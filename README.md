@@ -7,6 +7,11 @@ a JSON command line. It edits power limits, voltage ceilings, clock offset range
 **Not affiliated with, endorsed by or sponsored by NVIDIA Corporation.** NVIDIA and
 GeForce are trademarks of NVIDIA Corporation.
 
+> [!CAUTION]
+> **You use this software entirely at your own risk.** Any modification you make with it,
+> anything derived from it or from its output, and any damage that results, is solely your
+> responsibility. See [Read before using an edited image](#read-before-using-an-edited-image).
+
 ## Download
 
 From the Releases page:
@@ -46,13 +51,23 @@ manifest. The original file is never modified.
 - Edited images keep the original cryptographic signature, which no longer matches.
   **Do not flash them with nvflash.** Load them through a firmware override method
   that accepts unsigned images.
+- **YOU ARE SOLELY RESPONSIBLE FOR WHAT YOU DO WITH THIS SOFTWARE.** Every modification
+  you make, and any damage, malfunction, data loss or other harm to your hardware,
+  your system or anything else that results from using this software or the images it
+  produces, is entirely your own responsibility. The same applies to anything derived
+  from the software or its output, such as edited images, files, tools or other works,
+  whoever makes, shares or uses them. The author accepts no responsibility or liability
+  of any kind for any of it. If you do not accept this, do not use the software.
 - Fields marked *experimental* have not been tested on hardware. Raising power,
-  current or voltage limits can damage hardware. You use this software at your own
-  risk.
-- Recognized images: GB20x object-directory v3 (GB202, GB203, GB205, GB206). Other
-  images can be inspected; their editable fields are limited to what was validated.
+  current or voltage limits can damage hardware.
+- Recognized images: GB20x object-directory v3 (GB202, GB203, GB205, GB206). Ada (AD10x)
+  and Ampere (GA10x) images are supported with the same restriction as any other
+  image: they can be inspected, and only the fields validated for them can be edited.
+
+## Acknowledgements
+
+Thanks to @pantsoftime and @b00nza.
 
 ## License
 
-Free to use, closed source: see `LICENSE`. Third-party components keep their own
-licenses: see `THIRD_PARTY_NOTICES.md`.
+See LICENSE and THIRD_PARTY_NOTICES.md.

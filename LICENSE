@@ -12,8 +12,10 @@ Copyright (c) 2026 the Vix Editor authors. All rights reserved.
 
 3. No warranty. The software is provided "as is", without warranty of any kind.
    Editing firmware images can make hardware unusable or damage it. You are solely
-   responsible for how you use the software and the images it produces. In no event
-   shall the copyright holder be liable for any damages arising from its use.
+   responsible for how you use the software, the images it produces and anything
+   derived from either of them, such as edited images, files, tools or other works,
+   whoever makes, shares or uses them. In no event shall the copyright holder be liable
+   for any damages arising from the software, its output or any such derivative.
 
 4. Third-party components. The release includes third-party components under their
    own licenses, listed in THIRD_PARTY_NOTICES.md. Nothing in this agreement limits

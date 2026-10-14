@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1
+
+- Internal research notes, capture names and dates no longer appear in field evidence.
+- Python environment variables are ignored; unexpected errors print one line instead
+  of a traceback.
+- PyGObject ships as its original, replaceable files (`lib/nvbios-gui/gi/`).
+- README: responsibility notice, Ada and Ampere support, acknowledgements.
+
 ## 0.1.0
 
 First public release, Linux x86_64.
