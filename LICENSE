@@ -1,0 +1,26 @@
+NVIDIA VBIOS Vix Editor - End User License Agreement
+
+Copyright (c) 2026 the Vix Editor authors. All rights reserved.
+
+1. Grant. You may download, install and use this software free of charge, for
+   personal or commercial purposes. You may share unmodified copies of the official
+   release archives, together with this license.
+
+2. Restrictions. Except as allowed in section 4 or by applicable law, you may not
+   modify, decompile, disassemble or reverse engineer the software, or distribute
+   modified copies of it.
+
+3. No warranty. The software is provided "as is", without warranty of any kind.
+   Editing firmware images can make hardware unusable or damage it. You are solely
+   responsible for how you use the software and the images it produces. In no event
+   shall the copyright holder be liable for any damages arising from its use.
+
+4. Third-party components. The release includes third-party components under their
+   own licenses, listed in THIRD_PARTY_NOTICES.md. Nothing in this agreement limits
+   your rights under those licenses. In particular, for components under the GNU
+   Lesser General Public License you may modify them and replace them with your
+   modified versions, and reverse engineer the software to the extent needed to debug
+   such modifications.
+
+5. Trademarks. NVIDIA and GeForce are trademarks of NVIDIA Corporation. This software
+   is not affiliated with, endorsed by or sponsored by NVIDIA Corporation.
