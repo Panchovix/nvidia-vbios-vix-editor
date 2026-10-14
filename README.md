@@ -46,6 +46,16 @@ cd nvidia-vbios-vix-editor-<version>
 The editor window verifies each change while you type and saves a new ROM plus a JSON
 manifest. The original file is never modified.
 
+## Screenshots
+
+<table>
+<tr>
+<td align="center"><a href="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb202-rtx5090.png"><img src="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb202-rtx5090.png" width="280" alt="RTX 5090 (GB202)"></a><br>RTX 5090 (GB202): changes verified while typing</td>
+<td align="center"><a href="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb203-rtx5080.png"><img src="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb203-rtx5080.png" width="280" alt="RTX 5080 (GB203)"></a><br>RTX 5080 (GB203): image just opened</td>
+<td align="center"><a href="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb205-rtx5070.png"><img src="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb205-rtx5070.png" width="280" alt="RTX 5070 (GB205)"></a><br>RTX 5070 (GB205): single rail, current in A, fans</td>
+</tr>
+</table>
+
 ## Read before using an edited image
 
 - Edited images keep the original cryptographic signature, which no longer matches.
