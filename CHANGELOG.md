@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.7
+
+- Ada: many more editable fields. All are experimental except the four already reviewed
+  on the RTX 2000 Ada (power minimum and maximum, NVVDD REL ceiling).
+  - Power minimum, default and maximum on every desktop and workstation image, in both
+    power table variants (RTX 4090, 4080, 6000 Ada and others were read-only before).
+  - Clock offset ranges: GPC, memory, XBAR, SYS and VID, minimum and maximum.
+  - PCIe slot power, fan channels and fan PWM frequency, where the image has them.
+  - NVVDD REL and ALT voltage ceilings, only where they are temperature-derated equations.
+  - Advanced (opt-in) hardware thresholds: 12 V input current, slot current and NVVDD
+    output power.
+  - RTX 4080, 4060 and 4050 Laptop images: power and clock offset ranges. On a laptop the
+    platform sets the running power limit.
+- Ada fields stay read-only, with the reason shown, when editing them would not change the
+  effective limit: fixed-constant voltages, voltages that depend on the chip's fused speedo,
+  policies whose rows hold different values or share a sensor with another threshold (the
+  RTX 4060 NVVDD power threshold), and every power policy when the override profiles do not
+  decode. The RTX 4090 Laptop image is still rejected (no UEFI image) and the RTX 4070
+  Laptop image is read-only (no checksum padding).
+
 ## 0.1.6
 
 - Experimental: `normalize --representation ada-relocated-v2` relocates other Ada
