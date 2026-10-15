@@ -118,6 +118,9 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
 - Recognized images: GB20x object-directory v3 (GB202, GB203, GB205, GB206). Ada (AD10x)
   and Ampere (GA10x) images are supported with the same restriction as any other
   image: they can be inspected, and only the fields validated for them can be edited.
+- Laptops: the RTX 5080 Laptop GPU layout is recognized. On a laptop the platform
+  (Dynamic Boost) sets the running power limit, so a raised power ceiling may not raise
+  it, and the fans belong to the laptop, not to the image.
 
 ## Acknowledgements
 

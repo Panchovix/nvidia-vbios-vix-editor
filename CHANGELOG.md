@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4
+
+- RTX 5080 Laptop GPU: board power (the laptop's TGP row), NVVDD and MSVDD output OCP,
+  and the clock offset ranges are now decoded and editable. Laptop fans are system-driven,
+  so no fan section is shown. Not tested on hardware; on laptops the platform (Dynamic
+  Boost) can keep the running power limit below a raised ceiling.
+
 ## 0.1.3
 
 - Saving on drives without hard links (FAT/exFAT, some network shares): a failed save
