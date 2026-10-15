@@ -108,7 +108,8 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
   that accepts unsigned images. On Linux, the open
   [NVIDIA Linux VBIOS Vix Loader](https://github.com/Panchovix/nvidia-linux-vbios-vix-loader) loads them at
   boot. For the RTX 2000 Ada, export the payload with
-  `nvbios normalize edited.rom payload.bin --representation ada-relocated-v1`.
+  `nvbios normalize edited.rom payload.bin --representation ada-relocated-v1`. Other desktop and
+  workstation Ada images can use the experimental `--representation ada-relocated-v2` (untested on hardware).
 - **YOU ARE SOLELY RESPONSIBLE FOR WHAT YOU DO WITH THIS SOFTWARE.** Every modification
   you make, and any damage, malfunction, data loss or other harm to your hardware,
   your system or anything else that results from using this software or the images it

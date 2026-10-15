@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.6
+
+- Experimental: `normalize --representation ada-relocated-v2` relocates other Ada
+  desktop and workstation VBIOS images so the loaded image fits the 512 KiB limit of
+  the Ada GSP firmware. The layout is derived from each ROM and the result is refused
+  unless every output byte, every known pointer field and every checksum verifies.
+  Values that point inside moved tables are treated as data and were not reviewed per
+  ROM, unlike `ada-relocated-v1`. The laptop images tested do not fit and are refused
+  with `RELOCATION_DOES_NOT_FIT`; a laptop image without a UEFI image (RTX 4090 Laptop)
+  is still rejected by the parser. A v2 payload is verified only while it is exported
+  from its source ROM: `inspect` and `verify` do not recognize it, so re-run `normalize`
+  on the source to re-verify. Not tested on hardware except the reviewed RTX 2000 Ada
+  layout, where v2 produces the same bytes as `ada-relocated-v1`. This makes these images
+  loadable, not fully editable: on several of them the editor still recognizes few or no
+  editable fields.
+- Ada and Ampere ROMs whose UEFI image carries an unstamped PCI identity (0000:0000),
+  such as some RTX 4090, RTX 6000 Ada, RTX 4500 Ada and RTX 4000 Ada images, are now
+  read instead of being rejected.
+
 ## 0.1.5
 
 - `normalize --representation ada-relocated-v1` exports a relocated Ada payload that fits the 512 KiB
