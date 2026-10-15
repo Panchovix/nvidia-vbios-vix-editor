@@ -2,7 +2,8 @@
 
 Offline editor for NVIDIA Blackwell (GB20x) VBIOS images, with a GTK editor window and
 a JSON command line. It edits power limits, voltage ceilings, clock offset ranges,
-12 V input current and output OCP limits, fan PWM frequency and fan channels.
+12 V input current and output OCP limits, fan PWM frequency and fan channels. Ada
+(AD10x) and Ampere (GA10x) images are supported too, limited to their validated fields.
 
 **Not affiliated with, endorsed by or sponsored by NVIDIA Corporation.** NVIDIA and
 GeForce are trademarks of NVIDIA Corporation.
