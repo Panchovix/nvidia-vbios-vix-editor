@@ -33,6 +33,17 @@ From the Releases page:
   - Arch: `sudo pacman -S gtk4 gobject-introspection-runtime`
 - Command line: nothing else.
 
+## Your VBIOS image
+
+The editor does not include any VBIOS. You provide the image of your own card, for
+example:
+
+- Windows: GPU-Z, with the arrow next to the BIOS version and *Save to file…*.
+- Linux: `nvflash --save card.rom` (reading only; never write an edited image with
+  nvflash).
+
+Keep the original file: the editor never modifies it and always saves a new copy.
+
 ## Use
 
 ```sh
