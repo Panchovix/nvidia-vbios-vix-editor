@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5
+
+- `normalize --representation ada-relocated-v1` exports a relocated Ada payload that fits the 512 KiB
+  limit of the Ada GSP firmware, for use with the open
+  [NVIDIA Linux VBIOS Vix Loader](https://github.com/Panchovix/nvidia-linux-vbios-vix-loader).
+  Only the reviewed RTX 2000 Ada layout (VBIOS 95.07.47.00.19) is supported; other Ada images are refused.
+
 ## 0.1.4
 
 - RTX 5080 Laptop GPU: board power (the laptop's TGP row), NVVDD and MSVDD output OCP,

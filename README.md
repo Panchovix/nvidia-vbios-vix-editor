@@ -105,7 +105,10 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
 
 - Edited images keep the original cryptographic signature, which no longer matches.
   **Do not flash them with nvflash.** Load them through a firmware override method
-  that accepts unsigned images.
+  that accepts unsigned images. On Linux, the open
+  [NVIDIA Linux VBIOS Vix Loader](https://github.com/Panchovix/nvidia-linux-vbios-vix-loader) loads them at
+  boot. For the RTX 2000 Ada, export the payload with
+  `nvbios normalize edited.rom payload.bin --representation ada-relocated-v1`.
 - **YOU ARE SOLELY RESPONSIBLE FOR WHAT YOU DO WITH THIS SOFTWARE.** Every modification
   you make, and any damage, malfunction, data loss or other harm to your hardware,
   your system or anything else that results from using this software or the images it
