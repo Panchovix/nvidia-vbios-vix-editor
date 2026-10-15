@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2
+
+- Windows x86_64: `nvbios-gui.exe` (editor window, one file with its own GTK 4 runtime)
+  and `nvbios.exe` (command line).
+- Saving works on drives without hard links (FAT/exFAT, some network shares): the new
+  ROM is written as an exclusive copy, and a failed manifest removes only that ROM.
+- The path dialog accepts Windows drive, UNC and `file:///` paths; `--changes` files
+  are read as UTF-8.
+- The command line exits quietly when its output is closed early (for example, piped
+  into `head`).
+
 ## 0.1.1
 
 - Internal research notes, capture names and dates no longer appear in field evidence.

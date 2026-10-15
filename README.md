@@ -1,7 +1,7 @@
 # NVIDIA VBIOS Vix Editor
 
-Offline editor for NVIDIA Blackwell (GB20x) VBIOS images, with a GTK editor window and
-a JSON command line. It edits power limits, voltage ceilings, clock offset ranges,
+Offline editor for NVIDIA Blackwell (GB20x) VBIOS images, for Linux and Windows, with a
+GTK editor window and a JSON command line. It edits power limits, voltage ceilings, clock offset ranges,
 12 V input current and output OCP limits, fan PWM frequency and fan channels. Ada
 (AD10x) and Ampere (GA10x) images are supported too, limited to their validated fields.
 
@@ -19,13 +19,19 @@ From the Releases page:
 
 | File | Contents |
 |---|---|
-| `nvidia-vbios-vix-editor-<version>-linux-x86_64.tar.gz` | editor window (`nvbios-gui`) and command line (`nvbios`) |
-| `nvbios-<version>-linux-x86_64` | command line only, one file |
-| `SHA256SUMS` | checksums: `sha256sum -c SHA256SUMS` |
+| `nvidia-vbios-vix-editor-<version>-linux-x86_64.tar.gz` | Linux: editor window (`nvbios-gui`) and command line (`nvbios`) |
+| `nvbios-<version>-linux-x86_64` | Linux: command line only, one file |
+| `nvbios-gui.exe` | Windows: editor window, one file with its own GTK 4 |
+| `nvbios.exe` | Windows: command line, one file |
+| `SHA256SUMS` | checksums: `sha256sum -c SHA256SUMS`, or `Get-FileHash FILE` in PowerShell |
 
 ## Requirements
 
-- Linux x86_64 with glibc 2.39 or newer: Ubuntu 24.04+, Debian 13+, Fedora 40+, Arch and
+Windows: Windows 10 or 11, x86_64. Nothing else; `nvbios-gui.exe` carries its own GTK 4.
+
+Linux:
+
+- x86_64 with glibc 2.39 or newer: Ubuntu 24.04+, Debian 13+, Fedora 40+, Arch and
   derivatives.
 - Editor window: GTK 4.14+ and the GObject Introspection runtime.
   - Ubuntu / Debian: `sudo apt install libgtk-4-1 libgirepository-1.0-1`
@@ -46,6 +52,8 @@ Keep the original file: the editor never modifies it and always saves a new copy
 
 ## Use
 
+Linux:
+
 ```sh
 tar xf nvidia-vbios-vix-editor-<version>-linux-x86_64.tar.gz
 cd nvidia-vbios-vix-editor-<version>
@@ -54,6 +62,19 @@ cd nvidia-vbios-vix-editor-<version>
 ./nvbios fields card.rom         # JSON list of the fields
 ./nvbios edit card.rom out.rom --set power_max_w=700
 ```
+
+Windows: double-click `nvbios-gui.exe`. The first start unpacks its GTK runtime to
+`%LOCALAPPDATA%\NVIDIA VBIOS Vix Editor` (a few seconds); later starts reuse it. From a
+terminal:
+
+```powershell
+.\nvbios-gui.exe --lang es card.rom
+.\nvbios.exe fields card.rom
+.\nvbios.exe edit card.rom out.rom --set power_max_w=700
+```
+
+The programs are not code-signed, so Windows SmartScreen may warn the first time:
+choose *More info*, then *Run anyway*.
 
 The editor window verifies each change while you type and saves a new ROM plus a JSON
 manifest. The original file is never modified.
