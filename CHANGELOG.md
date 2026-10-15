@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.3
+
+- Saving on drives without hard links (FAT/exFAT, some network shares): a failed save
+  no longer leaves a partial file, its rollback never removes a file another program
+  replaced or changed, and a file it cannot remove is named in the error.
+- Third-party notices: the Windows programs are built with Nuitka 4, licensed under the
+  GNU AGPL v3 with the Nuitka Runtime Library Exception (0.1.2 wrongly said Apache 2.0);
+  the Zstandard license of the single-file programs is included on Linux and Windows.
+- Remove the remaining private reference-image filenames from public evidence.
+- Bundle Nuitka's own Apache license and the full common-license texts referenced
+  by third-party notices.
+- Validate release versions and keep source exports temporary, preserving dated
+  editor ZIPs that may already have been shared.
+- Clarify environment handling: malformed CPython startup variables can fail
+  before the compiled entry point runs; this is not a full environment sandbox.
+
 ## 0.1.2
 
 - Windows x86_64: `nvbios-gui.exe` (editor window, one file with its own GTK 4 runtime)
@@ -14,8 +30,9 @@
 ## 0.1.1
 
 - Internal research notes, capture names and dates no longer appear in field evidence.
-- Python environment variables are ignored; unexpected errors print one line instead
-  of a traceback.
+- Import search paths and site imports are isolated; unexpected application errors
+  print one line instead of a traceback. See the startup-environment limitation
+  in the README.
 - PyGObject ships as its original, replaceable files (`lib/nvbios-gui/gi/`).
 - README: responsibility notice, Ada and Ampere support, acknowledgements.
 

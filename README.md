@@ -79,6 +79,18 @@ choose *More info*, then *Run anyway*.
 The editor window verifies each change while you type and saves a new ROM plus a JSON
 manifest. The original file is never modified.
 
+### Startup environment
+
+The compiled application isolates import search paths and disables site imports.
+CPython still reads some startup variables before the application's recovery code
+runs. Invalid `PYTHONMALLOC` or `PYTHONHASHSEED` values can therefore stop startup.
+If those variables are set by another Python environment, launch with:
+
+```sh
+env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios --version
+env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
+```
+
 ## Screenshots
 
 <table>
