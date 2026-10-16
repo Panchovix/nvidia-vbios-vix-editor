@@ -80,6 +80,12 @@ choose *More info*, then *Run anyway*.
 The editor window verifies each change while you type and saves a new ROM plus a JSON
 manifest. The original file is never modified.
 
+**Shunt multiplier (x)**: on a shunt-modded card, type the shunt factor (for example 2) and
+the board power, PCIe slot and 12 V input current rows also show about the real limit, the
+value times the factor. It is display only: the saved ROM keeps the values in the fields. It
+assumes the same factor on every 12 V input shunt; NVVDD/MSVDD output current limits are
+measured by the VRM and are not scaled.
+
 ### Startup environment
 
 The compiled application isolates import search paths and disables site imports.

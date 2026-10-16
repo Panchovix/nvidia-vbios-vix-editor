@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.8
+
+- Editor window: a display-only shunt multiplier (x, 1 = off, up to 10). On a
+  shunt-modded card, the board power, fixed board policy, PCIe slot power and current, and
+  12 V input current rows also show about the real limit: the value times the multiplier,
+  updated while you type. The saved ROM does not change. It assumes the same factor on
+  every 12 V input shunt (connector and PCIe slot). NVVDD/MSVDD output current limits are
+  measured by the VRM, not by the shunts, and are not scaled.
+
 ## 0.1.7
 
 - Ada: many more editable fields. All are experimental except the four already reviewed
