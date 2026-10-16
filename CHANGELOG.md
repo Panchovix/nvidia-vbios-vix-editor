@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.10
+
+- ASUS ROG Astral XOC-style images: power and 12 V input current are now shown and
+  editable from the override profile the ROM selects at its top level (profile 7: 1200 or
+  1600 W, 120 or 160 A). The base table (2001 W / 5001 A) is kept unchanged. Experimental:
+  which of the two the firmware enforces has not been tested on hardware.
+
 ## 0.1.9
 
 - Ampere (GA102-GA107): every image examined (desktop, workstation and laptop, including
