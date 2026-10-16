@@ -4,7 +4,8 @@ Offline editor for NVIDIA Blackwell (GB20x) VBIOS images, for Linux and Windows,
 GTK editor window and a JSON command line. It edits power limits, voltage ceilings, clock offset ranges,
 12 V input current and output OCP limits, fan PWM frequency and fan channels. Ada
 (AD10x) images get power limits, clock offset ranges, slot power, fans and, where they apply,
-voltage ceilings (experimental). Ampere (GA10x) images are limited to their validated fields.
+voltage ceilings (experimental). Ampere (GA10x) images get power limits, power connector
+channels, clock offset ranges, slot power and fans (experimental).
 
 **Not affiliated with, endorsed by or sponsored by NVIDIA Corporation.** NVIDIA and
 GeForce are trademarks of NVIDIA Corporation.
@@ -117,6 +118,8 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
   boot. For the RTX 2000 Ada, export the payload with
   `nvbios normalize edited.rom payload.bin --representation ada-relocated-v1`. Other desktop and
   workstation Ada images can use the experimental `--representation ada-relocated-v2` (untested on hardware).
+  Ampere GA102–GA107 images can use the experimental `--representation ampere-relocated-v1`
+  (untested on hardware).
 - **YOU ARE SOLELY RESPONSIBLE FOR WHAT YOU DO WITH THIS SOFTWARE.** Every modification
   you make, and any damage, malfunction, data loss or other harm to your hardware,
   your system or anything else that results from using this software or the images it

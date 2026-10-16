@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.9
+
+- Ampere (GA102-GA107): every image examined (desktop, workstation and laptop, including
+  laptop and A40 images without a UEFI image) is now recognized, with experimental
+  editable fields. None of them has been tested on Ampere hardware.
+  - Power minimum, default and maximum; PCIe slot power; power connector channels (one
+    per 12 V sense channel; one physical connector can span several channels).
+  - Clock offset ranges: GPC, memory, XBAR, SYS and VID. A range cannot be collapsed to
+    0..0.
+  - Fan channels and fan PWM frequency, where the image has them.
+  - Advanced (opt-in): 12 V input current and slot current thresholds.
+  - The shunt multiplier also scales the power connector channels.
+  - Read-only, with the reason shown: voltages (fixed constants on these images), NVVDD
+    output OCP, and the A40 clock ranges (stored as 0..0). The RTX 3050 6 GB image is
+    read-only (no checksum padding).
+- Experimental: `normalize --representation ampere-relocated-v1` exports a GA102-GA107
+  payload that fits the 512 KiB limit of the GA10x GSP firmware, for the open-source
+  Linux loader. It keeps the legacy and data images unchanged and drops the UEFI image
+  and the bytes after the last data image; the result is refused unless every byte, known
+  pointer and checksum verifies. Not tested on hardware. GA100 and the A40 image are
+  refused.
+
 ## 0.1.8
 
 - Editor window: a display-only shunt multiplier (x, 1 = off, up to 10). On a
