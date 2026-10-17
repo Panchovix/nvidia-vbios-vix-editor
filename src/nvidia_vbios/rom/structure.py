@@ -1,6 +1,10 @@
 """Bounded PCI/NPDS and BIT parsing, independent of total dump size."""
+import math
 import struct
 from .errors import FormatError
+
+# Quadratic coefficients below this are float residue (corpus: at most 5e-9; real slopes are 35 and up).
+VFE_RESIDUE = 1e-6
 
 
 def read(blob, fmt, at, *, end=None):
@@ -15,6 +19,47 @@ def fan_curve(blob, at):
     points and bytes 18..29 three (temperature in 1/32 C, RPM) points, '<H' each."""
     return dict(curve_levels=tuple(blob[at + 14:at + 17]),
                 curve_points=tuple(read(blob, '<HH', at + 18 + 4 * k) for k in range(3)))
+
+
+def vfe_range(blob, base, size, width, count, index, seen=frozenset()):
+    """(lowest, highest) uV of the VFE equation list at index, or None when it is not bounded.
+
+    Each equation is clamped to its own float bounds (bytes 3/7) and its next link
+    (byte 2, | byte 24 << 8 when links are u16) is added, as the RTX 2000 Ada VMIN
+    shows (clamp 560 mV, driver 650 mV). A quadratic (1) whose slopes are float
+    residue is its constant (byte 11); otherwise a quadratic or the GB20x type 7
+    polynomial is bounded by its clamp alone. Min/max (2) and compare (3) span
+    their two children (bytes 11/12 and 15/16, u16 high bytes 4 further on).
+    Other kinds or output units, indices outside the table and cycles give None;
+    a missing link (index 0xff/0xffff) is an empty list, (0, 0).
+    """
+    none = (1 << 8 * width) - 1
+    low = high = 0.0
+    while index != none:
+        if index >= count or index in seen:
+            return None
+        seen |= {index}
+        e = blob[base + size * index:base + size * index + size]
+        lo, hi, c0, c1, c2 = struct.unpack_from('<5f', e, 3)
+        if e[23] & 15 != 2 or not lo <= hi:
+            return None
+        if e[0] in (1, 7):
+            constant = e[0] == 1 and abs(c1) < VFE_RESIDUE and abs(c2) < VFE_RESIDUE
+            span = (c0, c0) if constant else (-math.inf, math.inf)
+        elif e[0] in (2, 3):
+            children = [vfe_range(blob, base, size, width, count, e[k] | (e[k + 4] << 8 if width == 2 else 0), seen)
+                        for k in ((11, 12) if e[0] == 2 else (15, 16))]
+            if None in children:
+                return None
+            span = (min(c[0] for c in children), max(c[1] for c in children))
+        else:
+            return None
+        value = (min(max(span[0], lo), hi), max(min(span[1], hi), lo))
+        if not all(abs(v) < 1e30 for v in value):  # a +-FLT_MAX clamp bounds nothing
+            return None
+        low, high = low + value[0], high + value[1]
+        index = e[2] | (e[24] << 8 if width == 2 else 0)
+    return low, high
 
 
 def scan_images(blob):

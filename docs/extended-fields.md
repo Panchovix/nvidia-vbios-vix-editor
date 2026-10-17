@@ -21,7 +21,7 @@ and evidence descriptors, and adds independent namespaces:
 
 ```json
 {
-  "key": "nvvdd_vmin_equation_max_mv",
+  "key": "nvvdd_ov_equation_max_mv",
   "units": "mV",
   "value_semantics": "stored-equation-output-ceiling",
   "capability": {
@@ -71,7 +71,9 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `*_rel_equation_max_mv` | VFE output clamp maximum addressed by REL selector | Reviewed Blackwell; Ada temperature-derated REL |
 | `*_alt_equation_max_mv` | VFE output clamp maximum addressed by ALT selector | Reviewed Blackwell when present; Ada temperature-derated ALT (experimental) |
 | `*_ov_equation_max_mv` | VFE output clamp maximum addressed by OV selector | Reviewed Blackwell |
-| `*_vmin_equation_max_mv` | VFE output clamp maximum addressed by VMIN selector | Reviewed Blackwell |
+| `*_vmin_equation_max_mv` | VFE output clamp maximum addressed by the rail INFO VMIN slot (GB20x row+`0x21`, Ada/Ampere row byte 11); **not** the evaluated VMIN | Read-only |
+| `*_vmin_mv` | Evaluated minimum voltage (VMIN): the equation at GB20x row+`0x13`, Ada/Ampere row byte 7 | Experimental, constant (GB20x) or clamp-pinned (Ada/Ampere) equations only, kept below the lowest REL value |
+| `nvvdd_rel_alt_follow_ov` | 1 when the NVVDD REL and ALT selectors (REL alone without ALT) point at the OV equation (XOC-style) | Experimental, opt-in, GB20x; only 0 -> 1 |
 | `*_rel/alt/ov/vmin_selector_index` | Full stored selector index | Read-only |
 | `*_boot_voltage_uv` | Stored boot voltage | Read-only, preserved |
 | `*_output_ocp_max_ma` | Reviewed output-OCP policy maximum (client ceiling) | Reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images |
@@ -97,13 +99,16 @@ Each selector field uses one complete role name, for example
 present the canonical field once and keep aliases in read-only details.
 
 The Blackwell V30 rail entries are 65 bytes with a 5-byte header. Proven selector
-locations are row+`0x0d` REL, +`0x0f` ALT, +`0x11` OV and +`0x21` VMIN; all are
+locations are row+`0x0d` REL, +`0x0f` ALT, +`0x11` OV, +`0x13` evaluated VMIN and
++`0x21` the slot the driver's rail INFO lists as VMIN; all are
 **u16**. Boot is u32 uV at +`0x19`. `0xffff` means absent. Matrix MSVDD selectors
 263–266 and other consumer selectors up to270 are retained without u8 truncation.
 Each present selector is bounded against object14 and the complete 25-byte VFE
 entry. Output minima/maxima use the reviewed float32 prefix at equation+3/+7;
-recognized voltage output unit2 and equation kinds1/7 for REL, or kind1 for the
-new roles, gate writable bindings. Unknown kinds or ownership remain read-only.
+recognized voltage output unit2 and equation kinds1/7 for REL, or kind1 for ALT
+and OV, gate writable bindings. The rail INFO VMIN slot (+`0x21`) is never
+writable (`capability.vbios.writable` is `unsupported`). Unknown kinds or ownership
+remain read-only.
 
 A selector is not an evaluated voltage. A stored ceiling is not a runtime offset.
 Consumer ALT equations currently have output bounds of20mV; that is a stored
@@ -114,6 +119,99 @@ its evaluated result unchanged. For example, a constant1200mV expression stays
 
 Ada selectors and equation kinds are described in [Ada fields](#ada-fields), Ampere
 ones in [Ampere fields](#ampere-fields); neither inherits a Blackwell mapping.
+
+## Evaluated VMIN (`nvvdd_vmin_mv`, `msvdd_vmin_mv`)
+
+The driver's evaluated VMIN does not come from the VMIN role selector above. That
+selector (`*_vmin_equation_max_mv`) is the slot the driver's rail INFO lists as VMIN;
+it is read-only and labelled as such:
+
+- **GB20x.** The driver VMIN equals the equation selected at row+`0x13`: a constant
+  800 mV on both RTX 5080 rails, min/max equation trees on the RTX PRO 4000 SFF
+  (630 mV NVVDD, 655 mV MSVDD). The +`0x21` slot holds a 900 or 750 mV constant
+  the driver does not report, and a third-party driver dump shows the VMIN_LOGIC
+  perf limit carrying the +`0x13` equation index. Hardware test on an RTX 5080:
+  with that NVVDD equation's minimum, maximum and value raised from 800 to 850 mV,
+  the driver reported VMIN 850 mV and the GPU idled at 850 mV.
+- **Ada.** The equation at row byte 7 sets VMIN. On the RTX 2000 Ada it is a float
+  quadratic on a fused input whose clamp pins 560 mV, and the driver reported
+  650 mV; with the clamp at 700 mV in both chains it reported 790 mV. The
+  equations chained after it (next link, temperature terms) add to the clamped
+  value: +90 mV on that board, and the offset may differ per board. A new value in
+  the byte-11 equation (and the identical equation 1) did not change the driver VMIN.
+- **Ampere** stores the same row byte 7, mostly as a clamp-pinned constant; it has
+  no hardware result.
+
+`*_vmin_mv` is offered, experimental, only on these shapes:
+
+- GB20x: a constant voltage equation (type 1, unit 2, minimum = maximum = value,
+  zero coefficients, no next link) in object 0x14 that no other equation references
+  and no other u16 word of the rail rows selects (+`0x0d`..+`0x17`, +`0x1d`..+`0x23`
+  and the trailing block +`0x29`..+`0x3f`, which holds voltage equations on the
+  Max-Q, RTX PRO 4000 SFF, RTX 5060 Ti and notebook rows). The edit writes the same
+  float to its minimum, maximum and value. Corpus: NVVDD of the RTX 5080, 5070 Ti,
+  5070 and the RTX 5090 images (FE, ASUS, XOC, Lightning). The other rails hold
+  min/max trees, and the RTX 5080/5070 Ti MSVDD constant (800 mV) lies above the
+  lowest MSVDD REL value (760.2 mV, see below): all read-only.
+- Ada and Ampere: a float voltage equation whose clamp minimum equals its maximum,
+  which no other equation references and no other role selects. The edit writes the
+  clamp minimum and maximum in every chain. Corpus: 7 of the 20 parseable Ada images
+  (RTX 2000 Ada, RTX 4090 95.02.18, 4080, 4080 SUPER, 4070, 4070 SUPER, RTX 4500 Ada;
+  the newer RTX 4090 image chains another equation into it, and a compare REL on
+  fused inputs gives no bound on the 4070 Ti SUPER) and 20 of the 33 Ampere images,
+  both rails on eight two-rail GA102 images. The A40 stores 668088.3125 uV, which an
+  edit in whole uV could not write back, so it stays read-only.
+
+The value goes from 450 mV (GB20x) or 400 mV (Ada, Ampere; no voltage device
+minimum is decoded) up to the lowest value the rail's REL equation list can take,
+less the most the equations chained after the VMIN equation can add, so the
+evaluated VMIN never crosses REL. Each equation of a list is clamped to its own
+bounds and its next link is added (the RTX 2000 Ada result above); a quadratic
+whose slopes are float residue (below 1e-6; the corpus has at most 5e-9) counts
+as its constant, other quadratics and the GB20x type 7 REL count as their clamp,
+and min/max or compare equations span their children. A list with an unclamped
+slope, another kind or a cycle has no bound and keeps the field read-only. On the
+RTX 2000 Ada REL is at least 915 mV and the chain after the VMIN clamp adds 70 to
+162 mV (the driver showed +90), so VMIN goes up to 753 mV; on the RTX 4080 REL is
+1075 mV and the chain adds 146 to 261 mV, so up to 814 mV. On the RTX 5080 and 5070
+Ti the MSVDD REL links a compare that can add -139.8 mV, so MSVDD REL can drop to
+760.2 mV. The edit guard allows exactly the declared floats of that one equation,
+and only through this canonical binding.
+
+## REL and ALT follow OV (`nvvdd_rel_alt_follow_ov`, opt-in)
+
+The ASUS RTX 5090 XOC images and the MSI RTX 5090 Lightning image reach
+REL = ALT = OV = 1.2 V by pointing the NVVDD REL and ALT selectors (row+`0x0d` and
++`0x0f`) at the OV equation, a constant 1200 mV; their VFE equations and MSVDD row
+equal the stock image's. The field writes the same two selectors: 1 points them at
+OV, so the voltage limit no longer follows the leakage-dependent REL curve.
+
+The rail table (P+`0x68`) lies in the legacy image, outside the signed data image's
+object directory. The legacy image has its own v3 object directory (objects 0xfa and
+0xbd first, SHA384 per object, directory digest at legacy+`0x209`): object 0x21 spans
+exactly the rail table and the aggregate object 0x35 holds it too. Every hash and the
+digest match on every GB20x image of the corpus. Inside the rail table the vendor
+XOC and Lightning images differ from the stock image only at the NVVDD REL and ALT
+selectors; they update the 0x21 and 0x35 hashes, the digest and the legacy checksum
+with them, and also change other legacy objects (0xbd, 0x69, 0x2e, 0x85 and more on
+the Lightning) that this field leaves alone. An edit there repairs
+every legacy object it touches, the legacy digest and the legacy image checksum, and
+the copy must reparse with a valid legacy directory. `inspect` reports that directory
+under `integrity.legacy_directory`; it does not change `integrity.valid`. The
+legacy image's vendor signature is not regenerated, as with the data image's.
+Applied to the stock ASUS RTX 5090 image, the edit gives the rail table and object
+0x21 hash of the XOC image byte for byte.
+
+0 -> 1 is offered while REL, ALT (if present) and OV select distinct equations, OV is
+a constant voltage equation and the legacy directory is valid: on 12 of the 15 GB20x
+images of the corpus (the XOC and Lightning images read 1). The RTX PRO 6000
+Workstation, RTX PRO 4000 SFF, Max-Q and notebook images have no ALT selector:
+there only REL moves (REL = OV). At 1 the field is
+read-only: the image keeps no record of the original REL and ALT selectors, so keep
+the source image to go back. The field is edited alone among the voltage fields
+(`SEPARATE_EDIT_REQUIRED`), because moving REL changes the equation the REL ceiling
+binds. Not hardware-tested: whether the firmware accepts an edited legacy image
+through the override loader is unknown.
 
 ## Output-OCP association and narrow gate
 
@@ -514,7 +612,8 @@ with `runtime_get: false`:
 | GB203 RTX 5080 Laptop GPU (Lenovo Legion 7 Pro) | `10de:2c59` | `98.03.5C.00.F2` |
 
 The rail and VFE tables are the split-rail ones, so the NVVDD and MSVDD voltage
-fields work unchanged (REL 1025 mV, OV 1200 mV, VMIN 700 mV on both rails). The
+fields work unchanged (REL 1025 mV, OV 1200 mV, rail INFO VMIN slot 700 mV on both
+rails; the evaluated VMIN equations are min/max trees, read-only). The
 power policy table keeps the v0x40 format but places its rows differently:
 
 - **TGP in row 2.** Every desktop and Max-Q source has policy header bytes 21..23 =
@@ -602,15 +701,22 @@ and every active channel is stored. Fan fields are offered only when that holds.
   in 1/32 °C, RPM) points from byte 18. Enabled policy entries past the cooler rows
   (4 and 5 on every source) store further curves. On every active row of the corpus
   the row limits hold the channel's own curve, and on most of them the curve's end
-  points equal the limits. On the RTX 5080, NVML reports 73 % at 2556 RPM with a
-  3500 RPM maximum (percent = RPM / row maximum), while the driver's 30-100 % range
+  points equal the limits. The driver's fan percent maps linearly from 30 % at the
+  row's minimum speed to 100 % at its maximum: RPM = min + (pct - 30) / 70 × (max -
+  min). Read-only NVML readings match it on every board on the maintainers' machine
+  (expected value in parentheses): RTX 5080 (1050-3500 RPM) 73 % -> 2556 (2555),
+  79 % -> 2761-2774 (2765); RTX PRO 4000 SFF (3600-7300) 92 % -> 6887 (6877), 84 % ->
+  6438 (6454); RTX 5070 Ti (1050-3200) 68 % -> 2206-2213 (2217); RTX PRO 6000 Max-Q
+  (1000-3350) 96 % -> 3213 (3216), 90 % -> 3010 (3014). The driver's 30-100 % range
   does not follow byte 2 (10-30 on the corpus), so the meaning of the level bytes is
   unconfirmed. Hardware test on that RTX 5080 (both channels, fans under manual
-  control): with the speed maximum raised from 3500 to 4000 RPM, 72 % gave about
-  2820 RPM instead of about 2520, so the driver maps the fan percent to the stored
-  maximum; with the level minimum lowered from 20 to 10 %, the driver's fan range
-  stayed 30-100 %. The other limits, the curve points and other boards are not
-  hardware-tested. `fan_N_min_rpm`, `fan_N_max_rpm`, `fan_N_min_pct` and `fan_N_max_pct`
+  control): with the speed maximum raised from 3500 to 4000 RPM, 72 % gave 2820 RPM
+  and 30 % gave 1050 RPM, as the linear map predicts; with the level minimum lowered
+  from 20 to 10 %, the driver's fan range stayed 30-100 %. So the 30 % setting runs at
+  the row minimum speed, and lowering `fan_N_min_rpm` should lower the slowest manual
+  speed (observed mapping; an edited minimum is not hardware-tested). The other
+  limits, the curve points and other boards are not hardware-tested.
+  `fan_N_min_rpm`, `fan_N_max_rpm`, `fan_N_min_pct` and `fan_N_max_pct`
   (N = row index + 1, active channels only) edit these bytes:
   - A minimum may go from 0 up to the lowest first point of the channel's curve and
     of every enabled extra curve, and below its maximum. A maximum may go from the
@@ -754,7 +860,7 @@ equation. Read-only kinds carry `equation_kind`:
 | --- | --- | --- |
 | `constant` | every OV; REL of the RTX 4090, 4080 and RTX 4000 Ada; ALT of 4090, 4080, 4080 SUPER, 4070 Ti SUPER, 4060 | A ceiling-only edit keeps the evaluated value |
 | `compare` | REL of the 4070 Ti SUPER, 4060 Ti, 4060 and laptops | The value comes from child terms on fused (speedo) inputs |
-| `fixed-point` | every VMIN | Output scale unverified; the selector is shown |
+| `fixed-point` | every VMIN slot (byte 11) | Output scale unverified; the selector is shown. It is the rail INFO VMIN slot, not the evaluated VMIN: changing it did not move the driver VMIN (see [Evaluated VMIN](#evaluated-vmin-nvvdd_vmin_mv-msvdd_vmin_mv)) |
 
 **Clocks (BIT C+8).** Version 0x40 with header `40 0d 0f 0a 03 01 03 e8 03` (GV HAL,
 one rail), ten 18-byte rows ending at the C+0x20 table. Rows are named by their
@@ -906,7 +1012,7 @@ from nvidia_vbios.editor import load, plan
 
 image = load("reviewed.rom")
 # Choose values from this ROM's field descriptors and preserved lower bounds.
-proposal = plan(image, {"msvdd_vmin_equation_max_mv": 1000,
+proposal = plan(image, {"msvdd_ov_equation_max_mv": 1300,
                         "nvvdd_output_ocp_max_ma": 100000})
 print(proposal.manifest["affected_fields"])
 ```

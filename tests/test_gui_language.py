@@ -92,6 +92,17 @@ class LanguageTests(unittest.TestCase):
         self.assertEqual(read_only_reason(reason, 'es'), spanish('reason.ocp'))
         self.assertEqual(field, {'key': 'nvvdd_rel_equation_max_mv', 'label': 'raw API label'})
 
+    def test_vmin_labels_keep_the_evaluated_vmin_apart_from_the_info_slot(self):
+        english, spanish = Messages(), Messages('es')
+        self.assertEqual(field_label({'key': 'msvdd_vmin_mv'}), 'MSVDD minimum voltage (VMIN, experimental)')
+        self.assertEqual(field_label({'key': 'msvdd_vmin_mv'}, 'es'), spanish('field.vmin', rail='MSVDD'))
+        slot = field_label({'key': 'nvvdd_vmin_equation_max_mv'})
+        self.assertIn('not the evaluated VMIN', slot)
+        self.assertNotEqual(slot, english('field.equation', rail='NVVDD', role='VMIN'))
+        self.assertIn('no es el VMIN evaluado', field_label({'key': 'nvvdd_vmin_equation_max_mv'}, 'es'))
+        for language in ('en', 'es'):
+            self.assertIn('XOC', field_label({'key': 'nvvdd_rel_alt_follow_ov'}, language))
+
 
 if __name__ == '__main__':
     unittest.main()

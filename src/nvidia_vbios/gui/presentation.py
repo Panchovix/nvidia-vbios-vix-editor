@@ -11,7 +11,7 @@ FIELD_KEYS = frozenset(('power_min_w', 'power_max_w', 'nvvdd_rel_max_mv', 'msvdd
                         'gpc_offset_max_mhz', 'gpc_offset_min_mhz',
                         'memory_offset_min_mhz', 'dram_min_table_mhz',
                         'input_current_policy7_limit_ma', 'slot_power_rated_w', 'slot_power_max_w',
-                        'board_fixed_rated_w', 'fan_pwm_frequency_hz', 'fan_channels',
+                        'board_fixed_rated_w', 'fan_pwm_frequency_hz', 'fan_channels', 'nvvdd_rel_alt_follow_ov',
                         'slot_current_threshold_rated_ma', 'slot_current_threshold_max_ma',
                         'nvvdd_power_threshold_rated_w', 'nvvdd_power_threshold_max_w'))
 # Ampere external 12 V connector-channel power policies, numbered in power-row order
@@ -55,7 +55,12 @@ def field_label(field, language='en'):
             return text('field.output_ocp', rail=rail.upper())
         if key == f'{rail}_output_ocp_rated_ma':
             return text('field.output_ocp_rated', rail=rail.upper())
-        for role in ('rel', 'alt', 'ov', 'vmin'):
+        if key == f'{rail}_vmin_mv':
+            return text('field.vmin', rail=rail.upper())
+        if key == f'{rail}_vmin_equation_max_mv':
+            # The rail INFO VMIN slot; the evaluated VMIN is {rail}_vmin_mv.
+            return text('field.vmin_slot', rail=rail.upper())
+        for role in ('rel', 'alt', 'ov'):
             if key == f'{rail}_{role}_equation_max_mv':
                 return text('field.equation', role=role.upper(), rail=rail.upper())
     match = CONNECTOR_KEY.fullmatch(key)
@@ -114,10 +119,10 @@ SECTIONS = (
                'slot_power_max_w', 'slot_power_rated_w') +
               tuple(f'connector_{n}_power_{side}_w' for n in range(1, 5) for side in ('max', 'rated')) +
               ('nvvdd_power_threshold_max_w', 'nvvdd_power_threshold_rated_w')),
-    ('voltage', ('nvvdd_rel_equation_max_mv', 'nvvdd_rel_max_mv', 'nvvdd_ov_equation_max_mv',
-                 'nvvdd_vmin_equation_max_mv', 'nvvdd_alt_equation_max_mv', 'msvdd_rel_equation_max_mv',
-                 'msvdd_rel_max_mv', 'msvdd_ov_equation_max_mv', 'msvdd_vmin_equation_max_mv',
-                 'msvdd_alt_equation_max_mv')),
+    ('voltage', ('nvvdd_rel_equation_max_mv', 'nvvdd_rel_max_mv', 'nvvdd_ov_equation_max_mv', 'nvvdd_vmin_mv',
+                 'nvvdd_vmin_equation_max_mv', 'nvvdd_alt_equation_max_mv', 'nvvdd_rel_alt_follow_ov',
+                 'msvdd_rel_equation_max_mv', 'msvdd_rel_max_mv', 'msvdd_ov_equation_max_mv', 'msvdd_vmin_mv',
+                 'msvdd_vmin_equation_max_mv', 'msvdd_alt_equation_max_mv')),
     ('clocks', ('gpc_offset_max_mhz', 'gpc_offset_min_mhz', 'memory_offset_max_mhz', 'memory_offset_min_mhz',
                 'xbar_max_table_mhz', 'xbar_min_table_mhz', 'sys_max_table_mhz', 'sys_min_table_mhz',
                 'vid_max_table_mhz', 'vid_min_table_mhz')),
@@ -222,7 +227,7 @@ def windows_value(field, value):
 # Rows show some stored units on a friendlier scale: table MHz as MHz, mA as A
 # and Hz as kHz (exact: factor 0.001), and C as °C. The backend always receives stored units.
 DISPLAY_UNITS = {'table MHz': ('MHz', Decimal(1)), 'mA': ('A', Decimal('0.001')), 'Hz': ('kHz', Decimal('0.001')),
-                 'channels': ('', Decimal(1)), 'C': ('°C', Decimal(1))}
+                 'channels': ('', Decimal(1)), 'flag': ('', Decimal(1)), 'C': ('°C', Decimal(1))}
 
 
 def display_units(field):

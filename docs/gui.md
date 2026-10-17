@@ -70,9 +70,11 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    current values are stored policy values, not hardware-safe ratings; connector,
    slot and cable limits still apply. **Show advanced XOC-style fields** (off by
    default) reveals opt-in fields such as the rated power of the fixed board
-   policies 2/7 and the Ada hardware thresholds (slot current, NVVDD output
-   power and, on Ada, the 12 V input current, labelled "threshold"); values
-   typed before ticking it are kept. **Shunt multiplier (x)** (1 = off, up to 10)
+   policies 2/7, the Ada hardware thresholds (slot current, NVVDD output
+   power and, on Ada, the 12 V input current, labelled "threshold") and, on
+   Blackwell, **NVVDD REL and ALT follow OV** (0 or 1: 1 gives the flat XOC-style
+   voltage limit; save it on its own, and keep the original image to go back);
+   values typed before ticking it are kept. **Shunt multiplier (x)** (1 = off, up to 10)
    is display only: for board power, PCIe slot power/current and 12 V input
    current rows it adds a note with the real limit on a shunt-modded card, about
    the stored value times the multiplier, assuming the same factor on every 12 V
@@ -109,7 +111,12 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    before changing channel limits or curves on the copy.
    Voltage compatibility aliases, selector indices and stored boot values are
    not shown; `nvbios fields` lists them. Each equation ceiling, including ALT, is an
-   expression bound, not an evaluated VOP reading or runtime offset. The full
+   expression bound, not an evaluated VOP reading or runtime offset. **Minimum
+   voltage (VMIN)** (experimental) is the stored value of the equation the driver
+   evaluates as VMIN; on Ada the driver adds its chained terms (+90 mV on an RTX
+   2000 Ada), so the value goes up to the lowest REL value less the most those terms
+   can add (753 mV on that board). The read-only "rail INFO VMIN-slot" ceiling
+   is a different equation and does not set VMIN. The full
    source SHA256 and integrity scope are in the saved manifest.
    Ada/Ampere do not inherit the Blackwell memory conversion.
 3. The preview is live. Typing marks the row, shows original → new value and the

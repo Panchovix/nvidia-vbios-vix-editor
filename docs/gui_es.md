@@ -61,9 +61,11 @@ funcionando sin las dependencias gráficas.
    la política, no corrientes seguras garantizadas; los límites del conector, del
    slot y de los cables siguen aplicando. **Mostrar campos avanzados (estilo XOC)**
    (desmarcada por defecto) muestra campos opcionales como la potencia nominal de
-   las políticas fijas 2/7 y los umbrales de hardware de Ada (corriente del slot,
+   las políticas fijas 2/7, los umbrales de hardware de Ada (corriente del slot,
    potencia de salida NVVDD y, en Ada, la corriente de entrada de 12 V, rotulada
-   "umbral"); los valores ya escritos se conservan al marcarla. **Multiplicador
+   "umbral") y, en Blackwell, **REL y ALT de NVVDD siguen a OV** (0 o 1: 1 da el
+   límite de voltaje plano estilo XOC; guárdalo solo y conserva la imagen original
+   para volver atrás); los valores ya escritos se conservan al marcarla. **Multiplicador
    de shunt (x)** (1 = desactivado, hasta 10) es solo informativo: en las filas de
    potencia de la tarjeta, potencia/corriente del slot PCIe y corriente de entrada
    de 12 V agrega una nota con el límite real en una tarjeta con shunt mod,
@@ -115,8 +117,14 @@ de las curvas aparecen con los campos avanzados. Guarda primero una nueva cantid
 de canales y cambia los límites o las curvas en la copia. Ada y
 Ampere no heredan esa conversión. Los techos de
 salida OCP revisados se expresan en mA, pero editarlos no demuestra que el firmware
-los aplique. Un techo de ecuación REL/ALT/OV/VMIN tampoco es un voltaje evaluado ni
-un offset runtime. La GUI guarda el archivo completo y no normaliza los bancos
+los aplique. Un techo de ecuación REL/ALT/OV tampoco es un voltaje evaluado ni
+un offset runtime. **Voltaje mínimo (VMIN)** (experimental) es el valor guardado de la
+ecuación que el driver evalúa como VMIN; en Ada el driver le suma sus términos
+encadenados (+90 mV en una RTX 2000 Ada), así que el valor llega hasta el REL más
+bajo menos lo máximo que esos términos pueden sumar (753 mV en esa placa). El
+techo de solo lectura del "slot VMIN de la info del riel" es otra ecuación y no
+fija el VMIN. La GUI guarda
+el archivo completo y no normaliza los bancos
 implícitamente. Los formatos desconocidos o no editables permiten sólo inspección.
 Las firmas criptográficas no se verifican ni regeneran.
 

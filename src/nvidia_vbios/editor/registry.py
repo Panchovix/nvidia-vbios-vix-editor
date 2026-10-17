@@ -494,6 +494,17 @@ AMPERE_VOLTAGE_EVIDENCE = dict(
                 'DRAM and DISP on rail 1)')
 
 
+# The VMIN role selector is the slot the driver's rail INFO lists as VMIN; the evaluated
+# VMIN comes from another selector (evaluated_vmin).
+VMIN_SLOT_REASONS = {
+    'gb20x': 'rail INFO VMIN slot (row +0x21); the driver reports the evaluated VMIN of the row +0x13 equation '
+             '(the *_vmin_mv field) and does not report this one',
+    'ada': 'rail INFO VMIN slot (row byte 11); on an RTX 2000 Ada a new value here, in its equation and in the '
+           'identical equation 1, did not change the driver VMIN, which follows the row byte 7 equation (nvvdd_vmin_mv)',
+    'ampere': 'rail INFO VMIN slot (row byte 11) as on Ada, where a new value here did not change the driver VMIN; '
+              'the evaluated VMIN follows the row byte 7 equation (the *_vmin_mv field)'}
+
+
 def ada_equation_reason(kind):
     return ADA_EQUATION_REASONS.get(kind, 'equation shape outside the reviewed temperature-derated form')
 
@@ -575,7 +586,14 @@ def equation_roles(image, parser):
         reason = ('selector denotes absence' if item['absent'] else
                   item.get('diagnostic', 'equation clamp only; evaluated voltage and runtime offset remain unknown'))
         flags = {}
-        if isinstance(parser, TableRom) and not item['absent']:
+        label = f"{item['logical_rail_id']} {item['role']} equation output ceiling"
+        if item['role'] == 'VMIN':
+            # The rail INFO VMIN slot; the evaluated VMIN is the evaluated_vmin field.
+            label = f"{item['logical_rail_id']} rail INFO VMIN-slot equation ceiling (not the evaluated VMIN)"
+            editable = False
+            if not item['absent']:
+                reason = 'read-only: ' + VMIN_SLOT_REASONS[parser.family if isinstance(parser, TableRom) else 'gb20x']
+        elif isinstance(parser, TableRom) and not item['absent']:
             if not item.get('editable_ceiling'):
                 reason = 'read-only: ' + ada_equation_reason(item.get('equation_kind'))
             elif editable:
@@ -596,7 +614,7 @@ def equation_roles(image, parser):
             offsets = [item['maximum_offset']] if isinstance(parser, BlackwellRom) else parser.copy_offsets(item['maximum_offset'], 4)
         selector = {'raw': item['selector_raw'], 'width_bits': item['selector_width_bits'],
                     'offset': item['selector_offset'], 'absent': item['absent']}
-        result.append(field(key, f"{item['logical_rail_id']} {item['role']} equation output ceiling", 'mV',
+        result.append(field(key, label, 'mV',
                             current, item['output_minimum_uv'] / 1000 if value_known else None,
                             0x7FFFFFFF / 1000 if known else None, editable, evidence,
                             offsets=offsets, encoding='<f' if known else '', scale=1000,
@@ -605,7 +623,8 @@ def equation_roles(image, parser):
                             selector=selector, shared_references=shared, equation_offset=item['equation_offset'],
                             equation_type=item.get('equation_type'), output_flags=item.get('output_flags'),
                             unchanged_output_minimum_uv=item['output_minimum_uv'] if value_known else None,
-                            runtime_role_candidate='VOP' if item['role'] == 'ALT' else item['role'],
+                            runtime_role_candidate={'ALT': 'VOP', 'VMIN': 'VMIN (rail INFO slot)'}.get(
+                                item['role'], item['role']),
                             runtime_offset={'units': 'uV', 'type': 'int32', 'signed': True,
                                             'current': None, 'writable': 'unknown'},
                             reason=reason, **flags,
@@ -626,6 +645,166 @@ def equation_roles(image, parser):
                             value_semantics='stored-boot-voltage', rail_identity=rail_identity(parser, item),
                             reason='boot/factory values are preserved'))
     return result
+
+
+VMIN_SEMANTICS = 'stored-evaluated-vmin'
+FOLLOW_OV_SEMANTICS = 'stored-rail-selector-layout'
+# Lowest VMIN offered: no voltage device minimum is decoded, so a fixed reviewed floor.
+VMIN_FLOOR_MV = {'gb20x': 450, 'ada': 400, 'ampere': 400}
+GB20X_VMIN_EVIDENCE = [
+    {'kind': 'read-only-rail-status-correlation', 'source': 'read-only driver rail status', 'set_tested': False,
+     'format': 'GB20x rail row +0x13 (u16) selects the VFE equation of the evaluated VMIN',
+     'observation': 'the driver VMIN equals that equation on the RTX 5080 (constant 800 mV on both rails) and the RTX '
+                    'PRO 4000 SFF (min/max trees, 630 mV NVVDD and 655 mV MSVDD); the rail INFO VMIN slot (+0x21) '
+                    'holds a 900 or 750 mV constant that the driver does not report; a third-party driver dump shows '
+                    'the VMIN_LOGIC perf limit carrying the +0x13 equation index'},
+    {'kind': 'hardware-test', 'source': 'edited image loaded as an override; read-only driver rail status',
+     'set_tested': True, 'scope': 'RTX 5080 (10de:2c02), NVVDD',
+     'observed': 'equation minimum, maximum and value 800 -> 850 mV: the driver reported VMIN 850 mV and the idle '
+                 'voltage was 850 mV'}]
+ADA_VMIN_EVIDENCE = [
+    {'kind': 'hardware-test', 'source': 'edited image loaded as an override; read-only driver rail status',
+     'set_tested': True, 'scope': 'RTX 2000 Ada 95.07.47.00.19 (10de:28b0)',
+     'format': 'Ada rail row byte 7 (u8) selects the VFE equation of the evaluated VMIN',
+     'observed': 'that equation pins 560 mV with its clamp; driver VMIN 650 mV; with the clamp at 700 mV in both '
+                 'chains the driver reported 790 mV, the clamp value plus 90 mV both times; a new row byte 11 '
+                 'equation did not change the driver VMIN'}]
+
+
+@registry.register
+def evaluated_vmin(image, parser):
+    """Evaluated minimum voltage (VMIN) of each rail: the GB20x row +0x13 equation, the Ada/Ampere row byte 7 one.
+
+    A GB20x constant equation takes the value in its minimum, maximum and constant;
+    an Ada/Ampere equation whose clamp pins its value takes it in the clamp minimum
+    and maximum (both chains). The value stays from a fixed floor up to the lowest
+    value of the REL equation list less the most the VMIN equation's chained
+    equations add, so the evaluated VMIN never crosses REL. Other shapes, unbounded
+    chains and a stored value that is not a whole uV are read-only.
+    """
+    if not isinstance(parser, (BlackwellRom, TableRom)):
+        return []
+    family = parser.family if isinstance(parser, TableRom) else 'gb20x'
+    result = []
+    for item in parser.rail_vmin():
+        name = item['logical_rail_id']
+        floor, added = VMIN_FLOOR_MV[family], item['added_uv']
+        top = (item['rel_lowest_uv'] - added[1]) / 1000 if added and item['rel_lowest_uv'] is not None else None
+        current = item['value_uv'] / 1000 if item['pinned'] else None
+        reason = None
+        if not item['pinned']:
+            reason = 'read-only: the evaluated VMIN equation ' + item['diagnostic'] + '; only a ' + (
+                'constant equation takes this edit' if family == 'gb20x' else 'clamp that pins the value takes this edit')
+        elif top is None:
+            reason = ('read-only: the REL equation list or the equations chained to VMIN have no bounded value, so '
+                      'VMIN cannot be kept below REL')
+        elif item['value_uv'] != int(item['value_uv']):
+            reason = f"read-only: the stored VMIN ({item['value_uv']} uV) is not a whole uV, so it could not be restored"
+        elif not floor <= current <= top:
+            reason = (f'read-only: the stored VMIN is outside {floor} mV up to {top:g} mV, the lowest REL value less '
+                      'what the chained equations can add')
+        editable = reason is None and can_edit(image, parser)
+        offsets = ()
+        if editable:
+            offsets = ([item['minimum_offset'], item['maximum_offset'], item['value_offset']] if family == 'gb20x' else
+                       parser.copy_offsets(item['minimum_offset'], 4) + parser.copy_offsets(item['maximum_offset'], 4))
+        if reason is None:
+            chained = (f'its chained equations add {added[0] / 1000:g} to {added[1] / 1000:g} mV, so the value stays '
+                       f'at most the lowest REL value less {added[1] / 1000:g} mV')
+            reason = {
+                'gb20x': 'experimental: constant equation selected at rail row +0x13, the evaluated VMIN; the edit '
+                         'writes its minimum, maximum and value; at most the lowest REL value; hardware-tested '
+                         'on an RTX 5080 (800 -> 850 mV: the driver reported VMIN 850 mV and the idle voltage was '
+                         '850 mV); other boards not hardware-tested',
+                'ada': 'experimental: clamp of the equation selected at rail row byte 7, which pins the evaluated '
+                       f'VMIN; the edit writes the clamp minimum and maximum; {chained}; on an RTX 2000 Ada the '
+                       'driver reported this value plus 90 mV (hardware test), and the offset may differ per board',
+                'ampere': 'experimental: clamp of the equation selected at rail row byte 7, the Ada VMIN layout; the '
+                          f'edit writes the clamp minimum and maximum; {chained}; on Ada the driver reported the '
+                          'value plus its chained equations; not hardware-tested on Ampere'}[family]
+        selector = {'raw': item['selector_raw'], 'width_bits': 16 if family == 'gb20x' else 8,
+                    'offset': item['selector_offset'], 'absent': item['equation_offset'] is None}
+        result.append(field(name.lower() + '_vmin_mv', f'{name} minimum voltage (VMIN)', 'mV', current,
+                            floor if editable else None, top if editable else None, editable,
+                            [dict(e) for e in (GB20X_VMIN_EVIDENCE if family == 'gb20x' else ADA_VMIN_EVIDENCE +
+                                               ([AMPERE_VOLTAGE_EVIDENCE] if family == 'ampere' else []))],
+                            offsets=offsets, encoding='<f' if editable else '', scale=1000, stored_units='uV',
+                            writable_status=None if editable else 'unsupported', experimental=True,
+                            value_semantics=VMIN_SEMANTICS, rail_identity=rail_identity(parser, item),
+                            selector=selector, equation_offset=item['equation_offset'],
+                            equation_type=item['equation_type'], runtime_role_candidate='VMIN', reason=reason))
+    return result
+
+
+LEGACY_DIRECTORY_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'GB20x VBIOS corpus',
+    'format': 'GB20x legacy image v3 object directory (objects 0xfa, 0xbd first), SHA384 per object, directory '
+              'digest at legacy+0x209',
+    'observation': 'every hash and digest matches on every GB20x image of the corpus; object 0x21 spans exactly the '
+                   'rail table (P+0x68) and object 0x35 holds it too; the vendor XOC images update both hashes, the '
+                   'digest and the legacy image checksum'}
+FOLLOW_OV_EVIDENCE = {
+    'kind': 'vendor-image-comparison', 'source': 'ASUS RTX 5090 XOC and MSI RTX 5090 Lightning images',
+    'observation': 'against the stock ASUS RTX 5090 image the XOC images point the NVVDD REL and ALT selectors (row '
+                   '+0x0d and +0x0f) at the OV equation, a constant 1200 mV, so REL = ALT = OV; their VFE equations '
+                   'and MSVDD row are unchanged', 'set_tested': False}
+
+
+@registry.register
+def rail_follow_ov(image, parser):
+    """XOC-style flat NVVDD voltage limit: REL and ALT select the OV equation (1) or their own (0).
+
+    Opt-in, GB20x only. The rail table sits in the legacy image, whose objects
+    0x21/0x35, directory digest and checksum the editor repairs. The value 1 can be
+    written while REL, ALT (if present) and OV select distinct equations, OV a
+    constant voltage. The value 1 is read-only: the image keeps no record of the
+    original REL and ALT selectors, so the editor cannot restore them.
+    """
+    if not isinstance(parser, BlackwellRom):
+        return []
+    roles = {r['role']: r for r in parser.rail_equations() if r['logical_rail_id'] == 'NVVDD'}
+    rel, alt, ov = roles['REL'], roles['ALT'], roles['OV']
+    moved = [rel] + ([] if alt['absent'] else [alt])
+    selectors = [r['selector_raw'] for r in moved]
+    state = (1 if set(selectors) == {ov['selector_raw']} else
+             0 if len(set(selectors + [ov['selector_raw']])) == len(moved) + 1 else None)
+    try:
+        rail, length = parser.rail_table()
+        owner = parser.legacy_owner(rail, length)
+        owned = (owner['id'], owner['data'], owner['size']) == (0x21, rail, length)
+    except FormatError:
+        owned = False
+    ov_value = parser.constant_equation(ov['equation_offset']) if ov['equation_offset'] is not None else None
+    # Images without an ALT selector (RTX PRO 6000 Workstation, PRO 4000 SFF, Max-Q, notebook) move REL alone.
+    names, flat = (('REL and ALT selectors', 'REL = ALT = OV') if len(moved) == 2 else
+                   ('REL selector (this image has no ALT selector)', 'REL = OV'))
+    if state == 1:
+        reason = (f'read-only: the OV equation is already selected by the NVVDD {names}; the image keeps no record '
+                  'of the original selectors, so the editor cannot restore them (edit the original image instead)')
+    elif state is None or rel['absent'] or ov_value is None or not all(r['layout_recognized'] for r in moved):
+        reason = 'read-only: the NVVDD REL, ALT and OV selectors or the OV equation hold another shape'
+    elif not owned:
+        reason = ('read-only: the rail table is not the exact legacy-image object 0x21 of a valid legacy directory, '
+                  'so its hashes cannot be repaired')
+    else:
+        reason = None
+    editable = reason is None and can_edit(image, parser)
+    layout = ()
+    if editable:
+        own = tuple(struct.pack('<H', r['selector_raw']) for r in moved)
+        layout = ((0, own), (1, (struct.pack('<H', ov['selector_raw']),) * len(moved)))
+    return [field('nvvdd_rel_alt_follow_ov', 'REL and ALT follow OV (XOC-style flat voltage limit)', 'flag', state,
+                  0 if editable else None, 1 if editable else None, editable,
+                  [dict(FOLLOW_OV_EVIDENCE), dict(LEGACY_DIRECTORY_EVIDENCE), dict(SELECTOR_EVIDENCE)],
+                  offsets=[r['selector_offset'] for r in moved] if editable else (),
+                  encoding='<H' if editable else '', scale=1, layout=layout,
+                  writable_status=None if editable else 'unsupported', experimental=True, opt_in=True,
+                  value_semantics=FOLLOW_OV_SEMANTICS, rail_identity=rail_identity(parser, rel),
+                  reason=reason or f'experimental, opt-in: 1 points the NVVDD {names} at the OV equation '
+                                   f'({ov_value / 1000:g} mV), as the ASUS XOC and MSI Lightning images do: {flat}, a '
+                                   'flat voltage limit; the rail table is in the legacy image, whose object hashes, '
+                                   'directory digest and checksum the edit repairs; the value 1 cannot be undone in '
+                                   'the copy; not hardware-tested')]
 
 
 def profiles_decoded(parser):
@@ -1244,16 +1423,24 @@ FAN_LIMIT_EVIDENCE = {
                    '(channel curves 43-97 C, the other curves 92-108 C, three Ampere boards with a point off a '
                    'whole degree); every enabled speed entry holds 0.51-0.79 of its row maximum RPM; byte 3 is '
                    '100; duplicate chains hold the same bytes; Ampere boards that stop the fan store 0 % and 0 RPM'}
-FAN_LIMIT_NVML = dict(NVML_CAPTURE, relation='fan percent = RPM / row maximum RPM',
-                      observed='RTX 5080: 73 % at 2556 RPM with a 3500 RPM row maximum; the driver fan-speed range '
-                               'stays 30-100 % while row byte 2 is 10-22')
+FAN_LIMIT_NVML = dict(NVML_CAPTURE, relation='the driver fan percent maps linearly from 30 % = row minimum RPM to '
+                                               '100 % = row maximum RPM',
+                      observed='RTX 5080 (1050-3500 RPM): 73 % -> 2556 RPM, 79 % -> 2761-2774 (2555 and 2765 '
+                               'expected); RTX PRO 4000 SFF (3600-7300): 92 % -> 6887, 84 % -> 6438 (6877, 6454); '
+                               'RTX 5070 Ti (1050-3200): 68 % -> 2206-2213 (2217); RTX PRO 6000 Max-Q (1000-3350): '
+                               '96 % -> 3213, 90 % -> 3010 (3216, 3014); the driver fan-speed range stays 30-100 % '
+                               'while row byte 2 is 10-22')
 FAN_LIMIT_HARDWARE = {'kind': 'hardware-test', 'source': 'edited image loaded as an override; read-only NVML',
                       'set_tested': True, 'scope': 'RTX 5080, both fan channels, fans under manual control',
-                      'observed': 'speed maximum 3500 -> 4000 RPM: 72 % gives about 2820 RPM instead of about '
-                                  '2520; level minimum 20 -> 10 %: the driver fan-speed range stays 30-100 %'}
+                      'observed': 'speed maximum 3500 -> 4000 RPM: 72 % -> 2820 RPM and 30 % -> 1050 RPM, as the '
+                                  'linear 30 % = minimum, 100 % = maximum map gives; level minimum 20 -> 10 %: the '
+                                  'driver fan-speed range stays 30-100 %'}
 # Reason endings of the limits the hardware test changed; the other limits are untested.
-FAN_LIMIT_TESTED = {('max', 'rpm'): 'hardware-tested on an RTX 5080: the driver maps the fan percent to this '
-                                    'maximum; other boards not hardware-tested',
+FAN_LIMIT_TESTED = {('max', 'rpm'): 'hardware-tested on an RTX 5080: the driver runs 100 % at this speed and maps '
+                                    'the percent linearly down to 30 % at the minimum; other boards not '
+                                    'hardware-tested',
+                    ('min', 'rpm'): "the driver's 30 % setting runs at this speed (observed); lowering it is not "
+                                    'hardware-tested',
                     ('min', 'pct'): 'on an RTX 5080 a lower value left the driver fan-speed range at 30-100 %; '
                                     'other boards not hardware-tested'}
 FAN_SHAPE_REASON = 'fan row or policy curves hold values outside the reviewed shape'

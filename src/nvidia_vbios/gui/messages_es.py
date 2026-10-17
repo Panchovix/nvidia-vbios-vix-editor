@@ -28,7 +28,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.fan_extra_curve_rpm': 'Curva adicional {curve}, punto {point}: velocidad (experimental)',
  'field.fan_extra_curve_pct': 'Curva adicional {curve}, punto {point}: nivel (avanzado, experimental)',
  'section.readonly': 'Campos de solo lectura ({count})',
- 'section.voltage_note': 'REL, OV y VMIN son techos de ecuación, no el voltaje efectivo.',
+ 'section.voltage_note': 'REL y OV son techos de ecuación. VMIN cambia un valor guardado; las ecuaciones encadenadas pueden cambiar el mínimo efectivo.',
  'badge.experimental': 'experimental',
  'changes_heading': 'Cambios',
  'live_none': 'Sin cambios. Edita un valor y la vista previa se actualiza aquí.',
@@ -146,6 +146,10 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                'los mide el VRM, no los shunts, y no se escalan.',
  'shunt_real': 'Unos {value} {units} reales con un shunt x{factor}',
  'field.equation': 'Techo de ecuación {role} de {rail}',
+ 'field.vmin': 'Voltaje mínimo (VMIN) de {rail} (experimental)',
+ 'field.vmin_slot': 'Techo de la ecuación del slot VMIN de la info del riel {rail} (no es el VMIN evaluado)',
+ 'field.nvvdd_rel_alt_follow_ov': ('REL y ALT de NVVDD siguen a OV (límite de voltaje plano estilo XOC; avanzado, '
+                                   'experimental)'),
  'field.power_default_w': 'Potencia por defecto al arrancar (experimental)',
  'field.input_current_rated_ma': 'Límite de corriente de entrada de 12 V, nominal (experimental)',
  'field.input_current_max_ma': 'Techo de corriente de entrada de 12 V (experimental)',
@@ -191,8 +195,9 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'error.INVALID_PATH': 'Elija una ruta local válida',
  'error.UNSUPPORTED_ARCHITECTURE': 'Esta arquitectura sólo permite inspección',
  'error.UNSUPPORTED_FORMAT': 'Este formato sólo permite inspección',
- 'error.SEPARATE_EDIT_REQUIRED': ('Guarde primero la cantidad de canales de ventilador y luego abra la copia para '
-                                  'cambiar los límites o las curvas de los ventiladores'),
+ 'error.SEPARATE_EDIT_REQUIRED': ('Guarde primero la cantidad de canales de ventilador o el ajuste REL/ALT siguen a '
+                                  'OV y luego abra la copia para cambiar los límites o las curvas de los ventiladores '
+                                  'o los voltajes'),
  'cli_usage': 'uso: ',
  'cli_positionals': 'argumentos posicionales',
  'cli_options': 'opciones',

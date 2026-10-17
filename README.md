@@ -1,12 +1,12 @@
 # NVIDIA VBIOS Vix Editor
 
 Offline editor for NVIDIA Blackwell (GB20x) VBIOS images, for Linux and Windows, with a
-GTK editor window and a JSON command line. It edits power limits, voltage ceilings, clock offset ranges,
-12 V input current and output OCP limits, fan PWM frequency, fan channels, per-channel fan
-speed limits and the stored fan curves (experimental). Ada (AD10x) images get power limits, clock
-offset ranges, slot power, fans and, where they apply, voltage ceilings (experimental). Ampere (GA10x)
-images get power limits, power connector channels, clock offset ranges, slot power and fans
-(experimental).
+GTK editor window and a JSON command line. It edits power limits, voltage ceilings, the minimum voltage
+(VMIN), clock offset ranges, 12 V input current and output OCP limits, fan PWM frequency, fan channels,
+per-channel fan speed limits and the stored fan curves (experimental). Ada (AD10x) images get power limits,
+clock offset ranges, slot power, fans and, where they apply, voltage ceilings and VMIN (experimental).
+Ampere (GA10x) images get power limits, power connector channels, clock offset ranges, slot power, fans
+and, where it applies, VMIN (experimental).
 
 **Not affiliated with, endorsed by or sponsored by NVIDIA Corporation.** NVIDIA and
 GeForce are trademarks of NVIDIA Corporation.

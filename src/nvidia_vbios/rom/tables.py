@@ -10,7 +10,7 @@ No board serial, complete-file size, table-address, or source-hash pins.
 import copy
 import hashlib
 import math
-from .structure import fan_curve, scan_images, image_chains, parse_bit, read
+from .structure import fan_curve, scan_images, image_chains, parse_bit, read, vfe_range
 from .errors import FormatError
 
 SOURCE = 'https://github.com/OE4T/linux-nvgpu/blob/patches-rel-36/drivers/gpu/nvgpu/include/nvgpu/bios.h'
@@ -47,8 +47,11 @@ ADA_POLICIES = {
 ADA_RAIL_HEADER = bytes.fromhex('20 05 1f 01 00')
 ADA_VFE_PREFIX = bytes.fromhex('30 0b 19 32 19')
 # V20 rail row selectors (u8, 0xff = absent). REL/ALT/OV follow the nvgpu 1x prefix;
-# VMIN is byte 11 (the reviewed board's runtime INFO VMIN selector is found only there).
+# VMIN is byte 11, the slot of the reviewed board's runtime rail INFO VMIN selector.
 ADA_ROLE_OFFSETS = (('REL', 4), ('ALT', 5), ('OV', 6), ('VMIN', 11))
+# Byte 7 selects the equation of the evaluated VMIN: on the RTX 2000 Ada a new clamp
+# there moved the driver's VMIN, a new byte-11 equation did not (hardware tests).
+ADA_VMIN_OFFSET = 7
 # Clocks table (BIT C+8) v0x40 with the GV HAL (header byte 6 = 3). nvgpu fixes the
 # GV row order; each row is also gated by its usage (0 fixed, 1 master), the low
 # byte of its ordering word and its rail sub-entry type. NVD is named VID as on GB20x.
@@ -474,9 +477,9 @@ class TableRom:
     def _ada_references(self, base, count):
         """Equation indices another VFE equation references, or None for unknown kinds.
 
-        Ada links are u16: next = bytes 2 | 24 << 8 (0xffff = none); compare (3) and
-        min/max (2) children are bytes 15/16 | 19/20 << 8 and 11/12 | 19/20 << 8.
-        Ampere links are the low bytes alone (0xff = none).
+        Ada links are u16: next = bytes 2 | 24 << 8 (0xffff = none); compare (3)
+        children are bytes 15/16 | 19/20 << 8 and min/max (2) children bytes
+        11/12 | 15/16 << 8. Ampere links are the low bytes alone (0xff = none).
         """
         b, refs = self.blob, set()
         size, width = self._equation_layout()
@@ -491,7 +494,7 @@ class TableRom:
             if e[0] == 3:
                 links += [e[15] | high(e, 19), e[16] | high(e, 20)]
             elif e[0] == 2:
-                links += [e[11] | high(e, 19), e[12] | high(e, 20)]
+                links += [e[11] | high(e, 15), e[12] | high(e, 16)]
             refs.update(link for link in links if link != (1 << 8 * width) - 1)
         return refs
 
@@ -597,6 +600,54 @@ class TableRom:
                             item.update(output_minimum_uv=lo, output_maximum_uv=hi, layout_recognized=True)
                     item['editable_ceiling'] = role in ('REL', 'ALT') and kind == 'temperature-derated'
                 result.append(item)
+        return result
+
+    def rail_vmin(self):
+        """Per rail, the equation of the evaluated VMIN (row byte 7) and whether its clamp pins it.
+
+        The clamp pins the value when the equation is a float voltage output
+        (type 1, unit 2) with a finite clamp minimum equal to its maximum, which
+        no other equation references and no other role selects; its chained
+        equations (next link) add added_uv to the clamped value. The RTX 2000 Ada
+        driver reported VMIN 90 mV above this value, at both the stock and an
+        edited clamp, inside the 70..162 mV its chain adds. rel_lowest_uv is the
+        lowest value of the REL equation list (vfe_range).
+        """
+        rails, vfe, base, count = self._rails()
+        refs = self._ada_references(base, count)
+        size, width = self._equation_layout()
+        roles = self.rail_equations()
+        result = []
+        for rail_index, name, row, selectors in rails:
+            selector = self.blob[row + ADA_VMIN_OFFSET]
+            rel = vfe_range(self.blob, base, size, width, count, selectors['REL'])  # _selectors: REL present
+            item = dict(logical_rail_id=name, rail_index=rail_index, rail_entry=row,
+                        selector_offset=row + ADA_VMIN_OFFSET, selector_raw=selector, equation_offset=None,
+                        equation_size=size, equation_type=None, value_uv=None, pinned=False,
+                        rel_lowest_uv=rel and rel[0], added_uv=None)
+            if selector == 0xFF or selector >= count:
+                result.append(dict(item, diagnostic='is absent or outside the equation table'))
+                continue
+            at = base + selector * size
+            self.owner(at, size)
+            lo, hi = read(self.blob, '<ff', at + 3)
+            link = self.blob[at + 2] | (self.blob[at + 24] << 8 if width == 2 else 0)
+            item.update(equation_offset=at, equation_type=self.blob[at],
+                        added_uv=vfe_range(self.blob, base, size, width, count, link, frozenset((selector,))))
+            selected = ([r for r in roles if r['equation_offset'] == at] or
+                        [r for _, _, r, _ in rails if r != row and self.blob[r + ADA_VMIN_OFFSET] == selector])
+            if self.blob[at] != 1 or self.blob[at + 23] & 15 != 2:
+                diagnostic = 'is not a float voltage output'
+            elif not (math.isfinite(lo) and lo == hi):
+                diagnostic = 'has a clamp that does not pin its value'
+            elif refs is None or selector in refs or selected:
+                diagnostic = 'is used by another equation or role'
+            else:
+                item.update(value_uv=lo, pinned=True, minimum_offset=at + 3, maximum_offset=at + 7)
+                diagnostic = None
+            if diagnostic:
+                item['diagnostic'] = diagnostic
+            result.append(item)
         return result
 
     def fan_regions(self):

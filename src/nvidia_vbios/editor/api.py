@@ -13,10 +13,15 @@ import time
 from ..rom import BiosImage, VbiosError
 from ..rom.blackwell import BlackwellRom
 from ..rom.image import backend, inspect_image
-from .registry import registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, connector_power
+from .registry import (registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, connector_power,
+                       evaluated_vmin, rail_follow_ov, VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS)
 
 # Reviewed resolvers whose bindings are canonical for range and joint checks.
-REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresholds, fans, connector_power)
+REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresholds, fans, connector_power,
+                      evaluated_vmin, rail_follow_ov)
+# Fields that change otherwise preserved rail bytes, each only through its reviewed binding:
+# the evaluated VMIN equation and the XOC-style NVVDD REL/ALT selectors.
+RAIL_EXCEPTIONS = (VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS)
 # The only requests that may change otherwise preserved power-row values:
 # canonical key -> preserved row attribute it may change. 'linked_limit' is
 # the opaque policy7 copy of the 12 V input limit, limited to its own bytes.
@@ -152,6 +157,15 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     if 'fan_channels' in changes and per_channel:
         raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change fan_channels and the fan limits or curves in separate edits',
                          details={'fields': ['fan_channels'] + per_channel})
+    # Moving the REL/ALT selectors changes which equation the voltage fields bind.
+    voltages = sorted(k for k in changes if k in available and available[k].descriptor.get('units') == 'mV')
+    if 'nvvdd_rel_alt_follow_ov' in changes and voltages:
+        raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change nvvdd_rel_alt_follow_ov and the voltage fields in separate '
+                         'edits', details={'fields': ['nvvdd_rel_alt_follow_ov'] + voltages})
+    for key in changes:
+        if (key in available and key in reviewed and reviewed[key].descriptor['value_semantics'] in RAIL_EXCEPTIONS
+                and key not in canonical):
+            raise VbiosError('INVALID_FIELD_EVIDENCE', f'{key} must use the reviewed complete binding')
     exceptions = {}
     for key, attribute in PRESERVATION_EXCEPTIONS.items():
         if key in changes and key in available:
@@ -185,7 +199,7 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
         for at, encoded in zip(binding.offsets, chunks):
             size = len(encoded)
             if isinstance(parser, BlackwellRom):
-                parser.object_for(at, size)
+                parser.write_owner(at, size)
             else:
                 # All writes must be the same relative field in each structurally
                 # validated duplicate chain. Extension resolvers cannot select
@@ -226,11 +240,29 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
             target[at:at + 48] = hashlib.sha384(target[directory['header']:directory['data_base']]).digest()
             allowed.update(range(at, at + 48))
             repairs.append(dict(kind='directory_sha384', offset=at))
-        for start, end in parser.image_regions:
+            # Legacy-image writes (write_owner proved a valid legacy directory) repair
+            # every legacy object they touch, its directory digest and the legacy checksum.
+            legacy = [o for o in parser.legacy_objects if any(a < o['data'] + o['size'] and o['data'] < b
+                                                              for a, b in writes)]
+            for obj in legacy:
+                at = obj['hash_offset']
+                target[at:at + 48] = hashlib.sha384(target[obj['data']:obj['data'] + obj['size']]).digest()
+                allowed.update(range(at, at + 48))
+                repairs.append(dict(kind='object_sha384', offset=at, object_id=obj['id'], directory='legacy'))
+            if legacy:
+                directory = parser.legacy_directory
+                at = directory['digest_offset']
+                target[at:at + 48] = hashlib.sha384(target[directory['header']:directory['data_base']]).digest()
+                allowed.update(range(at, at + 48))
+                repairs.append(dict(kind='directory_sha384', offset=at, directory='legacy'))
+        regions = list(parser.image_regions)
+        if isinstance(parser, BlackwellRom) and any(parser.legacy['start'] <= a < parser.legacy['end'] for a, _ in writes):
+            regions.append((parser.legacy['start'], parser.legacy['end']))
+        for start, end in regions:
             if not any(a < end and start < b for a, b in writes) and not any(start <= at < end for at in allowed):
                 continue
             if isinstance(parser, BlackwellRom):
-                if any(o['data'] <= end - 1 < o['data'] + o['size'] for o in parser.objects):
+                if any(o['data'] <= end - 1 < o['data'] + o['size'] for o in parser.objects + parser.legacy_objects):
                     raise VbiosError('UNSUPPORTED_CHECKSUM_LAYOUT', 'checksum overlaps a hashed object')
             elif target[end - 16:end - 1] != b'\xff' * 15:
                 raise VbiosError('UNSUPPORTED_CHECKSUM_LAYOUT', 'data image lacks reviewed checksum padding')
@@ -246,6 +278,11 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     if (rebuilt.pci_images != parser.pci_images or rebuilt.directory != parser.directory or
             rebuilt.objects != parser.objects or rebuilt.tokens != parser.tokens):
         raise VbiosError('IDENTITY_CHANGED', 'edit changed structural identity')
+    if isinstance(parser, BlackwellRom):
+        if (rebuilt.legacy_directory, rebuilt.legacy_objects) != (parser.legacy_directory, parser.legacy_objects):
+            raise VbiosError('IDENTITY_CHANGED', 'edit changed the legacy object directory')
+        if parser.legacy_valid() and not rebuilt.legacy_valid():
+            raise VbiosError('INTEGRITY_FAILED', 'edited image failed legacy directory validation')
     ranges = _ranges(image.blob, output.blob)
     if any(at not in allowed for r in ranges for at in range(r['start'], r['end_exclusive'])):
         raise VbiosError('UNDECLARED_CHANGE', 'edit changed bytes outside declared fields/integrity bytes')
@@ -402,6 +439,9 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                 raise VbiosError('OUT_OF_BOUNDS', 'an Ampere clock offset range must not collapse to 0..0 '
                                  '(it would read as disabled and become read-only)',
                                  details={'clock_row': right['row'], 'domain': right['domain']})
+    # Only the canonical REL/ALT follow-OV field moves the NVVDD REL and ALT selectors.
+    moved = ({('NVVDD', 'REL'), ('NVVDD', 'ALT')} if any(b.descriptor['value_semantics'] == FOLLOW_OV_SEMANTICS
+                                                         for b in canonical.values()) else set())
     try:
         source_rails = parser.rail_limits()
     except FormatError:
@@ -414,6 +454,8 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
         if len(source_rails) != len(target_rails):
             raise VbiosError('PRESERVED_FIELD_CHANGED', 'editing rail identity is unsupported')
         for source_rail, target_rail in zip(source_rails, target_rails):
+            if (source_rail['rail_name_inferred'], 'REL') in moved:
+                continue  # the declared selector bytes alone changed; its old equation is checked below
             source_fixed = {k: v for k, v in source_rail.items() if k != 'output_maximum_uv'}
             target_fixed = {k: v for k, v in target_rail.items() if k != 'output_maximum_uv'}
             at = source_rail['maximum_offset'] + 4
@@ -442,7 +484,7 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
             for left, right in zip(source_roles, target_roles):
                 left_fixed = {k: v for k, v in left.items() if k != 'output_maximum_uv'}
                 right_fixed = {k: v for k, v in right.items() if k != 'output_maximum_uv'}
-                if left_fixed != right_fixed:
+                if (left['logical_rail_id'], left['role']) not in moved and left_fixed != right_fixed:
                     raise VbiosError('PRESERVED_FIELD_CHANGED', 'role selectors, boot and equation minima must be preserved')
                 at = left['equation_offset']
                 if at is not None:
@@ -450,6 +492,37 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                     if (image.blob[at:at + 7] != output.blob[at:at + 7] or
                             image.blob[at + 11:at + width] != output.blob[at + 11:at + width]):
                         raise VbiosError('PRESERVED_FIELD_CHANGED', 'equation expression bytes must be preserved')
+    # The GB20x rail table (legacy image) changes only at the REL/ALT selector bytes of the canonical
+    # follow-OV binding; the role checks above cover its selectors and boot values again.
+    if isinstance(parser, BlackwellRom):
+        try:
+            rail, length = parser.rail_table()
+        except FormatError:
+            rail, length = 0, 0
+        follow = {at for binding in canonical.values() if binding.descriptor['value_semantics'] == FOLLOW_OV_SEMANTICS
+                  for start in binding.offsets for at in range(start, start + 2)}
+        if any(image.blob[i] != output.blob[i] and i not in follow for i in range(rail, rail + length)):
+            raise VbiosError('PRESERVED_FIELD_CHANGED', 'rail table bytes must be preserved')
+    # The evaluated VMIN selector stays, and its equation changes only at the floats
+    # the canonical *_vmin_mv binding declares (GB20x minimum, maximum and value;
+    # Ada/Ampere clamp minimum and maximum).
+    try:
+        source_vmin = parser.rail_vmin() if hasattr(parser, 'rail_vmin') else None
+    except FormatError:
+        source_vmin = None
+    if source_vmin is not None:
+        try:
+            target_vmin = rebuilt.rail_vmin()
+        except FormatError as exc:
+            raise VbiosError('PRESERVED_FIELD_CHANGED', 'edit invalidated the evaluated VMIN selectors') from exc
+        vmin_bytes = {at for binding in canonical.values() if binding.descriptor['value_semantics'] == VMIN_SEMANTICS
+                      for start in binding.offsets for at in range(start, start + 4)}
+        for left, right in zip(source_vmin, target_vmin):
+            at = left['equation_offset']
+            if (left['selector_raw'], at) != (right['selector_raw'], right['equation_offset']) or left['pinned'] and any(
+                    image.blob[i] != output.blob[i] and i not in vmin_bytes for i in range(at, at + left['equation_size'])):
+                raise VbiosError('PRESERVED_FIELD_CHANGED', 'the evaluated VMIN selector and equation bytes must be '
+                                 'preserved', details={'rail': left['logical_rail_id']})
     # The per-fan-channel tables change only through the reviewed fan fields,
     # and only at the bytes their bindings declare: the PWM frequency bytes,
     # the channel list/enable bytes, the row limits of the active channels and

@@ -10,7 +10,7 @@ import math
 import re
 import struct
 from .errors import FormatError
-from .structure import fan_curve, scan_images, parse_bit
+from .structure import fan_curve, scan_images, parse_bit, vfe_range
 
 def unpack(blob, fmt, at):
     size = struct.calcsize(fmt)
@@ -43,6 +43,12 @@ OUTPUT_CHAINS = {'NVVDD': (NVVDD_CHANNEL, NVVDD_POWER_DEVICE), 'MSVDD': (MSVDD_C
 # Notebook images accepted by static comparison; no saved GET.
 # 0x2C59 RTX 5080 Laptop GPU (98.03.5C.00.F2, Lenovo Legion 7 Pro).
 NOTEBOOK_IDS = (0x2C59,)
+# u16 words of a rail row that may select a VFE equation: REL, ALT, OV, the evaluated VMIN
+# (+0x13), +0x15, +0x17, the rail INFO VMIN slot (+0x21), the words +0x1D/+0x1F/+0x23 (0xffff
+# in the corpus) and the trailing block +0x29..+0x3F (voltage equations on the Max-Q, RTX PRO
+# 4000 SFF, RTX 5060 Ti and notebook rows). +0x1B is the boot voltage's high half.
+RAIL_SELECTORS = (0x0D, 0x0F, 0x11, 0x13, 0x15, 0x17, 0x1D, 0x1F, 0x21, 0x23) + tuple(range(0x29, 0x41, 2))
+VMIN_SELECTOR = 0x13
 # Per-fan-channel tables: name -> (BIT P offset, header, header size, entry size, entries, object).
 FAN_TABLES = {
     'cooler': (0x58, bytes((0x10, 9, 0x1A, 4)), 9, 0x1A, 4, 0x1D),
@@ -85,6 +91,7 @@ class BlackwellRom:
         self.image_regions = [(self.meta['start'], self.meta['end']),
                               (extended[0]['start'], extended[0]['end'])]
         self.directory, self.objects = self._directory()
+        self.legacy_directory, self.legacy_objects = self._legacy_directory()
         self.tokens = self._bit()
 
     def _pci_images(self):
@@ -125,6 +132,79 @@ class BlackwellRom:
         # Reviewed directories may have hash aliases and partially shared data.
         # Every digest is checked, and editing repairs every intersecting owner.
         return directory, entries
+
+    def _legacy_directory(self):
+        """The legacy image's own v3 object directory, or (None, []) when it is not recognized.
+
+        It has the layout of the signed data image's directory: the same header and
+        60-byte entries, objects 0xfa and 0xbd first (0xbd data at the PCIR) and its
+        SHA384 digest at legacy+0x209. Its objects hash the legacy tables, the rail
+        table (P+0x68) among them: object 0x21 spans exactly that table and object
+        0x35 holds it too. Every hash and digest matches on every GB20x image of the
+        corpus, the vendor XOC images included. Integrity reports it; only edits
+        inside the legacy image require it.
+        """
+        b, legacy, candidates = self.blob, self.legacy, []
+        for at in positions(b, struct.pack("<II", 3, 16), legacy["start"], legacy["pcir"]):
+            _, header_size, count, device = unpack(b, "<IIII", at)
+            base = at + header_size + count * 60
+            if not 2 <= count <= 1024 or device != legacy["device"] or not at < base <= legacy["pcir"]:
+                continue
+            entries = []
+            for index in range(count):
+                header = at + header_size + index * 60
+                oid, offset, size = unpack(b, "<III", header)
+                if not size or base + offset + size > legacy["end"]:
+                    break
+                entries.append(dict(index=index, id=oid, header=header, data=base + offset,
+                                    size=size, hash_offset=header + 12))
+            if (len(entries) == count and [e["id"] for e in entries[:2]] == [0xFA, 0xBD] and
+                    entries[1]["data"] == legacy["pcir"] and len({e["id"] for e in entries}) == count):
+                candidates.append((dict(header=at, header_size=header_size, count=count, data_base=base,
+                                        digest_offset=legacy["start"] + 0x209), entries))
+        if len(candidates) != 1 or candidates[0][0]["digest_offset"] + 48 > candidates[0][0]["header"]:
+            return None, []
+        return candidates[0]
+
+    def legacy_integrity(self):
+        """Hash and digest check of the legacy directory, or None when it is not recognized."""
+        b, d = self.blob, self.legacy_directory
+        if not d:
+            return None
+        return dict(object_count=len(self.legacy_objects),
+                    bad_object_ids=[o["id"] for o in self.legacy_objects
+                                    if hashlib.sha384(b[o["data"]:o["data"] + o["size"]]).digest()
+                                    != b[o["hash_offset"]:o["hash_offset"] + 48]],
+                    directory_sha384_valid=hashlib.sha384(b[d["header"]:d["data_base"]]).digest()
+                    == b[d["digest_offset"]:d["digest_offset"] + 48])
+
+    def legacy_valid(self):
+        """True when the legacy directory is recognized and every hash and its digest match."""
+        report = self.legacy_integrity()
+        return bool(report) and not report["bad_object_ids"] and report["directory_sha384_valid"]
+
+    def legacy_owner(self, at, size):
+        """The smallest legacy object holding at..at+size; every legacy object it touches holds it whole."""
+        if not self.legacy_valid():
+            raise FormatError("no valid legacy object directory owns legacy-image bytes")
+        touched = [o for o in self.legacy_objects if o["data"] < at + size and at < o["data"] + o["size"]]
+        if not touched or any(not o["data"] <= at <= at + size <= o["data"] + o["size"] for o in touched):
+            raise FormatError(f"expected legacy objects holding {at:#x}+{size}")
+        return min(touched, key=lambda o: o["size"])
+
+    def rail_table(self):
+        """(offset, size) of the rail table (P+0x68): the header and its 65-byte rows."""
+        rail = self.pointer("P", 0x68)
+        return rail, 5 + 65 * self.rail_count(rail)
+
+    def write_owner(self, at, size):
+        """The hashed object an edit of at..at+size changes. In the legacy image only the rail table is editable."""
+        if self.legacy["start"] <= at < self.legacy["end"]:
+            rail, length = self.rail_table()
+            if not rail <= at <= at + size <= rail + length:
+                raise FormatError("legacy-image edits are limited to the rail table")
+            return self.legacy_owner(at, size)
+        return self.object_for(at, size)
 
     def _bit(self):
         return parse_bit(self.blob, self.legacy)
@@ -167,7 +247,7 @@ class BlackwellRom:
                     for p in self.pci_images]
         return dict(object_count=len(self.objects), bad_object_ids=mismatches,
                     directory_sha384_valid=directory_ok, image_checksums=sums,
-                    pci_image_checksums=pci_sums,
+                    pci_image_checksums=pci_sums, legacy_directory=self.legacy_integrity(),
                     valid=not mismatches and directory_ok and sums == [0, 0]
                     and all(p["checksum"] == 0 for p in pci_sums),
                     cryptographic_signature="not verified")
@@ -675,6 +755,93 @@ class BlackwellRom:
                     except FormatError as exc:
                         item['diagnostic'] = str(exc)
                 result.append(item)
+        return result
+
+    def constant_equation(self, at):
+        """Value (uV) of a constant voltage equation at at, else None.
+
+        Constant: type 1, output unit 2, no next link, finite minimum = maximum =
+        value (bytes 3/7/11) and zero coefficients (bytes 15/19), in object 0x14.
+        """
+        b = self.blob
+        try:
+            if self.object_for(at, 25)["id"] != 0x14:
+                return None
+        except FormatError:
+            return None
+        lo, hi, c0, c1, c2 = unpack(b, "<5f", at + 3)
+        if (b[at] != 1 or b[at + 23] & 15 != 2 or (b[at + 2] | b[at + 24] << 8) != 0xFFFF or
+                not math.isfinite(lo) or not lo == hi == c0 or c1 or c2):
+            return None
+        return lo
+
+    def equation_references(self, equations, count):
+        """Equation indices another VFE equation references, or None for an unreviewed kind.
+
+        Every kind links its next equation (bytes 2 | 24 << 8, 0xffff = none);
+        min/max (2) children are bytes 11/12 | 15/16 << 8 and compare (3)
+        children bytes 15/16 | 19/20 << 8. Quadratic (1) and the type 7 REL
+        polynomial have no other equation link (type 7 terms name variables).
+        """
+        b, refs = self.blob, set()
+        for i in range(count):
+            e = b[equations + 25 * i:equations + 25 * i + 25]
+            if e[0] not in (0, 1, 2, 3, 7):
+                return None
+            links = [e[2] | e[24] << 8] if e[0] else []
+            if e[0] == 2:
+                links += [e[11] | e[15] << 8, e[12] | e[16] << 8]
+            elif e[0] == 3:
+                links += [e[15] | e[19] << 8, e[16] | e[20] << 8]
+            refs.update(x for x in links if x != 0xFFFF)
+        return refs
+
+    def rail_vmin(self):
+        """Per rail, the equation selected at row +0x13, which gives the driver's evaluated VMIN.
+
+        On the RTX 5080 (constant 800 mV on both rails) and the RTX PRO 4000 SFF
+        (min/max trees) the driver's rail status VMIN equals this equation, not the
+        rail INFO VMIN slot (+0x21). A constant equation (constant_equation) that no
+        other equation references and no other rail row word (RAIL_SELECTORS) selects
+        can take a new value; other shapes are reported only. rel_lowest_uv is the
+        lowest value of the REL equation list (vfe_range); a constant adds no
+        chained equations (added_uv 0, 0).
+        """
+        b = self.blob
+        rail, vfe = self.pointer("P", 0x68), self.pointer("P", 0x20)
+        rows = self.rail_count(rail)
+        if b[vfe:vfe + 5] != bytes((0x30, 14, 29, 255, 25)) or self.object_for(vfe)["id"] != 0x14:
+            raise FormatError("unvalidated Blackwell VFE output layout")
+        equations = vfe + b[vfe + 1] + b[vfe + 2] * b[vfe + 3]
+        count = b[vfe + 5] | b[vfe + 10] << 8
+        self.object_for(vfe, equations + 25 * count - vfe)
+        refs = self.equation_references(equations, count)
+        rows = [rail + 5 + 65 * i for i in range(rows)]
+        selected = [unpack(b, "<H", row + offset)[0] for row in rows for offset in RAIL_SELECTORS]
+        result = []
+        for i, (label, row) in enumerate(zip(("NVVDD", "MSVDD"), rows)):
+            if b[row:row + 2] != bytes((1, i + 1)):
+                raise FormatError("unvalidated rail logical identity")
+            selector, rel = unpack(b, "<H", row + VMIN_SELECTOR)[0], unpack(b, "<H", row + 0x0D)[0]
+            rel = None if rel == 0xFFFF else vfe_range(b, equations, 25, 2, count, rel)
+            item = dict(logical_rail_id=label, rail_index=i, rail_entry=row, selector_offset=row + VMIN_SELECTOR,
+                        selector_raw=selector, equation_offset=None, equation_size=25, equation_type=None,
+                        value_uv=None, pinned=False, rel_lowest_uv=rel and rel[0], added_uv=(0.0, 0.0))
+            if selector >= count:
+                result.append(dict(item, diagnostic="is absent or outside the equation table"))
+                continue
+            at = equations + 25 * selector
+            item.update(equation_offset=at, equation_type=b[at])
+            value = self.constant_equation(at)
+            if value is None:
+                item["diagnostic"] = ("is a min/max equation tree" if b[at] == 2 else
+                                      "is not a constant voltage equation in object 0x14")
+            elif refs is None or selector in refs or selected.count(selector) > 1:
+                item["diagnostic"] = "is used by another equation or rail selector"
+            else:
+                item.update(value_uv=value, pinned=True, minimum_offset=at + 3, maximum_offset=at + 7,
+                            value_offset=at + 11)
+            result.append(item)
         return result
 
     def rail_limits(self):

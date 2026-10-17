@@ -100,6 +100,12 @@ The envelope location is an explicit format constraint. Every object SHA384,
 directory SHA384 and bounded image sum is verified. Shared/partially overlapping
 object data is permitted as observed in the corpus; editable fields must have
 unambiguous ownership. Every hash owner intersecting a write is repaired.
+The legacy image carries its own directory of the same format (digest at
+`legacy+0x209`); `integrity.legacy_directory` reports its hashes without
+changing `integrity.valid`. A write inside the legacy image (only the opt-in
+`nvvdd_rel_alt_follow_ov`) requires that directory to verify, repairs every legacy
+object it touches, its digest and the legacy image checksum, and must reparse
+valid; those repairs carry `"directory": "legacy"` in the manifest.
 The examined portable Blackwell EFI GOP explicitly allows identity `0000:0000`;
 NVIDIA/chip identities remain checked on legacy, metadata and NPDS images.
 Unknown directory/envelope versions do not become editable merely because they
@@ -118,7 +124,9 @@ and OCP remain unchanged. When no profile matches the base (ASUS XOC-style image
 reached at the top level of the ROM's selection table and write only its entries; the base maximum and rated
 values stay unchanged (see `extended-fields.md`). Ada power uses its header's TGP index rather than a
 fixed board row. Ada REL editing changes only the clamp maximum and preserves
-its temperature equation coefficients and sensed-temperature input.
+its temperature equation coefficients and sensed-temperature input. The evaluated
+VMIN equation and the NVVDD REL/ALT selectors change only through the canonical
+`*_vmin_mv` and `nvvdd_rel_alt_follow_ov` bindings, at their declared bytes.
 
 ## Architecture gate and sources
 

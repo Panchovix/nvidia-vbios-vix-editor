@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.1.16
+
+- **Minimum voltage (VMIN), experimental.** New `nvvdd_vmin_mv` / `msvdd_vmin_mv` fields edit the equation the
+  driver actually evaluates as VMIN: on Blackwell the constant equation selected at rail row +0x13, on Ada and
+  Ampere the equation at rail row byte 7 when its clamp pins the value. The value goes from 450 mV (Blackwell) or
+  400 mV (Ada, Ampere) up to the lowest value REL can take, less the most the equations chained after VMIN can
+  add, so VMIN never ends up above REL (for example up to 753 mV on the RTX 2000 Ada, 814 mV on the RTX 4080).
+  Tested on an RTX 5080: 800 -> 850 mV made the driver report VMIN 850 mV and the card idled at 850 mV. On an
+  RTX 2000 Ada the driver reported the stored value plus 90 mV (650 mV stock, 790 mV with 700 mV stored); the
+  offset may differ on other boards. Other shapes (for example the min/max equation trees of the RTX 5090 MSVDD
+  and RTX PRO 4000 SFF rails) are read-only, and so is the RTX 5080/5070 Ti MSVDD VMIN, whose 800 mV already lies
+  above the lowest MSVDD REL value (760.2 mV). Not tested on Ampere.
+- **The old "VMIN equation ceiling" is not VMIN.** `*_vmin_equation_max_mv` is the slot the driver's rail info
+  lists as VMIN, but the driver does not evaluate it as the minimum voltage (on the RTX 2000 Ada a new value
+  there changed nothing). It is now read-only on every image and labelled "rail INFO VMIN-slot equation
+  ceiling (not the evaluated VMIN)"; the key is unchanged.
+- **REL and ALT follow OV (advanced, experimental).** On Blackwell, `nvvdd_rel_alt_follow_ov` = 1 points the
+  NVVDD REL and ALT selectors at the OV equation, as the ASUS XOC and MSI Lightning RTX 5090 images do (a flat
+  1.2 V voltage limit; images without an ALT selector, such as the RTX PRO 4000 SFF, move REL alone). The rail
+  table lives in the legacy image, which has its own SHA384 object directory: the editor now reads it
+  (`integrity.legacy_directory`) and repairs its hashes, digest and checksum on this edit. On the stock ASUS
+  RTX 5090 image the result matches the XOC image's rail table byte for byte. Save it on its own; at 1 the field
+  is read-only, so keep the original image to go back. Not tested on hardware.
+- **Fan percent.** The driver maps its fan percent linearly from 30 % at the minimum speed to 100 % at the
+  maximum speed (checked on four Blackwell models). The fan descriptions now say so, instead of "percent = RPM /
+  maximum": the 30 % setting runs at `fan_N_min_rpm`, so lowering it should lower the slowest manual fan speed
+  (not tested on hardware).
+- Ada and Ampere: min/max equations now read their child links correctly when the editor checks whether an
+  equation is shared. On the corpus this changes no field.
+
 ## 0.1.15
 
 - **Fan limits and curves per channel (experimental).** Blackwell, Ada and Ampere images get the minimum

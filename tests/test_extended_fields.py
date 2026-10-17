@@ -48,7 +48,7 @@ def extended_fixture(*, absent_alt=False, shared=False, high_index=False, unknow
         row = rail + 5 + 65 * i
         selectors = (0, 1, 2, 3) if i == 0 else ((263, 264, 266, 265) if high_index else (4, 5, 6, 7))
         if shared and i == 0:
-            selectors = (0, 1, 2, 0)
+            selectors = (0, 1, 0, 3)
         for role, index, offset in zip(('REL', 'ALT', 'OV', 'VMIN'), selectors, (13, 15, 17, 33)):
             struct.pack_into('<H', blob, row + offset, 0xFFFF if absent_alt and role == 'ALT' else index)
             at = base + 25 * index
@@ -178,7 +178,10 @@ class ExtendedFieldTests(unittest.TestCase):
             field = fields[f'msvdd_{role}_equation_max_mv']
             self.assertEqual(field['selector']['raw'], index)
             self.assertEqual(field['selector']['width_bits'], 16)
-            self.assertTrue(field['editable'])
+            # The rail INFO VMIN slot is shown but never edited (see test_rail_vmin).
+            self.assertEqual(field['editable'], role != 'vmin')
+            if role == 'vmin':
+                continue
             self.assertEqual(field['capability']['vbios']['writable'], 'verified')
             self.assertEqual(field['capability']['runtime']['writable'], 'unknown')
             self.assertEqual(field['capability']['runtime']['persistence'], 'unknown')
@@ -195,7 +198,7 @@ class ExtendedFieldTests(unittest.TestCase):
     def test_declared_bytes_hash_repairs_other_policies_and_curves_preserved(self):
         image = from_bytes(extended_fixture(high_index=True))
         source = backend(image)
-        result = edit(image, {'msvdd_vmin_equation_max_mv': 1100, 'nvvdd_output_ocp_max_ma': 100000})
+        result = edit(image, {'msvdd_ov_equation_max_mv': 1100, 'nvvdd_output_ocp_max_ma': 100000})
         target = backend(result.image)
         self.assertTrue(target.integrity()['valid'])
         self.assertEqual(target.power_rows()[9], source.power_rows()[9])
@@ -206,7 +209,7 @@ class ExtendedFieldTests(unittest.TestCase):
             if i != 13:
                 self.assertEqual(before, after)
         records = source.rail_equations()
-        selected = next(r for r in records if r['logical_rail_id'] == 'MSVDD' and r['role'] == 'VMIN')
+        selected = next(r for r in records if r['logical_rail_id'] == 'MSVDD' and r['role'] == 'OV')
         write_offsets = [selected['maximum_offset'], source.power_rows()[13]['offset'] + 21]
         allowed = {at for start in write_offsets for at in range(start, start + 4)}
         for repair in result.manifest['integrity_repairs']:
@@ -223,15 +226,15 @@ class ExtendedFieldTests(unittest.TestCase):
 
     def test_shared_equations_report_side_effects_and_conflicting_requests(self):
         image = from_bytes(extended_fixture(shared=True))
-        field = descriptors(image)['nvvdd_vmin_equation_max_mv']
-        self.assertEqual({x['role'] for x in field['shared_references']}, {'VMIN', 'REL'})
-        result = edit(image, {'nvvdd_vmin_equation_max_mv': 1100})
+        field = descriptors(image)['nvvdd_ov_equation_max_mv']
+        self.assertEqual({x['role'] for x in field['shared_references']}, {'OV', 'REL'})
+        result = edit(image, {'nvvdd_ov_equation_max_mv': 1100})
         affected = {x['field']: x for x in result.manifest['affected_fields']}
         for key in ('nvvdd_rel_equation_max_mv', 'nvvdd_rel_max_mv'):
             self.assertEqual(affected[key]['after'], 1100)
             self.assertFalse(affected[key]['requested'])
         with self.assertRaises(VbiosError) as exc:
-            edit(image, {'nvvdd_vmin_equation_max_mv': 1100, 'nvvdd_rel_equation_max_mv': 1100})
+            edit(image, {'nvvdd_ov_equation_max_mv': 1100, 'nvvdd_rel_equation_max_mv': 1100})
         self.assertEqual(exc.exception.code, 'CONFLICTING_FIELDS')
         self.assertFalse(descriptors(image)['nvvdd_rel_max_mv']['ui_visible'])
 
@@ -1031,7 +1034,8 @@ class FixedPolicyRatedTests(unittest.TestCase):
         self.assertEqual((field['current'], field['bounds']['minimum'], field['bounds']['maximum']), (70, 30, 100))
         self.assertTrue(field['opt_in'] and field['experimental'] and field['editable'])
         self.assertEqual((field['policy_indices'], field['ordering_group']), ([2, 7], 'board-power'))
-        self.assertEqual(opt_in_field_keys(report), {'board_fixed_rated_w'})
+        # The XOC-style REL/ALT selector field is opt-in too (read-only here: no legacy directory).
+        self.assertEqual(opt_in_field_keys(report), {'board_fixed_rated_w', 'nvvdd_rel_alt_follow_ov'})
         for language in ('en', 'es'):
             self.assertIn('XOC', field_label(field, language))
         result = edit(image, {'board_fixed_rated_w': 90})
@@ -1727,6 +1731,9 @@ class FanCoolerTests(unittest.TestCase):
                     self.assertEqual(f['value_semantics'], 'stored-fan-%s-%s' % (
                         'minimum' if name.startswith('min') else 'maximum', 'speed' if speed else 'level'))
         self.assertTrue(all(fields[k]['reason'].startswith('experimental:') for k in ('fan_1_max_pct', 'fan_1_max_rpm')))
+        # The driver percent maps linearly: 30 % runs at the row minimum, 100 % at the row maximum.
+        self.assertIn("the driver's 30 % setting runs at this speed", fields['fan_1_min_rpm']['reason'])
+        self.assertIn('linearly down to 30 % at the minimum', fields['fan_1_max_rpm']['reason'])
         self.assertEqual(fields['fan_2_max_rpm']['bounds']['encoding_maximum'], 32767)
         self.assertEqual([e['kind'] for e in fields['fan_1_min_rpm']['evidence']][:2],
                          ['structural-table', 'read-only-nvml-correlation'])
