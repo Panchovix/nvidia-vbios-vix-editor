@@ -97,7 +97,16 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    current, output OCP) are shown and typed in A with up to three decimals; the
    GUI converts them exactly, and the backend, CLI and manifest stay in mA. The
    fan PWM frequency is shown and typed in kHz the same way; the Fans card also
-   sets the number of fan channels.
+   sets the number of fan channels and, per channel, the minimum and maximum speed
+   in RPM, then the three points of the channel's stored fan curve (temperature in
+   °C, speed in RPM), and last the extra curves that serve every channel (all
+   experimental). Temperatures take steps of 1/32 °C (`60.5` is fine, `60.01` is not)
+   and show decimals only when they need them. A limit moves only as far as the
+   stored curves: to lower a maximum below them, type the new maximum and the curve
+   points above it, including those of the extra curves, and they are checked and
+   saved together as one copy. The minimum and maximum level (%) of each channel
+   and the curve levels appear with the advanced fields. Save a new channel count
+   before changing channel limits or curves on the copy.
    Voltage compatibility aliases, selector indices and stored boot values are
    not shown; `nvbios fields` lists them. Each equation ceiling, including ALT, is an
    expression bound, not an evaluated VOP reading or runtime offset. The full

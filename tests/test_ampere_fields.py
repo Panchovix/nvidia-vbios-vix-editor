@@ -11,8 +11,8 @@ from nvidia_vbios.editor import edit, plan
 from nvidia_vbios.editor.registry import registry
 from nvidia_vbios.rom import VbiosError, from_bytes, inspect_image, load
 from nvidia_vbios.rom.image import backend
-from test_ada_fields import GV_HAL, messages, patched
-from test_extended_fields import changed_bytes_within, descriptors
+from test_ada_fields import GV_HAL, fan_curves, fan_limits, messages, patched
+from test_extended_fields import changed_bytes_within, curve_step, descriptors
 from test_rom_formats import synthetic_rom
 
 POWER = ['power_max_w', 'power_default_w', 'power_min_w']
@@ -324,6 +324,50 @@ class AmpereFanTests(unittest.TestCase):
         self.assertNotIn('fan_channels', descriptors(from_bytes(patched(image.blob, speed, b'\x01'))))
         laptop = descriptors(from_bytes(synthetic_rom(family='ampere', fans=-1)))
         self.assertFalse(any(key.startswith('fan_') for key in laptop))
+
+    def test_a_stopped_fan_row_raises_its_minimum_only_with_the_curve(self):
+        # As on the RTX 3080/3090 boards: 0 % and 0 RPM as row minimum and curve start.
+        image = from_bytes(synthetic_rom(family='ampere', copies=2, fans=2))
+        row = backend(image).fan_coolers()['rows'][0]
+        blob = image.blob
+        for at, data in ((row['offset'] + 2, b'\x00'), (row['offset'] + 14, bytes(2)),
+                         (row['policy_offset'] + 14, b'\x00'), (row['policy_offset'] + 20, bytes(2))):
+            blob = patched(blob, at, data)
+        stopped = from_bytes(blob)
+        fields = descriptors(stopped)
+        # The minimums (0..0) and the level maximum (100..100) stay where they are alone, and move with the curve.
+        for key in ('fan_1_min_rpm', 'fan_1_min_pct', 'fan_1_max_pct', 'fan_1_max_rpm', 'fan_2_min_rpm'):
+            with self.subTest(key=key):
+                self.assertTrue(fields[key]['editable'])
+                self.assertTrue(fields[key]['reason'].startswith('experimental:'))
+        self.assertEqual((fields['fan_1_min_rpm']['current'], fields['fan_1_min_rpm']['bounds']['maximum']), (0, 0))
+        with self.assertRaises(VbiosError) as exc:
+            edit(stopped, {'fan_1_min_rpm': 500})
+        self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        spinning = edit(stopped, {'fan_1_min_rpm': 500, 'fan_1_curve_1_rpm': 500, 'fan_1_min_pct': 10,
+                                  'fan_1_curve_1_pct': 10})
+        self.assertEqual(backend(spinning.image).fan_coolers()['rows'][0]['rpm_minimum'], 500)
+        self.assertEqual(edit(spinning.image, {'fan_1_min_rpm': 0, 'fan_1_curve_1_rpm': 0, 'fan_1_min_pct': 0,
+                                               'fan_1_curve_1_pct': 0}).blob, stopped.blob)
+        faster = edit(stopped, {'fan_1_max_rpm': 3600})
+        self.assertEqual(backend(faster.image).fan_coolers()['rows'][0]['rpm_maximum'], 3600)
+        self.assertEqual(edit(faster.image, {'fan_1_max_rpm': 3300}).blob, stopped.blob)
+
+    def test_an_unused_speed_table_leaves_the_maximum_to_the_curves(self):
+        # Both fixtures store 2295 RPM in the speed entries; only enabled ones hold the maximum.
+        top = ['fan_1_max_rpm', 'fan_1_curve_3_rpm', 'fan_extra_1_curve_3_rpm', 'fan_extra_2_curve_3_rpm']
+        for speed in (True, False):
+            with self.subTest(speed=speed):
+                image = from_bytes(synthetic_rom(family='ampere', copies=2, fans=2, fan_speed=speed))
+                self.assertTrue(all(f['editable'] for k, f in descriptors(image).items() if '_curve_' in k))
+                if speed:
+                    with self.assertRaises(VbiosError) as exc:
+                        edit(image, {key: 2100 for key in top})
+                    self.assertEqual(exc.exception.details['bounds']['minimum'], 2295)
+                    continue
+                lowered = edit(image, {key: 2100 for key in top})
+                self.assertEqual(backend(lowered.image).fan_coolers()['rows'][0]['rpm_maximum'], 2100)
+                self.assertEqual(edit(lowered.image, {key: 3300 for key in top}).blob, image.blob)
 
 
 if __name__ == '__main__':

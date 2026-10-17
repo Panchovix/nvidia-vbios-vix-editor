@@ -11,7 +11,7 @@ from nvidia_vbios.editor import edit, plan
 from nvidia_vbios.editor.registry import registry
 from nvidia_vbios.rom import VbiosError, from_bytes, inspect_image, load
 from nvidia_vbios.rom.image import backend
-from test_extended_fields import changed_bytes_within, custom_registry, descriptors
+from test_extended_fields import changed_bytes_within, curve_step, custom_registry, descriptors
 from test_rom_formats import synthetic_blackwell, synthetic_rom
 
 GV_HAL = ['GPC', 'XBAR', 'DRAM', 'SYS', 'HUB', 'VID', 'PWR', 'DISP', 'PCIEGEN', 'HOST']
@@ -30,6 +30,18 @@ def patched(blob, at, data):
 
 def messages(image):
     return [d.get('message', '') for d in inspect_image(image)['diagnostics']]
+
+
+def fan_limits(channels, sides=('min_rpm', 'max_rpm', 'min_pct', 'max_pct')):
+    """Per-channel fan limit keys, by default all four of each channel."""
+    return [f'fan_{n}_{side}' for n in range(1, channels + 1) for side in sides]
+
+
+def fan_curves(channels, extras, skip=()):
+    """Curve point keys of the channel curves and the extra curves, except those in skip."""
+    owners = [f'fan_{n}' for n in range(1, channels + 1)] + [f'fan_extra_{m}' for m in range(1, extras + 1)]
+    return [key for owner in owners for k in (1, 2, 3) for unit in ('temp_c', 'rpm', 'pct')
+            if (key := f'{owner}_curve_{k}_{unit}') not in skip]
 
 
 class AdaPowerTests(unittest.TestCase):
@@ -419,6 +431,72 @@ class AdaFanTests(unittest.TestCase):
             edit(stored, {'probe': 7}, field_registry=custom_registry('probe', tuple(parser.copy_offsets(control, 1)),
                                                                        encoding='<B', scale=1))
         self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+
+    def test_channel_limits_write_both_chains_and_revert(self):
+        image = from_bytes(synthetic_rom(copies=2, fans=2))
+        parser = backend(image)
+        bindings = {b.descriptor['key']: b for b in registry.bindings(image, parser)[0]}
+        rows = [r['offset'] for r in parser.fan_coolers()['rows']]
+        fields = descriptors(image)
+        self.assertEqual([(fields[k]['current'], fields[k]['editable']) for k in
+                          ('fan_2_min_rpm', 'fan_2_max_rpm', 'fan_2_min_pct', 'fan_2_max_pct')],
+                         [(1000, True), (3300, True), (20, True), (100, True)])
+        for key, at, width, value in (('fan_1_min_rpm', rows[0] + 14, 2, 900), ('fan_2_max_rpm', rows[1] + 16, 2, 3500),
+                                      ('fan_1_min_pct', rows[0] + 2, 1, 15)):
+            with self.subTest(key=key):
+                offsets = bindings[key].offsets
+                self.assertEqual(offsets, tuple(parser.copy_offsets(at, width)))
+                self.assertEqual(len(offsets), 2)
+                result = edit(image, {key: value})
+                changed_bytes_within(self, image, result, offsets, width=width)
+                self.assertEqual({struct.unpack_from(bindings[key].encoding, result.blob, o)[0] for o in offsets}, {value})
+                self.assertEqual(edit(result.image, {key: fields[key]['current']}).blob, image.blob)
+
+    def test_an_extra_curve_above_a_channel_maximum_keeps_that_maximum_read_only(self):
+        # As on the RTX 4080 Super: channel 2 and its own curve top out at 3000 RPM, the extra curve at 3300.
+        # Entry 3 is disabled, so entry 2 alone (the only extra one on the RTX 4060 and 4060 Ti) has to stop it.
+        image = from_bytes(synthetic_rom(copies=2, fans=2))
+        row = backend(image).fan_coolers()['rows'][1]
+        blob = patched(patched(image.blob, row['offset'] + 16, struct.pack('<H', 3000)),
+                       row['policy_offset'] + 28, struct.pack('<H', 3000))
+        blob = patched(blob, row['policy_offset'] + 2 * 0x33, b'\x00')
+        self.assertEqual([c['index'] for c in backend(from_bytes(blob)).fan_coolers()['extra_curves']], [2])
+        fields = descriptors(from_bytes(blob))
+        self.assertFalse(fields['fan_2_max_rpm']['editable'])
+        self.assertEqual(fields['fan_2_max_rpm']['reason'], 'fan row or policy curves hold values outside the reviewed shape')
+        self.assertEqual((fields['fan_2_max_rpm']['bounds']['minimum'], fields['fan_2_max_rpm']['bounds']['maximum']),
+                         (3300, 32767))
+        self.assertTrue(fields['fan_2_min_rpm']['editable'] and fields['fan_1_max_rpm']['editable'])
+
+    def test_curve_points_write_both_chains_and_move_with_the_maximum(self):
+        image = from_bytes(synthetic_rom(copies=2, fans=2))
+        parser = backend(image)
+        table = parser.fan_coolers()
+        bindings = {b.descriptor['key']: b for b in registry.bindings(image, parser)[0]}
+        fields = descriptors(image)
+        # Channel curves 55/70/85 C, extra curves (entries 2 and 3) 98/103/108 and 92/97/102 C, 1000/2000/3300 RPM.
+        self.assertEqual([fields[k]['current'] for k in ('fan_2_curve_2_temp_c', 'fan_extra_1_curve_3_temp_c',
+                                                         'fan_extra_2_curve_1_temp_c', 'fan_extra_2_curve_3_rpm')],
+                         [70, 108, 92, 3300])
+        self.assertEqual(sum(1 for k, f in fields.items() if '_curve_' in k and f['editable']), 4 * 9)
+        self.assertEqual(bindings['fan_extra_2_curve_3_rpm'].offsets,
+                         tuple(parser.copy_offsets(table['extra_curves'][1]['policy_offset'] + 28, 2)))
+        top = ['fan_1_max_rpm', 'fan_1_curve_3_rpm', 'fan_extra_1_curve_3_rpm', 'fan_extra_2_curve_3_rpm']
+        lowered = edit(image, {key: 3000 for key in top})
+        offsets = [o for key in top for o in bindings[key].offsets]
+        self.assertEqual(len(offsets), 2 * len(top))
+        changed_bytes_within(self, image, lowered, offsets, width=2)
+        self.assertEqual({struct.unpack_from('<H', lowered.blob, o)[0] for o in offsets}, {3000})
+        self.assertEqual(edit(lowered.image, {key: 3300 for key in top}).blob, image.blob)
+        # Without the extra curves, or below the speed value (2295 RPM), the maximum stays.
+        for changes in ({key: 3000 for key in top[:2]}, {key: 2200 for key in top}):
+            with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
+                edit(image, changes)
+            self.assertEqual((exc.exception.code, exc.exception.details['field']), ('OUT_OF_BOUNDS', 'fan_1_max_rpm'))
+        warmer = edit(image, {'fan_2_curve_1_temp_c': '55.5'})
+        changed_bytes_within(self, image, warmer, bindings['fan_2_curve_1_temp_c'].offsets, width=2)
+        self.assertEqual({struct.unpack_from('<H', warmer.blob, o)[0] for o in bindings['fan_2_curve_1_temp_c'].offsets},
+                         {1776})
 
 
 if __name__ == '__main__':

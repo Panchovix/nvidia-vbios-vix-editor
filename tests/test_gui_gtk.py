@@ -197,6 +197,36 @@ class GtkSmokeTests(unittest.TestCase):
                 pwm.set_text('30')
                 until(lambda: not window.verifying)
                 self.assertIn('28 kHz', window.rows['fan_pwm_frequency_hz']['delta'].get_text())
+                # Channel limits stage in RPM; a channel count with them asks for separate copies.
+                pwm.set_text('27')
+                window.entries['fan_1_min_rpm'].set_text('900')
+                until(lambda: not window.verifying and not window.dirty)
+                self.assertEqual(window.controller.document.changes, {'fan_1_min_rpm': '900'})
+                self.assertIn('Original: 1050 RPM', texts(window.rows['fan_1_min_rpm']['row']))
+                window.entries['fan_channels'].set_text('3')
+                until(lambda: not window.verifying)
+                self.assertIn(window.text('error.SEPARATE_EDIT_REQUIRED'), window.status.get_text())
+                window.entries['fan_channels'].set_text('2')
+                until(lambda: not window.verifying and not window.dirty)
+                # Level limits only show with the advanced fields.
+                self.assertIn('fan_1_min_pct', window.entries)
+                window.advanced_toggle.set_active(False)
+                self.assertNotIn('fan_1_min_pct', window.entries)
+                self.assertEqual(window.entries['fan_1_min_rpm'].get_text(), '900')
+                # Curve temperatures show in °C. A maximum below the curves is refused until the points
+                # above it move too, then the whole set stages as one copy.
+                self.assertIn('Original: 60 °C', texts(window.rows['fan_1_curve_3_temp_c']['row']))
+                self.assertNotIn('fan_1_curve_3_pct', window.entries)
+                window.entries['fan_1_min_rpm'].set_text('1050')
+                window.entries['fan_1_max_rpm'].set_text('3000')
+                until(lambda: not window.verifying)
+                self.assertIn('invalid', window.rows['fan_1_max_rpm']['row'].get_css_classes())
+                top = ('fan_1_curve_3_rpm', 'fan_extra_1_curve_3_rpm', 'fan_extra_2_curve_3_rpm')
+                for key in top:
+                    window.entries[key].set_text('3000')
+                until(lambda: not window.verifying and not window.dirty)
+                self.assertEqual(window.controller.document.changes, {key: '3000' for key in ('fan_1_max_rpm',) + top})
+                self.assertNotIn('invalid', window.rows['fan_1_max_rpm']['row'].get_css_classes())
             finally:
                 window.close()
                 while context.pending():

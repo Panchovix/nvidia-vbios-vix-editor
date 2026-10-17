@@ -10,6 +10,13 @@ def read(blob, fmt, at, *, end=None):
     return struct.unpack_from(fmt, blob, at)
 
 
+def fan_curve(blob, at):
+    """Stored curve of the fan policy entry at `at`: bytes 14..16 hold three level (%)
+    points and bytes 18..29 three (temperature in 1/32 C, RPM) points, '<H' each."""
+    return dict(curve_levels=tuple(blob[at + 14:at + 17]),
+                curve_points=tuple(read(blob, '<HH', at + 18 + 4 * k) for k in range(3)))
+
+
 def scan_images(blob):
     pci, extended, issues = [], [], []
     for start in range(0, len(blob) - 0x1A + 1, 512):

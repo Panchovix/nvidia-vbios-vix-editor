@@ -106,7 +106,7 @@ class ControllerTests(unittest.TestCase):
         self.controller.save(self.root / 'unchanged.rom')
         self.assertTrue((self.root / 'unchanged.rom.json').exists())
 
-    def test_blackwell_prefers_lact_and_rejects_overlapping_alias(self):
+    def test_blackwell_prefers_nvml_units_and_rejects_overlapping_alias(self):
         self.source.write_bytes(synthetic_blackwell())
         doc = self.controller.open(self.source)
         fields = {f['key']: f for f in controls(doc.report)}
@@ -143,6 +143,45 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(editable[:3], ['power_max_w', 'power_default_w', 'power_min_w'])
         self.assertIn('gpc_offset_max_mhz', editable)
         self.assertFalse(any(key.endswith('_mv') for key in editable))
+
+    def test_fan_channel_count_and_channel_limits_are_separate_copies(self):
+        source = self.root / 'fans.rom'
+        source.write_bytes(synthetic_blackwell(fans=True))
+        self.controller.open(source)
+        with self.assertRaises(VbiosError) as exc:
+            self.controller.stage({'fan_channels': '3', 'fan_1_min_rpm': '900'})
+        self.assertEqual(exc.exception.code, 'SEPARATE_EDIT_REQUIRED')
+        # An unchanged count is not requested.
+        self.assertEqual(self.controller.stage({'fan_channels': '2', 'fan_1_min_rpm': '900'}).changes,
+                         {'fan_1_min_rpm': '900'})
+
+    def test_a_fan_maximum_and_its_curve_points_lower_in_one_copy(self):
+        from nvidia_vbios.rom import from_bytes
+        from nvidia_vbios.rom.image import backend
+        source = self.root / 'fans.rom'
+        source.write_bytes(synthetic_blackwell(fans=True))
+        self.controller.open(source)
+        top = {'fan_1_max_rpm': '3000', 'fan_1_curve_3_rpm': '3000', 'fan_extra_1_curve_3_rpm': '3000',
+               'fan_extra_2_curve_3_rpm': '3000'}
+        # Without the extra curves the joint result is refused and the earlier document stays.
+        opened = self.controller.document
+        with self.assertRaises(VbiosError) as exc:
+            self.controller.stage({key: top[key] for key in ('fan_1_max_rpm', 'fan_1_curve_3_rpm')})
+        self.assertEqual((exc.exception.code, exc.exception.details['field']), ('OUT_OF_BOUNDS', 'fan_1_max_rpm'))
+        self.assertIs(self.controller.document, opened)
+        # An unchanged temperature (60 = 60.0 C) is not requested.
+        document = self.controller.stage(dict(top, fan_1_curve_2_temp_c='56.5', fan_1_curve_3_temp_c='60'))
+        self.assertEqual(document.changes, dict(top, fan_1_curve_2_temp_c='56.5'))
+        self.controller.save(self.root / 'quieter.rom')
+        table = backend(from_bytes((self.root / 'quieter.rom').read_bytes())).fan_coolers()
+        self.assertEqual((table['rows'][0]['rpm_maximum'], table['rows'][0]['curve_points'][1:]),
+                         (3000, ((56.5 * 32, 2200), (60 * 32, 3000))))
+        self.assertEqual([c['curve_points'][2][1] for c in table['extra_curves']], [3000, 3000])
+        # The same fields undo it in one copy, the points flush with the new maximum included.
+        self.controller.open(self.root / 'quieter.rom')
+        self.controller.stage(dict({key: '3500' for key in top}, fan_1_curve_2_temp_c='55'))
+        self.controller.save(self.root / 'restored.rom')
+        self.assertEqual((self.root / 'restored.rom').read_bytes(), source.read_bytes())
 
     def test_main_preview_has_one_memory_representation_and_keeps_backend_manifest(self):
         from nvidia_vbios.gui.presentation import primary_preview, technical_field_keys
@@ -225,7 +264,9 @@ class PresentationNumberTests(unittest.TestCase):
         self.assertIsNone(to_display(amps, None))
         from nvidia_vbios.gui.i18n import Messages
         from nvidia_vbios.gui.presentation import field_section, read_only_reason
-        single = {'key': 'fan_channels', 'units': 'channels', 'reason': 'no other fan channel layout is stored in this table'}
+        single = {'key': 'fan_channels', 'units': 'channels',
+                  'reason': "no other fan channel layout is stored in this table, or a stored channel's limits do not "
+                            'hold the extra fan curves'}
         for language in ('en', 'es'):
             self.assertEqual(read_only_reason(single, language), Messages(language)('reason.fan_layout'))
         self.assertEqual(display_units(single), '')
@@ -278,6 +319,66 @@ class PresentationNumberTests(unittest.TestCase):
             self.assertTrue(shunt_scaled(fields[key]))
             self.assertEqual(field_section(fields[key]), 'power')
         self.assertFalse(shunt_scaled(fields['nvvdd_output_ocp_max_ma']))
+
+    def test_fan_limit_labels_sections_and_opt_in(self):
+        from nvidia_vbios.gui.presentation import (display_units, field_label, field_section, opt_in_field_keys,
+                                                   section_order, shunt_scaled)
+        from test_extended_fields import descriptors
+        from nvidia_vbios.rom import from_bytes
+        fields = descriptors(from_bytes(synthetic_blackwell(fans=True)))
+        self.assertEqual([field_label(fields[k]) for k in ('fan_2_min_rpm', 'fan_1_max_pct')],
+                         ['Fan 2 minimum speed (experimental)', 'Fan 1 maximum level (advanced, experimental)'])
+        self.assertEqual([field_label(fields[k], 'es') for k in ('fan_2_max_rpm', 'fan_1_min_pct')],
+                         ['Velocidad máxima del ventilador 2 (experimental)',
+                          'Nivel mínimo del ventilador 1 (avanzado, experimental)'])
+        keys = [f'fan_{n}_{side}_{unit}' for n in (1, 2) for unit in ('rpm', 'pct') for side in ('max', 'min')]
+        self.assertEqual([f['key'] for f in section_order(fields.values()) if f['key'] in keys], keys)
+        for key in keys:
+            with self.subTest(key=key):
+                self.assertEqual(field_section(fields[key]), 'fans')
+                self.assertEqual(display_units(fields[key]), 'RPM' if key.endswith('rpm') else '%')
+                self.assertFalse(shunt_scaled(fields[key]))
+        # The level limits stay behind the advanced toggle.
+        self.assertEqual(opt_in_field_keys({'fields': list(fields.values())}) & set(keys),
+                         {k for k in keys if k.endswith('_pct')})
+
+    def test_fan_curve_labels_sections_units_and_opt_in(self):
+        from decimal import Decimal
+        from nvidia_vbios.gui.presentation import (display_units, field_label, field_section, number,
+                                                   opt_in_field_keys, section_order, to_display)
+        from test_extended_fields import descriptors
+        from nvidia_vbios.rom import from_bytes
+        fields = descriptors(from_bytes(synthetic_blackwell(fans=True)))
+        keys = ('fan_2_curve_1_temp_c', 'fan_1_curve_3_rpm', 'fan_1_curve_2_pct', 'fan_extra_2_curve_3_temp_c',
+                'fan_extra_2_curve_1_rpm', 'fan_extra_1_curve_2_pct')
+        self.assertEqual([field_label(fields[k]) for k in keys],
+                         ['Fan 2 curve point 1 temperature (experimental)', 'Fan 1 curve point 3 speed (experimental)',
+                          'Fan 1 curve point 2 level (advanced, experimental)',
+                          'Extra fan curve 2 point 3 temperature (experimental)',
+                          'Extra fan curve 2 point 1 speed (experimental)',
+                          'Extra fan curve 1 point 2 level (advanced, experimental)'])
+        self.assertEqual([field_label(fields[k], 'es') for k in keys],
+                         ['Curva del ventilador 2, punto 1: temperatura (experimental)',
+                          'Curva del ventilador 1, punto 3: velocidad (experimental)',
+                          'Curva del ventilador 1, punto 2: nivel (avanzado, experimental)',
+                          'Curva adicional 2, punto 3: temperatura (experimental)',
+                          'Curva adicional 2, punto 1: velocidad (experimental)',
+                          'Curva adicional 1, punto 2: nivel (avanzado, experimental)'])
+        # Channels and PWM, then each channel's limits and curve points, then the extra curves.
+        limits = lambda n: [f'fan_{n}_{side}_{unit}' for unit in ('rpm', 'pct') for side in ('max', 'min')]
+        points = lambda prefix: [f'{prefix}_curve_{k}_{unit}' for k in (1, 2, 3) for unit in ('temp_c', 'rpm', 'pct')]
+        expected = (['fan_channels', 'fan_pwm_frequency_hz'] + limits(1) + points('fan_1') + limits(2) + points('fan_2') +
+                    points('fan_extra_1') + points('fan_extra_2'))
+        self.assertEqual([f['key'] for f in section_order(fields.values()) if f['key'].startswith('fan_')], expected)
+        self.assertTrue(all(field_section(fields[k]) == 'fans' for k in expected))
+        self.assertEqual(opt_in_field_keys({'fields': list(fields.values())}) & set(expected),
+                         {k for k in expected if k.endswith('_pct')})
+        # Temperatures show in °C, with decimals only when the stored 1/32 C needs them.
+        self.assertEqual(display_units(fields['fan_1_curve_1_temp_c']), '°C')
+        self.assertEqual([number(to_display(fields['fan_1_curve_1_temp_c'], v)) for v in (60.0, 51.90625, '60.5')],
+                         ['60', '51.90625', '60.5'])
+        self.assertEqual(to_display(fields['fan_1_curve_1_temp_c'], fields['fan_1_curve_1_temp_c']['current']),
+                         Decimal(50))
 
     def test_number_formats_every_magnitude_briefly(self):
         from decimal import Decimal

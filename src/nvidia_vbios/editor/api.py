@@ -145,6 +145,13 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     for key in changes:
         if key in available and key in reviewed and not reviewed[key].descriptor['editable']:
             raise VbiosError('FIELD_READ_ONLY', f'{key} is read-only', details={'field': reviewed[key].descriptor})
+    # A channel count adds or removes per-channel fan fields and changes the limits every
+    # extra curve has to fit: change it and the fan limits or curves in separate edits.
+    per_channel = sorted(k for k in changes if k in reviewed and
+                         {'fan_channel', 'fan_policy'} & set(reviewed[k].descriptor))
+    if 'fan_channels' in changes and per_channel:
+        raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change fan_channels and the fan limits or curves in separate edits',
+                         details={'fields': ['fan_channels'] + per_channel})
     exceptions = {}
     for key, attribute in PRESERVATION_EXCEPTIONS.items():
         if key in changes and key in available:
@@ -444,8 +451,9 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                             image.blob[at + 11:at + width] != output.blob[at + 11:at + width]):
                         raise VbiosError('PRESERVED_FIELD_CHANGED', 'equation expression bytes must be preserved')
     # The per-fan-channel tables change only through the reviewed fan fields,
-    # and only at the bytes their bindings declare: the PWM frequency bytes
-    # and the channel list/enable bytes. They must still decode and agree
+    # and only at the bytes their bindings declare: the PWM frequency bytes,
+    # the channel list/enable bytes, the row limits of the active channels and
+    # the points of the enabled curves. They must still decode and agree
     # afterwards. Tables that do not decode or agree accept no change at all.
     regions = parser.fan_regions() if hasattr(parser, 'fan_regions') else []
     if regions:
@@ -462,10 +470,11 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
             names = ('offset', 'policy_offset', 'mapping_offset', 'control_offset', 'speed_offset')
             if target_fans is None or any(target_fans[k] != source_fans[k] for k in names):
                 raise VbiosError('PRESERVED_FIELD_CHANGED', 'edit invalidated recognized fan tables')
-            for key in ('fan_pwm_frequency_hz', 'fan_channels'):
-                if key in changes and key in canonical:
-                    size = struct.calcsize(canonical[key].encoding)
-                    fan_allowed.update(at for start in canonical[key].offsets for at in range(start, start + size))
+            for key in changes:
+                binding = canonical.get(key)
+                if binding is not None and binding.descriptor.get('value_semantics', '').startswith('stored-fan-'):
+                    size = struct.calcsize(binding.encoding)
+                    fan_allowed.update(at for start in binding.offsets for at in range(start, start + size))
         if any(image.blob[at] != output.blob[at] and at not in fan_allowed
                for start, size in regions for at in range(start, start + size)):
             raise VbiosError('PRESERVED_FIELD_CHANGED', 'fan table bytes must be preserved')

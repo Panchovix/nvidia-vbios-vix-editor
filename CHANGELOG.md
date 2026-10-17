@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.15
+
+- **Fan limits and curves per channel (experimental).** Blackwell, Ada and Ampere images get the minimum
+  and maximum fan speed (RPM) of each active fan channel and, behind *Show advanced XOC-style fields*, its
+  minimum and maximum level (%). The three points of each stored fan curve are editable too: temperature
+  (°C, in 1/32 °C steps), speed (RPM) and, with the advanced fields, level (%), for each channel's curve
+  and for the extra curves that serve every channel. Points stay in order and inside the limits. On its
+  own a limit moves only as far as the stored curves; edited together with the curve points above it
+  (including the extra curves'), a maximum can go below its stored value, and a minimum above it, in one
+  copy. A speed maximum never goes below the channel's stored speed-table value. Save a new channel count
+  before changing these limits or curves on the copy. The fan channel count now turns a channel on or off
+  only when its limits hold the extra curves, so the RTX PRO 4000 SFF and RTX 4080 Super images keep their
+  stored count. Tested on an RTX 5080: raising the speed maximum from 3500 to 4000 RPM made the same
+  fan percent spin about 12 % faster, so the driver scales the percent to this maximum; lowering the
+  level minimum did not change the 30-100 % range the driver allows. The other limits and the curve
+  points are not tested on hardware.
+
 ## 0.1.14
 
 - **Open source.** The editor's source code is now in this repository under the GNU GPL v3.0 or later

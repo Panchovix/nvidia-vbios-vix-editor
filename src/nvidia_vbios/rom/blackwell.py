@@ -10,7 +10,7 @@ import math
 import re
 import struct
 from .errors import FormatError
-from .structure import scan_images, parse_bit
+from .structure import fan_curve, scan_images, parse_bit
 
 def unpack(blob, fmt, at):
     size = struct.calcsize(fmt)
@@ -412,6 +412,14 @@ class BlackwellRom:
         row i (byte 1), a control entry with byte 2 = i and byte 5 =
         0x30 | 1 << i, and a speed entry with byte 1 = i. On every source the
         five enable sets agree and every active channel is stored.
+
+        Row limits: bytes 2/3 hold the minimum/maximum level (%), bytes
+        14..15/16..17 the minimum/maximum speed (RPM, '<H'). Policy entry i
+        stores the channel's curve (structure.fan_curve); enabled entries past
+        the cooler rows (4 and 5 on every source) store further curves, listed
+        in extra_curves. On every active row the row limits hold the channel's
+        own curve and the extra curves. Speed entry bytes 2..3 hold an RPM
+        value inside the channel's row limits (meaning unknown).
         """
         b = self.blob
         try:
@@ -441,10 +449,13 @@ class BlackwellRom:
             rows.append(dict(index=i, offset=row, enable=b[row], active=i in listed,
                              pwm_frequency_hz=int.from_bytes(b[row + 11:row + 14], "little"),
                              pwm_frequency_offset=row + 11,
+                             level_minimum=b[row + 2], level_maximum=b[row + 3],
+                             rpm_minimum=unpack(b, '<H', row + 14)[0], rpm_maximum=unpack(b, '<H', row + 16)[0],
+                             **fan_curve(b, pol),
                              policy_offset=pol, policy_enable=b[pol], mapping_offset=mapped,
                              mapping_enable=b[mapped], mapping_row=b[mapped + 1],
                              control_offset=control, control_enable=b[control],
-                             speed_offset=speed, speed_enable=b[speed],
+                             speed_offset=speed, speed_enable=b[speed], speed_rpm=unpack(b, '<H', speed + 2)[0],
                              stored=(b[pol + 1] == 1 and b[mapped + 1] == i and b[control + 2] == i and
                                      b[control + 5] == 0x30 | 1 << i and b[speed + 1] == i)))
         if [r["index"] for r in rows if r["enable"]] != listed:
@@ -454,9 +465,12 @@ class BlackwellRom:
                 raise FormatError("fan channel enables disagree across the fan tables")
             if r["active"] and not r["stored"]:
                 raise FormatError("an active fan channel is not stored in every fan table")
+        policies = b[tables['policy'](0) - 1]  # entry count, header byte 3
+        extra = [dict(index=k, policy_offset=tables['policy'](k), **fan_curve(b, tables['policy'](k)))
+                 for k in range(len(rows), policies) if b[tables['policy'](k)]]
         return dict(offset=at, policy_offset=tables['policy'](0) - 4, mapping_offset=tables['mapping'](0) - 4,
                     control_offset=tables['control'](0) - 4, speed_offset=tables['speed'](0) - 4,
-                    channels=listed, rows=rows)
+                    channels=listed, rows=rows, extra_curves=extra)
 
     def slot_power_policy(self):
         """PCIe-slot power policy: row 19 on the reviewed SFF, row 18 on the 5060 Ti.

@@ -240,17 +240,26 @@ def ada_fan_tables(b, fans, pointer, speed=True):
         b[row] = 2 if on else 0
         b[row + 4:row + 6], b[row + 10] = (bytes.fromhex('3d 02'), 9) if i == 0 else (bytes.fromhex('d2 02'), 0xD1)
         struct.pack_into('<I', b, row + 11, 27000)
+        b[row + 2:row + 4] = bytes((20, 100))  # level limits (%)
+        struct.pack_into('<HH', b, row + 14, 1000, 3300)  # speed limits (RPM)
         if fans < 0:
             continue
         b[entry['policy'](i)] = int(on)
+        # Curve levels 20/50/100 % and three (1/32 C, RPM) points that reach the row limits.
+        b[entry['policy'](i) + 14:entry['policy'](i) + 17] = bytes((20, 50, 100))
+        struct.pack_into('<6H', b, entry['policy'](i) + 18, 55 * 32, 1000, 70 * 32, 2000, 85 * 32, 3300)
         b[entry['mapping'](i):entry['mapping'](i) + 2] = bytes((int(on), i))
         control = entry['control'](i)
         # As on the RTX 2000 Ada, a one-channel layout keeps an unstored second entry.
         b[control], b[control + 2], b[control + 5] = int(on), i, 0x06 if fans == 1 and i else 0x0C | 1 << i
         b[entry['speed'](i):entry['speed'](i) + 2] = bytes((int(on and speed), i))
+        struct.pack_into('<H', b, entry['speed'](i) + 2, 2295)  # speed value (RPM), as on the RTX 4090
     if fans > 0:
-        for i in (2, 3):  # enabled policy entries that are not per channel
+        for i, start in ((2, 98), (3, 92)):  # enabled policy entries that are not per channel, same curve
             b[entry['policy'](i)] = 1
+            b[entry['policy'](i) + 14:entry['policy'](i) + 17] = bytes((20, 50, 100))
+            struct.pack_into('<6H', b, entry['policy'](i) + 18, start * 32, 1000, (start + 5) * 32, 2000,
+                             (start + 10) * 32, 3300)
 
 
 class StructureTests(unittest.TestCase):
@@ -448,6 +457,7 @@ def synthetic_blackwell(*, shared_objects=False, rails=2, clock_subsize=2, power
             b[row:row + 6] = bytes((2 if i < 2 else 0, 0, 0x14, 0x64, gpio, 2))
             b[row + 10] = tach
             b[row + 11:row + 14] = (27000).to_bytes(3, 'little')
+            struct.pack_into('<HH', b, row + 14, 1050, 3500)  # speed limits (RPM), as on the RTX 5080
         objects.append((0x1D, coolers, 9 + 0x1A * 4))
         # Policy (P+0x5c) and mapping (P+0x64) entries of the same channels.
         policy, mapping = 26240, 26816
@@ -458,6 +468,14 @@ def synthetic_blackwell(*, shared_objects=False, rails=2, clock_subsize=2, power
         for i, (enable, stored, row) in enumerate(((1, 1, 0), (1, 1, 1), (0, 1, 2), (0, 0, 0))):
             b[policy + 4 + 0x33 * i:policy + 6 + 0x33 * i] = bytes((enable, stored))
             b[mapping + 4 + 5 * i:mapping + 9 + 5 * i] = bytes((enable, row, 0x0A, 0x10, 0x27))
+        # Curves: levels 20/50/100 % and three (1/32 C, RPM) points reaching the row limits, on the
+        # channel entries and on entries 4/5, enabled past the cooler rows as on every source.
+        for i in range(6):
+            entry, start = policy + 4 + 0x33 * i, 50 if i < 4 else 93
+            if i >= 4:
+                b[entry] = 1
+            b[entry + 14:entry + 17] = bytes((20, 50, 100))
+            struct.pack_into('<6H', b, entry + 18, start * 32, 1050, (start + 5) * 32, 2200, (start + 10) * 32, 3500)
         objects += [(0x1E, policy, 4 + 0x33 * 0x0B), (0x20, mapping, 4 + 5 * 4)]
         # Control (P+0xdc) and speed (P+0xe0) entries: channels 0-2 stored, 3 a placeholder.
         control, speed = 26848, 26912

@@ -1,6 +1,7 @@
 """Per-format field evidence registry; unvalidated fields stay read-only."""
 from dataclasses import dataclass
 from decimal import Decimal
+import struct
 from ..rom.blackwell import BlackwellRom
 from ..rom.errors import VbiosError, FormatError
 from ..rom.image import metadata
@@ -1154,31 +1155,37 @@ def fan_layouts(parser, table):
     - Raising enables the next stored channels only: stored in every table
       (see BlackwellRom.fan_coolers), with their own cooler configuration
       (row bytes 4..5 and 10 unlike every earlier row), the shared PWM
-      frequency and byte 13 = 0. They take channel 0's enable byte in each
-      table.
+      frequency, byte 13 = 0 and speed and level limits that hold every
+      enabled extra curve (those curves serve every active channel, so an
+      edited extra curve cannot end up outside a channel enabled later). They
+      take channel 0's enable byte in each table.
     - Lowering clears the last channels in all five tables, as the two-channel
       ASUS XOC image does for the Matrix's third channel. It is offered only down
       to the lowest channel above which every active channel has its own
-      cooler configuration and channel 0's enable byte in every table, so
-      raising again restores it.
+      cooler configuration, channel 0's enable byte in every table and limits
+      that hold the extra curves, so raising again restores it.
     """
     b, rows = parser.blob, table['rows']
     active = [r for r in rows if r['active']]
     frequency = active[0]['pwm_frequency_hz']
     identity = lambda r: (b[r['offset'] + 4:r['offset'] + 6], b[r['offset'] + 10])
     first = rows[0]
+    holds = lambda r: all(r[low] <= fan_points(c, unit)[0] and fan_points(c, unit)[-1] <= r[high]
+                          for c in table['extra_curves']
+                          for unit, low, high in (('rpm', 'rpm_minimum', 'rpm_maximum'),
+                                                  ('pct', 'level_minimum', 'level_maximum')))
     enables = (('offset', 'enable'), ('policy_offset', 'policy_enable'), ('mapping_offset', 'mapping_enable'),
                ('control_offset', 'control_enable'), ('speed_offset', 'speed_enable'))
     most = len(active)
     for row in rows[most:]:
         if (identity(row) in {identity(r) for r in rows[:row['index']]} or
-                row['pwm_frequency_hz'] != frequency or b[row['offset'] + 13] or not row['stored']):
+                row['pwm_frequency_hz'] != frequency or b[row['offset'] + 13] or not row['stored'] or not holds(row)):
             break
         most += 1
     least = len(active)
     for row in reversed(active[1:]):
         if (identity(row) in {identity(r) for r in rows[:row['index']]} or
-                any(row[name] != first[name] for _, name in enables)):
+                any(row[name] != first[name] for _, name in enables) or not holds(row)):
             break
         least -= 1
     n = len(rows)  # list bytes and entries per table: 4 on GB20x, 2 on Ada
@@ -1226,9 +1233,160 @@ def chain_copies(parser, offsets, size, layout=()):
     return [at for group in groups for at in group], layout
 
 
+FAN_LIMIT_EVIDENCE = {
+    'kind': 'structural-table',
+    'format': 'fan cooler row bytes 2/3 (u8 %) and 14..15/16..17 (u16 RPM); policy entry bytes 14..16 (%) and '
+              'three (1/32 C, RPM) curve points from byte 18; speed entry bytes 2..3 (u16 RPM)',
+    'observation': 'on every active row of the GB20x, Ada and Ampere corpus the row limits hold the channel\'s own '
+                   'policy curve (row minimum <= lowest curve point, highest curve point <= row maximum); the '
+                   'enabled policy curves past the cooler rows fit too, except on one Ada board whose second '
+                   'channel tops out below them; every curve rises strictly in temperature, RPM and level '
+                   '(channel curves 43-97 C, the other curves 92-108 C, three Ampere boards with a point off a '
+                   'whole degree); every enabled speed entry holds 0.51-0.79 of its row maximum RPM; byte 3 is '
+                   '100; duplicate chains hold the same bytes; Ampere boards that stop the fan store 0 % and 0 RPM'}
+FAN_LIMIT_NVML = dict(NVML_CAPTURE, relation='fan percent = RPM / row maximum RPM',
+                      observed='RTX 5080: 73 % at 2556 RPM with a 3500 RPM row maximum; the driver fan-speed range '
+                               'stays 30-100 % while row byte 2 is 10-22')
+FAN_LIMIT_HARDWARE = {'kind': 'hardware-test', 'source': 'edited image loaded as an override; read-only NVML',
+                      'set_tested': True, 'scope': 'RTX 5080, both fan channels, fans under manual control',
+                      'observed': 'speed maximum 3500 -> 4000 RPM: 72 % gives about 2820 RPM instead of about '
+                                  '2520; level minimum 20 -> 10 %: the driver fan-speed range stays 30-100 %'}
+# Reason endings of the limits the hardware test changed; the other limits are untested.
+FAN_LIMIT_TESTED = {('max', 'rpm'): 'hardware-tested on an RTX 5080: the driver maps the fan percent to this '
+                                    'maximum; other boards not hardware-tested',
+                    ('min', 'pct'): 'on an RTX 5080 a lower value left the driver fan-speed range at 30-100 %; '
+                                    'other boards not hardware-tested'}
+FAN_SHAPE_REASON = 'fan row or policy curves hold values outside the reviewed shape'
+# (key unit, label noun, units, row byte of the minimum, of the maximum, encoding, ceiling). The RPM
+# ceiling is the signed 16-bit range of the driver's fan-curve RPM values, not the '<H' encoding.
+FAN_LIMITS = (('rpm', 'speed', 'RPM', 14, 16, '<H', 32767), ('pct', 'level', '%', 2, 3, '<B', 100))
+# Curve points of a policy entry: (key unit, label noun, units, stored units, entry byte of point 1,
+# byte step per point, encoding, scale, ceiling in stored units). Temperatures are stored in 1/32 C.
+FAN_CURVE = (('temp_c', 'temperature', 'C', '1/32 C', 18, 4, '<H', 32, 110 * 32),
+             ('rpm', 'speed', 'RPM', 'RPM', 20, 4, '<H', 1, 32767), ('pct', 'level', '%', '%', 14, 1, '<B', 1, 100))
+
+
+def fan_points(curve, unit):
+    """Stored values of the three curve points: 1/32 C ('temp_c'), RPM or %."""
+    return ([t for t, _ in curve['curve_points']] if unit == 'temp_c' else
+            [rpm for _, rpm in curve['curve_points']] if unit == 'rpm' else list(curve['curve_levels']))
+
+
+def fan_shaped(curve):
+    """Reviewed curve shape: temperatures rise strictly (the curve sets a speed per temperature, so two
+    points may not share one), RPM and levels never fall, and every value is within its ceiling."""
+    temps, rpm, levels = (fan_points(curve, unit) for unit in ('temp_c', 'rpm', 'pct'))
+    return (all(a < b for a, b in zip(temps, temps[1:])) and rpm == sorted(rpm) and levels == sorted(levels) and
+            all(fan_points(curve, unit)[-1] <= ceiling for unit, *_, ceiling in FAN_CURVE))
+
+
+def fan_field(writable, parser, key, label, units, current, lo, hi, shaped, at, encoding, scale, ceiling, noun,
+              evidence, reason, **extra):
+    """One fan limit or curve point, in stored units. It is editable when the image is (writable), its
+    row and curves hold the reviewed shape and it sits inside lo..hi. With lo == hi (a curve point flush
+    with its limit, a level maximum of 100 under a curve that reaches 100 %) a request for it alone
+    keeps its value, but it can move with its partners in a joint edit. Bounds stay numeric, so the
+    joint recheck refuses a request that breaks the order on the edited result."""
+    inside = shaped and lo <= current <= hi
+    editable = inside and writable
+    show = (lambda v: v / scale) if scale != 1 else (lambda v: v)
+    offsets, _ = chain_copies(parser, [at], struct.calcsize(encoding))
+    return field(key, label, units, show(current), show(lo), show(hi), editable, evidence,
+                 offsets=offsets if editable else (), encoding=encoding if editable else '', scale=scale,
+                 experimental=True, ordering_group=f'fan-{noun}' if editable else None,
+                 encoding_bounds=(0, show(ceiling)) if editable else None,
+                 writable_status=None if editable else 'unsupported',
+                 reason=reason if inside else FAN_SHAPE_REASON, **extra)
+
+
+def fan_limits(writable, parser, table, evidence):
+    """Speed (RPM) and level (%) limits of each active fan channel, numbered from 1.
+
+    The limits keep containing the stored curves: the channel's own policy curve and
+    every enabled policy curve past the cooler rows, and the speed limits also the
+    channel's enabled speed-table value. A minimum moves from 0 up to the lowest of
+    them and below the maximum; a maximum from the highest of them and above the
+    minimum up to the ceiling. A limit moves past a curve only together with the
+    curve points (fan_curves), in one joint edit. Each side is read-only when its
+    row and curves hold another shape (fan_shaped).
+    """
+    result = []
+    for r in table['rows']:
+        if not r['active']:
+            continue
+        n = r['index'] + 1
+        curves = [r] + table['extra_curves']
+        shaped = all(fan_shaped(c) for c in curves)
+        for unit, noun, units, low_at, high_at, encoding, ceiling in FAN_LIMITS:
+            low, high = ((r['rpm_minimum'], r['rpm_maximum']) if unit == 'rpm' else
+                         (r['level_minimum'], r['level_maximum']))
+            points = [fan_points(c, unit) for c in curves]
+            held = [r['speed_rpm']] if unit == 'rpm' and r['speed_enable'] else []
+            floor, top = min([p[0] for p in points] + held), max([p[-1] for p in points] + held)
+            for side, current, at, lo, hi in (('min', low, low_at, 0, min(floor, high - 1)),
+                                              ('max', high, high_at, max(top, low + 1), ceiling)):
+                word = 'minimum' if side == 'min' else 'maximum'
+                result.append(fan_field(
+                    writable, parser, f'fan_{n}_{side}_{unit}', f'Fan {n} {word} {noun}', units, current, lo, hi,
+                    shaped, r['offset'] + at, encoding, 1, ceiling, noun,
+                    [dict(FAN_LIMIT_EVIDENCE), dict(FAN_LIMIT_NVML), dict(FAN_LIMIT_HARDWARE)] +
+                    [dict(e) for e in evidence],
+                    f'experimental: {word} fan {noun} of channel {n}; the stored fan curves' +
+                    (' and the speed-table value' if unit == 'rpm' else '') + ' stay inside the limits, so a '
+                    'limit moves past a curve only with its points in one edit; ' +
+                    FAN_LIMIT_TESTED.get((side, unit), 'not hardware-tested'),
+                    stored_units=units, value_semantics=f'stored-fan-{word}-{noun}', fan_rows=[r['index']],
+                    fan_channel=r['index'], **({'opt_in': True} if unit == 'pct' else {})))
+    return result
+
+
+def fan_curves(writable, parser, table, evidence):
+    """Points 1..3 of the stored fan curves: temperature (1/32 C), speed (RPM) and level (%).
+
+    The curves are each active channel's own policy entry and the enabled entries past
+    the cooler rows, numbered from 1 in entry order (extra curves). Temperatures rise
+    strictly from 0 to 110 C; speeds and levels never fall and stay inside the limits:
+    the channel's own row limits, or for an extra curve, which serves every active
+    channel, the highest minimum and lowest maximum of the active rows. The row limits
+    hold the curves the same way (fan_limits), so lowering a maximum below a curve
+    takes the limit and the points above it in one joint edit. Every point stays inside
+    the containment, so a stored point above it does not widen its neighbor's range.
+    """
+    active = [r for r in table['rows'] if r['active']]
+    if not active:
+        return []
+    shared = {'rpm': (max(r['rpm_minimum'] for r in active), min(r['rpm_maximum'] for r in active)),
+              'pct': (max(r['level_minimum'] for r in active), min(r['level_maximum'] for r in active))}
+    curves = [(f'fan_{r["index"] + 1}', f'Fan {r["index"] + 1} curve', f'channel {r["index"] + 1}', r,
+               {'rpm': (r['rpm_minimum'], r['rpm_maximum']), 'pct': (r['level_minimum'], r['level_maximum'])},
+               dict(fan_channel=r['index'], fan_rows=[r['index']])) for r in active]
+    curves += [(f'fan_extra_{m}', f'Extra fan curve {m}', f'extra {m}', c, shared,
+                dict(fan_rows=[r['index'] for r in active])) for m, c in enumerate(table['extra_curves'], 1)]
+    result = []
+    for prefix, name, owner, curve, limits, extra in curves:
+        shaped = fan_shaped(curve) and all(low < high for low, high in limits.values())
+        for k in range(3):
+            for unit, noun, units, stored_units, first, step, encoding, scale, ceiling in FAN_CURVE:
+                values = fan_points(curve, unit)
+                floor, top = (0, ceiling) if unit == 'temp_c' else (limits[unit][0], min(limits[unit][1], ceiling))
+                gap = 1 if unit == 'temp_c' else 0  # temperatures rise by at least 1/32 C
+                lo = max(values[k - 1] + gap, floor) if k else floor
+                hi = min(values[k + 1] - gap, top) if k < 2 else top
+                result.append(fan_field(
+                    writable, parser, f'{prefix}_curve_{k + 1}_{unit}', f'{name} point {k + 1} {noun}', units, values[k],
+                    lo, hi, shaped, curve['policy_offset'] + first + step * k, encoding, scale, ceiling, noun,
+                    [dict(FAN_LIMIT_EVIDENCE)] + [dict(e) for e in evidence],
+                    f'experimental: {noun} of point {k + 1} of the stored {owner} fan curve; the points stay in '
+                    'order and inside the fan limits' + (' of every active channel' if 'fan_channel' not in extra
+                                                         else '') + '; not hardware-tested',
+                    stored_units=stored_units, value_semantics=f'stored-fan-curve-{noun}', fan_policy=curve['index'],
+                    **extra, **({'opt_in': True} if unit == 'pct' else {})))
+    return result
+
+
 @registry.register
 def fans(image, parser):
-    """Fan channel count and the shared PWM frequency of the fan rows."""
+    """Fan channel count, the shared PWM frequency of the fan rows, channel limits and curves."""
     if not isinstance(parser, (BlackwellRom, TableRom)):
         return []
     table = parser.fan_coolers()
@@ -1245,8 +1403,9 @@ def fans(image, parser):
     pwm_rows = table['rows'][:most]
     pwm_offsets, _ = chain_copies(parser, [r['pwm_frequency_offset'] for r in pwm_rows], 2)
     evidence = FAN_EVIDENCE if isinstance(parser, BlackwellRom) else ADA_FAN_EVIDENCE if ada(parser) else AMPERE_FAN_EVIDENCE
-    channels_editable = shared and most > least and can_edit(image, parser)
-    editable = in_band and can_edit(image, parser)
+    writable = can_edit(image, parser)
+    channels_editable = shared and most > least and writable
+    editable = in_band and writable
     return [field('fan_channels', 'Fan channels', 'channels', len(table['channels']),
                   least if channels_editable else None, most if channels_editable else None, channels_editable,
                   [dict(e) for e in evidence], offsets=layout_offsets if channels_editable else (),
@@ -1257,7 +1416,8 @@ def fans(image, parser):
                          'different fan count; lowering clears the last channels, raising enables stored channels; '
                          'every offered count can be undone byte for byte; not hardware-tested' if shared and most > least else
                          'active fan rows disagree or hold a value outside the reviewed shape' if not shared else
-                         'no other fan channel layout is stored in this table'),
+                         'no other fan channel layout is stored in this table, or a stored channel\'s limits do not '
+                         'hold the extra fan curves'),
             field('fan_pwm_frequency_hz', 'Fan PWM frequency', 'Hz', current,
                   FAN_PWM_BAND_HZ[0] if in_band else None, FAN_PWM_BAND_HZ[1] if in_band else None, editable,
                   [dict(e) for e in evidence], offsets=pwm_offsets if editable else (),
@@ -1265,7 +1425,8 @@ def fans(image, parser):
                   value_semantics='stored-fan-pwm-frequency', fan_rows=[r['index'] for r in pwm_rows],
                   reason='experimental: PWM frequency of the fan channels; accepted range is the 4-wire PWM fan '
                          'band (21-28 kHz); not hardware-tested' if in_band else
-                         'active fan rows disagree or hold a value outside the reviewed shape')]
+                         'active fan rows disagree or hold a value outside the reviewed shape')] + fan_limits(
+        writable, parser, table, evidence) + fan_curves(writable, parser, table, evidence)
 
 
 @registry.register

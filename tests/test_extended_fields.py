@@ -1,4 +1,5 @@
 """Extended offline fields: synthetic public images and opt-in reference ROMs."""
+from decimal import Decimal
 import hashlib
 import json
 import os
@@ -160,6 +161,13 @@ def custom_registry(key, offsets, *, encoding='<I', scale=1000, bounds=None, inc
 
 def descriptors(image):
     return {f['key']: f for f in inspect_image(image)['fields']}
+
+
+def curve_step(field):
+    """A fan curve point one stored step away (1/32 C, 1 RPM or 1 %): up, or down at its upper bound."""
+    step = Decimal(1) / 32 if field['units'] == 'C' else Decimal(1)
+    current = Decimal(str(field['current']))
+    return current + step if current + step <= Decimal(str(field['bounds']['maximum'])) else current - step
 
 
 class ExtendedFieldTests(unittest.TestCase):
@@ -1450,7 +1458,10 @@ class FanCoolerTests(unittest.TestCase):
                  'row 3 copies idle row 2': (lambda b: (store(b, 3), b.__setitem__(slice(row[3]['offset'] + 4, row[3]['offset'] + 6),
                                                                                     bytes((0xFB, 2))),
                                                         b.__setitem__(row[3]['offset'] + 10, 0xFA)), 3),
-                 'stored row 3': (lambda b: store(b, 3), 4)}
+                 'stored row 3': (lambda b: store(b, 3), 4),
+                 # The extra curves serve every active channel: row 2's limits must hold them.
+                 'row 2 maximum below the extra curves': (lambda b: struct.pack_into('<H', b, row[2]['offset'] + 16, 3400), 2),
+                 'row 2 level minimum above the extra curves': (lambda b: b.__setitem__(row[2]['offset'] + 2, 30), 2)}
         for name, (change, most) in cases.items():
             with self.subTest(case=name):
                 b = bytearray(blob)
@@ -1459,6 +1470,15 @@ class FanCoolerTests(unittest.TestCase):
                 self.assertEqual(descriptors(image)['fan_channels']['bounds']['maximum'], most)
                 with self.assertRaises(VbiosError):
                     edit(image, {'fan_channels': most + 1})
+        # Extra curves edited past the stored idle row keep it off, and past a cleared row keep it cleared.
+        image = from_bytes(bytes(blob))
+        top = {'fan_extra_1_curve_3_rpm': 4000, 'fan_extra_2_curve_3_rpm': 4000}
+        wide = edit(image, dict(top, fan_1_max_rpm=4000, fan_2_max_rpm=4000)).image
+        one = edit(edit(image, {'fan_channels': 1}).image, dict(top, fan_1_max_rpm=4000)).image
+        for edited, count, code in ((wide, 3, 'OUT_OF_BOUNDS'), (one, 2, 'FIELD_READ_ONLY')):
+            with self.subTest(count=count), self.assertRaises(VbiosError) as exc:
+                edit(edited, {'fan_channels': count})
+            self.assertEqual(exc.exception.code, code)
 
     def test_single_channel_without_stored_channels_is_read_only(self):
         blob = bytearray(synthetic_blackwell(fans=True))
@@ -1471,7 +1491,8 @@ class FanCoolerTests(unittest.TestCase):
             b[r['mapping_offset'] + 1] = 0
         single = descriptors(from_bytes(repair_fixture(b)))['fan_channels']
         self.assertEqual((single['current'], single['editable']), (1, False))
-        self.assertEqual(single['reason'], 'no other fan channel layout is stored in this table')
+        self.assertEqual(single['reason'], "no other fan channel layout is stored in this table, or a stored channel's "
+                                           'limits do not hold the extra fan curves')
 
     def test_tables_lists_and_shared_values_gate_the_fields(self):
         blob = synthetic_blackwell(fans=True)
@@ -1547,7 +1568,8 @@ class FanCoolerTests(unittest.TestCase):
         probes = {'row 0 enable': ((rows[0],), '<B', 0), 'row 3 enable': ((rows[3],), '<B', 2),
                   'header list': ((at + 7,), '<B', 3), 'header version': ((at,), '<B', 0x11),
                   'row 0 byte 13': ((rows[0] + 13,), '<B', 1), 'inactive row 3 frequency': ((rows[3] + 11,), '<H', 1000),
-                  'row 0 other bytes': ((rows[0] + 16,), '<H', 9999),
+                  'row 0 speed maximum': ((rows[0] + 16,), '<H', 9999), 'row 1 level minimum': ((rows[1] + 2,), '<B', 10),
+                  'inactive row 3 speed minimum': ((rows[3] + 14,), '<H', 900),
                   'policy enable': ((r2['policy_offset'],), '<B', 1), 'policy curve': ((r2['policy_offset'] + 20,), '<B', 9),
                   'mapping enable': ((r2['mapping_offset'],), '<B', 1), 'mapping row': ((r2['mapping_offset'] + 1,), '<B', 0),
                   'control enable': ((r2['control_offset'],), '<B', 1), 'control other': ((r2['control_offset'] + 9,), '<B', 7),
@@ -1576,6 +1598,38 @@ class FanCoolerTests(unittest.TestCase):
                                       bounds={'minimum': 0, 'maximum': 255})._resolvers[0])
         with self.assertRaises(VbiosError) as exc:
             edit(image, {'fan_pwm_frequency_hz': 25000, 'probe': 1}, field_registry=both)
+        self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+        # A channel limit with relaxed bounds still may not cut into the stored curve.
+        limit = reviewed['fan_1_min_rpm']
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_1_min_rpm': 2000}, field_registry=custom_registry(
+                'fan_1_min_rpm', limit.offsets, encoding='<H', scale=1, bounds={'minimum': 0, 'maximum': 65535}))
+        self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        # Over the maximum's bytes it is not canonical, so those bytes are refused.
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_1_min_rpm': 900}, field_registry=custom_registry(
+                'fan_1_min_rpm', (rows[0] + 16,), encoding='<H', scale=1, bounds={'minimum': 0, 'maximum': 65535}))
+        self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+        # A curve point with relaxed bounds still may not pass its neighbors or limits.
+        point = reviewed['fan_1_curve_3_rpm']
+        for value in (3600, 2100):
+            with self.subTest(value=value), self.assertRaises(VbiosError) as exc:
+                edit(image, {'fan_1_curve_3_rpm': value}, field_registry=custom_registry(
+                    'fan_1_curve_3_rpm', point.offsets, encoding='<H', scale=1, bounds={'minimum': 0, 'maximum': 65535}))
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        # Over another point's bytes it is not canonical, so those bytes are refused.
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_1_curve_3_rpm': 3000}, field_registry=custom_registry(
+                'fan_1_curve_3_rpm', reviewed['fan_1_curve_2_rpm'].offsets, encoding='<H', scale=1,
+                bounds={'minimum': 0, 'maximum': 65535}))
+        self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+        # A canonical limit does not make other curve bytes writable.
+        curve = FieldRegistry()
+        curve.register(fans)
+        curve.register(custom_registry('probe', (t['rows'][0]['policy_offset'] + 20,), encoding='<H', scale=1,
+                                       bounds={'minimum': 0, 'maximum': 65535})._resolvers[0])
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_1_min_rpm': 900, 'probe': 900}, field_registry=curve)
         self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
 
         def layout_registry(layout, key='fan_channels', offsets=channels.offsets):
@@ -1628,6 +1682,8 @@ class FanCoolerTests(unittest.TestCase):
         cases = {name: (lambda b, at=r1[name]: b.__setitem__(at, 3)) for name in self.ENABLES}
         cases['row 1 copies row 0'] = lambda b: (b.__setitem__(slice(r1['offset'] + 4, r1['offset'] + 6), bytes((0x3D, 2))),
                                                   b.__setitem__(r1['offset'] + 10, 0x09))
+        # Cleared, row 1 could not come back: its maximum is below the extra curves (as on the RTX 4080 Super).
+        cases['row 1 below the extra curves'] = lambda b: struct.pack_into('<H', b, r1['offset'] + 16, 3400)
         for name, change in cases.items():
             with self.subTest(case=name):
                 b = bytearray(blob)
@@ -1646,9 +1702,320 @@ class FanCoolerTests(unittest.TestCase):
         clock = next(o for o in backend(from_bytes(bytes(blob))).objects if o['id'] == 3)
         blob[clock['data'] + clock['size'] - 1] ^= 1
         fields = descriptors(from_bytes(bytes(blob)))
-        for key in ('fan_pwm_frequency_hz', 'fan_channels'):
+        for key in ('fan_pwm_frequency_hz', 'fan_channels', 'fan_1_min_rpm', 'fan_2_max_rpm', 'fan_1_min_pct',
+                    'fan_1_curve_2_temp_c', 'fan_extra_2_curve_3_rpm'):
             self.assertFalse(fields[key]['editable'])
             self.assertTrue(fields[key]['reason'].startswith('experimental:'), fields[key]['reason'])
+
+    def test_channel_limits_stop_at_the_stored_curves(self):
+        image = from_bytes(synthetic_blackwell(fans=True))
+        fields = descriptors(image)
+        rows = [r['offset'] for r in self.table(image.blob)['rows']]
+        # Rows 0/1: 1050..3500 RPM and 20..100 %; their curves and entries 4/5 span exactly that.
+        expected = {'min_rpm': (1050, 0, 1050, True), 'max_rpm': (3500, 3500, 32767, True),
+                    'min_pct': (20, 0, 20, True), 'max_pct': (100, 100, 100, True)}
+        for n in (1, 2):
+            for name, (current, low, high, editable) in expected.items():
+                with self.subTest(channel=n, field=name):
+                    f = fields[f'fan_{n}_{name}']
+                    self.assertEqual((f['current'], f['bounds']['minimum'], f['bounds']['maximum'], f['editable']),
+                                     (current, low, high, editable))
+                    speed = name.endswith('rpm')
+                    self.assertEqual((f['units'], f['experimental'], f['fan_channel'], f['fan_rows'], bool(f.get('opt_in'))),
+                                     ('RPM' if speed else '%', True, n - 1, [n - 1], not speed))
+                    self.assertEqual(f['ordering_group'], f"fan-{'speed' if speed else 'level'}")
+                    self.assertEqual(f['value_semantics'], 'stored-fan-%s-%s' % (
+                        'minimum' if name.startswith('min') else 'maximum', 'speed' if speed else 'level'))
+        self.assertTrue(all(fields[k]['reason'].startswith('experimental:') for k in ('fan_1_max_pct', 'fan_1_max_rpm')))
+        self.assertEqual(fields['fan_2_max_rpm']['bounds']['encoding_maximum'], 32767)
+        self.assertEqual([e['kind'] for e in fields['fan_1_min_rpm']['evidence']][:2],
+                         ['structural-table', 'read-only-nvml-correlation'])
+        self.assertFalse(any(key.startswith(('fan_3_', 'fan_4_')) for key in fields))
+        # Each limit writes only its own bytes and reverts byte for byte.
+        for key, value, at, width in (('fan_1_min_rpm', 900, rows[0] + 14, 2), ('fan_2_max_rpm', 4000, rows[1] + 16, 2),
+                                      ('fan_2_min_pct', 15, rows[1] + 2, 1)):
+            with self.subTest(key=key):
+                result = edit(image, {key: value})
+                self.assertTrue(result.manifest['integrity']['valid'])
+                changed_bytes_within(self, image, result, [at], width=width)
+                self.assertEqual(descriptors(result.image)[key]['current'], value)
+                self.assertEqual(result.manifest['edits'][0]['stored_units'], fields[key]['units'])
+                self.assertEqual(edit(result.image, {key: fields[key]['current']}).blob, image.blob)
+        # A limit may not cut into the curve or leave its encoding range.
+        for key, value, code in (('fan_1_min_rpm', 1051, 'OUT_OF_BOUNDS'), ('fan_1_max_rpm', 3499, 'OUT_OF_BOUNDS'),
+                                 ('fan_1_max_rpm', 32768, 'OUT_OF_BOUNDS'), ('fan_2_min_pct', 21, 'OUT_OF_BOUNDS'),
+                                 ('fan_1_min_rpm', -1, 'OUT_OF_BOUNDS'), ('fan_1_min_rpm', '900.5', 'UNREPRESENTABLE_VALUE'),
+                                 ('fan_1_max_pct', 99, 'OUT_OF_BOUNDS')):
+            with self.subTest(key=key, value=value), self.assertRaises(VbiosError) as exc:
+                edit(image, {key: value})
+            self.assertEqual(exc.exception.code, code)
+        # Partners requested together are checked on the joint result.
+        both = edit(image, {'fan_1_min_rpm': 500, 'fan_1_max_rpm': 32767})
+        changed_bytes_within(self, image, both, [rows[0] + 14], width=4)
+        # From limits past the curve, each one may also move back in as far as the curve.
+        narrowed = descriptors(edit(both.image, {'fan_1_min_rpm': 1000, 'fan_1_max_rpm': 4000}).image)
+        self.assertEqual([narrowed[k]['current'] for k in ('fan_1_min_rpm', 'fan_1_max_rpm')], [1000, 4000])
+        for key, value in (('fan_1_min_rpm', 1051), ('fan_1_max_rpm', 3499)):
+            with self.subTest(key=key, value=value), self.assertRaises(VbiosError) as exc:
+                edit(both.image, {key: value})
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_1_min_rpm': 6000, 'fan_1_max_rpm': 5000})
+        self.assertEqual((exc.exception.code, exc.exception.details['field'], exc.exception.details['joint_fields']),
+                         ('OUT_OF_BOUNDS', 'fan_1_max_rpm', ['fan_1_max_rpm', 'fan_1_min_rpm']))
+
+    def test_channel_count_and_limits_are_separate_edits(self):
+        image = from_bytes(synthetic_blackwell(fans=True))
+        t = self.table(image.blob)
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_channels': 3, 'fan_2_max_rpm': 4000, 'fan_1_min_pct': 15})
+        self.assertEqual((exc.exception.code, exc.exception.details['fields']),
+                         ('SEPARATE_EDIT_REQUIRED', ['fan_channels', 'fan_1_min_pct', 'fan_2_max_rpm']))
+        # The PWM frequency combines with the limits.
+        both = edit(image, {'fan_pwm_frequency_hz': 25000, 'fan_2_max_rpm': 4000})
+        changed_bytes_within(self, image, both, [r['offset'] + 11 for r in t['rows'][:3]] + [t['rows'][1]['offset'] + 16],
+                             width=2)
+        # Lowering the count drops channel 2's limits; raising it again restores its edited bytes.
+        lowered = edit(both.image, {'fan_channels': 1})
+        self.assertFalse(any(key.startswith('fan_2_') for key in descriptors(lowered.image)))
+        self.assertEqual(edit(lowered.image, {'fan_channels': 2}).blob, both.blob)
+        # Raising to three offers the stored third row's own limits.
+        three = descriptors(edit(image, {'fan_channels': 3}).image)
+        self.assertEqual((three['fan_3_min_rpm']['current'], three['fan_3_max_rpm']['editable']), (1050, True))
+
+    def test_limits_outside_the_reviewed_shape_are_read_only(self):
+        blob = synthetic_blackwell(fans=True)
+        t = self.table(blob)
+        row, policy = t['rows'][0]['offset'], t['rows'][0]['policy_offset']
+        extra = t['policy_offset'] + 4 + 0x33 * 4  # entry 4, enabled past the cooler rows
+        pack = lambda fmt, at, *values: (lambda b: struct.pack_into(fmt, b, at, *values))
+
+        def above_ceilings(b):  # every curve of channel 1 starts above 32767 RPM and 100 %, the maximums higher still
+            pack('<H', row + 16, 40000)(b)
+            pack('<B', row + 3, 200)(b)
+            for at in (policy, extra, extra + 0x33):
+                pack('<3B', at + 14, 150, 160, 170)(b)
+                for k, rpm in enumerate((33000, 34000, 35000)):
+                    pack('<H', at + 20 + 4 * k, rpm)(b)
+        cases = {'speed minimum above maximum':(pack('<HH', row + 14, 3500, 1050),
+                                                 {'fan_1_min_rpm': False, 'fan_1_max_rpm': False, 'fan_1_min_pct': True}),
+                 'curve below the speed minimum': (pack('<H', row + 14, 1100), {'fan_1_min_rpm': False, 'fan_1_max_rpm': True}),
+                 'curve above the speed maximum': (pack('<H', row + 16, 3400), {'fan_1_min_rpm': True, 'fan_1_max_rpm': False}),
+                 'speed maximum above 32767': (pack('<H', row + 16, 40000), {'fan_1_min_rpm': True, 'fan_1_max_rpm': False}),
+                 'level maximum above 100': (pack('<B', row + 3, 101), {'fan_1_min_pct': True, 'fan_1_max_pct': False}),
+                 'curve speeds not ascending': (pack('<H', policy + 24, 1000),
+                                                {'fan_1_min_rpm': False, 'fan_1_max_rpm': False, 'fan_1_min_pct': False,
+                                                 'fan_2_min_rpm': True}),
+                 'curve temperatures not ascending': (pack('<H', policy + 22, 40 * 32),
+                                                      {'fan_1_min_rpm': False, 'fan_1_min_pct': False, 'fan_2_max_rpm': True}),
+                 'curve levels not ascending': (pack('<B', policy + 15, 10), {'fan_1_min_pct': False, 'fan_1_max_rpm': False}),
+                 # A curve that is not the channel's own still has to fit: only the maximum stops.
+                 'extra curve above the speed maximum': (pack('<H', extra + 28, 3600),
+                                                         {'fan_1_min_rpm': True, 'fan_1_max_rpm': False,
+                                                          'fan_2_min_rpm': True, 'fan_2_max_rpm': False}),
+                 'last extra curve above the speed maximum': (pack('<H', extra + 0x33 + 28, 3600),
+                                                              {'fan_1_min_rpm': True, 'fan_1_max_rpm': False}),
+                 # The minimum may not rise past the ceiling with the curves either.
+                 'curves above the ceilings': (above_ceilings, {'fan_1_min_rpm': False, 'fan_1_max_rpm': False,
+                                                                'fan_1_min_pct': False, 'fan_1_max_pct': False}),
+                 'disabled extra curve':(lambda b: (pack('<H', extra + 28, 3600)(b), b.__setitem__(extra, 0)),
+                                          {'fan_1_max_rpm': True, 'fan_2_max_rpm': True})}
+        for name, (change, editable) in cases.items():
+            with self.subTest(case=name):
+                b = bytearray(blob)
+                change(b)
+                fields = descriptors(from_bytes(repair_fixture(b)))
+                for key, expected in editable.items():
+                    f = fields[key]
+                    self.assertEqual(f['editable'], expected, key)
+                    self.assertTrue(f['reason'].startswith('experimental:') if expected else
+                                    f['reason'] == 'fan row or policy curves hold values outside the reviewed shape', key)
+                    self.assertTrue(all(isinstance(f['bounds'][k], int) for k in ('minimum', 'maximum')), key)
+                    if not expected:
+                        with self.assertRaises(VbiosError) as exc:
+                            edit(from_bytes(repair_fixture(b)), {key: f['current']})
+                        self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
+
+
+    def test_curve_points_stay_between_their_neighbors_and_limits(self):
+        image = from_bytes(synthetic_blackwell(fans=True))
+        t = self.table(image.blob)
+        fields = descriptors(image)
+        # Channel curves 50/55/60 C, the extra ones (entries 4/5) 93/98/103 C; 1050/2200/3500 RPM and 20/50/100 %
+        # inside rows 0/1 (1050..3500 RPM, 20..100 %).
+        expected = {'fan_1_curve_1_temp_c': (50, 0, 54.96875), 'fan_1_curve_2_temp_c': (55, 50.03125, 59.96875),
+                    'fan_2_curve_3_temp_c': (60, 55.03125, 110), 'fan_extra_2_curve_1_temp_c': (93, 0, 97.96875),
+                    'fan_1_curve_1_rpm': (1050, 1050, 2200), 'fan_1_curve_2_rpm': (2200, 1050, 3500),
+                    'fan_extra_1_curve_3_rpm': (3500, 2200, 3500), 'fan_2_curve_1_pct': (20, 20, 50),
+                    'fan_extra_1_curve_3_pct': (100, 50, 100)}
+        for key, (current, low, high) in expected.items():
+            with self.subTest(key=key):
+                f = fields[key]
+                self.assertEqual((f['current'], f['bounds']['minimum'], f['bounds']['maximum'], f['editable']),
+                                 (current, low, high, True))
+                unit = key.rsplit('_', 1)[1] if not key.endswith('temp_c') else 'temp_c'
+                noun = {'temp_c': 'temperature', 'rpm': 'speed', 'pct': 'level'}[unit]
+                self.assertEqual((f['units'], f['stored_units'], f['ordering_group'], f['bounds']['encoding_maximum'],
+                                  f['value_semantics'], f['experimental'], bool(f.get('opt_in'))),
+                                 ({'temp_c': 'C', 'rpm': 'RPM', 'pct': '%'}[unit],
+                                  {'temp_c': '1/32 C', 'rpm': 'RPM', 'pct': '%'}[unit], f'fan-{noun}',
+                                  {'temp_c': 110, 'rpm': 32767, 'pct': 100}[unit], f'stored-fan-curve-{noun}', True,
+                                  unit == 'pct'))
+                extra = key.startswith('fan_extra_')
+                self.assertEqual((f.get('fan_channel'), f['fan_rows'], f['fan_policy']),
+                                 (None, [0, 1], 3 + int(key[10])) if extra else (int(key[4]) - 1, [int(key[4]) - 1],
+                                                                                 int(key[4]) - 1))
+        self.assertFalse(any(key.startswith(('fan_3_curve', 'fan_extra_3')) for key in fields))
+        # Each point writes only its own bytes, in 1/32 C for temperatures, and reverts byte for byte.
+        own, extra = t['rows'][0]['policy_offset'], t['extra_curves'][1]['policy_offset']
+        for key, value, at, fmt, stored in (('fan_1_curve_3_temp_c', '60.5', own + 26, '<H', 1936),
+                                            ('fan_1_curve_3_temp_c', 110, own + 26, '<H', 3520),
+                                            ('fan_extra_2_curve_1_rpm', 1100, extra + 20, '<H', 1100),
+                                            ('fan_1_curve_2_pct', 60, own + 15, '<B', 60)):
+            with self.subTest(key=key, value=value):
+                result = edit(image, {key: value})
+                changed_bytes_within(self, image, result, [at], width=struct.calcsize(fmt))
+                self.assertEqual(struct.unpack_from(fmt, result.blob, at)[0], stored)
+                self.assertEqual(result.manifest['edits'][0]['stored_units'], fields[key]['stored_units'])
+                self.assertEqual(edit(result.image, {key: fields[key]['current']}).blob, image.blob)
+        for changes, code in (({'fan_1_curve_3_temp_c': '60.01'}, 'UNREPRESENTABLE_VALUE'),
+                              ({'fan_1_curve_3_temp_c': '110.03125'}, 'OUT_OF_BOUNDS'),
+                              # Temperatures rise strictly: an equal neighbor is refused, alone or jointly.
+                              ({'fan_1_curve_2_temp_c': 50}, 'OUT_OF_BOUNDS'),
+                              ({'fan_1_curve_1_temp_c': 52, 'fan_1_curve_2_temp_c': 52}, 'OUT_OF_BOUNDS'),
+                              ({'fan_1_curve_1_rpm': 1000}, 'OUT_OF_BOUNDS'), ({'fan_1_curve_3_pct': 101}, 'OUT_OF_BOUNDS'),
+                              # A joint request may not leave an unrequested neighbor behind.
+                              ({'fan_1_curve_2_rpm': 3600, 'fan_1_max_rpm': 4000}, 'OUT_OF_BOUNDS'),
+                              ({'fan_1_curve_3_temp_c': 54, 'fan_1_curve_1_temp_c': 40}, 'OUT_OF_BOUNDS')):
+            with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
+                edit(image, changes)
+            self.assertEqual(exc.exception.code, code)
+        self.assertEqual(exc.exception.details['field'], 'fan_1_curve_3_temp_c')
+        # Speeds and levels may repeat; a joint edit moves two points together.
+        flat = edit(image, {'fan_1_curve_1_rpm': 2200, 'fan_1_curve_2_temp_c': 59, 'fan_1_curve_3_temp_c': '59.03125'})
+        self.assertEqual(descriptors(flat.image)['fan_1_curve_2_rpm']['bounds']['minimum'], 2200)
+
+    def test_lowering_a_maximum_takes_the_curve_points_above_it(self):
+        from nvidia_vbios.editor.registry import registry
+        image = from_bytes(synthetic_blackwell(fans=True))
+        t = self.table(image.blob)
+        bindings = {b.descriptor['key']: b for b in registry.bindings(image, backend(image))[0]}
+        top = ['fan_1_curve_3_rpm', 'fan_extra_1_curve_3_rpm', 'fan_extra_2_curve_3_rpm']
+        # Alone, or with the channel's own curve only, the maximum stops at the extra curves (3500 RPM).
+        for changes in ({'fan_1_max_rpm': 3000}, {'fan_1_max_rpm': 3000, 'fan_1_curve_3_rpm': 3000}):
+            with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
+                edit(image, changes)
+            self.assertEqual((exc.exception.code, exc.exception.details['field'],
+                              exc.exception.details['bounds']['minimum']), ('OUT_OF_BOUNDS', 'fan_1_max_rpm', 3500))
+        lowered = edit(image, dict({'fan_1_max_rpm': 3000}, **{key: 3000 for key in top}))
+        changed_bytes_within(self, image, lowered, [bindings[k].offsets[0] for k in ['fan_1_max_rpm'] + top], width=2)
+        after = descriptors(lowered.image)
+        self.assertEqual([after[k]['current'] for k in ['fan_1_max_rpm', 'fan_2_max_rpm'] + top], [3000, 3500] + [3000] * 3)
+        self.assertEqual(after['fan_1_max_rpm']['bounds']['minimum'], 3000)
+        # Extra curves serve both channels: their points now stop at channel 1's maximum.
+        self.assertEqual(after['fan_extra_1_curve_3_rpm']['bounds']['maximum'], 3000)
+        self.assertEqual(edit(lowered.image, dict({'fan_1_max_rpm': 3500}, **{key: 3500 for key in top})).blob, image.blob)
+        # The enabled speed-table value (2300 RPM) stops the maximum, with or without the curves.
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, dict({'fan_1_max_rpm': 2250}, **{key: 2250 for key in top}))
+        self.assertEqual((exc.exception.code, exc.exception.details['bounds']['minimum']), ('OUT_OF_BOUNDS', 2300))
+        # Below a lower speed value, every point above the new maximum moves with it.
+        blob = bytearray(image.blob)
+        struct.pack_into('<H', blob, t['rows'][0]['speed_offset'] + 2, 1500)
+        slow = from_bytes(repair_fixture(blob))
+        middle = ['fan_1_curve_2_rpm', 'fan_extra_1_curve_2_rpm', 'fan_extra_2_curve_2_rpm']
+        capped = edit(slow, dict({'fan_1_max_rpm': 2000}, **{key: 2000 for key in top + middle}))
+        self.assertEqual(backend(capped.image).fan_coolers()['rows'][0]['rpm_maximum'], 2000)
+        # A point flush with its neighbor and its limit has no room alone, but the same keys undo the cap in one edit.
+        flush = descriptors(capped.image)['fan_1_curve_3_rpm']
+        self.assertEqual((flush['editable'], flush['bounds']['minimum'], flush['bounds']['maximum']), (True, 2000, 2000))
+        with self.assertRaises(VbiosError) as exc:
+            edit(capped.image, {'fan_1_curve_3_rpm': 2100})
+        self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        self.assertEqual(edit(capped.image, dict({'fan_1_max_rpm': 3500}, **{key: 3500 for key in top},
+                                                 **{key: 2200 for key in middle})).blob, slow.blob)
+        with self.assertRaises(VbiosError) as exc:
+            edit(slow, dict({'fan_1_max_rpm': 2000}, **{key: 2000 for key in top}))
+        self.assertEqual(exc.exception.details['field'], 'fan_1_curve_3_rpm')
+        # A level maximum of 100 under curves that reach 100 % lowers the same way, and reverts in one edit.
+        levels = {'fan_1_max_pct': 90, 'fan_1_curve_3_pct': 90, 'fan_extra_1_curve_3_pct': 90,
+                  'fan_extra_2_curve_3_pct': 90}
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_1_max_pct': 90})
+        self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        quieter = edit(image, levels)
+        changed_bytes_within(self, image, quieter, [bindings[k].offsets[0] for k in levels], width=1)
+        self.assertEqual(edit(quieter.image, {key: 100 for key in levels}).blob, image.blob)
+
+    def test_channel_count_and_curves_are_separate_edits(self):
+        image = from_bytes(synthetic_blackwell(fans=True))
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_channels': 3, 'fan_1_curve_1_temp_c': 51, 'fan_extra_1_curve_2_rpm': 2100})
+        self.assertEqual((exc.exception.code, exc.exception.details['fields']),
+                         ('SEPARATE_EDIT_REQUIRED', ['fan_channels', 'fan_1_curve_1_temp_c', 'fan_extra_1_curve_2_rpm']))
+        # Lowering the count leaves the extra curves to the remaining channel.
+        lowered = descriptors(edit(image, {'fan_channels': 1}).image)
+        self.assertEqual(lowered['fan_extra_1_curve_1_rpm']['fan_rows'], [0])
+        self.assertFalse(any(key.startswith('fan_2_') for key in lowered))
+
+    def test_curve_points_outside_the_reviewed_shape_are_read_only(self):
+        blob = synthetic_blackwell(fans=True)
+        t = self.table(blob)
+        own, extra = t['rows'][0]['policy_offset'], t['extra_curves'][0]['policy_offset']
+        pack = lambda fmt, at, *values: (lambda b: struct.pack_into(fmt, b, at, *values))
+        shape = 'fan row or policy curves hold values outside the reviewed shape'
+        cases = {'equal temperatures': (pack('<H', own + 22, 50 * 32),
+                                        {'fan_1_curve_1_temp_c': shape, 'fan_1_curve_3_pct': shape,
+                                         'fan_1_max_rpm': shape, 'fan_2_curve_1_temp_c': None}),
+                 'temperature above 110 C': (pack('<H', own + 26, 111 * 32), {'fan_1_curve_2_rpm': shape}),
+                 # An extra curve has to fit every active channel: only its top point leaves channel 2's maximum.
+                 'extra curve above a channel maximum': (pack('<H', t['rows'][1]['offset'] + 16, 3400),
+                                                         {'fan_extra_1_curve_3_rpm': shape, 'fan_extra_1_curve_2_rpm': None,
+                                                          'fan_1_curve_3_rpm': None, 'fan_2_max_rpm': shape}),
+                 # Speeds may repeat: a point flush with its neighbor and limit stays editable (lo == hi).
+                 'equal speeds at the minimum': (pack('<H', own + 24, 1050),
+                                                 {'fan_1_curve_1_rpm': None, 'fan_1_curve_2_rpm': None}),
+                 'extra levels not ascending': (pack('<B', extra + 15, 10), {'fan_extra_1_curve_1_temp_c': shape,
+                                                                            'fan_extra_2_curve_1_temp_c': None}),
+                 'speed minimum above maximum': (pack('<HH', t['rows'][0]['offset'] + 14, 3500, 1050),
+                                                 {'fan_1_curve_2_rpm': shape, 'fan_1_curve_2_temp_c': shape})}
+        for name, (change, reasons) in cases.items():
+            with self.subTest(case=name):
+                b = bytearray(blob)
+                change(b)
+                image = from_bytes(repair_fixture(b))
+                fields = descriptors(image)
+                for key, reason in reasons.items():
+                    f = fields[key]
+                    self.assertEqual(f['editable'], reason is None, key)
+                    self.assertTrue(f['reason'].startswith('experimental:') if reason is None else f['reason'] == reason,
+                                    key)
+                    self.assertTrue(all(isinstance(f['bounds'][k], (int, float)) for k in ('minimum', 'maximum')))
+                    if reason:
+                        with self.assertRaises(VbiosError) as exc:
+                            edit(image, {key: f['current']})
+                        self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
+        # A stored top point above the containment does not widen its neighbor's range (RTX 4080 Super).
+        b = bytearray(blob)
+        struct.pack_into('<H', b, t['rows'][1]['offset'] + 16, 3400)
+        image = from_bytes(repair_fixture(b))
+        middle = descriptors(image)['fan_extra_1_curve_2_rpm']
+        self.assertEqual((middle['editable'], middle['bounds']['minimum'], middle['bounds']['maximum']), (True, 1050, 3400))
+        for changes in ({'fan_extra_1_curve_2_rpm': 3500},
+                        {'fan_extra_1_curve_2_rpm': 3450, 'fan_extra_2_curve_2_rpm': 3500}):
+            with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
+                edit(image, changes)
+            self.assertEqual((exc.exception.code, exc.exception.details['field']),
+                             ('OUT_OF_BOUNDS', 'fan_extra_1_curve_2_rpm'))
+        # A row maximum above the 32767 RPM ceiling does not lift the top point past it.
+        b = bytearray(blob)
+        struct.pack_into('<H', b, t['rows'][0]['offset'] + 16, 40000)
+        image = from_bytes(repair_fixture(b))
+        point = descriptors(image)['fan_1_curve_3_rpm']
+        self.assertEqual((point['editable'], point['bounds']['minimum'], point['bounds']['maximum']), (True, 2200, 32767))
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_1_curve_3_rpm': 33000})
+        self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
 
 
 def top_profile_fixture(*, stage1_type=1, stage2_target=7, top_code_power=600000, mutate=None):

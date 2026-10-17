@@ -17,6 +17,11 @@ FIELD_KEYS = frozenset(('power_min_w', 'power_max_w', 'nvvdd_rel_max_mv', 'msvdd
 # Ampere external 12 V connector-channel power policies, numbered in power-row order
 # (a sense channel, not a physical connector: one connector may span several).
 CONNECTOR_KEY = re.compile(r'connector_(\d+)_power_(max|rated)_w')
+# Per-channel fan limits, numbered from 1 like the fan channels; stored curve points, of a
+# channel or of an extra curve (numbered from 1 in policy entry order).
+FAN_KEY = re.compile(r'fan_(\d+)_(min|max)_(rpm|pct)')
+FAN_CURVE_KEY = re.compile(r'fan_(\d+|extra_(\d+))_curve_(\d)_(temp_c|rpm|pct)')
+FAN_CURVE_UNITS = ('temp_c', 'rpm', 'pct')
 REASON_KEYS = {
     'generic OCP mapping unknown; reviewed per-rail output ceilings use *_output_ocp_max_ma': 'reason.generic_ocp',
     'generic current mapping unknown; the reviewed 12 V input policy uses input_current_*_ma': 'reason.generic_input',
@@ -32,7 +37,8 @@ REASON_KEYS = {
     'domain identity and MHz conversion are unvalidated': 'reason.clock',
     'Same field as the MHz control; edit that control.': 'table_alias',
     'Equivalent representation; use the main control.': 'field_alias',
-    'no other fan channel layout is stored in this table': 'reason.fan_layout',
+    "no other fan channel layout is stored in this table, or a stored channel's limits do not hold the extra fan "
+    'curves': 'reason.fan_layout',
 }
 
 
@@ -55,6 +61,15 @@ def field_label(field, language='en'):
     match = CONNECTOR_KEY.fullmatch(key)
     if match:
         return text('field.connector_power_' + match.group(2), connector=match.group(1))
+    match = FAN_KEY.fullmatch(key)
+    if match:
+        return text(f'field.fan_{match.group(2)}_{match.group(3)}', fan=match.group(1))
+    match = FAN_CURVE_KEY.fullmatch(key)
+    if match:
+        owner, extra, point, unit = match.groups()
+        if extra:
+            return text(f'field.fan_extra_curve_{unit}', curve=extra, point=point)
+        return text(f'field.fan_curve_{unit}', fan=owner, point=point)
     for domain in ('xbar', 'sys', 'vid'):
         for side in ('max', 'min'):
             if key == f'{domain}_{side}_table_mhz':
@@ -110,7 +125,13 @@ SECTIONS = (
                  'nvvdd_output_ocp_rated_ma', 'nvvdd_output_ocp_max_ma',
                  'msvdd_output_ocp_rated_ma', 'msvdd_output_ocp_max_ma', 'slot_current_threshold_rated_ma',
                  'slot_current_threshold_max_ma')),
-    ('fans', ('fan_channels', 'fan_pwm_frequency_hz')),
+    # Each channel's limits, then its curve points; then the extra curves.
+    ('fans', ('fan_channels', 'fan_pwm_frequency_hz') +
+             tuple(key for n in range(1, 5) for key in
+                   tuple(f'fan_{n}_{side}_{unit}' for unit in ('rpm', 'pct') for side in ('max', 'min')) +
+                   tuple(f'fan_{n}_curve_{k}_{unit}' for k in (1, 2, 3) for unit in FAN_CURVE_UNITS)) +
+             tuple(f'fan_extra_{m}_curve_{k}_{unit}' for m in range(1, 8) for k in (1, 2, 3)
+                   for unit in FAN_CURVE_UNITS)),
 )
 # Windows tools such as MSI Afterburner show the stored table value: half of
 # the NVML/Linux memory offset, the same value for the core (observed on hardware).
@@ -149,7 +170,7 @@ def row_title(field, language='en'):
     return short, bool(field.get('experimental')) or short != title
 
 
-# Every editable field fits in 32 bits with at most three decimals, so input
+# Every editable field fits in 32 bits with at most five decimals (1/32 C), so input
 # outside these magnitudes is refused before any arithmetic or formatting.
 LARGEST = Decimal('1e12')
 SMALLEST = Decimal('1e-6')
@@ -199,9 +220,9 @@ def windows_value(field, value):
 
 
 # Rows show some stored units on a friendlier scale: table MHz as MHz, mA as A
-# and Hz as kHz (exact: factor 0.001). The backend always receives stored units.
+# and Hz as kHz (exact: factor 0.001), and C as °C. The backend always receives stored units.
 DISPLAY_UNITS = {'table MHz': ('MHz', Decimal(1)), 'mA': ('A', Decimal('0.001')), 'Hz': ('kHz', Decimal('0.001')),
-                 'channels': ('', Decimal(1))}
+                 'channels': ('', Decimal(1)), 'C': ('°C', Decimal(1))}
 
 
 def display_units(field):

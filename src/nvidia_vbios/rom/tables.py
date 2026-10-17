@@ -10,7 +10,7 @@ No board serial, complete-file size, table-address, or source-hash pins.
 import copy
 import hashlib
 import math
-from .structure import scan_images, image_chains, parse_bit, read
+from .structure import fan_curve, scan_images, image_chains, parse_bit, read
 from .errors import FormatError
 
 SOURCE = 'https://github.com/OE4T/linux-nvgpu/blob/patches-rel-36/drivers/gpu/nvgpu/include/nvgpu/bios.h'
@@ -630,6 +630,11 @@ class TableRom:
         Ampere uses the same tables. Its speed table may be unused: enable 0 on
         every channel (RTX 3080/3090 boards, RTX 3060 8GB); its entries are then
         not compared, and a raised channel count keeps them disabled.
+
+        Rows carry the GB20x row limits, policy curve and speed value. Enabled
+        policy entries past the two cooler rows (entry 2, and 3 on most images)
+        store further curves, listed in extra_curves. Ampere boards that stop
+        the fan store 0 % and 0 RPM as the row minimum.
         """
         b = self.blob
         try:
@@ -661,10 +666,13 @@ class TableRom:
             rows.append(dict(index=i, offset=row, enable=b[row], active=i in listed,
                              pwm_frequency_hz=int.from_bytes(b[row + 11:row + 14], 'little'),
                              pwm_frequency_offset=row + 11,
+                             level_minimum=b[row + 2], level_maximum=b[row + 3],
+                             rpm_minimum=read(b, '<H', row + 14)[0], rpm_maximum=read(b, '<H', row + 16)[0],
+                             **fan_curve(b, pol),
                              policy_offset=pol, policy_enable=b[pol], mapping_offset=mapped,
                              mapping_enable=b[mapped], mapping_row=b[mapped + 1],
                              control_offset=control, control_enable=b[control],
-                             speed_offset=speed, speed_enable=b[speed],
+                             speed_offset=speed, speed_enable=b[speed], speed_rpm=read(b, '<H', speed + 2)[0],
                              stored=(b[pol + 1] == b[first_policy + 1] and b[mapped + 1] == i and
                                      b[control + 2] == i and
                                      b[control + 5] == (b[first_control + 5] & 0xFC) | 1 << i and
@@ -677,9 +685,12 @@ class TableRom:
                 raise FormatError('fan channel enables disagree across the fan tables')
             if r['active'] and not r['stored']:
                 raise FormatError('an active fan channel is not stored in every fan table')
+        policies = b[first_policy - 1]  # entry count, header byte 3
+        extra = [dict(index=k, policy_offset=tables['policy'](k), **fan_curve(b, tables['policy'](k)))
+                 for k in range(n, policies) if b[tables['policy'](k)]]
         return dict(offset=at, policy_offset=tables['policy'](0) - 4, mapping_offset=tables['mapping'](0) - 4,
                     control_offset=tables['control'](0) - 4, speed_offset=tables['speed'](0) - 4,
-                    channels=listed, rows=rows)
+                    channels=listed, rows=rows, extra_curves=extra)
 
     def copy_offsets(self, at, size):
         self.owner(at, size)

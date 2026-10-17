@@ -102,7 +102,18 @@ queda en `nvbios fields`. Las corrientes guardadas en mA (entrada de 12 V y OCP 
 salida) se muestran y escriben en A, con hasta tres decimales; la GUI las convierte
 de forma exacta y el backend, la CLI y el manifiesto siguen en mA. La frecuencia
 PWM de los ventiladores se muestra y escribe en kHz de la misma forma; la tarjeta
-Ventiladores también permite cambiar la cantidad de canales de ventilador. Ada y Ampere no heredan esa conversión. Los techos de
+Ventiladores también permite cambiar la cantidad de canales de ventilador y, por
+canal, la velocidad mínima y máxima en RPM, luego los tres puntos de la curva de
+ventilador guardada del canal (temperatura en °C, velocidad en RPM) y al final las
+curvas adicionales, que valen para todos los canales (todo experimental). Las
+temperaturas avanzan de a 1/32 °C (`60.5` sirve, `60.01` no) y muestran decimales solo
+cuando hacen falta. Un límite solo llega hasta las curvas guardadas: para bajar un
+máximo por debajo de ellas, escribe el nuevo máximo y los puntos de curva que
+quedan por encima, también los de las curvas adicionales, y se comprueban y guardan
+juntos en una sola copia. El nivel mínimo y máximo (%) de cada canal y los niveles
+de las curvas aparecen con los campos avanzados. Guarda primero una nueva cantidad
+de canales y cambia los límites o las curvas en la copia. Ada y
+Ampere no heredan esa conversión. Los techos de
 salida OCP revisados se expresan en mA, pero editarlos no demuestra que el firmware
 los aplique. Un techo de ecuación REL/ALT/OV/VMIN tampoco es un voltaje evaluado ni
 un offset runtime. La GUI guarda el archivo completo y no normaliza los bancos
