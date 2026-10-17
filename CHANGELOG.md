@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.17
+
+- **Windows: the programs start again on CPUs without AVX-512.** The 0.1.15 and 0.1.16 `.exe` files closed at
+  once, without a message and before unpacking anything, on CPUs without AVX-512: the compiler built their
+  memory-copy routine for the CPU of the build machine. The build now targets baseline x86-64 and fails if
+  AVX or AVX-512 code reaches either program (0.1.14 needed AVX2 for the same reason). The editor itself and
+  the Linux packages are unchanged.
+
 ## 0.1.16
 
 - **Minimum voltage (VMIN), experimental.** New `nvvdd_vmin_mv` / `msvdd_vmin_mv` fields edit the equation the

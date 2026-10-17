@@ -47,6 +47,10 @@ export PYTHONPATH="$src/src"
 metadata=(--company-name="panchovix" --product-name="NVIDIA VBIOS Vix Editor"
           --file-version="${VERSION%%[-+]*}" --product-version="${VERSION%%[-+]*}"
           --copyright="Copyright (C) 2026 panchovix")
+# Nuitka compiles for baseline x86-64 (-march=x86_64) but links without it, so Zig
+# built its runtime (memcpy) for the CPU of the CI runner: the 0.1.15 and 0.1.16
+# programs used AVX-512 and did not start on CPUs without it.
+export LDFLAGS="-march=x86_64"
 # MSYS2 Python uses "/" as os.sep while MSYSTEM is set; Nuitka needs "\\".
 nuitka=(env -u MSYSTEM python -m nuitka --assume-yes-for-downloads --zig
         --python-flag=no_docstrings --python-flag=no_asserts --python-flag=no_site --python-flag=isolated
@@ -124,6 +128,41 @@ for library in "${roots[@]}"; do case "$library" in "$prefix"/bin/*) cp -n "$lib
     --file-description="NVIDIA VBIOS Vix Editor" --no-deployment-flag=excluded-module-usage \
     --include-raw-dir="$(cygpath -w "$runtime")=gtk" --report="$(cygpath -w "$work/gui-report.xml")" \
     --include-package=nvidia_vbios --nofollow-import-to=gi --include-package=importlib "${gi_args[@]}" entry_gui.py
+
+# Both programs must run on any x86-64 CPU: no AVX or AVX-512 register in the code
+# Zig built, the onefile bootstrap and the program it unpacks (the payload's first
+# file). The other payload files are MSYS2 builds that pick their code at run time.
+python -I - "$work/cli/nvbios.exe" "$work/gui/nvbios-gui.exe" <<'PY'
+import struct, subprocess, sys, tempfile, zlib
+from compression import zstd
+
+def wide_registers(path):
+    code = subprocess.run(['objdump', '-d', '-j', '.text', path], capture_output=True, text=True, check=True).stdout
+    return sum(code.count(register) for register in ('%ymm', '%zmm'))
+
+for program in sys.argv[1:]:
+    data = open(program, 'rb').read()
+    start = data.find(b'KAY\x28\xb5\x2f\xfd')  # payload marker, then the zstd frame
+    if start < 0:
+        sys.exit(f'{program}: onefile payload not found')
+    payload = zstd.ZstdDecompressor().decompress(data[start + 3:])
+    end = payload.find(b'\0\0\0', 0) + 1  # UTF-16 file name, then a NUL character
+    name = payload[:end].decode('utf-16-le')
+    size, = struct.unpack_from('<Q', payload, end + 2)
+    # A CRC-32 follows the size when the files are kept in a cache folder (the editor window).
+    checked = payload[end + 10:end + 12] != b'MZ'
+    first = end + (14 if checked else 10)
+    inner = payload[first:first + size]
+    if (not name.endswith(('.exe', '.dll')) or len(inner) != size or inner[:2] != b'MZ'
+            or checked and zlib.crc32(inner) != struct.unpack_from('<I', payload, end + 10)[0]):
+        sys.exit(f'{program}: unexpected first payload file {name!r}')
+    with tempfile.NamedTemporaryFile(suffix=name[-4:], delete=False) as handle:
+        handle.write(inner)
+    for label, path in ((program, program), (f'{program}:{name}', handle.name)):
+        if count := wide_registers(path):
+            sys.exit(f'{label}: {count} AVX/AVX-512 instructions, the program needs baseline x86-64')
+    print(f'{program}: baseline x86-64 (bootstrap and {name})')
+PY
 
 # Third-party notices, published with the programs: the MSYS2 package that owns
 # every file of the GTK runtime and every DLL Nuitka put into either program.
