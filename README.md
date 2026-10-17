@@ -115,11 +115,13 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
   **Do not flash them with nvflash.** Load them through a firmware override method
   that accepts unsigned images. On Linux, the open
   [NVIDIA Linux VBIOS Vix Loader](https://github.com/Panchovix/nvidia-linux-vbios-vix-loader) loads them at
-  boot. For the RTX 2000 Ada, export the payload with
-  `nvbios normalize edited.rom payload.bin --representation ada-relocated-v1`. Other desktop and
-  workstation Ada images can use the experimental `--representation ada-relocated-v2` (untested on hardware).
-  Ampere GA102–GA107 images can use the experimental `--representation ampere-relocated-v1`
-  (untested on hardware).
+  boot. Ada and Ampere GPUs read at most 512 KiB of the image, so they need a relocated
+  payload: saving an edited Ada or Ampere copy in the editor window also saves it as
+  `<name>-loader.bin`. From the command line:
+  `nvbios normalize edited.rom payload.bin --representation ada-relocated-v2` (Ada desktop and
+  workstation; `ada-relocated-v1` for the reviewed RTX 2000 Ada layout) or
+  `--representation ampere-relocated-v1` (Ampere GA102–GA107). Both are experimental; so far they
+  have been loaded on an RTX 4090 and an RTX A2000.
 - **YOU ARE SOLELY RESPONSIBLE FOR WHAT YOU DO WITH THIS SOFTWARE.** Every modification
   you make, and any damage, malfunction, data loss or other harm to your hardware,
   your system or anything else that results from using this software or the images it

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.11
+
+- Editor window: saving an edited Ampere or Ada copy also saves `<name>-loader.bin` next to it,
+  the relocated payload the VBIOS loaders take (`ampere-relocated-v1` or `ada-relocated-v2`), with
+  its JSON manifest. If the relocation is refused, the copy is still saved and the reason is shown.
+  If a `<name>-loader.bin` already exists, nothing is saved, so an older payload never sits next to
+  a new copy. GPUs outside the loaders' scope get no loader file.
+- RTX 4090 images with VBIOS 95.02.18 (a shorter power table): power, PCIe slot power, 12 V input
+  current and NVVDD power fields are now recognized, and `ada-relocated-v2` accepts them.
+- First hardware results for the relocated payloads (Windows, driver 617.42): an RTX 4090 (VBIOS
+  95.02.18, `ada-relocated-v2`) took a 671 W power limit and a +1200 MHz core clock offset ceiling;
+  an RTX A2000 (`ampere-relocated-v1`) took a 5 W power floor. Other Ada and Ampere cards remain
+  untested.
+
 ## 0.1.10
 
 - ASUS ROG Astral XOC-style images: power and 12 V input current are now shown and
