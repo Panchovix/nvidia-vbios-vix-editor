@@ -6,7 +6,9 @@ carries its own THIRD_PARTY_NOTICES.md inside the tar.gz.
 nvbios.exe and nvbios-gui.exe are compiled with Nuitka. The Nuitka runtime compiled
 into them is licensed under the GNU AGPL v3 with the Nuitka Runtime Library Exception 1.0 (`third_party/nuitka.*`);
 their onefile bootstrap includes Zstandard (BSD, `third_party/nuitka-inline-zstd.LICENSE`).
-They contain the CPython runtime (Python Software Foundation License) with the libraries
+They contain the CPython 3.14 runtime (Python Software Foundation License; the licenses
+of software incorporated in CPython, such as the Mersenne Twister, dtoa, SipHash and HACL*,
+are in `third_party/python-3.14-incorporated.txt`) with the libraries
 listed below. nvbios-gui.exe also carries the MSYS2 UCRT64 builds of GTK 4 and its
 dependencies, and unpacks them to
 `%LOCALAPPDATA%\NVIDIA VBIOS Vix Editor\<version>\gtk` when it starts. Each license

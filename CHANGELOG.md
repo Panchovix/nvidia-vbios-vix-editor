@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.13
+
+- Editor window: the *Technical details* section is gone; it made the window long. Accepted ranges
+  and encodings stay in the JSON manifest saved with each copy; `nvbios fields` also lists the
+  diagnostics. An error without a translated message shows the backend's explanation in the status
+  line.
+- Third-party notices: the licenses of software incorporated in CPython (Mersenne Twister, dtoa,
+  SipHash, cfuhash, HACL* and others), which the Python runtime inside the programs contains, are
+  now included on Linux and Windows (`third_party/python-<version>-incorporated.txt`). Earlier
+  releases left them out.
+
 ## 0.1.12
 
 - Editor window: dark theme. On Windows it follows the app mode (Settings > Personalization >
