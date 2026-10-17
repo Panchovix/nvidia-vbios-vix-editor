@@ -79,7 +79,8 @@ The programs are not code-signed, so Windows SmartScreen may warn the first time
 choose *More info*, then *Run anyway*.
 
 The editor window verifies each change while you type and saves a new ROM plus a JSON
-manifest. The original file is never modified.
+manifest. The original file is never modified. On Windows it follows the light or dark app
+mode; *File options > Theme* (or `--theme light` / `--theme dark`) changes it.
 
 **Shunt multiplier (x)**: on a shunt-modded card, type the shunt factor (for example 2) and
 the board power, PCIe slot and 12 V input current rows also show about the real limit, the
@@ -115,13 +116,14 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
   **Do not flash them with nvflash.** Load them through a firmware override method
   that accepts unsigned images. On Linux, the open
   [NVIDIA Linux VBIOS Vix Loader](https://github.com/Panchovix/nvidia-linux-vbios-vix-loader) loads them at
-  boot. Ada and Ampere GPUs read at most 512 KiB of the image, so they need a relocated
-  payload: saving an edited Ada or Ampere copy in the editor window also saves it as
+  boot; on Windows, the open
+  [NVIDIA Windows VBIOS Vix Loader](https://github.com/Panchovix/nvidia-windows-vbios-vix-loader) loads them
+  through the driver's registry override. Ada and Ampere GPUs read at most 512 KiB of the image, so they
+  need a relocated payload: saving an edited Ada or Ampere copy in the editor window also saves it as
   `<name>-loader.bin`. From the command line:
   `nvbios normalize edited.rom payload.bin --representation ada-relocated-v2` (Ada desktop and
-  workstation; `ada-relocated-v1` for the reviewed RTX 2000 Ada layout) or
-  `--representation ampere-relocated-v1` (Ampere GA102–GA107). Both are experimental; so far they
-  have been loaded on an RTX 4090 and an RTX A2000.
+  workstation) or `--representation ampere-relocated-v1` (Ampere GA102–GA107). Both are experimental;
+  so far they have been loaded on an RTX 4090 and an RTX A2000.
 - **YOU ARE SOLELY RESPONSIBLE FOR WHAT YOU DO WITH THIS SOFTWARE.** Every modification
   you make, and any damage, malfunction, data loss or other harm to your hardware,
   your system or anything else that results from using this software or the images it

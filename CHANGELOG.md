@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.12
+
+- Editor window: dark theme. On Windows it follows the app mode (Settings > Personalization >
+  Colors); elsewhere GTK follows the desktop as before. File options > Theme, or `--theme light` /
+  `--theme dark`, chooses one.
+
 ## 0.1.11
 
 - Editor window: saving an edited Ampere or Ada copy also saves `<name>-loader.bin` next to it,
