@@ -1,0 +1,845 @@
+# Extended offline power, equation, output-OCP, input-current and clock-range fields
+
+These additions inspect saved ROM bytes and edit immutable copies. The package is
+self-contained and uses stdlib at runtime; it never calls NVAPI, NVML, a GPU, or a
+driver. The CLI and GUI are built on it.
+
+The existing seven Blackwell edits have user-confirmed hardware results. That
+evidence does not validate new ALT/OV/VMIN/OCP, boot-default, input-current or
+clock-range edits. The reviewed Ada image reports a **100 W** NVML maximum only through
+its reviewed relocated runtime payload, which is pinned to that one source; any other edited Ada
+copy deploys only through the experimental `ada-relocated-v2` representation. Its REL temperature
+input cannot be equated with NVML GPU temperature. The Ada fields are described in
+[Ada fields](#ada-fields); all of them are experimental except the power ceiling/floor and the REL
+ceiling of the hardware-tested RTX 2000 Ada (95.07.47.00.19). The RTX 3090 reference
+image is used only offline and must not be deployed (see [Ampere fields](#ampere-fields)).
+
+## Capability and unit contract
+
+Every field retains the version-1 `key`, `current`, `units`, `bounds`, `editable`
+and evidence descriptors, and adds independent namespaces:
+
+```json
+{
+  "key": "nvvdd_vmin_equation_max_mv",
+  "units": "mV",
+  "value_semantics": "stored-equation-output-ceiling",
+  "capability": {
+    "vbios": {
+      "writable": "verified",
+      "persistence": "unknown",
+      "effect": "offline encoded bytes only; firmware acceptance unknown"
+    },
+    "runtime": {
+      "writable": "unknown",
+      "persistence": "unknown",
+      "applied": "unknown",
+      "evaluated_value": null,
+      "offset": {
+        "units": "uV",
+        "type": "int32",
+        "signed": true,
+        "current": null,
+        "writable": "unknown"
+      }
+    }
+  }
+}
+```
+
+`verified` means the offline writer recognizes and verifies that field's exact
+format. `unsupported` means this editor explicitly refuses the operation, such
+as an absent selector or a preserved boot value. `unknown` means the required
+field/variant/unit association is missing. `editable` remains an offline-only
+compatibility boolean. Root aggregates `capabilities.vbios/runtime` on the outer
+inspection envelope; the editor supplies `capability.vbios/runtime` per field.
+Neither SET API availability nor a successful GET proves writability or
+persistent firmware acceptance.
+
+`unit_metadata` identifies the public unit, stored unit, encoding and signedness.
+Equation ceilings expose mV and store exact float32 uV. Their unchanged lower
+clamp is the lower edit bound; the upper bound is a conservative encoding bound,
+with `hardware_safe_maximum=null`. Runtime offsets are separately typed signed
+int32 uV and have no offline binding. Output-OCP ceilings use integer mA stored
+as uint32, without converting them into signed voltage offsets or measured amps.
+The minimum editable OCP maximum is its unchanged factory rated/default value.
+
+## Stable field IDs and selector meaning
+
+| IDs (`*` stands for the `nvvdd` or `msvdd` prefix) | Meaning | Offline support |
+| --- | --- | --- |
+| `*_rel_equation_max_mv` | VFE output clamp maximum addressed by REL selector | Reviewed Blackwell; Ada temperature-derated REL |
+| `*_alt_equation_max_mv` | VFE output clamp maximum addressed by ALT selector | Reviewed Blackwell when present; Ada temperature-derated ALT (experimental) |
+| `*_ov_equation_max_mv` | VFE output clamp maximum addressed by OV selector | Reviewed Blackwell |
+| `*_vmin_equation_max_mv` | VFE output clamp maximum addressed by VMIN selector | Reviewed Blackwell |
+| `*_rel/alt/ov/vmin_selector_index` | Full stored selector index | Read-only |
+| `*_boot_voltage_uv` | Stored boot voltage | Read-only, preserved |
+| `*_output_ocp_max_ma` | Reviewed output-OCP policy maximum (client ceiling) | Reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images |
+| `*_output_ocp_rated_ma` | Reviewed output-OCP rated value, enforced from boot | Experimental, reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images |
+| `slot_power_rated_w`, `slot_power_max_w` | PCIe slot power policy: row 19 (SFF), row 18 (5060 Ti), Ada row 5 | Experimental, reviewed row shapes only |
+| `slot_current_threshold_rated/max_ma`, `nvvdd_power_threshold_rated/max_w` | Ada hardware-threshold policies (slot 12 V current, NVVDD output power) | Experimental, opt-in, Ada only |
+| `board_fixed_rated_w` | Rated value of the fixed board policies 2/7 | Experimental, opt-in (hidden in the GUI by default) |
+| `input_current_rated_ma`, `input_current_max_ma` | 12 V board input-current policy, row 9 (Ada: thresholds 0/1, rows 9/10) | Experimental, reviewed row shapes |
+| `input_current_policy7_limit_ma` | Policy 7 limit linked to the 12 V input policy | Experimental, reviewed Blackwell row shape |
+| `input_policy_9_max_raw` | Row 9 raw maximum; units unknown | Read-only, only when row 9 is unrecognized |
+| `fan_channels` | Active fan channels across the five fan tables | Experimental, Blackwell and Ada, up to the stored channels |
+| `fan_pwm_frequency_hz` | PWM frequency of every active fan channel | Experimental, Blackwell and Ada, 21-28 kHz |
+| `power_default_w` | Rated TGP value used at boot | Experimental; Blackwell, Ada, Ampere |
+| `gpc_offset_min/max_mhz`, `memory_offset_min_mhz` | Clock offset range in MHz (NVML scale) | Experimental, reviewed Blackwell and Ada |
+| `xbar/sys/vid_min/max_table_mhz`, `dram_min_table_mhz` | Clock offset range in table MHz | Experimental, reviewed Blackwell and Ada |
+
+Each selector field uses one complete role name, for example
+`msvdd_vmin_selector_index`. Original `nvvdd_rel_max_mv` and
+`msvdd_rel_max_mv` remain editable API aliases, with
+`alias_of="*_rel_equation_max_mv"` and `ui_visible=false`. GUI callers should
+present the canonical field once and keep aliases in read-only details.
+
+The Blackwell V30 rail entries are 65 bytes with a 5-byte header. Proven selector
+locations are row+`0x0d` REL, +`0x0f` ALT, +`0x11` OV and +`0x21` VMIN; all are
+**u16**. Boot is u32 uV at +`0x19`. `0xffff` means absent. Matrix MSVDD selectors
+263–266 and other consumer selectors up to270 are retained without u8 truncation.
+Each present selector is bounded against object14 and the complete 25-byte VFE
+entry. Output minima/maxima use the reviewed float32 prefix at equation+3/+7;
+recognized voltage output unit2 and equation kinds1/7 for REL, or kind1 for the
+new roles, gate writable bindings. Unknown kinds or ownership remain read-only.
+
+A selector is not an evaluated voltage. A stored ceiling is not a runtime offset.
+Consumer ALT equations currently have output bounds of20mV; that is a stored
+expression output, not a claim that the evaluated VOP rail is20mV. Constant OV and
+VMIN equations keep their coefficients: raising an equation maximum can leave
+its evaluated result unchanged. For example, a constant1200mV expression stays
+1200mV when its clamp maximum increases to1300mV. No VFE input is evaluated here.
+
+Ada selectors and equation kinds are described in [Ada fields](#ada-fields), Ampere
+ones in [Ampere fields](#ampere-fields); neither inherits a Blackwell mapping.
+
+## Output-OCP association and narrow gate
+
+Saved GET evidence preserves policy indices in134/134 records. All seven
+Blackwell sources independently show rows13/14 of ROM type7, reported as RM
+type 18 and API type 19, discriminator1, unique monitor class6 and output rail IDs
+1(NVVDD) /16(MSVDD). Their saved GET limit unit is 1, which the third-party notes
+under [Provenance](#provenance) identify as mA.
+Rows5/6 also have type7 but fail the output gate; type alone is insufficient.
+
+The offline implementation requires recognized power headers40/38-or-3d/66/20,
+unique object13 ownership and a reviewed PCI identity. It compares immutable
+102-byte row shapes, excluding range bytes13:25, against four reviewed templates.
+This validates discriminator, monitor index and remaining identity/flag bytes
+without pinning factory limits or a complete ROM hash. Shapes were independently
+checked against all seven original corpus ROMs and their saved monitor records.
+Unknown shapes or devices produce read-only descriptors with unknown units in
+`raw_bounds`, and never become writable merely because their row index/type fits.
+The only exception is the NVVDD row 13 of the listed single-rail images: a fifth
+template plus the power channel/device chain described under
+[Single-rail images](#single-rail-images-rtx-pro-6000-workstation-rtx-5060-ti-rtx-5070).
+
+The SFF source exposes ceilings90000mA and60000mA. Other reviewed sources have
+maximum5001000mA, with differing rated/default values. These are stored policy
+bounds, not hardware-safe current ratings or measured current.
+
+The OCP enforced from boot is the **rated** value, not the maximum. In the saved GET,
+CONTROL current equals the rated value of rows 13/14 on all seven sources, for
+example 480000/180000 mA on the 5090. A third-party run that lowered those values to
+100 A under load clamped GPC/XBAR. `*_output_ocp_max_ma` (row+21) therefore only
+widens what a runtime client may request. On six of the seven sources it is already
+5001000 mA. The experimental `*_output_ocp_rated_ma` fields write row+17. Each
+rail's rated and maximum fields form one ordering group
+(`nvvdd-output-ocp`, `msvdd-output-ocp`). No reviewed profile carries entries for
+policies 13/14, and the rated fields are read-only when a profile table cannot be
+decoded. XOC and 2500 W vendor images store rated values of 2000000/1000000 mA.
+Lowering only the NVVDD rated value may act as a boot-persistent cap on core current;
+whether XBAR or memory clocks are affected is unknown, and nothing here is
+hardware-tested.
+
+`rail_identity` separates namespaces. A reviewed MSVDD OCP example is:
+
+```json
+{
+  "key": "msvdd_output_ocp_max_ma",
+  "current": 60000,
+  "units": "mA",
+  "factory_rated_ma": 60000,
+  "rail_identity": {
+    "logical_rail_id": "MSVDD",
+    "vbios_row_index": 1,
+    "vbios_policy_index": 14,
+    "api_rail_index": 1,
+    "power_monitor_rail_id": 16,
+    "api_index_scope": "saved Linux GET mask bits; no live GPU association"
+  },
+  "policy_types": {"vbios": 7, "rm": 18, "api": 19},
+  "monitor": {"index": 12, "class": 6, "rail_id": 16}
+}
+```
+
+The API rail index, monitor index, monitor rail ID and VBIOS policy index are
+independent integers. No runtime index is derived from a logical label for an
+unreviewed layout. Row 9 is ROM type11/RM30/API25 in the reviewed capture, with a
+class8 union. It is **not output OCP**: its reviewed shape is the separate 12 V
+input-current policy described below, and unrecognized shapes keep unknown units.
+Generic `current_limit_a` and `ocp_limit_a` placeholders stay read-only/unknown;
+the per-rail output and input-current fields do not silently assign them a mapping. Ada shows its
+NVVDD output-current row read-only (see [Ada fields](#ada-fields)), without implying absence of
+hardware protection.
+
+## Offline board power floor
+
+`power_min_w` is the encoded board/TGP minimum in W, stored as uint32 mW.
+It accepts exact 1 mW increments from **1 W** through the TGP rated default,
+which stays unchanged unless `power_default_w` is requested too. The writer
+enforces `minimum <= default <= maximum`;
+the existing `power_max_w` lower bound continues to protect every rated/default
+value in its coordinated policy group. These are encoding and preservation
+bounds, not a promise of hardware acceptance or a measured runtime minimum.
+Both controls display the ROM's rated default in the GUI.
+
+On the reviewed Blackwell V40 `40/38-or-3d/66` layout, the floor is the type 12
+TGP policy **row 8**, at row+13. Rows 2/7 participate in the existing coordinated
+maximum edit, but their distinct permissive minima remain unchanged. The real
+corpus stores 1 mW in rows 2/7 while row 8 stores the 60–400 W board floor; assuming
+all three source minima agree would reject the reviewed ROMs. The descriptor
+includes `policy_indices` and `format_scope` to make the narrower minimum scope
+explicit. Row 9 input-current policy and all other rows are preserved.
+
+Blackwell profiles must still use the reviewed complete matching maximum/default
+selectors. Those profiles contain no validated minimum override and remain
+byte-for-byte unchanged during a floor-only edit. Unknown selectors, including
+selector 2, malformed/duplicate selectors, unsupported profile types, and a
+nonempty table with no complete base-matching profile prevent power edits,
+except for the top-level profile binding described next.
+The writer does not infer minimum semantics for an unknown selector or silently
+ignore an unknown profile alongside a valid one.
+
+**Top-level override profile (ASUS XOC-style images).** Two selection rows precede
+the 16 profiles: stage 1 (+0x0A, header `01 08 00 00 00`) maps a code 0..3 to a
+power value, and stage 2 (+0x47, header `02 00 00 00 00`) maps that power value to a
+profile. On the stock FE and both ASUS XOC images, the top code 3 gives 600 W, which
+selects profile 7. The code is probably the 12V-2x6 sense level, but that is inferred,
+not proven. The two XOC images keep the base rows at 2001 W / 5001 A, and no profile
+matches them. In that case, and only then, the power and 12 V input fields bind to
+the profile the chain reaches from the top code (`BlackwellRom.selected_top_profile`).
+Every one of these conditions must hold, or the fields stay hidden as before:
+
+- both stage headers are exact, every stage entry has type 0 or 1, and the top code
+  is unique;
+- its power value is nonzero and is exactly one stage 2 key;
+- that key names an enabled profile with all eight 2/7/8/9 maximum/default entries;
+- each default is at or below its maximum, and the 2/7/8 maxima are equal;
+- every value is at or below the same base value, and 8/9 defaults are at or above
+  the base row 8/9 minima;
+- no entry of another profile exceeds the same entry of the bound profile.
+
+The bound fields write only that profile's entries. The maximum and rated values of
+base rows 2/7/8/9 are never written; each bound field is capped by the same base
+value (a rated field also by the base rated value), and a value above it is refused
+with `OUT_OF_BOUNDS`. `power_min_w`
+still writes base row 8 and is capped by the profile's `(8, default)`;
+`input_current_policy7_limit_ma` still writes row 7+61. The descriptors carry
+`bound_profile` and `base_values`, are experimental, and their reason names the
+profile and the base value. Which copy the firmware enforces (profile or base) has
+not been tested on hardware.
+
+Ada V3x `30/34/5b`, `30/32/53` and `30/2c/4b` and Ampere V3x `30/2c/47`, `30/2c/43` and `30/32/47` locate the
+TGP policy using header byte 10 (notebooks: byte 13), validate its type1/mW flags, bounds and power
+channel, and write its row+2 minimum in every validated duplicate chain. Nonempty Ada profiles remain unsupported;
+the Ampere BIT P token has no profile-table pointer (or a null one). Neither format
+inherits a Blackwell row index or unit association for unrelated policies.
+
+Only the canonical `power_min_w` request with the complete reviewed offsets,
+encoding and scale authorizes a minimum change. Extension registries and aliases
+cannot relax its 1 W/default bounds, change an unrelated minimum, or edit base
+or profile factory/rated defaults; only the canonical rated-default requests below
+may change a rated value. Full power headers, row identities and opaque
+row/profile bytes are preserved. The manifest identifies the requested floor,
+changed offsets and repaired integrity bytes; runtime fields remain `unknown`.
+For original floors within the supported edit range, an unchanged floor is an
+exact no-op, and restoring that floor reproduces the original archival bytes.
+An original floor below 1 W remains inspectable but is outside the edit range.
+
+```sh
+./nvbios edit original.rom modified.rom --set power_min_w=1 --dry-run
+./nvbios edit original.rom modified.rom --set power_min_w=1 --set power_max_w=100 --dry-run
+```
+
+The second command succeeds only if 100 W also meets that ROM's protected-default
+maximum bound. Removing `--dry-run` saves a new copy and JSON manifest; it does
+not deploy or activate the image.
+
+## Experimental boot default power, 12 V input current and clock ranges
+
+Offline encoding, ownership, hashes and reparsing are verified like the other
+fields. **No edited value of these fields has
+been booted on hardware**, so each descriptor carries `experimental: true` and the
+GUI labels say "experimental" in English and Spanish. Runtime capability stays
+`unknown`.
+
+### Boot default power (`power_default_w`)
+
+The rated value of the TGP policy is the limit the firmware applies at boot when no
+client sets a cap. On reviewed Blackwell images that is row 8 at row+17, written
+together with the `(8, default)` entry of every complete matching profile (on a
+top-level profile binding, only that profile's `(8, default)` entry). Ada and
+Ampere write the header-indexed TGP row+6 in every validated duplicate chain.
+A read-only NVML capture (`nvmlDeviceGetPowerManagementDefaultLimit`) showed the
+default power limit equal to this stored value in the deployed payload tables on
+the seven reviewed Blackwell devices and on the reviewed Ada device. The capture
+is not distributed.
+
+Rows 2 and 7 keep their own rated values, which equal their stored maxima in every
+reviewed source. They behave as fixed policies (current = rated). Whether they bind
+when the TGP default or ceiling is raised above them is **untested**; check NVML and
+the measured board power before relying on a raised default.
+
+### 12 V input current (`input_current_rated_ma`, `input_current_max_ma`)
+
+Row 9 is the board input-current policy (ROM type 11, RM 30, API 25), not the
+NVVDD/MSVDD output OCP of rows 13/14. A row is recognized only for a reviewed PCI
+identity whose 102-byte row shape matches one of two templates (monitor index 9,
+or 2 on Max-Q). The shape check excludes the range bytes 13:25. Row byte 1, the
+unit discriminator, must be 1. In the saved GET capture INFO+8 is 1 for rows 9-14
+(mA, as on the output-OCP rows 13/14) and 0 for the mW rows. Values are
+integer mA stored as uint32, for example 80000 mA on the 5090 Matrix and 6600 mA on
+the SFF.
+
+The client API does not raise this policy. Its arbitrated limit can still be lower
+than the rated value: a third-party STATUS read showed a limit of 80 A and an
+arbitrated 62 A. Raising the rated value needs `input_current_rated_ma` and, when
+above the stored ceiling, `input_current_max_ma` in the same request. Both write the
+base row and the `(9, default)`/`(9, maximum)` entries of complete matching profiles
+(on a top-level profile binding, only that profile's entries, capped by the base row).
+These are stored policy values, not hardware-safe current ratings. Connector, slot
+and cable limits still apply, for example on a slot-powered card.
+
+Policy 7 also stores a limit linked to policy 9, exposed as the separate field
+`input_current_policy7_limit_ma`:
+
+- row 7 byte 33 is 9, and its value at row+61 equals the row 9 limit on every
+  reviewed source;
+- saved GET INFO of policy 7 references policy 9, and its CONTROL carries policy 9's
+  current value;
+- a third-party XOC image raised this value from 80 A to 160 A while setting row 9 to
+  5001 A.
+
+Raising row 9 alone may therefore leave the effective limit at the policy 7 value,
+so a raise should set this field too, as the XOC image did. Which value binds is
+still to be measured on hardware.
+
+The field is recognized only when row 9 is recognized, row 7 has type 13 and
+byte 33 = 9, and the 102-byte row 7 shape matches the reviewed template. The shape
+check excludes the range bytes 13:25 and the value bytes 61:65. The value is integer
+mA stored as uint32 at row+61, from 1 to 0x7FFFFFFF, with no order imposed against
+row 9. Only the canonical binding may write those four bytes. The rest of row 7
+keeps its existing protection: only `power_max_w` (or an extension binding on a
+maximum) writes its maximum at row+21. An unrecognized row 9 keeps the read-only
+`input_policy_9_max_raw` field with unknown units.
+
+The reviewed vendor XOC and 2500 W images agree with this model:
+
+- On the two ASUS XOC images, the base row 9 is 5001000 mA, while profile 7 (the one
+  reached at the top selection level) sets policy 9 to 120000 and 160000 mA. The row 7
+  value equals that profile value. The editor shows and edits these profile values.
+- The MSI 2500 W image has no profiles. It stores 250000 mA in both row 9 and row 7.
+- Both vendors also raise the rated values of rows 2/7 together with their maxima.
+
+### Fixed board policies 2/7, opt-in (`board_fixed_rated_w`)
+
+Rows 2 and 7 are fixed board policies: in the saved GET their CONTROL current equals
+their rated value, even on boots where their maxima had been raised (MaxQ3 at
+325000 of 350000 mW, the SFF at 70000 of 100000 mW). `power_max_w` raises only their
+maxima. The ASUS XOC and MSI 2500 W images instead store rated = maximum in both
+rows. Raising the ceiling above the factory rated value may therefore stay capped
+until this rated value follows it. Whether that cap applies is untested.
+
+`board_fixed_rated_w` writes the rated value (row+17) of rows 2 and 7, which must
+be equal in the source, plus the `(2, default)` and `(7, default)` entries of
+complete matching profiles; on a top-level profile binding it writes only that
+profile's `(2, default)` and `(7, default)`. It is in the `board-power` ordering group, so it can
+never exceed the ceiling of the same result. A typical XOC-style request sets it
+together with `power_max_w`, for example to 1000 W on the 5090. The descriptor has
+`opt_in: true`. The GUI hides it until **Show advanced XOC-style fields** is ticked;
+the box is off by default. CLI and API callers opt in by naming the key.
+
+### PCIe slot power (`slot_power_rated_w`, `slot_power_max_w`)
+
+The reviewed RTX PRO 4000 SFF carries policy row 19: type 2, a mW policy
+(byte 1 = 0 and GET INFO+8 = 0) on power-monitor channel 1, the PCIe slot input.
+It stores 1/66000/66000 mW, and the saved GET shows a current of 66000. It
+therefore probably caps the slot-powered card near 66 W even when the TGP ceiling
+is higher. Recognition requires the SFF identity 0x2C33, type 2, monitor 1 and the
+reviewed 102-byte shape, excluding range bytes 13:25. The RTX 5060 Ti (0x2D04)
+holds the same shape at row 18 (0/66000/66000 mW) and is accepted there by that
+comparison alone, without saved GET. The fields use W, stored as uint32 mW, and
+form the `slot-power` ordering group.
+
+Raising them lets the board draw more than the PCIe slot rating, which is only
+appropriate with hardware that can supply that power. The fields are read-only when
+a profile table cannot be decoded. The 12 V
+input-current values (6600 mA on the SFF) may also bind and should be raised with
+them. Nothing here is hardware-tested.
+
+### Clock offset ranges
+
+The GB20x clock table (object 3) stores a signed 16-bit minimum and maximum offset
+for each structurally identified domain row: GPC, XBAR, DRAM, SYS and VID.
+
+| Field | Public unit | Relation to the table |
+| --- | --- | --- |
+| `gpc_offset_min_mhz`, `gpc_offset_max_mhz` | MHz | NVML = table MHz |
+| `memory_offset_min_mhz` | MHz | NVML = 2 × table MHz; must be even |
+| `dram_min_table_mhz` | table MHz | GUI-hidden alias of `memory_offset_min_mhz` |
+| `xbar/sys/vid_min_table_mhz`, `xbar/sys/vid_max_table_mhz` | table MHz | No runtime alias |
+
+The GPC and memory relations come from read-only `nvmlDeviceGetGpcClkMinMaxVfOffset`
+and `nvmlDeviceGetMemClkMinMaxVfOffset` on the seven reviewed devices: GPC
+-1000..1000 for table -1000..1000, memory minimum -2000 for table -1000, and memory
+maxima 12000/13000 for tables 6000/6500. Every range must keep 0 inside it, so a
+minimum is at most 0 and a maximum at least 0. The existing
+`memory_offset_max_mhz`/`dram_max_table_mhz` ceiling keeps its hardware-validated
+status. Ada and Ampere rows are named by their GV HAL position (see [Ada fields](#ada-fields)
+and [Ampere fields](#ampere-fields)).
+
+### Joint validation
+
+`power_min_w`, `power_default_w` and `power_max_w` form the `board-power` ordering
+group; the two input-current fields form `input-current-12v`; each output-OCP rail's
+rated and maximum fields form `nvvdd-output-ocp` or `msvdd-output-ocp`; and the slot
+power fields form `slot-power`. A single-field request
+is checked against the static bounds in its descriptor, which hold the partners'
+current values. When partners are requested together, each value is first checked
+against `bounds.encoding_minimum`/`encoding_maximum`, and then against the reviewed
+bounds recomputed on the edited result. A broken minimum <= default <= maximum
+order returns `OUT_OF_BOUNDS`. For example, raising the default to 900 W and the
+ceiling to 1000 W in one request is accepted, while the same default alone is
+refused. Clock rows are reparsed after every edit: their identities must be
+unchanged, and each range that contained 0 must still contain it.
+
+A binding with the reviewed key, offsets, encoding and scale always uses the
+reviewed bounds, even when an extension supplies it. Other extension bindings keep
+their own bounds, as before. Only a canonical `power_min_w`, `power_default_w`,
+`input_current_rated_ma`, `*_output_ocp_rated_ma`, `slot_power_rated_w` or
+`board_fixed_rated_w` binding may change a minimum or rated value, and only the
+canonical `input_current_policy7_limit_ma` binding may write row 7's opaque bytes
+61:65. Any other binding with one of these keys fails with `INVALID_FIELD_EVIDENCE`.
+Aliases, partial offsets, other rows and non-matching profiles stay protected.
+Override profiles that matched the base must still match after the edit, and no
+profile may end with a policy default above its maximum. On a top-level profile
+binding, the edited image must still bind the same profile through the same chain:
+an edit that would let another profile exceed it, or make it equal the base table
+(it would then become a matching profile and later edits would write the base), is
+refused with `OUT_OF_BOUNDS`, a message naming the profile and entry, and
+`details.field` set to the field of that entry; a plain order mistake gets the usual
+ordering message. When a rated value
+changes, the manifest sets `preservation.factory_defaults` to `false` and lists the
+fields in `preservation.changed_rated_defaults`. Both describe that edit relative to
+the image it received, not the original archive of a chain of edits.
+
+```sh
+./nvbios edit original.rom modified.rom --set power_default_w=900 --set power_max_w=1000 --dry-run
+./nvbios edit original.rom modified.rom --set memory_offset_min_mhz=-4000 --set gpc_offset_min_mhz=-2000 --dry-run
+./nvbios edit original.rom modified.rom --set input_current_rated_ma=100000 --set input_current_max_ma=100000 \
+  --set input_current_policy7_limit_ma=100000 --dry-run
+```
+
+### Provenance
+
+@pantsoftime's GB202 tool and research notes were reviewed as untrusted input:
+read, never executed; the author permitted reuse. They corroborate these findings:
+
+- object 0x03 holds per-domain s16 offset ranges; only a DRAM maximum edit was
+  verified on hardware there;
+- RM INFO entry 8 limitMin/limitRated/limitMax equal row 8;
+- RM INFO entry 9 is type 0x1e, channel 9, limitUnit 1 (mA);
+- lowering the rated OCP of entries 13/14 under load clamped GPC/XBAR, and power
+  monitor channel 1 is the PCIe slot input.
+
+No third-party code or fixed file offsets are used. Descriptors cite this as
+`third-party-research` evidence next to this repository's own GET correlations.
+
+## Single-rail images (RTX PRO 6000 Workstation, RTX 5060 Ti, RTX 5070)
+
+Three images differ from the seven reviewed sources in their rail and clock tables:
+
+| Image | PCI ID | BIOS |
+|---|---|---|
+| GB202 RTX PRO 6000 Workstation | `10de:2bb1` | `98.02.81.00.07` |
+| GB206 RTX 5060 Ti (MSI Ventus 3X) | `10de:2d04` | `98.06.39.00.B2` |
+| GB205 RTX 5070 (Palit GamingPro) | `10de:2f04` | `98.05.28.00.1B` |
+
+- **Rail table.** The rail v0x30 table has one row, with header byte 4 = 0. The
+  MSVDD voltage devices are disabled, so the firmware controls no MSVDD rail on these
+  boards. The NVVDD row keeps the reviewed identity, REL/ALT/OV/VMIN selector offsets
+  and boot offset.
+  - NVVDD fields work as on the split-rail images.
+  - `msvdd_rel_max_mv` is reported read-only with the single-rail reason, and no
+    other MSVDD voltage field exists.
+- **Clock offset table.** The table packs the same 15-byte rows with 1-byte
+  sub-entries, an 18-byte stride instead of 21. The clock range fields, XBAR, SYS
+  and VID included, read only the base row and are unchanged.
+
+There is no saved GET for these devices. Their power rows are accepted by static
+comparison, and the descriptors carry a `structural-row-comparison` evidence entry
+with `runtime_get: false`:
+
+- **12 V input current.** Row 9 equals a GET-reviewed template: the non-Max-Q one
+  on the Workstation and the 5060 Ti, the Max-Q one (monitor 2) on the 5070. Each
+  device ID is tied to one template. The policy-7 linked field additionally needs
+  row 7 to match the reviewed linked-limit shape, as on every other image.
+- **Output OCP.** Rows 13 and 14 both use monitor 26. Row 13 is accepted as the NVVDD
+  output OCP only when the whole chain matches:
+  - the row equals the single-rail shape;
+  - power channel 26 (P+0x3c, object 0x16) is byte-identical to the NVVDD output
+    channel of all seven GET-reviewed sources (channel 13, or 27 on Max-Q);
+  - the power device that channel reads (P+0x28 entry 9, object 0x12) is identical
+    to theirs.
+
+  The MSVDD channel and device are disabled. Row 14 holds no MSVDD limit, so
+  `msvdd_output_ocp_max_ma` stays read-only with the single-rail reason. Stock rated
+  NVVDD OCP: 660 A on the Workstation, 170 A on the 5060 Ti, 240 A on the 5070.
+- **PCIe slot power (5060 Ti).** Row 18 has the immutable shape of the GET-reviewed
+  SFF row 19 slot policy (type 2, mW, monitor 1, 66 W), so `slot_power_*` edits
+  row 18 there. Row 17 (type 2, monitor 2, 150 W, likely the 8-pin input) has no
+  reviewed template and is not offered.
+- `api_rail_index` stays unknown. No edited value has been booted on these boards.
+
+## Notebook image (RTX 5080 Laptop GPU)
+
+| Image | PCI ID | BIOS |
+|---|---|---|
+| GB203 RTX 5080 Laptop GPU (Lenovo Legion 7 Pro) | `10de:2c59` | `98.03.5C.00.F2` |
+
+The rail and VFE tables are the split-rail ones, so the NVVDD and MSVDD voltage
+fields work unchanged (REL 1025 mV, OV 1200 mV, VMIN 700 mV on both rails). The
+power policy table keeps the v0x40 format but places its rows differently:
+
+- **TGP in row 2.** Every desktop and Max-Q source has policy header bytes 21..23 =
+  `ff 08 ff` and its TGP in row 8 (type 12). The notebook has `ff ff 02`, rows 7 and 8
+  of type 0 with zero limits, and row 2 (type 1) holding 5000/80000/175000 mW.
+  `nvidia-smi -q -d POWER` on a laptop running the same VBIOS reports Min 5 W, Default
+  80 W and Max 175 W. `power_min_w`, `power_default_w` and `power_max_w` edit row 2 at +13, +17
+  and +21. Override profiles on this layout are unreviewed; an image with any profile
+  offers no power fields. The fixed-policy opt-in field does not exist here.
+- **Running limit.** On a laptop the platform (the system BIOS's Dynamic Boost data
+  and, on Linux, `nvidia-powerd`) requests the running limit. A raised ceiling is only
+  a ceiling; the request, the output OCP, the cooling and the laptop's VRM can all keep
+  power lower. The header also stores 55000/45000/35000/25000 at bytes 24..39, whose
+  meaning is unknown.
+- **Output OCP.** Rows 13 and 14 equal the GET-reviewed Max-Q rows byte for byte
+  (range bytes excluded), monitors 27 and 28. Each monitor's power channel and the
+  power device it reads are byte-identical to the reviewed NVVDD (channel 13, device 9)
+  or MSVDD (channel 12, device 8) output on all seven GET-reviewed sources. The chain
+  is required, and so is device ID `0x2C59`. Stock rated values: NVVDD 180 A, MSVDD
+  60 A, each with rated = maximum.
+- **Row 9** is type 3 with unit byte 1 and value 11375, not the type 11 input-current
+  row of the desktop cards. It stays read-only (`input_policy_9_max_raw`).
+- **Clock offsets.** The table equals the desktop one except bit 12 of the DRAM row
+  descriptor (`0x1182` instead of `0x182`). That one bit is accepted on that row only.
+- **Fans.** The cooler list is empty and every per-channel enable is 0: the laptop's
+  fans belong to the system, so no fan field is offered.
+
+There is no saved GET for a notebook, and no edited value has been booted on one.
+The power and OCP descriptors carry `structural-row-comparison` evidence with
+`runtime_get: false`.
+
+## Fan tables (`fan_channels`, `fan_pwm_frequency_hz`)
+
+Five BIT P tables hold one entry per fan channel i (0..3). They have the same shape on
+all fourteen Blackwell sources in the corpus:
+
+| Pointer | Object | Shape | Entry i |
+|---|---|---|---|
+| P+0x58 cooler | 0x1d | v0x10, 9-byte header, four 26-byte rows | byte 0 enable; header bytes 4..7 list the active rows |
+| P+0x5c policy | 0x1e | v0x20, 4-byte header, eleven 51-byte entries | byte 0 enable; byte 1 = 1 for a stored policy |
+| P+0x64 mapping | 0x20 | v0x10, 4-byte header, four 5-byte entries | byte 0 enable; byte 1 the cooler row it drives |
+| P+0xdc control | 0x80 | v0x10, 4-byte header, four 13-byte entries | byte 0 enable; byte 2 = i and byte 5 = 0x30 or 1 << i when stored |
+| P+0xe0 speed | 0x83 | v0x10, 4-byte header, four 6-byte entries | byte 0 enable; byte 1 = i when stored (0xff otherwise); bytes 2..3 a per-fan value |
+
+A channel is *stored* when all four non-cooler entries say so. On every source the
+active rows are listed from 0 upward and ended by 0xff, the five enable sets agree,
+and every active channel is stored. Fan fields are offered only when that holds.
+
+- **Channels.** The listed count equals the read-only `nvmlDeviceGetNumFans` value on
+  the five reviewed Blackwell boards: Max-Q 1, 5090 Matrix 3, 5080 2, 5070 Ti 2, SFF 1.
+  `fan_channels` sets that count, for using or loading an image (offline edit, then
+  override) on a board with another fan count: the 3-channel Matrix image on a
+  2-channel Astral, for example. It writes
+  only the cooler list and byte 0 of entries 0..3 in the five tables, and offers only
+  counts that can be undone byte for byte:
+  - Lowering the count drops the last channels in all five tables. It goes down only
+    while each channel it clears has its own cooler configuration and channel 0's
+    enable byte in every table, so raising again rebuilds it exactly. The Matrix
+    lowered to 2 then has the same list and enables as the Astral XOC image, which
+    keeps the third channel stored but off. Its other bytes stay its own: the cooler enable
+    value (2 on the Matrix, 1 on the XOC and Lightning images; meaning unknown),
+    duty bytes and policy curves.
+  - Raising the count enables the next stored channels, each with channel 0's enable
+    byte in every table. The cooler row must also have its own configuration (row
+    bytes 4..5 and 10 unlike every earlier row), the active PWM frequency and byte
+    13 = 0. The scan stops at the first channel that does not qualify.
+  - Lowering and raising again restores the original bytes.
+  - Resulting limits: Matrix, Astral XOC and Lightning 3; FE, 5080, 5070 Ti, 5070,
+    Workstation and SFF 2; Max-Q and 5060 Ti 1, read-only, because their second
+    channel holds only placeholder entries.
+- **PWM frequency.** Cooler row bytes 11..13 hold the PWM frequency in Hz. It is
+  25000 on the active rows of the 5090 Matrix and the Asus XOC images, and 27000
+  elsewhere. On the Matrix, mVolt's BIOS override view shows the same 25 kHz and 3
+  channels. The field is offered when the active rows share one value inside the
+  21-28 kHz band of 4-wire PWM fans and byte 13 is 0. A
+  write sets bytes 11..12 of the active rows and of the stored rows the channel count
+  may enable, so those rows stay eligible. The GUI shows kHz.
+- **Not offered.** Cooler row bytes 2 and 3 (10-30 and 85-100 on the corpus) look like
+  duty limits, but NVML reports 30-100 % on every board, so their meaning is
+  unconfirmed. Policy curves, speed values and the remaining bytes are preserved.
+
+`fan_channels` uses a data-only layout binding: for each allowed count it lists the
+byte written at each offset, so the manifest's `edits` entries show raw layout bytes
+(`stored_units: "layout byte"`) and `affected_fields` shows the count. Any other change
+to the five tables, including one made through an extension binding, is refused with
+`PRESERVED_FIELD_CHANGED`. They must still decode and agree after an edit. The guard
+covers the reviewed table size at every fan pointer: when the tables do not decode or
+agree in the source, including a table with another header, no byte of them may
+change. Both fan fields are
+reviewed resolvers: an extension binding cannot unlock them, relax the band or
+substitute a layout. No fan edit has been booted on hardware.
+
+## Ada fields
+
+Every Ada rule is structural and was checked on each parseable image of the Ada
+corpus (19 of 20 images; the RTX 4090 Laptop image has no EFI image and is
+refused by the image-chain parser). Writes go to the same field in every
+duplicate chain, and the additive checksum of each touched image is repaired.
+Only the RTX 2000 Ada (10de:28b0, 95.07.47.00.19) runs edited images on the maintainers' Linux machine: its
+power ceiling/floor and REL ceiling keep their reviewed status; every other Ada
+field, and every field on any other Ada image, is marked experimental. The
+RTX 4070 Laptop image lacks the reviewed checksum padding in its data image, so
+all its fields stay read-only with a diagnostic.
+
+**Power policy table (BIT P+0x2C).** Versions `30/34/5b` and `30/32/53` share
+the 0x53-byte entry prefix (the larger variant adds zero bytes). `30/2c/4b` (RTX 4090
+VBIOS 95.02.18) holds the first 0x2c header and 0x4b entry bytes of `30/32/53`; its
+policy rows are matched as the 0x53 rows they truncate (eight more zero bytes). The TGP row is
+header byte 10; notebook headers store `ff ff ff 02` in bytes 10..13 and name
+row 2 through the D-notifier index. The TGP row must be class 1 in mW on power
+channel 0, which must be the class-2 sum on rail 0xf5 (the total board power
+monitor in the Ada and GB20x GET readings). The rated values equal the published
+board power of all fifteen desktop and workstation images. Other policies are
+identified by their immutable row shape (bytes 0..1 and 14..0x52, range bytes
+excluded) and the exact power-channel entry they read:
+
+| Field | Row | Basis |
+| --- | --- | --- |
+| `slot_power_rated_w`, `slot_power_max_w` | class 4 mW on the slot channel (byte-identical to GB20x slot channel 1) | RTX 2000 Ada GET: policy 5, 66 W, current = rated |
+| `slot_current_threshold_rated_ma`, `_max_ma` (opt-in) | class 5 hardware threshold, mA, slot channel | RTX 2000 Ada GET: policy 8, unit mA, 8.25 A, current = rated |
+| `input_current_rated_ma`, `_max_ma` (opt-in) | class 5 hardware thresholds 0 and 1, mA, on the 12 V input channel (byte-identical to GB20x channel 9), written together | Structural only (no Ada GET of these rows); editable only while both rows hold the same value |
+| `nvvdd_power_threshold_rated_w`, `_max_w` (opt-in) | class 5 mW on the NVVDD output power channel 18 | RTX 2000 Ada GET: policy 16, mW, monitor rail 1, current = rated |
+| `nvvdd_output_ocp_max_ma` | class 0 mA on the NVVDD output current channel 19 | Read-only: absent from the RTX 2000 Ada runtime policy list, so enforcement is unproven |
+
+Class-5 rows are hardware thresholds: their fields carry
+`policy_class: "hardware-threshold"`, are opt-in (shown under **Show advanced
+XOC-style fields**) and the GUI labels them "threshold", also for the Ada 12 V
+input current (the GB20x type-11 input policy keeps its "limit" labels). The 11
+images with the 12 V input rows store 16-45 A rated, about 1.2-1.69 × rated
+TGP / 12 V; thresholds 0 and 1 hold equal rated values on all of them, but the
+RTX 4500 Ada maxima differ (22000/21000 mA), so only its rated value is editable.
+The NVVDD threshold rated value is above the rated TGP on every image (122-650 W;
+the RTX 4050 Laptop GPU's 122 W is below its 140 W TGP ceiling).
+
+A field stays read-only when another row of the same class and unit reads the
+same power channel (`same_channel_rows` in the descriptor), because that row may
+bind instead. Only the RTX 4060 has one: besides row 16 (threshold index 0,
+140 W) it stores row 17, a class-5 mW row on channel 18 with parameter byte 0 =
+4 and 1/100/100 W minimum/rated/maximum. Which of the two
+the firmware enforces is unknown, so both NVVDD threshold values stay read-only
+there; raising row 16 alone could leave the 100 W row in force.
+
+Raising the slot power or slot current threshold of a slot-powered board exceeds
+the PCIe CEM slot rating. Auxiliary-connector rows, laptop-only rows and
+placeholder rows stay unexposed.
+
+**Voltage (rail P+0x68, VFE P+0x20).** One V20 logic rail (NVVDD). Row selectors
+are u8: REL +4, ALT +5, OV +6 and VMIN +11 (0xff = absent); the RTX 2000 Ada runtime
+INFO selectors REL 2, ALT absent, OV 4 and VMIN 3 equal those bytes. Every
+parseable image keeps REL < ALT < VMIN = OV - 1, as the GET-reviewed GB20x rows,
+and the rule is required. The VFE equation count is the u16 at header bytes 5/10
+and equation links are u16 (bytes 2 and 24). A ceiling edit is offered only for a
+REL or ALT equation of the hardware-tested REL shape: float quadratic in uV on a
+sensed-temperature variable, nonzero slope, no link and no reference from another
+equation. Read-only kinds carry `equation_kind`:
+
+| Kind | Images | Why read-only |
+| --- | --- | --- |
+| `constant` | every OV; REL of the RTX 4090, 4080 and RTX 4000 Ada; ALT of 4090, 4080, 4080 SUPER, 4070 Ti SUPER, 4060 | A ceiling-only edit keeps the evaluated value |
+| `compare` | REL of the 4070 Ti SUPER, 4060 Ti, 4060 and laptops | The value comes from child terms on fused (speedo) inputs |
+| `fixed-point` | every VMIN | Output scale unverified; the selector is shown |
+
+**Clocks (BIT C+8).** Version 0x40 with header `40 0d 0f 0a 03 01 03 e8 03` (GV HAL,
+one rail), ten 18-byte rows ending at the C+0x20 table. Rows are named by their
+nvgpu GV HAL position (GPC, XBAR, DRAM, SYS, HUB, VID = NVD, PWR, DISP, PCIEGEN,
+HOST) after per-row gates (usage, ordering byte, rail sub-entry type and fixed
+bytes); programming indices are not used for names, so the shifted indices of the
+RTX 4080 Laptop image keep their names. Fields mirror GB20x: GPC MHz = table
+(NVML), memory MHz = 2 × table (NVML; `dram_*_table_mhz` are table MHz), XBAR/SYS/VID
+in table MHz. The RTX 2000 Ada booted a GPC ceiling of 1500 and a memory floor of
+-5000 MHz as reported NVML ranges; applied offsets were not tested, so the clock
+fields stay experimental. HUB, PWR, DISP, PCIEGEN and HOST stay unexposed.
+
+**Fans (P+0x58, 0x5C, 0x64, 0xDC, 0xE0).** The GB20x table set with a 6-byte cooler
+header and two entries per table. An Ada channel is stored when its mapping,
+control (byte 5 = channel 0's flags with its own channel bit) and speed entries
+name it and its policy byte 1 equals channel 0's. `fan_pwm_frequency_hz` is offered
+on the 15 desktop and workstation images with GPU-driven fans; `fan_channels` is editable on the
+8 two-channel images. Laptop images list no channel and get no fan field. Fan
+bytes are guarded in both chains.
+
+`ada-relocated-v2` compares `power_rows`, `clock_ranges`, `rail_limits`,
+`rail_equations` and `fan_coolers` between the source and the relocated payload.
+
+## Ampere fields
+
+Ampere GA102-GA107 images use the Ada table set with narrower rows. Every rule
+below is structural and was checked on the 33 images of the Ampere corpus (desktop,
+workstation, datacenter and laptop); all are recognized. No Ampere board runs on
+the maintainers' Linux machine, so **every Ampere field is experimental** and none
+has a runtime reading there. An RTX A2000 took an edited power floor through the
+Windows loader. Writes go to every duplicate chain and repair the additive checksum of
+each touched image.
+
+**Image chains.** Laptop and headless dumps (A40, RTX 3070/3060/3050 Ti/3050
+Laptop) have no EFI image: the legacy image is marked last and the data images
+follow it, and table pointers then need no EFI offset. GA102, GA104 and GA106 data
+images all carry NPDS ID `0x2200` (GA103 `0x2400`, GA107 `0x2580`), so an Ampere
+data image may carry its own chip ID or `0x2200`, and every data image of a chain
+the same ID. Ada keeps requiring the EFI image. `10de:2501` (RTX 3060, PG190 SKU 50)
+is not in NVIDIA's product table; the editor recognizes it from pci.ids
+(`EDITOR_ONLY` in `families.py`, evidence kind `pci-ids-entry`), while the loader
+and enrollment keep it out of scope. The RTX 3050 6GB image lacks the
+reviewed checksum padding in its last data image: all its fields stay read-only.
+
+**Power policy table (P+0x2C).** `30/2c/47`, `30/2c/43` (RTX 3080 2206: the same
+bytes 0..0x42) and `30/32/47` (six more header bytes). The TGP row (row 2 on every
+image) follows the Ada rule, including the notebook header and the class-2 sum on
+rail 0xf5 behind channel 0. Power channel entries are 22 or 26 bytes (the last
+four zero). Other rows are identified by class, unit and the channel they read;
+a single input channel is class 5 at 12 V with no parameter but its provider
+byte 15:
+
+| Field | Row | Notes |
+| --- | --- | --- |
+| `slot_power_rated_w`, `_max_w` | class 4 mW on the slot channel (byte-identical to the Ada one) | Row 5, 66 W rated |
+| `connector_N_power_rated_w`, `_max_w` | class 4 mW on a connector channel, rails 0xfa, 0xfb, 0xfc, 0xe4 | One per connector sense channel, numbered in row order; 150-175 W or 75-87.5 W rated. The PCIe CEM 8-pin (150 W) and 6-pin (75 W) ratings are a hint, not an identity: one physical connector can span several channels (RTX A6000 and A40 EPS 8-pin: two at 150 W; RTX 3090 Ti 16-pin: three at 162 W) |
+| `slot_current_threshold_rated_ma`, `_max_ma` (opt-in) | class 5 mA on the slot channel | Hardware threshold, as on Ada |
+| `input_current_rated_ma`, `_max_ma` (opt-in) | class 5 mA on the 12 V input channel, rail 0xe0 | Every such row written together (two on the RTX 3090 Ti) |
+| `nvvdd_output_ocp_max_ma` | class 0 mA on the NVVDD output channel | Read-only, as on Ada |
+
+With the slot policy, the connector-channel policies probably cap the board power
+below a TGP raised past their sum (inferred, untested). A class-2 power channel sums
+the channels its relationship entries name (bytes 14..15 give the first and last
+entry; the 46- or 31-byte relationship table follows the channel entries, header
+bytes 4/5, and byte 1 of each entry is a channel index). A class-4 mW row on a sum
+that adds a connector channel is listed in that field's `summed_cap_rows` and
+reason, and may bind before the per-channel limits: the RTX 3080 Ti caps channels
+5-7 at 450 W (3 x 162 W = 486 W) and the RTX A6000 channels 5-6 at 280 W
+(2 x 150 W = 300 W), so raising a connector channel alone may have no effect
+there. The connector fields stay editable; the sum rows have no field. The
+same-channel rule of Ada applies, and rows must keep minimum <= rated <= maximum.
+Not exposed: the class-5 connector current thresholds, the two rows on the NVVDD
+power channel (12.5-250 W, mostly class 5; some above the TGP, as on the GA103
+RTX 3060 Ti and the RTX 3070 Ti Laptop; class 0 on the RTX 3090 Ti, row 16, and
+the A2000, row 17; meaning unknown), the MSVDD output-current row of the two-rail
+boards and the laptop rows.
+
+**Voltage (P+0x68, P+0x20).** Rail table `20 05 11 01 00` (NVVDD) or `20 05 11 02 01`
+(GA102 except the RTX 3090 Ti: NVVDD and MSVDD, the second name inferred from the
+clock domains). Rows are the first 17 bytes of the Ada row, with the same
+selectors and order rule on every rail. VFE equations are 24 bytes with a u8 count
+(header byte 5) and u8 links. REL and OV are `constant` equations on all 33 images
+(REL 900-1087.5 mV, OV 1100 mV); ALT is constant (1100 mV) on the 17 desktop
+GeForce images and absent (selector 0xff) on the 16 workstation and laptop images.
+Every voltage field is therefore
+read-only: a ceiling-only edit would not change the voltage, and writing the
+constant itself is an unreviewed kind of edit.
+
+**Clocks (C+8).** Header `40`, size `0b` or `0c`, `0d 0a 03`, rails `01` or `02`,
+`03 e8 03`; 13-byte rows with one 3-byte rail sub-entry per rail, of which exactly
+one has a nonzero type (VID: type 2). Rows keep the GV HAL names and the Ada field
+set and units (GPC MHz = table, memory MHz = 2 × table, by analogy only: no Ampere
+NVML reading). Every image stores GPC -1000..1000 and DRAM -1000..3000 except the
+A40, whose ranges are all 0..0: its clock fields stay read-only. An edit may not
+collapse a wider Ampere range to 0..0 (OUT_OF_BOUNDS), since that state reads as
+disabled and could not be reverted. The RTX 2050 has
+fixed HUB and DISP rows, which no field uses.
+
+**Fans.** The Ada tables and rules, except that the speed table may be unused
+(disabled on every channel: RTX 3080/3090 boards, RTX 3060 8GB). PWM frequency on
+23 images with GPU-driven fans, channel count on the 15 that store a second channel.
+The A40 (passive) and the RTX 3050 6GB/8GB tables disagree and keep no fan field;
+laptops list no channel.
+
+**Load path.** GA102-GA107 load `gsp_ga10x.bin`, the same GSP firmware as Ada, which
+loads at most 512 KiB counted from the legacy image; a larger payload is ignored and
+the stock VBIOS boots. The current normalizer accepts 32 of the 33 images; their
+payloads keep the whole bank and exceed that capacity. The examined A40 dump is already refused
+because its primary-bank padding is unrecognized. The chain itself (legacy to last data image) fits only on the A40 and the
+four EFI-less laptops (20-76 KiB too large elsewhere) and would fit on all 33
+without the EFI image. The experimental `ampere-relocated-v1` representation
+exports exactly that: legacy and E0 images unchanged, EFI and trailing bank bytes
+dropped, refused unless every check passes. 32 images verify; none is tested on
+hardware. The loader rejects GA10x and AD10x
+payloads above 512 KiB from the selected legacy image, in both profile
+preparation and direct enrollment/reconciliation validation, so plain
+`normalize` output of an Ampere ROM is not loadable. GA100 uses different GSP
+firmware whose limit is unknown; this check does not infer it.
+
+## Preservation, aliases and manifests
+
+Edits preserve selector/boot identity, equation minima and all expression bytes
+outside the maximum float, including temperature curves and opaque equation7
+payloads. They preserve unrequested power minima and rated/default values,
+unrelated policies, unknown bytes and board records. Affected object/directory
+SHA384 and bounded additive checksums are repaired, then the image is reparsed and
+verified.
+
+`shared_references` enumerates every rail/role referring to one equation. Editing
+one ceiling changes that shared expression for all references; the manifest's
+`affected_fields` includes these implicit changes and compatibility aliases with
+`requested=false`. Requests that overlap bytes fail `CONFLICTING_FIELDS`, even
+when their values agree. Existing typed errors and schema version1 remain intact.
+No edited OCP maximum may fall below its unchanged rated/default value.
+
+```python
+from nvidia_vbios.editor import load, plan
+
+image = load("reviewed.rom")
+# Choose values from this ROM's field descriptors and preserved lower bounds.
+proposal = plan(image, {"msvdd_vmin_equation_max_mv": 1000,
+                        "nvvdd_output_ocp_max_ma": 100000})
+print(proposal.manifest["affected_fields"])
+```
+
+This example generates verified bytes in memory and makes no deployment or
+runtime request. It does not establish that either new ceiling will affect the
+running firmware.
+
+## Evidence and tests
+
+No research file is required at package runtime. Each descriptor's `evidence`
+names its kind (for example `saved-get-selector-correlation`,
+`saved-get-policy-monitor-correlation`, `read-only-nvml-correlation`,
+`structural-row-comparison` or `third-party-research`), its scope and the
+schema/format version it covers, and whether a SET was tested. The saved captures
+and reference ROMs behind it are not distributed. Driver-version-specific SET
+behavior stays unknown. Runtime GET and physical provenance remain separately
+qualified.
+
+The tests generate small structured images; no ROM file, GPU or driver is needed:
+
+```sh
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_extended_fields.py'
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_ada_fields.py'
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_ampere_fields.py'
+```
+
+They cover full u16 selectors, both output-OCP ceilings, exact allowed byte ranges,
+hashes/checksums, shared references and preservation. The maintainers also check
+real reference ROMs, which cover every Ada and Ampere image listed above; those ROMs
+are not distributed, and the suite here is synthetic only.

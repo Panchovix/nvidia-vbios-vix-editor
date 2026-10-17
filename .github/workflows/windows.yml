@@ -1,0 +1,87 @@
+# Windows release build: nvbios-gui.exe and nvbios.exe (MSYS2 UCRT64 Python, Nuitka 4, Zig).
+# Only the repository owner starts it: Run workflow, or a pushed vX.Y.Z tag that must match the
+# source version. Pull requests, forks included, get the tests workflow instead. The token is
+# read-only and no secret is used; the programs are a workflow artifact, never published from here.
+name: windows-release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version (X.Y.Z); empty uses the source version
+        required: false
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  build:
+    if: github.actor == github.repository_owner
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e  # v2.33.0
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-python-pip
+            mingw-w64-ucrt-x86_64-python-gobject mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-ntldd
+            mingw-w64-ucrt-x86_64-python-zstandard binutils zip
+      - name: Nuitka
+        run: python -m pip install --break-system-packages nuitka==4.2.2 ordered-set==4.1.0
+      - name: Zig (Nuitka's C compiler for MSYS2 Python 3.14)
+        run: |
+          python -m pip download --no-deps --only-binary=:all: --platform win_amd64 \
+              --python-version 3.12 -d zigwheel ziglang==0.16.0
+          python -m zipfile -e zigwheel/ziglang-0.16.0-*.whl zig
+          zig/ziglang/zig.exe version
+      - name: Build
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          source_version=$(sed -n 's/^__version__ = "\([^"]*\)"$/\1/p' src/nvidia_vbios/__init__.py 2>/dev/null || true)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            VERSION=${GITHUB_REF_NAME#v}
+            if [ "$VERSION" != "$source_version" ]; then
+              echo "tag $GITHUB_REF_NAME does not match the source version ${source_version:-(none)}" >&2
+              exit 1
+            fi
+          else
+            VERSION=${REQUESTED_VERSION:-$source_version}
+          fi
+          export VERSION
+          PATH="$PWD/zig/ziglang:$PATH" tools/release/build-windows.sh
+      - name: Editor window smoke test
+        shell: pwsh
+        run: |
+          $rom = (Resolve-Path build-windows/package/lint0.rom).Path
+          $p = Start-Process -FilePath (Resolve-Path build-windows/gui/nvbios-gui.exe).Path -ArgumentList "`"$rom`"" `
+              -PassThru -RedirectStandardOutput gui-out.txt -RedirectStandardError gui-err.txt
+          Start-Sleep -Seconds 20
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("$PWD\gui-smoke.png")
+          $alive = -not $p.HasExited
+          if ($alive) { Stop-Process -Id $p.Id -Force }
+          Get-Content gui-out.txt, gui-err.txt -ErrorAction SilentlyContinue
+          if (-not $alive) { throw "nvbios-gui.exe exited early with code $($p.ExitCode)" }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        if: always()
+        with:
+          name: gui-smoke
+          path: gui-*
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: windows-release
+          path: dist-windows/*
+          if-no-files-found: error

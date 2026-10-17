@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.14
+
+- **Open source.** The editor's source code is now in this repository under the GNU GPL v3.0 or later
+  (`GPL-3.0-or-later`): you can use, study, change and share it, and changed versions you share must stay
+  under the same license. Issues and pull requests are welcome. Binary releases up to 0.1.13 were
+  distributed under a freeware license agreement. `nvbios --version` and the editor window show the
+  license.
+- Third-party notices name the exact Ubuntu and MSYS2 package versions of the bundled libraries and where
+  their complete source is published, with a written offer for it.
+- Field evidence in `nvbios fields` and `inspect` uses public descriptions of what was checked (with model,
+  VBIOS version and PCI ID scopes) instead of internal capture references. For `ada-relocated-v1` payloads,
+  `inspect` reports `recipe_version` instead of `recipe_commit`. Field values and saved bytes are unchanged.
+
 ## 0.1.13
 
 - Editor window: the *Technical details* section is gone; it made the window long. Accepted ranges

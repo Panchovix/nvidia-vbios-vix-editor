@@ -1,0 +1,1459 @@
+"""Per-format field evidence registry; unvalidated fields stay read-only."""
+from dataclasses import dataclass
+from decimal import Decimal
+from ..rom.blackwell import BlackwellRom
+from ..rom.errors import VbiosError, FormatError
+from ..rom.image import metadata
+from ..rom.tables import SOURCE, TableRom
+
+
+@dataclass(frozen=True)
+class Binding:
+    descriptor: dict
+    offsets: tuple[int, ...]
+    encoding: str
+    scale: Decimal
+    # Optional ((value, (bytes per offset, ...)), ...) for a field whose stored
+    # form differs per offset; only the listed values can be written.
+    layout: tuple = ()
+
+
+class FieldRegistry:
+    """Explicit extension point for additional reviewed field resolvers.
+
+    A resolver receives (image, parser), returns Binding objects, and must bound
+    offsets using parser ownership checks. Editing rechecks every offset and
+    refuses structural/integrity/overlapping writes. Registration never bypasses
+    the architecture gate. Evidence must describe units and supported variants.
+    """
+    def __init__(self):
+        self._resolvers = []
+
+    def register(self, resolver):
+        self._resolvers.append(resolver)
+        return resolver
+
+    def bindings(self, image, parser):
+        result, diagnostics = [], []
+        for resolver in self._resolvers:
+            try:
+                result.extend(resolver(image, parser))
+            except VbiosError as exc:
+                diagnostics.append({'code': exc.code, 'message': str(exc), 'resolver': resolver.__name__})
+        keys = [b.descriptor['key'] for b in result]
+        if len(keys) != len(set(keys)):
+            raise VbiosError('REGISTRY_CONFLICT', 'duplicate field keys in evidence registry')
+        return result, diagnostics
+
+
+registry = FieldRegistry()
+
+# Findings from an independent GB202 tool and its research notes (credited in
+# the acknowledgements), used with the author's permission. They corroborate
+# the structural parsers below; no third-party offsets or code are used.
+THIRD_PARTY_EVIDENCE = {
+    'kind': 'third-party-research',
+    'source': 'independent GB202 research (see acknowledgements)',
+    'use': 'cross-check only; structural parsing and writers are independent'}
+# Read-only NVML GET on the enrolled GPUs, correlated with the deployed payload
+# tables. Reading proves the unit or default relation only; no edited value of
+# these fields has been booted.
+NVML_CAPTURE = {'kind': 'read-only-nvml-correlation', 'source': 'read-only NVML capture', 'set_tested': False}
+DEFAULT_LIMIT_EVIDENCE = dict(NVML_CAPTURE, relation='NVML default power limit = stored TGP rated value',
+                              api='nvmlDeviceGetPowerManagementDefaultLimit',
+                              scope='seven reviewed GB202/GB203 devices and the reviewed Ada device')
+GPC_UNITS_EVIDENCE = dict(NVML_CAPTURE, relation='NVML MHz = table MHz',
+                          api='nvmlDeviceGetGpcClkMinMaxVfOffset', observed='-1000..1000 for table rows -1000..1000',
+                          scope='seven reviewed GB202/GB203 devices')
+DRAM_MIN_UNITS_EVIDENCE = dict(NVML_CAPTURE, relation='NVML MHz = 2 * table MHz',
+                               api='nvmlDeviceGetMemClkMinMaxVfOffset',
+                               observed='minimum -2000 for table -1000; maxima 12000/13000 for tables 6000/6500',
+                               scope='seven reviewed GB202/GB203 devices')
+
+
+def field(key, label, units, current, lo, hi, editable, evidence, *, offsets=(),
+          encoding='', scale=1, reason=None, stored_units=None, writable_status=None,
+          ordering_group=None, encoding_bounds=None, layout=(), **extra):
+    desc = dict(key=key, label=label, type='number', units=units, current=current,
+                bounds={'minimum': lo, 'maximum': hi, 'kind': 'encoding-and-preserved-defaults',
+                        'hardware_safe_maximum': None}, editable=editable,
+                capability_status='supported' if editable else 'read-only',
+                evidence=evidence, **extra)
+    if ordering_group:
+        # Static bounds hold the partners' current values. When partners of one
+        # group are requested together, the editor checks only these encoding
+        # bounds first and then the reviewed bounds of the joint result.
+        desc['ordering_group'] = ordering_group
+        desc['bounds'].update(encoding_minimum=encoding_bounds[0], encoding_maximum=encoding_bounds[1])
+    writable = writable_status or ('verified' if editable else
+                                   'unknown' if current is None or not evidence else 'unsupported')
+    desc['capability'] = {
+        'vbios': {'writable': writable, 'persistence': 'unknown',
+                  'effect': 'offline encoded bytes only; firmware acceptance unknown'},
+        'runtime': {'writable': 'unknown', 'persistence': 'unknown', 'applied': 'unknown',
+                    'evaluated_value': None}}
+    if 'runtime_offset' in desc:
+        desc['capability']['runtime']['offset'] = dict(desc['runtime_offset'])
+    desc['unit_metadata'] = {'symbol': units, 'stored_symbol': stored_units,
+                             'storage_encoding': encoding or None,
+                             'storage_signed': encoding in ('<h', '<i', '<f') if encoding else None}
+    desc.setdefault('value_semantics', 'stored-field-value')
+    desc.setdefault('version_metadata', {'schema_version': 1,
+                    'format_variant': next((e['format'] for e in evidence if 'format' in e), None)})
+    if reason:
+        desc['reason'] = reason
+    if stored_units:
+        desc['stored_units'] = stored_units
+    return Binding(desc, tuple(offsets), encoding, Decimal(str(scale)), tuple(layout))
+
+
+def can_edit(image, parser):
+    # The additive checksum is repaired only in the reviewed padded data-image layout.
+    return parser.integrity()['valid'] and (not isinstance(parser, TableRom) or parser.checksum_padding_reviewed())
+
+
+def ada(parser):
+    return isinstance(parser, TableRom) and parser.family == 'ada'
+
+
+def ampere(parser):
+    return isinstance(parser, TableRom) and parser.family == 'ampere'
+
+
+# The only Ada board that runs edited images here. Booted edits: TGP ceiling
+# 100 W (NVML maximum) and NVVDD REL ceiling 1100 mV (runtime evaluated REL); a
+# second image also changed the GPC offset ceiling and the memory offset floor
+# (NVML ranges only, so those clock fields stay experimental). The power floor
+# keeps its reviewed status (NVML minimum = stored value). Every other Ada
+# field and every other Ada image is experimental.
+ADA_TESTED_BOARD = (0x28B0, '95.07.47.00.19')
+ADA_TESTED_FIELDS = ('power_max_w', 'power_min_w', 'nvvdd_rel_max_mv', 'nvvdd_rel_equation_max_mv')
+
+
+def ada_tested(image, parser, key):
+    """True for the fields of the hardware-tested Ada board that keep their reviewed status."""
+    return (ada(parser) and key in ADA_TESTED_FIELDS and parser.legacy['device'] == ADA_TESTED_BOARD[0] and
+            ADA_TESTED_BOARD[1] in metadata(image)['versions'])
+
+
+def experimental_flag(image, parser, key):
+    """{'experimental': True} for an Ada field outside the hardware-tested board and every Ampere field, else {}."""
+    return {} if not isinstance(parser, TableRom) or ada_tested(image, parser, key) else {'experimental': True}
+
+
+ADA_POWER_EVIDENCE = {
+    'kind': 'nvidia-struct-prefix-and-structural-rule', 'source': SOURCE,
+    'format': 'Ada 3x power 30/32/53, 30/34/5b or 30/2c/4b (the first 0x2c header and 0x4b entry bytes of '
+              '30/32/53); TGP row = header byte 10 (notebook: byte 13 when bytes 10..12 are ff); class 1 mW on '
+              'power channel 0 = class-2 sum on rail 0xf5',
+    'observation': 'the TGP row is row 2 on every parseable Ada image; its rated value equals the published board '
+                   'power of the reference desktop and workstation boards in the corpus (a partner RTX 4090 '
+                   'image, VBIOS 95.02.18, is rated 550 W)'}
+ADA_RUNTIME_EVIDENCE = {
+    'kind': 'saved-get-policy-correlation', 'source': 'saved runtime GET capture',
+    'scope': 'RTX 2000 Ada 95.07.47.00.19 (10de:28b0), stock image', 'set_tested': False}
+ADA_STRUCTURAL_EVIDENCE = {
+    'kind': 'structural-row-comparison', 'source': 'Ada VBIOS corpus, 19 parseable images',
+    'set_tested': False, 'runtime_get': False}
+ADA_NOTEBOOK_EVIDENCE = dict(
+    ADA_STRUCTURAL_EVIDENCE, format='Ada 3x power notebook header: bytes 10..13 ff ff ff 02; TGP row 2 class 1 mW '
+                                    'on channel 0',
+    observation='row 2 has the identity of the desktop TGP row; stored minimum/rated/maximum match OEM laptop '
+                'TGP plus Dynamic Boost (for example 5/150/175 W on an RTX 4080 Laptop GPU)')
+ADA_NOTEBOOK_DEFAULT_REASON = ('experimental: stored notebook rated TGP; taken as the default power limit by '
+                               'structural analogy with the GB20x notebook layout, whose nvidia-smi Default Power '
+                               'Limit equals its rated value; no Ada laptop reading; the platform requests the '
+                               'running limit; not hardware-tested')
+ADA_NOTEBOOK_REASON = ('experimental: stored notebook TGP; the platform (Dynamic Boost, nvidia-powerd) requests the '
+                       'running limit and may keep it lower; laptop Ada images are not accepted by the loader; '
+                       'not hardware-tested')
+# Ampere (GA10x): structural rules checked on the 33 images of the Ampere corpus.
+# No Ampere board runs here, so no Ampere value has a runtime reading or a boot.
+AMPERE_STRUCTURAL_EVIDENCE = {
+    'kind': 'structural-row-comparison',
+    'source': 'Ampere VBIOS corpus, 33 parseable GA102-GA107 images', 'set_tested': False, 'runtime_get': False}
+AMPERE_POWER_EVIDENCE = dict(
+    AMPERE_STRUCTURAL_EVIDENCE,
+    format='Ampere 3x power 30/2c/47, 30/2c/43 or 30/32/47; TGP row = header byte 10 (notebook: byte 13 when bytes '
+           '10..12 are ff); class 1 mW on power channel 0 = class-2 sum on rail 0xf5',
+    observation='the TGP row is row 2 on every image; its rated value is the board power of the model on the '
+                'desktop and workstation images (for example RTX A6000 300 W, RTX A4000 140 W, RTX 3060 170 W)')
+AMPERE_NOTEBOOK_REASON = ('experimental: stored notebook TGP; the platform (Dynamic Boost, nvidia-powerd) requests the '
+                          'running limit and may keep it lower; whether the loader accepts an Ampere laptop image is '
+                          'untested; not hardware-tested')
+AMPERE_NOTEBOOK_DEFAULT_REASON = ('experimental: stored notebook rated TGP; taken as the default power limit by '
+                                  'structural analogy with the GB20x notebook layout; no Ampere reading; the platform '
+                                  'requests the running limit; not hardware-tested')
+
+
+@registry.register
+def checksum_layout(image, parser):
+    """Diagnostic only: an Ada image whose checksum layout keeps every field read-only."""
+    if isinstance(parser, TableRom) and parser.integrity()['valid'] and not parser.checksum_padding_reviewed():
+        raise FormatError('a data image holding edited tables lacks the reviewed checksum padding; fields are read-only')
+    return []
+
+
+# The notebook image has no saved GET. Its TGP row is identified by layout and
+# by the nvidia-smi limits its owner reported on the same VBIOS.
+NOTEBOOK_POWER_EVIDENCE = {
+    'kind': 'structural-row-comparison', 'source': 'reviewed Blackwell notebook table layout',
+    'scope': 'RTX 5080 Laptop GPU 98.03.5C.00.F2 (10de:2c59)',
+    'format': 'GB20x power v40 notebook layout: header bytes 21..23 ff ff 02, rows 7/8 empty, TGP row 2 type 1',
+    'set_tested': False, 'runtime_get': False}
+NOTEBOOK_SMI_EVIDENCE = {
+    'kind': 'owner-nvidia-smi-reading',
+    'source': 'nvidia-smi -q -d POWER on the same laptop, shared by its owner',
+    'relation': 'nvidia-smi Min/Default/Max Power Limit = row 2 minimum/rated/maximum',
+    'observed': 'Min 5 W, Default 80 W, Max 175 W (Current 175 W) for row 2 5000/80000/175000 mW',
+    'set_tested': False}
+# ASUS XOC images: base rows 2/7/8/9 hold 2001 W / 5001 A and no profile matches
+# them; the profile reached by the ROM's own selection chain is bound instead.
+TOP_PROFILE_EVIDENCE = {
+    'kind': 'vendor-image-comparison',
+    'source': 'two ASUS RTX 5090 XOC vendor images (no profile matches the base table)',
+    'format': 'GB20x override profile bound through selection stage 1 (top code -> mW) and stage 2 (mW -> profile); '
+              'no profile matches base rows 2/7/8/9',
+    'observation': 'stage 1 top code 3 -> 600 W -> profile 7 on the stock FE and both XOC images; stock FE profiles '
+                   '4..7 cap at 150/300/450/600 W; the XOC images keep the base at 2001 W / 5001 A '
+                   'and store profile 7 = 1000 W default, 1200/1600 W maximum, 120/160 A, and set the row 7 linked '
+                   '12 V limit to the profile 7 value; that the stage 1 code is the 12V-2x6 sense level is inferred',
+    'runtime_active_profile': 'inferred from the selection chain; not measured here', 'set_tested': False}
+
+
+def top_profile_note(top, base):
+    """Reason prefix of a field bound to the top-level override profile instead of the base table."""
+    return ('value of override profile %d, reached at the top level of the ROM selection table (code %d -> %g W; '
+            'probably the highest 12V-2x6 sense level, inferred); the base table holds %s and is preserved; which '
+            'copy the firmware enforces is not hardware-tested; '
+            % (top['index'], top['selection_code'], top['selection_power_raw'] / 1000, base))
+
+
+def top_profile_bounds(profiles, top, policies, name):
+    """Values of the same entry in every other profile; the bound profile must stay at or above them."""
+    return [e['value_raw'] for p in profiles if p['index'] != top['index'] for e in p['entries']
+            if e['policy'] in policies and e['field'] == name]
+
+
+def top_profile_offsets(top, policies, name):
+    return [e['value_offset'] for e in top['entries'] if e['policy'] in policies and e['field'] == name]
+
+
+NOTEBOOK_POWER_REASON = ('stored notebook TGP ceiling; the platform (Dynamic Boost, nvidia-powerd) requests the '
+                         'running limit and may keep it lower; output OCP, cooling and the laptop VRM still apply; '
+                         'not hardware-tested')
+
+
+@registry.register
+def power(image, parser):
+    rows = parser.power_rows()
+    profiles = parser.power_profiles()
+    matching = parser.matching_power_profiles()
+    notebook = isinstance(parser, BlackwellRom) and parser.notebook_power_layout()
+    top, maximum_upper, default_lower, default_upper, minimum_evidence = None, 0x7FFFFFFF, None, None, None
+    if notebook:
+        tgp = rows[2]
+        if not 0 <= tgp['minimum_raw'] <= tgp['default_raw'] <= tgp['maximum_raw']:
+            raise FormatError('unvalidated notebook TGP policy bounds')
+        if profiles:
+            raise FormatError('override profiles of the notebook layout are unreviewed')
+        policy_indices = (2,)
+        minimum = minimum_upper = tgp['default_raw']
+        offsets, default_offsets, minimum_offsets = [tgp['offset'] + 21], [tgp['offset'] + 17], [tgp['offset'] + 13]
+        minimum_scope = default_scope = 'notebook TGP policy row 2; no override profiles'
+        evidence = [dict(NOTEBOOK_POWER_EVIDENCE), dict(NOTEBOOK_SMI_EVIDENCE)]
+        default_evidence = evidence
+    elif isinstance(parser, BlackwellRom):
+        for i, kind in ((2, 1), (7, 13), (8, 12), (9, 11)):
+            r = rows[i]
+            if r['type'] != kind or not 0 <= r['minimum_raw'] <= r['default_raw'] <= r['maximum_raw']:
+                raise FormatError('unvalidated Blackwell board/current power policy identity or bounds')
+        if profiles and not matching:
+            top = parser.top_power_profile()
+            if top is None:
+                raise FormatError('no complete override profile matches the base policy')
+        if len({rows[i]['maximum_raw'] for i in (2, 7, 8)}) != 1:
+            raise FormatError('board policy maximum values disagree')
+        # Rows2/7 carry independent permissive minima (1mW in the real
+        # corpus). Only row8 is the reviewed TGP floor; coordinating their
+        # maxima does not establish a shared minimum value or meaning.
+        policy_indices = (8,)
+        tgp, minimum = rows[8], max(rows[i]['default_raw'] for i in (2, 7, 8))
+        minimum_upper = tgp['default_raw']
+        minimum_offsets = [tgp['offset'] + 13]
+        minimum_scope = 'base TGP policy8 only; rows2/7 minima preserved; profiles override maximum/default only'
+        offsets = [rows[i]['offset'] + 21 for i in (2, 7, 8)]
+        offsets.extend(e['value_offset'] for p in matching for e in p['entries']
+                       if e['policy'] in (2, 7, 8) and e['field'] == 'maximum')
+        # The rated value of row8 is the boot default. Rows2/7 keep their own
+        # rated values; whether they bind above that value is untested.
+        default_offsets = [tgp['offset'] + 17]
+        default_offsets.extend(e['value_offset'] for p in matching for e in p['entries']
+                               if e['policy'] == 8 and e['field'] == 'default')
+        default_scope = 'base TGP policy8 rated value and complete matching profiles; rows2/7 rated values preserved'
+        evidence = [{'kind': 'reviewed-layout', 'format': 'GB20x power v40 rows 2/7/8 and complete matching profiles',
+                     'source': 'reviewed table layout',
+                     'runtime_active_profile': 'unknown'}]
+        default_evidence = evidence + [dict(THIRD_PARTY_EVIDENCE, observation=(
+            'RM PWR_POLICIES INFO entry 8 limitMin/limitRated/limitMax equal row8 on a Matrix boot; '
+            'limitRated is the limit run without a client cap'))]
+        if top is not None:
+            # Only the bound profile's entries are written; base rows 2/7/8 cap them.
+            values = top['values']
+            tgp = dict(rows[8], default_raw=values[(8, 'default')], maximum_raw=values[(8, 'maximum')])
+            minimum = max([values[(i, 'default')] for i in (2, 7, 8)] +
+                          top_profile_bounds(profiles, top, (2, 7, 8), 'maximum'))
+            minimum_upper, maximum_upper = tgp['default_raw'], rows[8]['maximum_raw']
+            default_lower = max([tgp['minimum_raw']] + top_profile_bounds(profiles, top, (8,), 'default'))
+            default_upper = min(tgp['maximum_raw'], rows[8]['default_raw'])
+            offsets = top_profile_offsets(top, (2, 7, 8), 'maximum')
+            default_offsets = top_profile_offsets(top, (8,), 'default')
+            default_scope = ('override profile %d policy8 rated value only; base row 8 rated value preserved'
+                             % top['index'])
+            # The bound fields name the profile binding first; the NVML and Matrix row 8
+            # correlations were taken where the profile equals the base, so they are dropped.
+            minimum_evidence, evidence = evidence, [TOP_PROFILE_EVIDENCE] + evidence
+            default_evidence = evidence
+    else:
+        tgp = rows[parser.tgp_index]
+        notebook = parser.notebook_power
+        policy_indices = (parser.tgp_index,)
+        minimum = minimum_upper = tgp['default_raw']
+        minimum_offsets = parser.copy_offsets(tgp['maximum_offset'] - 8, 4)
+        minimum_scope = 'header-indexed TGP policy in every validated duplicate chain; no nonempty profiles'
+        offsets = parser.copy_offsets(tgp['maximum_offset'], 4)
+        default_offsets = parser.copy_offsets(tgp['maximum_offset'] - 4, 4)
+        default_scope = 'header-indexed TGP rated value in every validated duplicate chain; no nonempty profiles'
+        evidence = [{'kind': 'nvidia-struct-prefix-and-reviewed-variant', 'source': SOURCE,
+                     'format': '3x power policy; TGP index from header; limit_unit flag mW',
+                     'recognized_variants': ['Ada 30/32/53', 'Ada 30/34/5b', 'Ada 30/2c/4b'] if ada(parser) else
+                                            ['Ampere 30/2c/47', 'Ampere 30/2c/43', 'Ampere 30/32/47']}]
+        if ada(parser):
+            evidence = evidence + [dict(ADA_POWER_EVIDENCE)] + ([dict(ADA_NOTEBOOK_EVIDENCE)] if notebook else [])
+        else:
+            evidence = evidence + [dict(AMPERE_POWER_EVIDENCE)]
+        default_evidence = evidence
+    default_evidence = default_evidence + ([] if top else [dict(DEFAULT_LIMIT_EVIDENCE, **(
+        {'use': 'structural analogy only: no NVML or nvidia-smi reading of an Ada laptop exists'}
+        if notebook and ada(parser) else
+        {'use': 'structural analogy only: no NVML or nvidia-smi reading of an Ampere board exists'}
+        if ampere(parser) else {}))])
+    # Ada notebook TGP rows are never the hardware-tested board; Ampere is never tested.
+    flags = {'experimental': True} if notebook and ada(parser) else experimental_flag(image, parser, 'power_max_w')
+    untested = 'not hardware-tested on this board; ' if flags else ''
+    top_extra = {} if top is None else dict(bound_profile=top['index'], base_values={
+        'power_max_w': rows[8]['maximum_raw'] / 1000, 'power_default_w': rows[8]['default_raw'] / 1000})
+    return [field('power_max_w', 'Board power ceiling', 'W', tgp['maximum_raw'] / 1000,
+                  minimum / 1000, maximum_upper / 1000, can_edit(image, parser), evidence,
+                  offsets=offsets, encoding='<I', scale=1000, stored_units='mW',
+                  factory_default=tgp['default_raw'] / 1000,
+                  ordering_group='board-power', encoding_bounds=(0, 0x7FFFFFFF / 1000),
+                  reason=(ADA_NOTEBOOK_REASON if ada(parser) else AMPERE_NOTEBOOK_REASON if ampere(parser) else
+                          NOTEBOOK_POWER_REASON) if notebook else
+                  'experimental: encoding ceiling only; ' + untested + 'firmware/current/hardware restrictions remain'
+                  if untested else
+                  'experimental: ' + top_profile_note(top, '%g W' % (rows[8]['maximum_raw'] / 1000)) +
+                  'firmware/current/hardware restrictions remain' if top else
+                  'encoding ceiling only; firmware/current/hardware restrictions remain',
+                  **(dict(flags, experimental=True, **top_extra) if top else flags)),
+            field('power_default_w', 'Boot default board power', 'W', tgp['default_raw'] / 1000,
+                  (tgp['minimum_raw'] if default_lower is None else default_lower) / 1000,
+                  (tgp['maximum_raw'] if default_upper is None else default_upper) / 1000,
+                  can_edit(image, parser),
+                  default_evidence, offsets=default_offsets, encoding='<I', scale=1000, stored_units='mW',
+                  policy_indices=list(policy_indices), value_semantics='stored-board-power-rated-default',
+                  format_scope=default_scope, experimental=True,
+                  ordering_group='board-power', encoding_bounds=(0, 0x7FFFFFFF / 1000),
+                  reason=ADA_NOTEBOOK_DEFAULT_REASON if notebook and ada(parser) else
+                  AMPERE_NOTEBOOK_DEFAULT_REASON if notebook and ampere(parser) else
+                  'experimental: notebook default TGP (nvidia-smi Default Power Limit); the platform '
+                  'requests the running limit; not hardware-tested' if notebook else
+                  'experimental: ' + top_profile_note(top, '%g W' % (rows[8]['default_raw'] / 1000)) +
+                  'rated TGP limit used at boot without a client cap' if top else
+                  'experimental: rated TGP limit used at boot without a client cap; not hardware-tested',
+                  **top_extra),
+            field('power_min_w', 'Board power floor', 'W', tgp['minimum_raw'] / 1000,
+                  1, minimum_upper / 1000, can_edit(image, parser), minimum_evidence or evidence,
+                  offsets=minimum_offsets, encoding='<I', scale=1000, stored_units='mW',
+                  factory_default=tgp['default_raw'] / 1000, policy_indices=list(policy_indices),
+                  value_semantics='stored-board-power-minimum', format_scope=minimum_scope,
+                  ordering_group='board-power', encoding_bounds=(1, 0x7FFFFFFF / 1000),
+                  reason='experimental: encoded floor only; ' + untested + 'firmware acceptance and runtime minimum '
+                         'remain unknown' if untested else
+                  'encoded floor only; firmware acceptance and runtime minimum remain unknown',
+                  **flags)] + fixed_policy_rated(image, parser, rows, matching, top)
+
+
+def fixed_policy_rated(image, parser, rows, matching, top=None):
+    """Opt-in rated value of the fixed board policies 2/7 (Blackwell only).
+
+    Their CONTROL current equals the rated value in saved GET, and vendor XOC and
+    2500 W images raise it together with the ceiling. Hidden behind an explicit
+    opt-in in the GUI; requires equal rated values in rows 2 and 7 (in the bound
+    top-level profile instead when one replaces the base).
+    """
+    if (not isinstance(parser, BlackwellRom) or parser.notebook_power_layout() or
+            rows[2]['default_raw'] != rows[7]['default_raw']):
+        return []
+    offsets = [rows[i]['offset'] + 17 for i in (2, 7)]
+    offsets.extend(e['value_offset'] for p in matching for e in p['entries']
+                   if e['policy'] in (2, 7) and e['field'] == 'default')
+    current, lower = rows[2]['default_raw'], max(rows[2]['minimum_raw'], rows[7]['minimum_raw'])
+    upper, extra, reason = rows[2]['maximum_raw'], {}, ''
+    if top is not None:
+        values = top['values']
+        if values[(2, 'default')] != values[(7, 'default')]:
+            return []
+        current, upper = values[(2, 'default')], min(values[(2, 'maximum')], rows[2]['default_raw'])
+        offsets = top_profile_offsets(top, (2, 7), 'default')
+        lower = max([lower] + top_profile_bounds(parser.power_profiles(), top, (2, 7), 'default'))
+        extra = dict(bound_profile=top['index'], base_values={'board_fixed_rated_w': rows[2]['default_raw'] / 1000})
+        reason = top_profile_note(top, '%g W' % (rows[2]['default_raw'] / 1000))
+    evidence = [{'kind': 'reviewed-layout', 'format': 'GB20x power v40 rows 2/7 rated value and complete matching profiles',
+                 'source': 'reviewed table layout', 'runtime_active_profile': 'unknown'},
+                dict(INPUT_CURRENT_EVIDENCE, kind='saved-get-policy-correlation',
+                     observed='policies 2/7: CONTROL current = rated, also when their maxima were raised',
+                     units_basis='GET INFO+8 is 0 (mW) on rows 2/7'),
+                {'kind': 'vendor-image-comparison',
+                 'observed': 'ASUS XOC and MSI 2500 W images store rows 2/7 rated = maximum (2001000/2500000 mW)'}]
+    if top is not None:
+        evidence.insert(0, TOP_PROFILE_EVIDENCE)
+    return [field('board_fixed_rated_w', 'Fixed board policies 2/7 rated power', 'W', current / 1000,
+                  lower / 1000, upper / 1000, can_edit(image, parser), evidence, offsets=offsets, encoding='<I',
+                  scale=1000, stored_units='mW',
+                  policy_indices=[2, 7], value_semantics='stored-board-fixed-policy-rated', experimental=True,
+                  opt_in=True, ordering_group='board-power', encoding_bounds=(0, 0x7FFFFFFF / 1000),
+                  reason='experimental, opt-in: ' + reason + 'rated value of the fixed board policies 2/7 (current = '
+                         'rated); XOC-style images raise it with the ceiling; not hardware-tested', **extra)]
+
+
+@registry.register
+def voltage(image, parser):
+    result = []
+    for rail in parser.rail_limits():
+        label = rail['rail_name_inferred']
+        key = label.lower() + '_rel_max_mv'
+        offsets = [rail['maximum_offset']] if isinstance(parser, BlackwellRom) else parser.copy_offsets(rail['maximum_offset'], 4)
+        known_kind = rail['equation_type'] in (1, 7) if isinstance(parser, BlackwellRom) else rail['editable_ceiling']
+        reason = 'float32 exact encoding required; runtime voltage may follow unchanged temperature curve'
+        if isinstance(parser, TableRom) and not known_kind:
+            reason = 'read-only: ' + ada_equation_reason(rail['equation_kind'])
+        elif experimental_flag(image, parser, key):
+            reason = ('experimental: float32 exact encoding required; not hardware-tested on this board; runtime '
+                      'voltage may follow unchanged temperature curve')
+        result.append(field(key, label + ' REL equation ceiling', 'mV',
+                            rail['output_maximum_uv'] / 1000, rail['output_minimum_uv'] / 1000,
+                            0x7FFFFFFF / 1000, can_edit(image, parser) and known_kind,
+                            [{'kind': 'reviewed-voltage-output-equation', 'source': SOURCE,
+                              'format': 'GB20x rail v30/object 14' if isinstance(parser, BlackwellRom) else
+                                        'Ada single logic rail v20, VFE quadratic temperature equation' if ada(parser)
+                                        else 'Ampere rails v20 (17-byte rows), VFE quadratic voltage equation'}] +
+                            ([dict(SINGLE_RAIL_EVIDENCE)] if single_rail(parser) else []) +
+                            ([dict(ADA_VOLTAGE_EVIDENCE)] if ada(parser) else []) +
+                            ([dict(AMPERE_VOLTAGE_EVIDENCE)] if ampere(parser) else []),
+                            offsets=offsets, encoding='<f', scale=1000, stored_units='uV',
+                            writable_status=None if known_kind else 'unsupported' if isinstance(parser, TableRom) else 'unknown',
+                            equation_coefficients=rail.get('equation_coefficients'),
+                            thermal_derating_preserved=rail.get('thermal_derating_preserved', True),
+                            value_semantics='stored-equation-output-ceiling',
+                            alias_of=label.lower() + '_rel_equation_max_mv', ui_visible=False,
+                            runtime_offset={'units': 'uV', 'type': 'int32', 'signed': True,
+                                            'current': None, 'writable': 'unknown'},
+                            reason=reason, **(experimental_flag(image, parser, key) if known_kind else {})))
+    return result
+
+
+# Ada VFE equation kinds that keep a role read-only (see TableRom._ada_equation_kind).
+ADA_EQUATION_REASONS = {
+    'constant': 'constant equation (value, minimum and maximum are one constant); a ceiling-only edit would not '
+                'change the evaluated voltage',
+    'compare': 'compare expression; the evaluated voltage comes from child terms on fused (speedo) inputs',
+    'fixed-point': 'fixed-point equation with an unverified output scale',
+}
+ADA_VOLTAGE_EVIDENCE = {
+    'kind': 'structural-selector-and-equation-rule', 'source': SOURCE,
+    'format': 'Ada rail20/05/1f/01/00 row selectors REL +4, ALT +5, OV +6, VMIN +11 (u8, ff absent); VFE30/0b/19/32/19 '
+              'with u16 equation count (header bytes 5/10) and u16 links (bytes 2/24)',
+    'observation': 'RTX 2000 Ada runtime INFO selectors REL 2, ALT absent, OV 4, VMIN 3 equal rail bytes +4/+5/+6/+11; '
+                   'every parseable Ada image keeps REL < ALT < VMIN = OV - 1 as the GET-reviewed GB20x rows; '
+                   'the editable kind is the hardware-tested REL shape: float quadratic in uV on sensed temperature, '
+                   'nonzero slope, no link and no reference from another equation',
+    'set_tested': False}
+
+
+AMPERE_VOLTAGE_EVIDENCE = dict(
+    AMPERE_STRUCTURAL_EVIDENCE, source=SOURCE,
+    format='Ampere rail 20/05/11 with one (01 00) or two (02 01) 17-byte rows; selectors REL +4, ALT +5, OV +6, '
+           'VMIN +11 (u8, ff absent) as on Ada; VFE 30/09/19/32/18 with 24-byte equations, u8 count (header byte 5) '
+           'and u8 links (byte 2; children bytes 11/12 and 15/16)',
+    observation='every rail of every image keeps REL < ALT (if present) < VMIN = OV - 1; REL and OV are constant '
+                'equations (value, minimum and maximum one constant) on all 33 images; ALT is constant (1100 mV) on '
+                'the 17 desktop GeForce images and absent (selector 0xff) on the 16 workstation and laptop images; '
+                'rail 1 of the two-rail GA102 images is named MSVDD by inference only (GPC runs on rail 0; XBAR, '
+                'DRAM and DISP on rail 1)')
+
+
+def ada_equation_reason(kind):
+    return ADA_EQUATION_REASONS.get(kind, 'equation shape outside the reviewed temperature-derated form')
+
+
+SELECTOR_EVIDENCE = {
+    'kind': 'saved-get-selector-correlation', 'source': 'saved runtime GET capture',
+    'comparisons': '36/36 fields across six Blackwell rows', 'set_tested': False,
+    'format': 'Blackwell rail30/05/41/02 and VFE30/0e/1d/ff/19'}
+OCP_EVIDENCE = {
+    'kind': 'saved-get-policy-monitor-correlation', 'source': 'saved runtime GET capture',
+    'format': 'GB20x power40/38-or-3d/66/14 rows13/14; class6 monitor',
+    'set_tested': False, 'indices_matched': '134/134',
+    'units_basis': 'saved GET INFO+8 is 1 (mA) on rows 13/14'}
+REVIEWED_GB20X_IDS = (0x2BB4, 0x2B85, 0x2C02, 0x2C05, 0x2C33)
+# The single-rail image has no saved GET; its NVVDD row is compared statically.
+SINGLE_RAIL_EVIDENCE = {
+    'kind': 'structural-row-comparison', 'source': 'reviewed single-rail Blackwell table layout',
+    'scope': 'RTX PRO 6000 Blackwell Workstation Edition 98.02.81.00.07 (10de:2bb1)',
+    'format': 'Blackwell rail30/05/41/01/00 (NVVDD only) and VFE30/0e/1d/ff/19',
+    'observation': 'NVVDD row identity, REL/ALT/OV/VMIN selector and boot offsets as in the reviewed '
+                   'split-rail row; MSVDD voltage devices disabled', 'set_tested': False}
+
+# Rows accepted on devices without saved GET because they equal a reviewed
+# shape byte for byte (range bytes excluded) or follow the reviewed chain.
+STRUCTURAL_ROW_EVIDENCE = {
+    'kind': 'structural-row-comparison', 'source': 'reviewed Blackwell structural row comparison',
+    'scope': 'RTX PRO 6000 Blackwell Workstation Edition 98.02.81.00.07, RTX 5060 Ti 98.06.39.00.B2, '
+             'RTX 5070 98.05.28.00.1B',
+    'set_tested': False, 'runtime_get': False}
+NOTEBOOK_OCP_EVIDENCE = dict(
+    STRUCTURAL_ROW_EVIDENCE, source='reviewed Blackwell notebook table layout',
+    scope='RTX 5080 Laptop GPU 98.03.5C.00.F2 (10de:2c59)',
+    format='GB20x notebook rows13/14 type7; monitors 27/28',
+    observation='rows 13/14 equal the GET-reviewed Max-Q rows byte for byte (range bytes excluded); monitors '
+                '27/28 -> power channels and devices byte-identical to the reviewed NVVDD/MSVDD outputs')
+SINGLE_RAIL_OCP_EVIDENCE = dict(
+    STRUCTURAL_ROW_EVIDENCE, format='GB20x single-rail row13 type7; monitor 26',
+    observation='row13 monitor 26 -> power channel 26 (P+0x3c) and power device 9 (P+0x28) are byte-identical '
+                'to the NVVDD output channel 13 (27 on Max-Q) and its device in all seven GET-reviewed sources; '
+                'the MSVDD channel and device are disabled')
+
+
+def single_rail(parser):
+    """True for the recognized Blackwell rail table with one (NVVDD) row."""
+    if not isinstance(parser, BlackwellRom):
+        return False
+    try:
+        return parser.rail_count(parser.pointer('P', 0x68)) == 1
+    except FormatError:
+        return False
+
+
+def rail_identity(parser, item, *, ocp=False):
+    reviewed = isinstance(parser, BlackwellRom) and parser.legacy['device'] in REVIEWED_GB20X_IDS
+    index = item.get('rail_index', 0 if item['logical_rail_id'] == 'NVVDD' else 1)
+    return {'logical_rail_id': item['logical_rail_id'], 'vbios_row_index': index,
+            'api_rail_index': index if reviewed else None,
+            'power_monitor_rail_id': item.get('power_monitor_rail_id') if ocp else None,
+            'api_index_scope': 'saved Linux GET mask bits; no live GPU association' if reviewed else 'unknown'}
+
+
+@registry.register
+def equation_roles(image, parser):
+    records = parser.rail_equations()
+    result = []
+    for item in records:
+        prefix = item['logical_rail_id'].lower()
+        role = item['role'].lower()
+        key = f'{prefix}_{role}_equation_max_mv'
+        identities = rail_identity(parser, item)
+        known = item['layout_recognized']
+        editable = bool(known and item.get('editable_ceiling') and can_edit(image, parser))
+        evidence = [dict(SELECTOR_EVIDENCE)] if isinstance(parser, BlackwellRom) else [
+            {'kind': 'nvidia-common-prefix-and-reviewed-ada-rel', 'source': SOURCE,
+             'format': 'Ada rail20/05/1f/01 VFE30/0b/19/32/19'}, dict(ADA_VOLTAGE_EVIDENCE)] if ada(parser) else [
+            dict(AMPERE_VOLTAGE_EVIDENCE)]
+        if single_rail(parser):
+            evidence.append(dict(SINGLE_RAIL_EVIDENCE))
+        reason = ('selector denotes absence' if item['absent'] else
+                  item.get('diagnostic', 'equation clamp only; evaluated voltage and runtime offset remain unknown'))
+        flags = {}
+        if isinstance(parser, TableRom) and not item['absent']:
+            if not item.get('editable_ceiling'):
+                reason = 'read-only: ' + ada_equation_reason(item.get('equation_kind'))
+            elif editable:
+                flags = experimental_flag(image, parser, key)
+                if flags:
+                    reason = ('experimental: equation clamp only; not hardware-tested on this board; evaluated '
+                              'voltage and runtime offset remain unknown')
+        shared = [{'logical_rail_id': other['logical_rail_id'], 'role': other['role'],
+                   'selector_index': other['selector_raw']}
+                  for other in records if item['equation_offset'] is not None and
+                  other['equation_offset'] == item['equation_offset']]
+        status = 'verified' if editable else 'unsupported' if item['absent'] or known else 'unknown'
+        # Do not present an unrecognized output-unit code as a voltage value.
+        value_known = item['output_minimum_uv'] is not None and item.get('output_unit_code') == 2
+        current = item['output_maximum_uv'] / 1000 if value_known else None
+        offsets = ()
+        if editable:
+            offsets = [item['maximum_offset']] if isinstance(parser, BlackwellRom) else parser.copy_offsets(item['maximum_offset'], 4)
+        selector = {'raw': item['selector_raw'], 'width_bits': item['selector_width_bits'],
+                    'offset': item['selector_offset'], 'absent': item['absent']}
+        result.append(field(key, f"{item['logical_rail_id']} {item['role']} equation output ceiling", 'mV',
+                            current, item['output_minimum_uv'] / 1000 if value_known else None,
+                            0x7FFFFFFF / 1000 if known else None, editable, evidence,
+                            offsets=offsets, encoding='<f' if known else '', scale=1000,
+                            stored_units='uV' if value_known else None, writable_status=status,
+                            value_semantics='stored-equation-output-ceiling', rail_identity=identities,
+                            selector=selector, shared_references=shared, equation_offset=item['equation_offset'],
+                            equation_type=item.get('equation_type'), output_flags=item.get('output_flags'),
+                            unchanged_output_minimum_uv=item['output_minimum_uv'] if value_known else None,
+                            runtime_role_candidate='VOP' if item['role'] == 'ALT' else item['role'],
+                            runtime_offset={'units': 'uV', 'type': 'int32', 'signed': True,
+                                            'current': None, 'writable': 'unknown'},
+                            reason=reason, **flags,
+                            **({'equation_kind': item['equation_kind']} if 'equation_kind' in item else {})))
+        result.append(field(f'{prefix}_{role}_selector_index', f"{item['logical_rail_id']} {item['role']} selector", 'index',
+                            item['selector_raw'], None, None, False, evidence, writable_status='unsupported' if
+                            item['selector_raw'] is not None else 'unknown',
+                            encoding='<H' if item['selector_width_bits'] == 16 else '<B' if item['selector_width_bits'] == 8 else '',
+                            value_semantics='selector-index', rail_identity=identities, selector=selector,
+                            reason='selectors are inspected without edits or runtime evaluation'))
+    for index in sorted({r['rail_index'] for r in records}):
+        item = next(r for r in records if r['rail_index'] == index)
+        result.append(field(item['logical_rail_id'].lower() + '_boot_voltage_uv',
+                            item['logical_rail_id'] + ' stored boot voltage', 'uV', item['boot_voltage_uv'],
+                            None, None, False, [dict(SELECTOR_EVIDENCE)] if isinstance(parser, BlackwellRom) else
+                            [{'kind': 'nvidia-common-prefix', 'source': SOURCE}],
+                            writable_status='unsupported', stored_units='uV', encoding='<I',
+                            value_semantics='stored-boot-voltage', rail_identity=rail_identity(parser, item),
+                            reason='boot/factory values are preserved'))
+    return result
+
+
+def profiles_decoded(parser):
+    """True when every override profile decodes; decoded entries only target policies 2/7/8/9."""
+    try:
+        parser.power_profiles()
+    except FormatError:
+        return False
+    return True
+
+
+def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, reasons, **extra):
+    """Maximum and rated fields of Ada policy rows written together in every duplicate chain.
+
+    items share one role (one row, or the two 12 V input thresholds). A value is
+    editable only while every row holds the same value. Units follow the row unit
+    flag: W over stored mW, or mA. Both values stay read-only when another row of
+    the same class and unit reads the same channel (it may bind instead), and
+    class-5 rows carry policy_class 'hardware-threshold'. Ampere rows of the same
+    class and unit on a sum channel that adds this one are listed in
+    summed_cap_rows and named in the reason: they may bind first.
+    """
+    watts = items[0]['units'] == 'mW'
+    scale, units = (1000, 'W') if watts else (1, 'mA')
+    editable = can_edit(image, parser)
+    maxima, rated = {i['maximum_raw'] for i in items}, {i['default_raw'] for i in items}
+    raw = [{'minimum': i['minimum_raw'], 'rated': i['default_raw'], 'maximum': i['maximum_raw'],
+            'units': i['units']} for i in items]
+    own = {i['vbios_row_index'] for i in items}
+    others = sorted({o['row']: o for i in items for o in i['same_channel_rows'] if o['row'] not in own}.values(),
+                    key=lambda o: o['row'])
+    threshold = items[0]['type'] == 5
+    if threshold:
+        extra = dict(extra, policy_class='hardware-threshold')
+    if others:
+        extra = dict(extra, same_channel_rows=[{'row': o['row'], 'parameter_byte_0': o['parameter_byte_0'],
+                                                'minimum': o['minimum_raw'], 'rated': o['default_raw'],
+                                                'maximum': o['maximum_raw'], 'units': o['units']} for o in others])
+    summed = sorted({o['row']: o for i in items for o in i.get('summed_cap_rows', ())}.values(),
+                    key=lambda o: o['row'])
+    if summed:
+        extra = dict(extra, summed_cap_rows=[{'row': o['row'], 'power_channel': o['channel_index'],
+                                              'summed_channels': o['summed_channels'], 'minimum': o['minimum_raw'],
+                                              'rated': o['default_raw'], 'maximum': o['maximum_raw'],
+                                              'units': o['units']} for o in summed])
+    common = dict(encoding='<I', scale=scale, stored_units=items[0]['units'],
+                  policy_indices=[i['vbios_row_index'] for i in items], experimental=True, ordering_group=group,
+                  encoding_bounds=(0, 0x7FFFFFFF / scale), power_channel=items[0]['channel_index'],
+                  immutable_row_sha256=[i['immutable_row_sha256'] for i in items],
+                  raw_bounds=raw[0] if len(raw) == 1 else raw, **extra)
+
+    def offsets(name):
+        return [at for i in items for at in parser.copy_offsets(i[name], 4)]
+
+    def amount(value):
+        return f'{value / scale:g} {units}'
+    if summed:
+        reasons = tuple(r + ''.join(
+            f"; row {o['row']} caps the sum of power channels {', '.join(map(str, o['summed_channels']))} at "
+            f"{amount(o['default_raw'])} rated, {amount(o['maximum_raw'])} maximum, and may bind first: raising "
+            'this limit alone may have no effect' for o in summed) for r in reasons)
+    differ = 'read-only: the rows of this policy hold different values'
+    if others:
+        kind = 'hardware threshold' if threshold else 'policy row'
+        differ = ('read-only: ' + '; '.join(
+            f"row {o['row']} (parameter byte 0 = {o['parameter_byte_0']}, rated {amount(o['default_raw'])}, "
+            f"maximum {amount(o['maximum_raw'])})" for o in others) +
+            (f' is another {kind}' if len(others) == 1 else f' are other {kind}s') +
+            ' of the same class and unit on this power channel; which row binds is unknown, '
+            'so editing this row alone may have no effect')
+    one_max, one_rated = len(maxima) == 1 and not others, len(rated) == 1 and not others
+    if not profiles_decoded(parser):
+        # As for the TGP: an undecoded override profile may target this policy.
+        one_max = one_rated = False
+        differ = ('read-only: the power override profiles do not decode, so a profile may override this '
+                  'policy; editing it alone may have no effect')
+    return [field(keys[0], labels[0], units, max(maxima) / scale if len(maxima) == 1 else None,
+                  max(rated) / scale, 0x7FFFFFFF / scale, editable and one_max, [dict(e) for e in evidence],
+                  offsets=offsets('maximum_offset'), value_semantics='stored-policy-maximum',
+                  writable_status=None if one_max else 'unsupported', reason=reasons[0] if one_max else differ,
+                  **common),
+            field(keys[1], labels[1], units, max(rated) / scale if len(rated) == 1 else None,
+                  max(i['minimum_raw'] for i in items) / scale, min(maxima) / scale, editable and one_rated,
+                  [dict(e) for e in evidence], offsets=offsets('default_offset'),
+                  value_semantics='stored-policy-rated-default', writable_status=None if one_rated else 'unsupported',
+                  reason=reasons[1] if one_rated else differ, **common)]
+
+
+ADA_SLOT_EVIDENCE = [
+    dict(ADA_RUNTIME_EVIDENCE, format='Ada power row class 4 mW on channel 4',
+         observation='policy 5: API type 3, monitor 4 (class 8, rail 255), 1000/66000/66000 mW, CONTROL current '
+                     '66000; the same identity as the GET-reviewed GB20x SFF slot policy row 19'),
+    dict(ADA_STRUCTURAL_EVIDENCE, format='Ada power row shape 830b68bb (range bytes excluded) on a channel '
+                                         'byte-identical to the GB20x slot input channel 1',
+         observation='66 W (5.5 A x 12 V) on every Ada image with this row')]
+ADA_INPUT_EVIDENCE = [
+    dict(ADA_STRUCTURAL_EVIDENCE, format='Ada power rows class 5 (hardware threshold, nvgpu bios.h) mA, shapes '
+                                         '619656b5/6951b88d, threshold index 0/1 (parameter byte 0), channel 9',
+         observation='channel 9 is byte-identical to the GB20x 12 V input-current channel 9 that saved GET '
+                     'identifies (policy 9, mA); rated values 16-45 A, about 1.2-1.69 x rated TGP / 12 V on the 11 '
+                     'images with these rows; thresholds 0 and 1 hold equal rated values on all 11 and equal maxima '
+                     'on 10 (RTX 4500 Ada: 22000/21000 mA), minima differ on two (0/1000 mA); a value is editable '
+                     'only where both rows hold it'),
+    dict(ADA_RUNTIME_EVIDENCE, observation='units only: the class-5 mA row 8 of this board reports limit unit 1 (mA); '
+                                           'the 12 V input rows are not present on this board')]
+
+
+AMPERE_CHANNEL_FORMAT = ('Ampere power row class/unit flags (byte 0) and channel (byte 1); power channel table P+0x3c '
+                         'v0x20 with 22- or 26-byte entries: class 5 single input at 12 V (bytes 2..7), rail byte 1, '
+                         'no parameter but the provider byte 15')
+AMPERE_SLOT_EVIDENCE = [dict(
+    AMPERE_STRUCTURAL_EVIDENCE, format=AMPERE_CHANNEL_FORMAT + '; class 4 mW row on the PCIe slot channel (rail 0xff)',
+    observation='the slot channel is byte-identical (zero padded) to the Ada slot channel of the GET-reviewed RTX 2000 '
+                'Ada policy 5; one such row (row 5) on every desktop and workstation image that has it, rated 66 W; '
+                'laptops, the A1000 and the RTX 3050 8GB store none')]
+AMPERE_CONNECTOR_EVIDENCE = [dict(
+    AMPERE_STRUCTURAL_EVIDENCE, format=AMPERE_CHANNEL_FORMAT + '; class 4 mW rows on the external 12 V connector '
+                                                               'channels, rails 0xfa, 0xfb, 0xfc and 0xe4',
+    observation='one row per connector sense channel, numbered in power-row order; rated 150-175 W on rails '
+                '0xfa/0xfb/0xe4 and 75-87.5 W on 0xfc; the PCIe CEM 8-pin (150 W) and 6-pin (75 W) ratings are a '
+                'hint, not an identity: one physical connector can span several channels (RTX A6000 and A40 EPS '
+                '8-pin: two at 150 W; RTX 3090 Ti 16-pin: three at 162 W); rail names are inferred, not read at '
+                'runtime; with the slot policy they likely cap the board power below a TGP raised past their sum, '
+                'and a class-4 row on a sum of these channels (RTX 3080 Ti 450 W, RTX A6000 280 W) may bind first '
+                '(inferred, untested)')]
+AMPERE_INPUT_EVIDENCE = [dict(
+    AMPERE_STRUCTURAL_EVIDENCE, format=AMPERE_CHANNEL_FORMAT + '; class 5 (hardware threshold, nvgpu bios.h) mA rows '
+                                                               'on the 12 V input channel, rail 0xe0',
+    observation='the Ada 12 V input-current rows and the GB20x input channel 9 read rail 0xe0; one row on most '
+                'images (14-37.8 A, about 1.1-1.9 x rated TGP / 12 V), two equal 45 A rows (thresholds 0 and 1) on '
+                'the RTX 3090 Ti; none on the RTX 3080/3090, A40, A6000, laptops and slot-powered boards; a value is '
+                'editable only where every row holds it')]
+AMPERE_SLOT_CURRENT_EVIDENCE = [dict(
+    AMPERE_STRUCTURAL_EVIDENCE, format=AMPERE_CHANNEL_FORMAT + '; class 5 (hardware threshold) mA row on the PCIe '
+                                                               'slot channel',
+    observation='the same class, unit and channel as the GET-reviewed RTX 2000 Ada policy 8 (CONTROL current = rated '
+                'there); 7-11.35 A rated (row 8) on the desktop and workstation images')]
+
+
+def ampere_policy(parser, role):
+    """The single Ampere power row of a role, or None (see TableRom.ampere_policies)."""
+    items = parser.ampere_policies(role)
+    return items[0] if len(items) == 1 else None
+
+
+@registry.register
+def output_ocp(image, parser):
+    if ampere(parser):
+        # Class-0 mA rows on the NVVDD output-current channel (row 13; single-rail images
+        # add a 5001 A row 18). As on Ada, whether the firmware enforces them is unproven.
+        items = sorted(parser.ampere_policies('nvvdd_current'), key=lambda i: i['maximum_raw'])
+        if not items:
+            return []
+        item = items[0]
+        others = [{'row': o['row'], 'minimum': o['minimum_raw'], 'rated': o['default_raw'],
+                   'maximum': o['maximum_raw'], 'units': 'mA'} for o in items[1:]]
+        return [field('nvvdd_output_ocp_max_ma', 'NVVDD output current policy ceiling', 'mA', item['maximum_raw'],
+                      None, None, False, [dict(AMPERE_STRUCTURAL_EVIDENCE, format='Ampere power row class 0 mA on an '
+                                                                                  'NVVDD output channel (class 1, rail 1)',
+                                               observation='row 13 on every image (54-445 A); the single-rail '
+                                                           'images add a 5001 A row 18 on the same channel')],
+                      writable_status='unsupported', stored_units='mA', value_semantics='stored-policy-maximum',
+                      policy_indices=[item['vbios_row_index']],
+                      raw_bounds={'minimum': item['minimum_raw'], 'rated': item['default_raw'],
+                                  'maximum': item['maximum_raw'], 'units': 'mA'},
+                      **({'same_channel_rows': others} if others else {}),
+                      reason='read-only: class-0 NVVDD output-current policy (the lowest ceiling on this channel); '
+                             'whether the firmware enforces it is unproven, as on Ada')]
+    if ada(parser):
+        # Row 13 (class 0, mA) on the NVVDD output-current channel. It is not in the
+        # runtime policy list of the RTX 2000 Ada, so its enforcement is unproven.
+        item = parser.ada_policy('nvvdd_current')
+        if item is None:
+            return []
+        return [field('nvvdd_output_ocp_max_ma', 'NVVDD output current policy ceiling', 'mA', item['maximum_raw'],
+                      None, None, False, [dict(ADA_STRUCTURAL_EVIDENCE, format='Ada power row class 0 mA on channel 19 '
+                                                                              '(NVVDD output current sensor, rail 1)'),
+                                          dict(ADA_RUNTIME_EVIDENCE, observation='row 13 is absent from the runtime '
+                                                                                 'policy list (mask 0x1c13f)')],
+                      writable_status='unsupported', stored_units='mA', value_semantics='stored-policy-maximum',
+                      policy_indices=[item['vbios_row_index']],
+                      raw_bounds={'minimum': item['minimum_raw'], 'rated': item['default_raw'],
+                                  'maximum': item['maximum_raw'], 'units': 'mA'},
+                      reason='read-only: class-0 NVVDD output-current policy; whether the firmware enforces it is '
+                             'unproven (absent from the runtime policy list of the RTX 2000 Ada)')]
+    if not isinstance(parser, BlackwellRom):
+        return []
+    result = []
+    # Rated values are enforced from boot only if no undecoded profile overrides them.
+    rated_editable = profiles_decoded(parser)
+    for item in parser.output_ocp_policies():
+        known = item['association_recognized']
+        editable = known and can_edit(image, parser)
+        evidence = [dict(OCP_EVIDENCE, immutable_row_sha256=item['immutable_row_sha256'])]
+        if item.get('association_basis') == 'structural-channel':
+            evidence = [dict(SINGLE_RAIL_OCP_EVIDENCE, immutable_row_sha256=item['immutable_row_sha256'])]
+        elif item.get('association_basis') == 'structural-notebook':
+            evidence = [dict(NOTEBOOK_OCP_EVIDENCE, immutable_row_sha256=item['immutable_row_sha256'])]
+        identity = rail_identity(parser, item, ocp=True)
+        # Policy row and voltage rail row are different namespaces.
+        identity['vbios_policy_index'] = item['vbios_row_index']
+        result.append(field(item['logical_rail_id'].lower() + '_output_ocp_max_ma',
+                            item['logical_rail_id'] + ' output OCP policy ceiling', 'mA',
+                            item['maximum_raw'] if known else None,
+                            item['default_raw'] if known else None, 0x7FFFFFFF if known else None,
+                            editable, evidence, offsets=[item['maximum_offset']] if editable else (),
+                            encoding='<I' if known else '', scale=1, stored_units='mA' if known else None,
+                            writable_status='verified' if editable else 'unsupported' if known else 'unknown',
+                            value_semantics='stored-policy-maximum', rail_identity=identity,
+                            factory_rated_ma=item['default_raw'] if known else None,
+                            raw_bounds={'minimum': item['minimum_raw'], 'rated': item['default_raw'],
+                                        'maximum': item['maximum_raw'], 'units': item['units']},
+                            policy_types={'vbios': item['type'], 'rm': item['rm_policy_type'], 'api': item['api_policy_type']},
+                            monitor={'index': item['monitor_index'], 'class': item['monitor_class'],
+                                     'rail_id': item['power_monitor_rail_id']},
+                            **(dict(ordering_group=item['logical_rail_id'].lower() + '-output-ocp',
+                                    encoding_bounds=(0, 0x7FFFFFFF)) if known else {}),
+                            reason='static maximum: widens what a runtime client may request; the boot OCP is the rated '
+                                   'value; runtime SET and enforcement untested' if known else
+                                   'this recognized single-rail layout exposes only logic/NVVDD' if item.get('rail_absent') else
+                                   'row shape/device/monitor association is outside reviewed evidence'))
+        if known:
+            # Saved GET shows CONTROL current = rated on rows13/14 of all seven
+            # sources, so the rated value is the OCP enforced from boot.
+            result.append(field(item['logical_rail_id'].lower() + '_output_ocp_rated_ma',
+                                item['logical_rail_id'] + ' output OCP rated limit', 'mA', item['default_raw'],
+                                item['minimum_raw'], item['maximum_raw'], editable and rated_editable,
+                                evidence + [dict(THIRD_PARTY_EVIDENCE, observation=(
+                                    'rows13/14 rated values are the enforced OCP: lowering them to 100 A clamped '
+                                    'GPC/XBAR under load; XOC images raise them to 2000/1000 A'))],
+                                offsets=[item['offset'] + 17], encoding='<I', scale=1, stored_units='mA',
+                                value_semantics='stored-policy-rated-default',
+                                rail_identity=dict(identity), policy_indices=[item['vbios_row_index']],
+                                experimental=True, ordering_group=item['logical_rail_id'].lower() + '-output-ocp',
+                                encoding_bounds=(0, 0x7FFFFFFF),
+                                policy_types={'vbios': item['type'], 'rm': item['rm_policy_type'],
+                                              'api': item['api_policy_type']},
+                                reason='experimental: rated output OCP enforced from boot (saved GET current = rated); '
+                                       'not hardware-tested; stored value, not a hardware-safe current rating'
+                                       if item.get('association_basis') == 'saved-get' else
+                                       'experimental: rated output OCP; on the GET-reviewed sources it is enforced from '
+                                       'boot (current = rated); this notebook image has the Max-Q rows and channel chains '
+                                       'but no saved GET; not hardware-tested; stored value, not a hardware-safe current rating'
+                                       if item.get('association_basis') == 'structural-notebook' else
+                                       'experimental: rated output OCP; on the GET-reviewed sources it is enforced from '
+                                       'boot (current = rated); this image matches their NVVDD channel chain but has no '
+                                       'saved GET; not hardware-tested; stored value, not a hardware-safe current rating'))
+    return result
+
+
+SLOT_POWER_EVIDENCE = {
+    'kind': 'saved-get-policy-correlation', 'source': 'saved runtime GET capture',
+    'format': 'GB20x power40/3d/66/14 row19 type2; byte1 0; monitor index 1; class8 monitor',
+    'observed': 'policy19 only on the SFF: INFO+8 0 (mW), monitor 1, 1/66000/66000, CONTROL current 66000',
+    'set_tested': False}
+
+
+@registry.register
+def slot_power(image, parser):
+    """PCIe-slot power policy of the reviewed SFF (row 19), the 5060 Ti (row 18) and Ada/Ampere row 5; absent elsewhere."""
+    if isinstance(parser, TableRom):
+        item = parser.ada_policy('slot_power') if ada(parser) else ampere_policy(parser, 'slot_power')
+        if item is None:
+            return []
+        return ada_policy_fields(
+            image, parser, [item], ('slot_power_max_w', 'slot_power_rated_w'),
+            ('PCIe slot power ceiling', 'PCIe slot power limit (rated)'), group='slot-power',
+            evidence=ADA_SLOT_EVIDENCE if ada(parser) else AMPERE_SLOT_EVIDENCE,
+            reasons=('experimental: ceiling of the PCIe slot power policy; SET and enforcement untested; '
+                     'stored value, not a hardware-safe slot rating',
+                     'experimental: rated slot power limit; on the RTX 2000 Ada it is enforced from boot (saved GET '
+                     'current = rated) and caps a slot-powered board; not hardware-tested; stored value, not a '
+                     'hardware-safe slot rating'))
+    item = parser.slot_power_policy()
+    if not item['association_recognized']:
+        return []
+    editable = can_edit(image, parser) and profiles_decoded(parser)
+    index = item['vbios_row_index']
+    evidence = [dict(SLOT_POWER_EVIDENCE, immutable_row_sha256=item['immutable_row_sha256']),
+                dict(THIRD_PARTY_EVIDENCE, observation=(
+                    'power-monitor channel 1 is the PCIe slot input (about 6 W of 555 W on a connector-powered 5090)'))]
+    reviewed = index == 19
+    if not reviewed:
+        # No saved GET for this device: the structural comparison leads.
+        evidence.insert(0, dict(STRUCTURAL_ROW_EVIDENCE,
+                                format=f'GB20x power40/38-or-3d/66/14 row{index} type2; byte1 0; monitor index 1',
+                                observation='same immutable shape as the GET-reviewed SFF row19 slot policy'))
+    common = dict(encoding='<I', scale=1000, stored_units='mW', policy_indices=[index], experimental=True,
+                  ordering_group='slot-power', encoding_bounds=(0, 0x7FFFFFFF / 1000), vbios_policy_index=index,
+                  monitor={'index': item['monitor_index'], 'class': 8},
+                  raw_bounds={'minimum': item['minimum_raw'], 'rated': item['default_raw'],
+                              'maximum': item['maximum_raw'], 'units': 'mW'})
+    return [field('slot_power_max_w', 'PCIe slot power ceiling', 'W', item['maximum_raw'] / 1000,
+                  item['default_raw'] / 1000, 0x7FFFFFFF / 1000, editable, evidence,
+                  offsets=[item['maximum_offset']], value_semantics='stored-policy-maximum',
+                  reason='experimental: ceiling of the PCIe slot power policy; SET and enforcement untested; '
+                         'stored value, not a hardware-safe slot rating', **common),
+            field('slot_power_rated_w', 'PCIe slot power limit (rated)', 'W', item['default_raw'] / 1000,
+                  item['minimum_raw'] / 1000, item['maximum_raw'] / 1000, editable, evidence,
+                  offsets=[item['default_offset']], value_semantics='stored-policy-rated-default',
+                  reason='experimental: rated slot power limit enforced from boot (saved GET current = rated); '
+                         'not hardware-tested; stored value, not a hardware-safe slot rating' if reviewed else
+                         'experimental: rated slot power limit; on the GET-reviewed SFF it is enforced from boot '
+                         '(current = rated); this image has no saved GET; not hardware-tested; stored value, not a '
+                         'hardware-safe slot rating', **common)]
+
+
+@registry.register
+def connector_power(image, parser):
+    """Ampere external 12 V connector-channel power policies (class 4 mW), numbered in power-row order.
+
+    A channel is a sense channel, not a physical connector: one connector may span several.
+    """
+    if not ampere(parser):
+        return []
+    result = []
+    for number, item in enumerate(parser.ampere_policies('connector_power'), 1):
+        result += ada_policy_fields(
+            image, parser, [item], (f'connector_{number}_power_max_w', f'connector_{number}_power_rated_w'),
+            (f'Connector power channel {number} ceiling', f'Connector power channel {number} limit (rated)'),
+            group=f'connector-{number}-power', evidence=AMPERE_CONNECTOR_EVIDENCE, connector=number,
+            channel_rail=item['channel_rail'],
+            reasons=('experimental: ceiling of the power policy of one external 12 V connector channel (rail '
+                     f"{item['channel_rail']:#04x}); SET and enforcement untested; stored value, not a hardware-safe "
+                     'connector rating',
+                     'experimental: rated power limit of one external 12 V connector channel (rail '
+                     f"{item['channel_rail']:#04x}); with the slot limit it may cap the board power below a raised TGP; "
+                     'not hardware-tested; stored value, not a hardware-safe connector rating'))
+    return result
+
+
+INPUT_CURRENT_EVIDENCE = {
+    'kind': 'saved-get-policy-correlation', 'source': 'saved runtime GET capture',
+    'format': 'GB20x power40/38-or-3d/66/14 row9 type11; unit discriminator1; class8 monitor',
+    'indices_matched': 'row9 range/current equal on all seven reviewed sources', 'set_tested': False,
+    'units_basis': 'row byte1 and GET INFO+8 are 1 on rows9-14 as on the mA output-OCP rows13/14; '
+                   'GET INFO+8 is 0 on every mW row'}
+
+
+@registry.register
+def input_current(image, parser):
+    """Row9 12 V board input-current policy (Ada: thresholds 0/1; Ampere: rail 0xe0 thresholds); kept apart from output OCP rows13/14."""
+    if isinstance(parser, TableRom):
+        items = ([parser.ada_policy('input_current_0'), parser.ada_policy('input_current_1')] if ada(parser) else
+                 parser.ampere_policies('input_current') or [None])
+        if None in items:
+            return []
+        return ada_policy_fields(
+            image, parser, items, ('input_current_max_ma', 'input_current_rated_ma'),
+            ('12 V input current threshold ceiling', '12 V input current threshold (rated)'),
+            group='input-current-12v', evidence=ADA_INPUT_EVIDENCE if ada(parser) else AMPERE_INPUT_EVIDENCE,
+            opt_in=True,
+            reasons=('experimental, opt-in: client ceiling of both 12 V input-current hardware thresholds (written '
+                     'together); SET and enforcement untested; stored value, not a hardware-safe current rating',
+                     'experimental, opt-in: rated 12 V input-current hardware threshold, thresholds 0 and 1 written '
+                     'together; identified by a channel byte-identical to the GB20x 12 V input channel; no Ada GET '
+                     'of these rows; not hardware-tested; stored value, not a hardware-safe current rating'
+                     if ada(parser) else
+                     'experimental, opt-in: rated 12 V input-current hardware threshold (every row on the rail 0xe0 '
+                     'channel written together); identified by its channel rail only; no Ampere reading; not '
+                     'hardware-tested; stored value, not a hardware-safe current rating'))
+    item = parser.input_current_policy()
+    known = item['association_recognized']
+    raw_bounds = {'minimum': item['minimum_raw'], 'rated': item['default_raw'],
+                  'maximum': item['maximum_raw'], 'units': item['units']}
+    if not known:
+        mapped = item['type'] == 11 and parser.legacy['device'] in REVIEWED_GB20X_IDS
+        return [field('input_policy_9_max_raw', 'Input-policy row9 maximum (units unknown)', 'unknown',
+                      item['maximum_raw'], None, None, False, [dict(OCP_EVIDENCE)],
+                      writable_status='unknown', value_semantics='unknown',
+                      policy_types={'vbios': item['type'], 'rm': 30 if mapped else None,
+                                    'api': 25 if mapped else None}, raw_bounds=raw_bounds,
+                      reason='row9 is not output OCP; class8 union and units are unknown')]
+    profiles, matching = parser.power_profiles(), parser.matching_power_profiles()
+    top = parser.top_power_profile() if profiles and not matching else None
+    if profiles and not matching and top is None:
+        raise FormatError('no complete override profile matches the base policy')
+    editable = can_edit(image, parser)
+    maximum, rated, maximum_lower = item['maximum_raw'], item['default_raw'], item['default_raw']
+    maximum_upper, rated_lower, extra, note = 0x7FFFFFFF, item['minimum_raw'], {}, ''
+    rated_upper = maximum
+    if top is not None:
+        # Only the bound profile's row 9 entries are written; base row 9 caps them.
+        maximum, rated = top['values'][(9, 'maximum')], top['values'][(9, 'default')]
+        rated_upper = min(maximum, item['default_raw'])
+        maximum_upper = item['maximum_raw']
+        maximum_lower = max([rated] + top_profile_bounds(profiles, top, (9,), 'maximum'))
+        rated_lower = max([rated_lower] + top_profile_bounds(profiles, top, (9,), 'default'))
+        extra = dict(bound_profile=top['index'], base_values={'input_current_max_ma': item['maximum_raw'],
+                                                              'input_current_rated_ma': item['default_raw']})
+        note = top_profile_note(top, '%d mA' % item['maximum_raw'] if item['maximum_raw'] == item['default_raw'] else
+                                '%d/%d mA (rated/maximum)' % (item['default_raw'], item['maximum_raw']))
+    structural = [] if parser.legacy['device'] in REVIEWED_GB20X_IDS else [dict(
+        STRUCTURAL_ROW_EVIDENCE, format='GB20x row9 type11' + (' and linked row7' if item['linked_limit_recognized'] else ''),
+        observation='row 9 equals a GET-reviewed template (non-Max-Q, or Max-Q with monitor 2)' +
+                    ('; row 7 equals the reviewed linked-limit shape' if item['linked_limit_recognized'] else ''))]
+    evidence = structural + [dict(INPUT_CURRENT_EVIDENCE, immutable_row_sha256=item['immutable_row_sha256']),
+                dict(THIRD_PARTY_EVIDENCE, observation=(
+                    'RM PWR_POLICIES INFO entry 9: type 0x1e, channel 9, limitUnit 1 (mA), 1/80000/80000 '
+                    'on a Matrix; STATUS channel 9 read 46008 mA at 555 W board power'))]
+    common = dict(encoding='<I', scale=1, stored_units='mA', policy_indices=[9], experimental=True,
+                  ordering_group='input-current-12v', encoding_bounds=(0, 0x7FFFFFFF),
+                  policy_types={'vbios': item['type'], 'rm': item['rm_policy_type'], 'api': item['api_policy_type']},
+                  monitor={'index': item['monitor_index'], 'class': item['monitor_class']}, raw_bounds=raw_bounds)
+
+    def offsets(name, base):
+        if top is not None:
+            return top_profile_offsets(top, (9,), name)
+        return [base] + [e['value_offset'] for p in matching for e in p['entries']
+                         if e['policy'] == 9 and e['field'] == name]
+    bound_evidence = [TOP_PROFILE_EVIDENCE] + evidence if top is not None else evidence
+    result = [field('input_current_max_ma', '12 V input current ceiling', 'mA', maximum,
+                    maximum_lower, maximum_upper, editable, bound_evidence,
+                    offsets=offsets('maximum', item['maximum_offset']), value_semantics='stored-policy-maximum',
+                    reason='experimental: ' + note + 'client ceiling of the 12 V input-current policy; SET and '
+                           'enforcement untested; stored value, not a hardware-safe current rating',
+                    **common, **extra),
+              field('input_current_rated_ma', '12 V input current limit (rated)', 'mA', rated,
+                    rated_lower, rated_upper, editable, bound_evidence,
+                    offsets=offsets('default', item['default_offset']), value_semantics='stored-policy-rated-default',
+                    reason='experimental: ' + note + 'rated limit applied without a client request; enforcement not '
+                           'hardware-tested; stored value, not a hardware-safe current rating',
+                    **common, **extra)]
+    if item['linked_limit_recognized']:
+        # Raising row9 alone may leave the effective 12 V limit at this value.
+        # Kept as a separate field on purpose; which copy binds is still to
+        # be measured on hardware.
+        result.append(field('input_current_policy7_limit_ma', 'Policy 7 limit linked to the 12 V input policy',
+                            'mA', item['linked_limit_raw'], 1, 0x7FFFFFFF, editable,
+                            structural + [dict(INPUT_CURRENT_EVIDENCE, linked_row_sha256=item['linked_limit_row_sha256'],
+                                  observation='row7 byte33 = 9; GET INFO7+364 = 9 and CONTROL7+1116 = policy9 '
+                                              'current; equal to the row9 limit on all seven reviewed sources'),
+                             dict(THIRD_PARTY_EVIDENCE, observation=(
+                                 'an XOC image raised this value 80000 -> 160000 while setting row9 to 5001000'))],
+                            offsets=[item['linked_limit_offset']], encoding='<I', scale=1, stored_units='mA',
+                            experimental=True, policy_indices=[7], value_semantics='stored-linked-policy-limit',
+                            references_policy=9, vbios_policy_index=7,
+                            reason='experimental: policy7 limit linked to the 12 V input policy; it may cap the input '
+                                   'current; not hardware-tested; stored value, not a hardware-safe current rating'))
+    return result
+
+
+@registry.register
+def power_thresholds(image, parser):
+    """Ada hardware-threshold policies with a runtime GET on the RTX 2000 Ada (advanced, opt-in).
+
+    Slot current (row 8, class 5 mA on the slot channel) and NVVDD output power
+    (row 16, class 5 mW on the NVVDD power sensor). Their rated value is the
+    enforced threshold there (CONTROL current = rated).
+    """
+    if ampere(parser):
+        slot = ampere_policy(parser, 'slot_current')
+        if slot is None:
+            return []
+        return ada_policy_fields(
+            image, parser, [slot], ('slot_current_threshold_max_ma', 'slot_current_threshold_rated_ma'),
+            ('PCIe slot current threshold ceiling', 'PCIe slot current threshold (rated)'),
+            group='slot-current', opt_in=True, evidence=AMPERE_SLOT_CURRENT_EVIDENCE,
+            reasons=('experimental, opt-in: ceiling of the slot current hardware threshold; SET untested; stored '
+                     'value, not a hardware-safe slot rating',
+                     'experimental, opt-in: slot 12 V current hardware threshold; enforced from boot on the RTX 2000 '
+                     'Ada, no Ampere reading; not hardware-tested; raising it exceeds the PCIe CEM slot rating on a '
+                     'slot-powered board'))
+    if not ada(parser):
+        return []
+    result = []
+    slot = parser.ada_policy('slot_current')
+    if slot is not None:
+        result += ada_policy_fields(
+            image, parser, [slot], ('slot_current_threshold_max_ma', 'slot_current_threshold_rated_ma'),
+            ('PCIe slot current threshold ceiling', 'PCIe slot current threshold (rated)'),
+            group='slot-current', opt_in=True,
+            evidence=[dict(ADA_RUNTIME_EVIDENCE, format='Ada power row class 5 (hardware threshold) mA on channel 4',
+                           observation='policy 8: API type 4, limit unit 1 (mA), monitor 4 (class 8, rail 255), '
+                                       '1000/8250/8250, CONTROL current 8250'),
+                      dict(ADA_STRUCTURAL_EVIDENCE, format='Ada power row shape 85465d66 on the slot channel',
+                           observation='8.25 A (about 99 W at 12 V) on the two images with this row')],
+            reasons=('experimental, opt-in: ceiling of the slot current hardware threshold; SET untested; stored '
+                     'value, not a hardware-safe slot rating',
+                     'experimental, opt-in: slot 12 V current hardware threshold enforced from boot on the RTX 2000 '
+                     'Ada (saved GET current = rated); not hardware-tested; raising it exceeds the PCIe CEM slot '
+                     'rating on a slot-powered board'))
+    nvvdd = parser.ada_policy('nvvdd_power')
+    if nvvdd is not None:
+        result += ada_policy_fields(
+            image, parser, [nvvdd], ('nvvdd_power_threshold_max_w', 'nvvdd_power_threshold_rated_w'),
+            ('NVVDD output power threshold ceiling', 'NVVDD output power threshold (rated)'),
+            group='nvvdd-power-threshold', opt_in=True,
+            evidence=[dict(ADA_RUNTIME_EVIDENCE, format='Ada power row class 5 (hardware threshold) mW on channel 18',
+                           observation='policy 16: API type 4, limit unit 0 (mW), monitor 18 (class 6, rail 1), '
+                                       '10000/125983/125983, CONTROL current 125983'),
+                      dict(ADA_STRUCTURAL_EVIDENCE, format='Ada power row shapes 9d19198c/f9720229 on the NVVDD '
+                                                           'output power channel 18 (rail 1)',
+                           observation='rated value above the rated TGP on every Ada image (122-650 W rated; the RTX '
+                                       '4050 Laptop GPU 122 W row is below its 140 W TGP ceiling); the RTX 4060 '
+                                       'has a second class-5 mW row on channel 18 (parameter byte 0 = 4, 100 W) '
+                                       'and keeps both values read-only')],
+            reasons=('experimental, opt-in: ceiling of the NVVDD output power hardware threshold; SET untested; '
+                     'stored value, not a hardware-safe rating',
+                     'experimental, opt-in: NVVDD output power hardware threshold enforced from boot on the RTX 2000 '
+                     'Ada (saved GET current = rated); not hardware-tested; stored value, not a hardware-safe rating'))
+    return result
+
+
+FAN_EVIDENCE = [
+    {'kind': 'structural-table',
+     'format': 'GB20x fan cooler table v0x10 at P+0x58 (object 0x1d); 9-byte header, four 26-byte rows',
+     'observation': 'header bytes 4..7 list exactly the rows with a nonzero byte 0 on all fourteen Blackwell '
+                    'sources; row bytes 11..13 hold 25000 or 27000, equal on the active rows; byte 13 is 0'},
+    {'kind': 'read-only-nvml-correlation', 'source': 'read-only NVML capture', 'set_tested': False,
+     'api': 'nvmlDeviceGetNumFans', 'relation': 'fan count = listed channels',
+     'observed': 'Max-Q 1, 5090 Matrix 3, 5080 2, 5070 Ti 2, SFF 1'},
+    {'kind': 'third-party-tool-reading',
+     'source': 'mVolt BIOS override view', 'use': 'cross-check only',
+     'observation': 'mVolt shows fan layout 3 channels and PWM frequency 25 kHz on the 5090 Matrix, '
+                    'whose active rows hold 25000 at bytes 11..13'}]
+# 4-wire PWM fan specification band; outside it fans may not regulate.
+FAN_PWM_BAND_HZ = (21000, 28000)
+
+
+def fan_layouts(parser, table):
+    """Channel counts this image can hold and restore, with the bytes each writes.
+
+    A count sets the cooler list (header bytes 4..7) and byte 0 of entries
+    0..3 in the cooler, policy, mapping, control and speed tables. Every
+    offered count can be reached and undone byte for byte:
+    - Raising enables the next stored channels only: stored in every table
+      (see BlackwellRom.fan_coolers), with their own cooler configuration
+      (row bytes 4..5 and 10 unlike every earlier row), the shared PWM
+      frequency and byte 13 = 0. They take channel 0's enable byte in each
+      table.
+    - Lowering clears the last channels in all five tables, as the two-channel
+      ASUS XOC image does for the Matrix's third channel. It is offered only down
+      to the lowest channel above which every active channel has its own
+      cooler configuration and channel 0's enable byte in every table, so
+      raising again restores it.
+    """
+    b, rows = parser.blob, table['rows']
+    active = [r for r in rows if r['active']]
+    frequency = active[0]['pwm_frequency_hz']
+    identity = lambda r: (b[r['offset'] + 4:r['offset'] + 6], b[r['offset'] + 10])
+    first = rows[0]
+    enables = (('offset', 'enable'), ('policy_offset', 'policy_enable'), ('mapping_offset', 'mapping_enable'),
+               ('control_offset', 'control_enable'), ('speed_offset', 'speed_enable'))
+    most = len(active)
+    for row in rows[most:]:
+        if (identity(row) in {identity(r) for r in rows[:row['index']]} or
+                row['pwm_frequency_hz'] != frequency or b[row['offset'] + 13] or not row['stored']):
+            break
+        most += 1
+    least = len(active)
+    for row in reversed(active[1:]):
+        if (identity(row) in {identity(r) for r in rows[:row['index']]} or
+                any(row[name] != first[name] for _, name in enables)):
+            break
+        least -= 1
+    n = len(rows)  # list bytes and entries per table: 4 on GB20x, 2 on Ada
+    offsets = [table['offset'] + 4 + i for i in range(n)] + [r[at] for at, _ in enables for r in rows]
+    layout = []
+    for count in range(least, most + 1):
+        listed = [i if i < count else 0xFF for i in range(n)]
+        on = lambda r, name: (r[name] if r['active'] else first[name]) if r['index'] < count else 0
+        values = listed + [on(r, name) for _, name in enables for r in rows]
+        layout.append((count, tuple(bytes((v,)) for v in values)))
+    return least, most, offsets, tuple(layout)
+
+
+ADA_FAN_EVIDENCE = [
+    {'kind': 'structural-table',
+     'format': 'Ada fan cooler table v0x10 at P+0x58; 6-byte header, two 26-byte rows; per-channel policy, mapping, '
+               'control and speed tables at P+0x5c/0x64/0xdc/0xe0',
+     'observation': 'header bytes 4..5 list exactly the rows with a nonzero byte 0 on the 15 GPU-driven Ada images; '
+                    'active rows hold 25000 or 27000 at bytes 11..13 and byte 13 is 0; row configuration bytes equal '
+                    'the GB20x rows 0/1; laptop images list no channel and enable none'},
+    {'kind': 'public-driver-source', 'source': 'Linux nouveau nvkm/subdev/bios/fan.c (MIT)',
+     'observation': 'reads the P+0x58 v0x10 cooler table; PWM frequency = 24-bit value at entry byte 0x0b'},
+    {'kind': 'read-only-nvml-correlation', 'source': 'read-only NVML capture', 'set_tested': False,
+     'api': 'nvmlDeviceGetNumFans', 'relation': 'fan count = listed channels', 'observed': 'RTX 2000 Ada 1'}]
+
+
+AMPERE_FAN_EVIDENCE = [
+    dict(AMPERE_STRUCTURAL_EVIDENCE, kind='structural-table',
+         format='Ampere fan tables: the Ada cooler, policy, mapping, control and speed tables at P+0x58/0x5c/0x64/'
+                '0xdc/0xe0 with the same headers and entry sizes',
+         observation='header bytes 4..5 list exactly the rows with a nonzero byte 0 on the GPU-driven images; active '
+                     'rows hold 25000 or 27000 at bytes 11..13 and byte 13 is 0; the RTX 3080/3090 boards and the RTX '
+                     '3060 8GB leave the speed table disabled on every channel; laptops list no channel and enable '
+                     'none; the passive A40 and the RTX 3050 6GB/8GB tables disagree and keep no fan field'),
+    ADA_FAN_EVIDENCE[1]]
+
+
+def chain_copies(parser, offsets, size, layout=()):
+    """Each offset in every duplicate Ada chain (layout bytes repeat per copy); GB20x unchanged."""
+    if isinstance(parser, BlackwellRom):
+        return list(offsets), layout
+    groups = [parser.copy_offsets(at, size) for at in offsets]
+    layout = tuple((value, tuple(chunk for chunk, group in zip(chunks, groups) for _ in group))
+                   for value, chunks in layout)
+    return [at for group in groups for at in group], layout
+
+
+@registry.register
+def fans(image, parser):
+    """Fan channel count and the shared PWM frequency of the fan rows."""
+    if not isinstance(parser, (BlackwellRom, TableRom)):
+        return []
+    table = parser.fan_coolers()
+    if table is None:
+        return []
+    active = [r for r in table['rows'] if r['active']]
+    frequencies = {r['pwm_frequency_hz'] for r in active}
+    shared = len(frequencies) == 1 and all(parser.blob[r['offset'] + 13] == 0 for r in active)
+    current = active[0]['pwm_frequency_hz'] if shared else None
+    in_band = shared and FAN_PWM_BAND_HZ[0] <= current <= FAN_PWM_BAND_HZ[1]
+    least, most, layout_offsets, layout = fan_layouts(parser, table) if shared else (len(active), len(active), [], ())
+    layout_offsets, layout = chain_copies(parser, layout_offsets, 1, layout)
+    # The PWM frequency is also kept on rows a larger channel count may enable.
+    pwm_rows = table['rows'][:most]
+    pwm_offsets, _ = chain_copies(parser, [r['pwm_frequency_offset'] for r in pwm_rows], 2)
+    evidence = FAN_EVIDENCE if isinstance(parser, BlackwellRom) else ADA_FAN_EVIDENCE if ada(parser) else AMPERE_FAN_EVIDENCE
+    channels_editable = shared and most > least and can_edit(image, parser)
+    editable = in_band and can_edit(image, parser)
+    return [field('fan_channels', 'Fan channels', 'channels', len(table['channels']),
+                  least if channels_editable else None, most if channels_editable else None, channels_editable,
+                  [dict(e) for e in evidence], offsets=layout_offsets if channels_editable else (),
+                  encoding='<B' if channels_editable else '', scale=1, layout=layout if channels_editable else (),
+                  writable_status=None if channels_editable else 'unsupported', experimental=True,
+                  value_semantics='stored-fan-layout', fan_rows=[r['index'] for r in table['rows'][:most]],
+                  reason='experimental: number of active fan channels, for using the image on a board with a '
+                         'different fan count; lowering clears the last channels, raising enables stored channels; '
+                         'every offered count can be undone byte for byte; not hardware-tested' if shared and most > least else
+                         'active fan rows disagree or hold a value outside the reviewed shape' if not shared else
+                         'no other fan channel layout is stored in this table'),
+            field('fan_pwm_frequency_hz', 'Fan PWM frequency', 'Hz', current,
+                  FAN_PWM_BAND_HZ[0] if in_band else None, FAN_PWM_BAND_HZ[1] if in_band else None, editable,
+                  [dict(e) for e in evidence], offsets=pwm_offsets if editable else (),
+                  encoding='<H' if editable else '', scale=1, stored_units='Hz', experimental=True,
+                  value_semantics='stored-fan-pwm-frequency', fan_rows=[r['index'] for r in pwm_rows],
+                  reason='experimental: PWM frequency of the fan channels; accepted range is the 4-wire PWM fan '
+                         'band (21-28 kHz); not hardware-tested' if in_band else
+                         'active fan rows disagree or hold a value outside the reviewed shape')]
+
+
+@registry.register
+def memory(image, parser):
+    rows = parser.clock_ranges()
+    result = []
+    for row in rows:
+        if row['domain'] != 'DRAM':
+            continue
+        if isinstance(parser, BlackwellRom):
+            # User-confirmed MHz relationship applies to the recognized GB20x
+            # table only. It is never carried over to Ada/Ampere.
+            evidence = [{'kind': 'reviewed-domain-identity', 'source': 'reviewed table layout',
+                         'format': 'GB20x clock v50 descriptors and two reviewed domain layouts'},
+                        {'kind': 'user-hardware-validated-units', 'relation': 'MHz = 2 * table MHz (NVML scale)',
+                         'scope': 'reviewed GB202/GB203 corpus'}]
+            result.extend([
+                field('dram_max_table_mhz', 'Memory offset ceiling (table)', 'table MHz', row['maximum_mhz'],
+                      max(0, row['minimum_mhz']), 32767, can_edit(image, parser), evidence,
+                      offsets=[row['maximum_offset']], encoding='<h', scale=1, stored_units='table MHz'),
+                field('memory_offset_max_mhz', 'Memory offset ceiling', 'MHz', 2 * row['maximum_mhz'],
+                      2 * max(0, row['minimum_mhz']), 65534, can_edit(image, parser), evidence,
+                      offsets=[row['maximum_offset']], encoding='<h', scale=Decimal('0.5'), stored_units='table MHz')])
+            result.extend(clock_offset_ranges(image, parser, rows))
+        elif isinstance(parser, TableRom):
+            evidence = (ADA_CLOCK_EVIDENCE + [ADA_DRAM_UNITS_EVIDENCE] if ada(parser) else
+                        AMPERE_CLOCK_EVIDENCE + [AMPERE_DRAM_UNITS_EVIDENCE])
+            offsets = parser.copy_offsets(row['maximum_offset'], 2)
+            editable = can_edit(image, parser) and not disabled_range(parser, row)
+            reason = (AMPERE_DISABLED_RANGE_REASON if disabled_range(parser, row) else
+                      'experimental: firmware memory offset ceiling; edit not hardware-tested')
+            status = 'unsupported' if disabled_range(parser, row) else None
+            result.extend([
+                field('dram_max_table_mhz', 'Memory offset ceiling (table)', 'table MHz', row['maximum_mhz'],
+                      max(0, row['minimum_mhz']), 32767, editable, [dict(e) for e in evidence],
+                      offsets=offsets, encoding='<h', scale=1, stored_units='table MHz', experimental=True,
+                      clock_domain='DRAM', clock_row=row['row'], reason=reason, writable_status=status),
+                field('memory_offset_max_mhz', 'Memory offset ceiling', 'MHz', 2 * row['maximum_mhz'],
+                      2 * max(0, row['minimum_mhz']), 65534, editable, [dict(e) for e in evidence],
+                      offsets=offsets, encoding='<h', scale=Decimal('0.5'), stored_units='table MHz',
+                      experimental=True, clock_domain='DRAM', clock_row=row['row'], reason=reason,
+                      writable_status=status)])
+            result.extend(clock_offset_ranges(image, parser, rows))
+        else:
+            result.append(field('dram_max_table_mhz', 'Memory offset ceiling (raw table)', 'table units',
+                                row['maximum_mhz'], None, None, False,
+                                [{'kind': 'read-only-table-probe', 'source': SOURCE}],
+                                reason='Ada/Ampere memory units and editor variant lack validated evidence'))
+    return result
+
+
+CLOCK_RANGE_EVIDENCE = [
+    {'kind': 'reviewed-domain-identity', 'source': 'reviewed table layout',
+     'format': 'GB20x clock v50 descriptors and two reviewed domain layouts'},
+    dict(THIRD_PARTY_EVIDENCE, observation=('object 0x03 rows hold signed MHz offset minimum/maximum per domain; '
+                                            'only the DRAM maximum edit was verified on hardware there'))]
+
+
+ADA_CLOCK_EVIDENCE = [
+    {'kind': 'nvidia-struct-and-hal-order', 'source': SOURCE,
+     'format': 'Ada clocks table C+8 v0x40 (40 0d 0f 0a 03 01 03 e8 03), ten 18-byte rows in the nvgpu GV HAL order '
+               'GPC, XBAR, MCLK (DRAM), SYS, HUB, NVD (VID), PWR, DISP, PCIEGEN, HOST',
+     'observation': 'row usage, ordering byte, rail sub-entry type and fixed bytes match on every parseable Ada image; '
+                    'master rows hold signed MHz offset minimum/maximum at bytes 3/5 (nvgpu PARAM1); both chains written'},
+    {'kind': 'saved-runtime-domain-list', 'use': 'cross-check only',
+     'source': 'saved RM clock-domain list of the RTX 2000 Ada',
+     'observation': 'domain ids by row 0,1,4,2,3,20,19,6,21,5 follow the GV HAL order; the XBAR entry repeats its row'}]
+ADA_GPC_UNITS_EVIDENCE = dict(NVML_CAPTURE, relation='NVML MHz = table MHz', api='nvmlDeviceGetGpcClkMinMaxVfOffset',
+                              observed='-1000..1000 for table rows -1000..1000', scope='RTX 2000 Ada 95.07.47.00.19')
+ADA_DRAM_UNITS_EVIDENCE = dict(NVML_CAPTURE, relation='NVML MHz = 2 * table MHz',
+                               api='nvmlDeviceGetMemClkMinMaxVfOffset', observed='-2000..6000 for table -1000..3000',
+                               scope='RTX 2000 Ada 95.07.47.00.19')
+AMPERE_CLOCK_EVIDENCE = [dict(
+    AMPERE_STRUCTURAL_EVIDENCE, kind='nvidia-struct-and-hal-order', source=SOURCE,
+    format='Ampere clocks table C+8 v0x40 (40, header size 0b or 0c, 0d 0a 03, one or two rails, 03 e8 03), ten '
+           '13-byte rows with one 3-byte rail sub-entry per rail, in the nvgpu GV HAL order GPC, XBAR, MCLK (DRAM), '
+           'SYS, HUB, NVD (VID), PWR, DISP, PCIEGEN, HOST',
+    observation='row usage, ordering byte and fixed bytes match on every image and exactly one sub-entry per row has '
+                'a nonzero type, as on Ada except VID (type 2); the table ends at the next C-token table; master rows '
+                'hold signed MHz offset minimum/maximum at bytes 3/5; GPC -1000..1000 and DRAM -1000..3000 on every '
+                'image except the A40 (0..0 on every domain); every duplicate chain written')]
+AMPERE_GPC_UNITS_EVIDENCE = dict(AMPERE_STRUCTURAL_EVIDENCE, kind='unit-analogy', relation='NVML MHz = table MHz',
+                                 use='analogy with the Ada and GB20x NVML readings; no Ampere NVML reading')
+AMPERE_DRAM_UNITS_EVIDENCE = dict(AMPERE_STRUCTURAL_EVIDENCE, kind='unit-analogy', relation='NVML MHz = 2 * table MHz',
+                                  use='analogy with the Ada and GB20x NVML readings; no Ampere NVML reading')
+AMPERE_DISABLED_RANGE_REASON = ('read-only: the stored offset range of this domain is 0..0 (offsets disabled on this '
+                                'board, as on the A40); whether a wider range would take effect is unknown')
+
+
+def disabled_range(parser, row):
+    """True for an Ampere clock row whose stored offset range is 0..0."""
+    return ampere(parser) and row['minimum_mhz'] == row['maximum_mhz'] == 0
+
+
+ADA_CLOCK_BOOT_EVIDENCE = {
+    'kind': 'boot-readback', 'source': 'NVML clock offset ranges after booting an edited image',
+    'scope': 'RTX 2000 Ada 95.07.47.00.19',
+    'observed': 'table GPC maximum 1500 -> NVML core maximum 1500; table DRAM minimum -2500 -> NVML memory minimum -5000',
+    'applied_offsets_tested': False}
+
+
+def clock_offset_ranges(image, parser, rows):
+    """Experimental GB20x, Ada and Ampere offset ranges beyond the hardware-validated GB20x DRAM ceiling.
+
+    Domain names come from the structurally gated rows (GB20x rows 0-4, Ada and
+    Ampere GV HAL positions). A range must keep 0 inside it, so minima are <= 0
+    and maxima >= 0 independently of each other. Only GPC and DRAM have an
+    observed NVML unit relation (Ampere: by analogy only); the other domains have
+    no runtime alias and stay in table MHz. Ada and Ampere write every duplicate
+    chain. An Ampere range stored as 0..0 stays read-only, and api.edit refuses
+    to collapse a wider Ampere range to 0..0.
+    """
+    editable = can_edit(image, parser)
+    named = {row['domain']: row for row in rows}
+    blackwell = isinstance(parser, BlackwellRom)
+    base = CLOCK_RANGE_EVIDENCE if blackwell else ADA_CLOCK_EVIDENCE if ada(parser) else AMPERE_CLOCK_EVIDENCE
+    gpc_units = GPC_UNITS_EVIDENCE if blackwell else ADA_GPC_UNITS_EVIDENCE if ada(parser) else AMPERE_GPC_UNITS_EVIDENCE
+    dram_units = (DRAM_MIN_UNITS_EVIDENCE if blackwell else ADA_DRAM_UNITS_EVIDENCE if ada(parser) else
+                  AMPERE_DRAM_UNITS_EVIDENCE)
+    booted = [ADA_CLOCK_BOOT_EVIDENCE] if ada(parser) else []
+
+    def bound(key, label, row, side, units, factor, evidence, **extra):
+        # factor converts stored table MHz to the public MHz unit (memory = 2x).
+        if side == 'max':
+            current, lo, hi, at = row['maximum_mhz'], max(0, row['minimum_mhz']), 32767, row['maximum_offset']
+        else:
+            current, lo, hi, at = row['minimum_mhz'], -32768, min(0, row['maximum_mhz']), row['minimum_offset']
+        disabled = disabled_range(parser, row)
+        return field(key, label, units, factor * current, factor * lo, factor * hi, editable and not disabled,
+                     [dict(item) for item in evidence],
+                     offsets=[at] if blackwell else parser.copy_offsets(at, 2), encoding='<h',
+                     scale=Decimal(1) / factor, stored_units='table MHz',
+                     value_semantics=f'stored-offset-range-{side}imum', experimental=True,
+                     clock_domain=row['domain'], clock_row=row['row'],
+                     reason=AMPERE_DISABLED_RANGE_REASON if disabled else
+                     f"experimental: firmware offset {'ceiling' if side == 'max' else 'floor'}; edit not hardware-tested",
+                     **({'writable_status': 'unsupported'} if disabled else {}), **extra)
+    dram, gpc = named['DRAM'], named['GPC']
+    result = [bound('memory_offset_min_mhz', 'Memory offset floor', dram, 'min', 'MHz', 2,
+                    base + [dram_units] + booted),
+              bound('dram_min_table_mhz', 'Memory offset floor (table)', dram, 'min', 'table MHz', 1,
+                    base + booted, alias_of='memory_offset_min_mhz'),
+              bound('gpc_offset_max_mhz', 'Core (GPC) offset ceiling', gpc, 'max', 'MHz', 1,
+                    base + [gpc_units] + booted),
+              bound('gpc_offset_min_mhz', 'Core (GPC) offset floor', gpc, 'min', 'MHz', 1,
+                    base + [gpc_units])]
+    for domain in ('XBAR', 'SYS', 'VID'):
+        for side, word in (('max', 'ceiling'), ('min', 'floor')):
+            result.append(bound(f'{domain.lower()}_{side}_table_mhz', f'{domain} offset {word} (table)',
+                                named[domain], side, 'table MHz', 1, base))
+    return result
+
+
+@registry.register
+def unknown_fields(image, parser):
+    current_reason = 'per-policy units/semantics require independent evidence'
+    try:
+        if any(b.descriptor['key'] == 'input_current_rated_ma' for b in input_current(image, parser)):
+            current_reason = 'generic current mapping unknown; the reviewed 12 V input policy uses input_current_*_ma'
+    except VbiosError:
+        pass
+    result = [field('current_limit_a', 'Input current limit', 'A', None, None, None, False, [],
+                    reason=current_reason),
+              field('ocp_limit_a', 'Overcurrent protection limit', 'A', None, None, None, False, [],
+                    reason='generic OCP mapping unknown; reviewed per-rail output ceilings use *_output_ocp_max_ma')]
+    family = metadata(image)['architecture']['family']
+    try:
+        # A recognized Ada/Ampere clock table provides the real memory ceiling field.
+        known_memory = family in ('ada', 'ampere') and any(b.descriptor['key'] == 'memory_offset_max_mhz'
+                                                           for b in memory(image, parser))
+    except VbiosError:
+        known_memory = False
+    if family in ('ada', 'ampere') and not known_memory:
+        result.append(field('memory_offset_max_mhz', 'Memory offset ceiling', 'MHz',
+                            None, None, None, False, [],
+                            reason='memory domain and MHz/table conversion need independent validation'))
+    try:
+        # A recognized single Ampere rail is NVVDD only, as on Ada.
+        single = ampere(parser) and len({r['rail_index'] for r in parser.rail_equations()}) == 1
+    except VbiosError:
+        single = False
+    if metadata(image)['architecture']['family'] == 'ada' or single_rail(parser) or single:
+        result.append(field('msvdd_rel_max_mv', 'MSVDD REL ceiling', 'mV', None, None, None, False, [],
+                            writable_status='unsupported',
+                            reason='this recognized single-rail layout exposes only logic/NVVDD'))
+    return result
+
+
+def describe(image, parser):
+    bindings, diagnostics = registry.bindings(image, parser)
+    return [dict(b.descriptor) for b in bindings], diagnostics

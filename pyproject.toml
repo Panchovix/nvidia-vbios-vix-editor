@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nvidia-vbios-editor"
+version = "0.1.14"
+description = "Offline NVIDIA VBIOS inspection/editing library, JSON CLI and GTK editor"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE", "NOTICE.md"]
+requires-python = ">=3.11"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Environment :: X11 Applications :: GTK",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Hardware",
+]
+
+[project.scripts]
+nvbios = "nvidia_vbios.cli:main"
+
+[project.gui-scripts]
+nvbios-editor = "nvidia_vbios.gui:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["nvidia_vbios", "nvidia_vbios.editor", "nvidia_vbios.rom", "nvidia_vbios.gui"]
+include-package-data = false

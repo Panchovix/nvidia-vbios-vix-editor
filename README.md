@@ -140,10 +140,87 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
   (Dynamic Boost) sets the running power limit, so a raised power ceiling may not raise
   it, and the fans belong to the laptop, not to the image.
 
+## Run from source
+
+Python 3.11 or newer. The command line uses only the standard library; the editor window also
+needs PyGObject with GTK 4.10 or newer:
+
+- Ubuntu / Debian: `sudo apt install python3-gi gir1.2-gtk-4.0`
+- Fedora: `sudo dnf install python3-gobject gtk4`
+- Arch: `sudo pacman -S python-gobject gtk4`
+- Windows: in an [MSYS2](https://www.msys2.org) UCRT64 shell,
+  `pacman -S mingw-w64-ucrt-x86_64-python mingw-w64-ucrt-x86_64-python-gobject mingw-w64-ucrt-x86_64-gtk4`
+
+```sh
+git clone https://github.com/Panchovix/nvidia-vbios-vix-editor
+cd nvidia-vbios-vix-editor
+./nvbios fields card.rom                 # Windows (MSYS2): python nvbios fields card.rom
+./nvbios edit card.rom out.rom --set power_max_w=700 --dry-run
+./nvbios gui --lang es card.rom
+```
+
+`inspect`, `fields`, `verify`, `edit` and `normalize` print one JSON document,
+`{"ok": true, "result": ...}`, or `{"ok": false, "error": {...}}` with exit status 2. On Windows,
+start the window with `GSK_RENDERER=cairo python nvbios gui`: GTK's OpenGL renderer aborts on some
+NVIDIA desktops, and the release programs choose cairo for the same reason. Over SSH the window
+uses its built-in file picker; see `docs/gui.md`.
+
+To install it, give it a virtual environment of its own. The Linux loader installs the same
+`nvidia_vbios` package and `nvbios` command, so the two cannot share one:
+
+```sh
+python3 -m venv --system-site-packages .venv   # the system site-packages provide PyGObject
+.venv/bin/pip install .
+.venv/bin/nvbios --version
+.venv/bin/nvbios-editor --lang es
+```
+
+The tests build small synthetic ROM structures; no VBIOS image is needed:
+
+```sh
+PYTHONPATH=src python3 -m unittest discover -s tests
+```
+
+The GTK window test is opt-in; see `docs/gui.md`. More documentation: `docs/editor-api.md`
+(formats, editor API and limitations), `docs/extended-fields.md` (voltage, OCP, memory and fan
+fields) and `docs/gui.md` (the window; in Spanish, `docs/gui_es.md`).
+
+## Build
+
+The release programs are compiled with Nuitka from this tree by the scripts in `tools/release/`.
+Their version is `__version__` in `src/nvidia_vbios/__init__.py`.
+
+- Linux: in a clean checkout with podman, `tools/release/build.sh X.Y.Z`. It builds in an
+  Ubuntu 24.04 container (the oldest supported glibc and GTK), runs the tests first, and writes
+  the archive, the one-file `nvbios` and `SHA256SUMS` to `dist/release-X.Y.Z/`.
+- Windows: the *windows-release* GitHub Actions workflow (`.github/workflows/windows.yml`) builds
+  `nvbios-gui.exe`, `nvbios.exe` and their third-party notices as a workflow artifact. Only the
+  repository owner starts it, with *Run workflow* or by pushing a `vX.Y.Z` tag that matches the
+  version. To build locally: an MSYS2 UCRT64 shell with the packages that workflow installs,
+  Nuitka 4.2.2 and Zig 0.16.0 on `PATH`, then `VERSION=X.Y.Z tools/release/build-windows.sh`
+  (output in `dist-windows/`).
+
+## Contributing
+
+Issues and pull requests are welcome. Run the tests before you open a pull request.
+The maintainers port accepted changes into the project themselves, so a merged change
+can land as a different commit from your branch. Contributions are licensed under
+GPL-3.0-or-later, like the rest of the project.
+
+Pull requests, forks included, run the unit tests on Linux (`.github/workflows/tests.yml`).
+
 ## Acknowledgements
 
-Thanks to @pantsoftime and @b00nza.
+Thanks to **@pantsoftime** ([overclock.net](https://www.overclock.net)), whose original GB202 VBIOS
+editor and `vbios_override` patch this project builds on. Thanks also to @b00nza.
 
 ## License
 
-See LICENSE and THIRD_PARTY_NOTICES.md.
+Copyright (C) 2026 panchovix. GNU General Public License v3.0 or later (`GPL-3.0-or-later`), see
+[LICENSE](LICENSE): you can use, study, change and share it, and changed versions you share must stay
+under the same license. There is no warranty, to the extent permitted by law.
+
+The source code is at <https://github.com/Panchovix/nvidia-vbios-vix-editor>; the tag `v<version>` matches
+each release. The binaries also contain third-party components under their own licenses: see
+THIRD_PARTY_NOTICES.md, which also says where to get their source code. Binary releases up to 0.1.13 were
+distributed under a freeware license agreement.

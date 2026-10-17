@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+build-windows/
+dist-windows/
+*.rom
+*.bin
