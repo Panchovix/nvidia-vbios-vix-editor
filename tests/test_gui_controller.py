@@ -282,8 +282,8 @@ class PresentationNumberTests(unittest.TestCase):
 
     def test_shunt_multiplier_scales_only_12v_input_limits(self):
         from decimal import Decimal
-        from nvidia_vbios.gui.presentation import (CONNECTOR_KEY, FIELD_KEYS, SHUNT_KEYS, field_section, shunt_real,
-                                                   shunt_scaled, to_display)
+        from nvidia_vbios.gui.presentation import (CONNECTOR_CURRENT_KEY, CONNECTOR_KEY, FIELD_KEYS, SHUNT_KEYS,
+                                                   field_section, shunt_real, shunt_scaled, to_display)
         watts = {'key': 'power_max_w', 'units': 'W'}
         self.assertEqual(shunt_real(watts, '600', Decimal(2)), '1200')
         self.assertEqual(shunt_real(watts, to_display(watts, 450.0), Decimal('1.33')), '598.5')
@@ -303,8 +303,9 @@ class PresentationNumberTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertFalse(shunt_scaled({'key': key}))
                 self.assertIsNone(shunt_real({'key': key, 'units': 'mA'}, '100', Decimal(2)))
-        # Every shunt key has its own label; Ampere connector keys share a numbered one.
-        self.assertTrue(all(key in FIELD_KEYS or CONNECTOR_KEY.fullmatch(key) for key in SHUNT_KEYS))
+        # Every shunt key has its own label; connector keys share numbered ones.
+        self.assertTrue(all(key in FIELD_KEYS or CONNECTOR_KEY.fullmatch(key) or CONNECTOR_CURRENT_KEY.fullmatch(key)
+                            for key in SHUNT_KEYS))
         self.assertEqual({field_section({'key': key}) for key in SHUNT_KEYS}, {'power', 'current'})
 
     def test_ampere_connector_labels_sections_and_shunt_scaling(self):
@@ -319,6 +320,100 @@ class PresentationNumberTests(unittest.TestCase):
             self.assertTrue(shunt_scaled(fields[key]))
             self.assertEqual(field_section(fields[key]), 'power')
         self.assertFalse(shunt_scaled(fields['nvvdd_output_ocp_max_ma']))
+
+    def test_a_row_capping_the_connector_sum_is_noted_on_each_connector_row(self):
+        from nvidia_vbios.gui.presentation import field_label, section_order, shunt_scaled, summed_cap_notes
+        from test_ampere_fields import CONNECTOR_SUM, connector_sum
+        from test_extended_fields import descriptors
+        from nvidia_vbios.rom import from_bytes
+        blob = synthetic_rom(family='ampere', policies=True)
+        fields = descriptors(from_bytes(connector_sum(blob)))
+        notes = {key: summed_cap_notes(fields[key], list(fields.values())) for key in fields}
+        self.assertEqual(notes['connector_2_power_rated_w'],
+                         ['Row 11 also caps the sum of connector power channels 1, 2 at 280 W rated / 280 W maximum '
+                          'and may bind first: raising this limit alone may have no effect. Raise the connector power '
+                          'sum limits too.'])
+        self.assertEqual({key for key, note in notes.items() if note},
+                         {f'connector_{n}_power_{side}_w' for n in (1, 2) for side in ('max', 'rated')})
+        spanish = summed_cap_notes(fields['connector_1_power_max_w'], list(fields.values()), 'es')
+        self.assertEqual(len(spanish), 1)
+        self.assertTrue(spanish[0].startswith('La fila 11 también limita la suma de los canales de potencia de '
+                                              'conector 1, 2 a 280 W nominal / 280 W máximo'))
+        self.assertTrue(spanish[0].endswith('Suba también los límites de la suma de potencia de conectores.'))
+        # A sum row without its own field (weight -1.0) keeps the warning; a channel without a
+        # connector field is named by its power channel index.
+        negative = descriptors(from_bytes(connector_sum(blob, weight=0xFFFFF000)))
+        self.assertTrue(summed_cap_notes(negative['connector_1_power_max_w'], list(negative.values()))[0]
+                        .endswith('may have no effect.'))
+        partial = [f for f in fields.values() if not f['key'].startswith('connector_2_')]
+        self.assertIn('sum of power channels 5, 6 at 280 W',
+                      summed_cap_notes(fields['connector_1_power_max_w'], partial)[0])
+        self.assertEqual([field_label(fields[k]) for k in CONNECTOR_SUM],
+                         ['Connector power sum ceiling (experimental)', 'Connector power sum limit, rated (experimental)'])
+        self.assertEqual(field_label(fields['connector_sum_power_rated_w'], 'es'),
+                         'Límite de la suma de potencia de conectores, nominal (experimental)')
+        power = [f['key'] for f in section_order(fields.values()) if f['key'].startswith('connector_')]
+        self.assertEqual(power[-2:], CONNECTOR_SUM)
+        self.assertTrue(all(shunt_scaled(fields[k]) for k in CONNECTOR_SUM))
+
+    def test_connector_current_labels_sections_shunt_scaling_and_opt_in(self):
+        from nvidia_vbios.gui.presentation import (field_label, field_section, opt_in_field_keys, section_order,
+                                                   shunt_scaled)
+        from test_ampere_fields import with_connector_current
+        from test_extended_fields import descriptors
+        from nvidia_vbios.rom import from_bytes
+        fields = descriptors(from_bytes(with_connector_current(synthetic_rom(family='ampere', copies=2,
+                                                                             policies=True))))
+        keys = ['connector_1_current_threshold_rated_ma', 'connector_1_current_threshold_max_ma']
+        self.assertEqual([field_label(fields[k]) for k in keys],
+                         ['Connector channel 1 current threshold, rated (advanced, experimental)',
+                          'Connector channel 1 current threshold ceiling (advanced, experimental)'])
+        self.assertEqual([field_label(fields[k], 'es') for k in keys],
+                         ['Umbral de corriente del canal de conector 1, nominal (avanzado, experimental)',
+                          'Techo del umbral de corriente del canal de conector 1 (avanzado, experimental)'])
+        for key in keys:
+            with self.subTest(key=key):
+                self.assertEqual(field_section(fields[key]), 'current')
+                self.assertTrue(shunt_scaled(fields[key]))
+        self.assertLessEqual(set(keys), opt_in_field_keys({'fields': list(fields.values())}))
+        order = [f['key'] for f in section_order(fields.values())]
+        self.assertEqual(order.index(keys[0]) + 1, order.index(keys[1]))
+        self.assertLess(order.index('slot_current_threshold_max_ma'), order.index(keys[0]))
+
+    def test_turing_fixed_voltage_labels_sections_and_opt_in(self):
+        from nvidia_vbios.gui.presentation import field_label, field_section, opt_in_field_keys, shunt_scaled
+        from test_extended_fields import descriptors
+        from test_turing import synthetic_turing
+        from nvidia_vbios.rom import from_bytes
+        fields = descriptors(from_bytes(synthetic_turing(rails=True)))
+        keys = ['nvvdd_rel_fixed_mv', 'nvvdd_alt_fixed_mv']
+        self.assertEqual([field_label(fields[k]) for k in keys],
+                         ['NVVDD REL fixed voltage (advanced, experimental)',
+                          'NVVDD ALT fixed voltage (advanced, experimental)'])
+        self.assertEqual(field_label(fields['nvvdd_alt_fixed_mv'], 'es'),
+                         'Voltaje fijo ALT de NVVDD (avanzado, experimental)')
+        # The Ada fields are not opt-in: the same label without "advanced".
+        self.assertEqual(field_label({'key': 'nvvdd_rel_fixed_mv'}), 'NVVDD REL fixed voltage (experimental)')
+        self.assertEqual({field_section(fields[k]) for k in keys}, {'voltage'})
+        self.assertLessEqual(set(keys), opt_in_field_keys({'fields': list(fields.values())}))
+        self.assertFalse(any(shunt_scaled(fields[k]) for k in keys))
+
+    def test_turing_nvvdd_current_limit_labels_are_advanced(self):
+        from nvidia_vbios.gui.presentation import field_label, opt_in_field_keys
+        from test_extended_fields import descriptors
+        from test_turing import synthetic_turing
+        from nvidia_vbios.rom import from_bytes
+        fields = descriptors(from_bytes(synthetic_turing(inputs=True)))
+        keys = ['nvvdd_output_ocp_max_ma', 'nvvdd_output_ocp_rated_ma']
+        self.assertEqual([field_label(fields[k]) for k in keys],
+                         ['NVVDD output current limit ceiling (advanced, experimental)',
+                          'NVVDD output current limit, rated (advanced, experimental)'])
+        self.assertEqual(field_label(fields['nvvdd_output_ocp_rated_ma'], 'es'),
+                         'Límite de corriente de salida de NVVDD, nominal (avanzado, experimental)')
+        self.assertLessEqual(set(keys), opt_in_field_keys({'fields': list(fields.values())}))
+        # Without opt-in (the Ada and Ampere rows) the label stays the OCP one.
+        self.assertEqual(field_label({'key': 'nvvdd_output_ocp_rated_ma'}),
+                         'NVVDD output OCP current limit, rated (experimental)')
 
     def test_fan_limit_labels_sections_and_opt_in(self):
         from nvidia_vbios.gui.presentation import (display_units, field_label, field_section, opt_in_field_keys,
@@ -364,21 +459,34 @@ class PresentationNumberTests(unittest.TestCase):
                           'Curva adicional 2, punto 3: temperatura (experimental)',
                           'Curva adicional 2, punto 1: velocidad (experimental)',
                           'Curva adicional 1, punto 2: nivel (avanzado, experimental)'])
-        # Channels and PWM, then each channel's limits and curve points, then the extra curves.
+        # Channels and PWM, then each channel's limits and curve points, then the extra curves, then zero RPM.
         limits = lambda n: [f'fan_{n}_{side}_{unit}' for unit in ('rpm', 'pct') for side in ('max', 'min')]
         points = lambda prefix: [f'{prefix}_curve_{k}_{unit}' for k in (1, 2, 3) for unit in ('temp_c', 'rpm', 'pct')]
         expected = (['fan_channels', 'fan_pwm_frequency_hz'] + limits(1) + points('fan_1') + limits(2) + points('fan_2') +
-                    points('fan_extra_1') + points('fan_extra_2'))
+                    points('fan_extra_1') + points('fan_extra_2') + ['fan_zero_rpm'])
         self.assertEqual([f['key'] for f in section_order(fields.values()) if f['key'].startswith('fan_')], expected)
         self.assertTrue(all(field_section(fields[k]) == 'fans' for k in expected))
         self.assertEqual(opt_in_field_keys({'fields': list(fields.values())}) & set(expected),
-                         {k for k in expected if k.endswith('_pct')})
+                         {k for k in expected if k.endswith('_pct')} | {'fan_zero_rpm'})
         # Temperatures show in °C, with decimals only when the stored 1/32 C needs them.
         self.assertEqual(display_units(fields['fan_1_curve_1_temp_c']), '°C')
         self.assertEqual([number(to_display(fields['fan_1_curve_1_temp_c'], v)) for v in (60.0, 51.90625, '60.5')],
                          ['60', '51.90625', '60.5'])
         self.assertEqual(to_display(fields['fan_1_curve_1_temp_c'], fields['fan_1_curve_1_temp_c']['current']),
                          Decimal(50))
+
+    def test_flag_fields_read_on_and_off(self):
+        from decimal import Decimal
+        from nvidia_vbios.gui.presentation import field_label, value_text
+        from test_extended_fields import descriptors
+        from nvidia_vbios.rom import from_bytes
+        field = descriptors(from_bytes(synthetic_blackwell(fans=True)))['fan_zero_rpm']
+        self.assertEqual((field_label(field), field_label(field, 'es')),
+                         ('Fan zero RPM (advanced, experimental)', 'Parada de ventiladores en reposo (avanzado, experimental)'))
+        self.assertEqual([value_text(field, v) for v in (Decimal(0), Decimal(1), None)], ['Off', 'On', None])
+        self.assertEqual([value_text(field, v, 'es') for v in (0, 1)], ['Desactivado', 'Activado'])
+        # Other units keep the plain number, 0 and 1 included.
+        self.assertEqual([value_text({'units': 'channels'}, v) for v in (Decimal(1), Decimal('2.50'))], ['1', '2.5'])
 
     def test_number_formats_every_magnitude_briefly(self):
         from decimal import Decimal

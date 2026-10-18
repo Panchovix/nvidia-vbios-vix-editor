@@ -61,17 +61,27 @@ funcionando sin las dependencias gráficas.
    la política, no corrientes seguras garantizadas; los límites del conector, del
    slot y de los cables siguen aplicando. **Mostrar campos avanzados (estilo XOC)**
    (desmarcada por defecto) muestra campos opcionales como la potencia nominal de
-   las políticas fijas 2/7, los umbrales de hardware de Ada (corriente del slot,
-   potencia de salida NVVDD y, en Ada, la corriente de entrada de 12 V, rotulada
-   "umbral") y, en Blackwell, **REL y ALT de NVVDD siguen a OV** (0 o 1: 1 da el
-   límite de voltaje plano estilo XOC; guárdalo solo y conserva la imagen original
-   para volver atrás); los valores ya escritos se conservan al marcarla. **Multiplicador
+   las políticas fijas 2/7, los umbrales de hardware (corriente del slot; en
+   Ampere y Turing la corriente de los conectores; en Ada la potencia de salida
+   NVVDD y la corriente de entrada de 12 V, rotulada "umbral"), el límite de
+   corriente de salida NVVDD y los voltajes fijos REL/ALT de Turing y, en
+   Blackwell y Ada, **REL y ALT de NVVDD siguen a OV** (un interruptor: activado
+   da el límite de voltaje plano estilo XOC; guárdalo solo y conserva la imagen
+   original para volver atrás) y, en Blackwell, **Parada de ventiladores en
+   reposo** (un interruptor para los bits que, por inferencia, permiten que los
+   ventiladores se detengan en reposo; experimental); los valores ya escritos se
+   conservan al marcarla. Los campos 0/1 de solo lectura muestran Activado o
+   Desactivado. **Multiplicador
    de shunt (x)** (1 = desactivado, hasta 10) es solo informativo: en las filas de
-   potencia de la tarjeta, potencia/corriente del slot PCIe y corriente de entrada
-   de 12 V agrega una nota con el límite real en una tarjeta con shunt mod,
+   potencia de la tarjeta, potencia/corriente del slot PCIe, potencia/corriente de
+   los conectores y corriente de entrada de 12 V agrega una nota con el límite real en una tarjeta con shunt mod,
    aproximadamente el valor guardado por el multiplicador, suponiendo el mismo
    factor en todos los shunts de entrada de 12 V. Los límites de salida
-   NVVDD/MSVDD los mide el VRM y no se escalan; no se escribe nada en la ROM. El
+   NVVDD/MSVDD los mide el VRM y no se escalan; no se escribe nada en la ROM. En
+   las imágenes Ampere donde otra fila de potencia también limita la suma de los
+   canales de conector, cada fila de conector anota los valores nominal y máximo de
+   esa fila; donde esa fila tiene un campo, sube también la **suma de potencia de
+   conectores**. El
    OCP nominal de salida y la potencia del slot de la SFF también son
    experimentales: el valor nominal es el que el firmware aplica desde el arranque,
    así que bajarlo limita la tarjeta.
@@ -114,7 +124,7 @@ máximo por debajo de ellas, escribe el nuevo máximo y los puntos de curva que
 quedan por encima, también los de las curvas adicionales, y se comprueban y guardan
 juntos en una sola copia. El nivel mínimo y máximo (%) de cada canal y los niveles
 de las curvas aparecen con los campos avanzados. Guarda primero una nueva cantidad
-de canales y cambia los límites o las curvas en la copia. Ada y
+de canales y cambia los límites, las curvas o la parada en reposo en la copia. Ada y
 Ampere no heredan esa conversión. Los techos de
 salida OCP revisados se expresan en mA, pero editarlos no demuestra que el firmware
 los aplique. Un techo de ecuación REL/ALT/OV tampoco es un voltaje evaluado ni
@@ -123,7 +133,17 @@ ecuación que el driver evalúa como VMIN; en Ada el driver le suma sus término
 encadenados (+90 mV en una RTX 2000 Ada), así que el valor llega hasta el REL más
 bajo menos lo máximo que esos términos pueden sumar (753 mV en esa placa). El
 techo de solo lectura del "slot VMIN de la info del riel" es otra ecuación y no
-fija el VMIN. La GUI guarda
+fija el VMIN. En las imágenes Ada cuyo REL o ALT es una constante (la imagen más
+nueva de la RTX 4090, 4080, RTX 4000 Ada; ALT en la 4080 SUPER, 4070 Ti SUPER y 4060),
+**Voltaje fijo REL/ALT de NVVDD** (experimental) fija ese valor, desde su mínimo de
+clamp hasta el valor de OV (1200 mV), con REL como máximo igual a ALT: cambia ambos
+juntos para subir REL por encima de ALT. Bajar REL por debajo de un VMIN subido
+también requiere VMIN en la misma edición. Las imágenes Turing tienen la misma fila
+entre los campos avanzados (REL 1068,75 mV y ALT 1093,75 mV en la mayoría de las
+tarjetas, OV 1125 mV); ahí REL y ALT además se mantienen como mínimo en el voltaje de
+arranque y en VMIN más sus términos encadenados, y VMIN puede subir por encima del REL
+anterior si REL sube en la misma edición (VMIN más sus términos encadenados queda como
+máximo en REL). La GUI guarda
 el archivo completo y no normaliza los bancos
 implícitamente. Los formatos desconocidos o no editables permiten sólo inspección.
 Las firmas criptográficas no se verifican ni regeneran.

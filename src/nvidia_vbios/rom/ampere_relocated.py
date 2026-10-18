@@ -18,7 +18,8 @@ from . import _ada_relocation as recipe
 
 REPRESENTATION = 'ampere-relocated-v1'
 GSP_LIMIT = recipe.RECEIVER_LIMIT
-POLICY_ROLES = ('slot_power', 'slot_current', 'input_current', 'connector_power', 'nvvdd_current')
+POLICY_ROLES = ('slot_power', 'slot_current', 'input_current', 'connector_power', 'connector_current', 'connector_sum',
+                'nvvdd_current')
 # Further logical pointers into the NPDS images seen on the GA10x corpus (u v1 size 17,
 # i v2, B v2); kept apart from the reviewed Ada recipe's POINTER_FIELDS.
 EXTRA_POINTER_FIELDS = (('u', 0x0D), ('i', 0x58), ('B', 0x21))

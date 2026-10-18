@@ -2,12 +2,13 @@
 
 Field locations derive from NVIDIA-authored nvgpu bios.h 3x power/1x rail/clock
 prefixes and VFE output equations; every rule below is structural and was
-checked on each parseable image of the Ada corpus and of the 33-image Ampere
+checked on each parseable image of the Ada corpus and of the 34-image Ampere
 corpus. Ampere shares the Ada table set with narrower rows (power 0x47/0x43,
 rail 0x11, VFE equations of 24 bytes with 8-bit links) and up to two rails.
-Turing (22-image corpus) is read for its board power policy only: its power
-table decodes like Ampere's with 0x42-byte rows; its rail, VFE, clock and fan
-tables use other layouts and are refused.
+Turing (22-image corpus) reads its power policy and input channels like
+Ampere (0x42-byte rows, 22-byte channels), its rail (nvgpu 1x row), VFE (as
+Ampere with 20 variables), clock (nvgpu v35) and fan tables (the Ada cooler and
+mapping tables, a v0x10 policy table) through Turing variants below.
 No board serial, complete-file size, table-address, or source-hash pins.
 """
 import copy
@@ -93,13 +94,48 @@ CHANNEL_12V = bytes.fromhex('00 1b b7 00 00 10')
 # 8-pin/6-pin ratings, but one connector can span several channels (A6000/A40
 # EPS 8-pin: two; RTX 3090 Ti 16-pin: three).
 AMPERE_CONNECTOR_RAILS = (0xFA, 0xFB, 0xFC, 0xE4)
+# Power channel relationship weight 1.0 (bytes 2..5 of a relationship entry, see relationships()).
+UNIT_WEIGHT = bytes.fromhex('00 10 00 00')
 # Turing power policy 30/2c/42 and 30/27/42 (the first 0x27 header bytes of 30/2c/42),
 # rows 0..0x41 as Ampere's. The power channel table has 20 entries of 22 bytes; the TGP
 # row reads the board-total channel (class-2 sum on rail 0xf5), which is channel 9 on
 # the desktop TU10x/TU116 images (channel 0 there is another sum) and 0 on TU117 and laptops.
+# Turing connector channels may hold a current correction offset in bytes 10..13 (nvgpu
+# curr_corr_offset; 200 and 300 on the RTX 2070 connector channels).
 TURING_POWER_VARIANTS = ((0x30, 0x2C, 0x42), (0x30, 0x27, 0x42))
-# The only table the Turing fields write (power policy, in the second data image).
-TURING_EDITED_TABLES = (('P', 0x2C),)
+# Turing rail table: one nvgpu 1x row of 14 bytes (vbios_voltage_rail_table_1x_entry):
+# REL +4, ALT +5, OV +6, power equation +7, boot voltage equation +8, VMIN limit
+# equation +9, voltage margin limit equation +10 (u8, 0xff = absent; the margin is
+# absent on every image). VFE as Ampere (24-byte equations, u8 count and links) with
+# 20 variables.
+TURING_RAIL_HEADER = bytes.fromhex('10 05 0e 01 00')
+TURING_VFE_PREFIX = bytes.fromhex('30 09 19 14 18')
+TURING_ROLE_OFFSETS = (('REL', 4), ('ALT', 5), ('OV', 6))
+TURING_BOOT_OFFSET, TURING_VMIN_OFFSET, TURING_MARGIN_OFFSET = 8, 9, 10
+# Turing clocks table C+8 v0x35 (nvgpu vbios_clocks_table_35): ten 11-byte rows in the
+# GV HAL order, each (name, usage, ordering byte). Usage 1 (master) rows store the
+# signed MHz offset minimum/maximum at bytes 3/5; usage 2 (slave) rows store other
+# parameters there.
+TURING_CLOCK_HEADER = bytes.fromhex('35 09 0b 0a 03 e8 03 00 00')
+TURING_CLOCK_ROWS = (('GPC', 1, 0x13), ('XBAR', 2, 0x24), ('DRAM', 1, 0x62), ('SYS', 2, 0x35), ('HUB', 2, 0x71),
+                     ('VID', 2, 0x46), ('PWR', 0, 0xFF), ('DISP', 1, 0x80), ('PCIEGEN', 2, 0x08), ('HOST', 2, 0x57))
+# Turing fan tables: the Ada cooler and mapping tables and a v0x10 policy table with
+# its own channel list (header bytes 4..5) and two 54-byte entries. Policy entries keep
+# the Ada entry layout three bytes later (entry byte 5 = Ada byte 2), so the Ada curve
+# offsets apply from entry + 3; every active entry holds TURING_POLICY_BYTES at bytes
+# 9..16 (Ada entry bytes 6..13, the same bytes on most Ada and Ampere images).
+# The P token ends before the control and speed table pointers (0xdc, 0xe0).
+TURING_FAN_TABLES = {
+    'cooler': ADA_FAN_TABLES['cooler'],
+    'policy': (0x5C, bytes((0x10, 6, 0x36, 2)), 6, 0x36, 2),
+    'mapping': ADA_FAN_TABLES['mapping'],
+}
+TURING_CURVE_SHIFT = 3
+TURING_POLICY_BYTES = bytes.fromhex('23 2b 0a 01 00 02 80 00')
+# Tables the Turing fields write: power policy, VFE and fans, all in the second data
+# image. The clock table sits in the legacy image, which lacks the padding on one RTX
+# 2080 image; the clock fields check it themselves (padded), so power stays editable.
+TURING_EDITED_TABLES = (('P', 0x2C), ('P', 0x20), ('P', 0x58), ('P', 0x5C), ('P', 0x64))
 
 
 class TableRom:
@@ -141,11 +177,6 @@ class TableRom:
         self.owner(at, 16)
         return at
 
-    def power_only(self, tables):
-        """Turing: only the board power policy is read; other tables give no field and accept no edit."""
-        if self.family == 'turing':
-            raise FormatError(f'Turing {tables} tables are not reviewed; only the board power policy is read')
-
     def owner(self, at, size):
         # The type-0x70 image that ends a Turing chain is never a table owner: no table is read from it.
         owners = [p for p in self.chains[0] if p['start'] <= at and at + size <= p['end'] and p['type'] != 0x70]
@@ -177,16 +208,23 @@ class TableRom:
         return self._padding
 
     def _checksum_padding(self):
-        for token, offset in TURING_EDITED_TABLES if self.family == 'turing' else ADA_EDITED_TABLES:
+        # Ada fields also write the rail table (P+0x68), which lies in the legacy image.
+        tables = (TURING_EDITED_TABLES if self.family == 'turing' else
+                  ADA_EDITED_TABLES + ((('P', 0x68),) if self.family == 'ada' else ()))
+        for token, offset in tables:
             try:
-                image = self.owner(self.pointer(token, offset), 1)
+                at = self.pointer(token, offset)
             except FormatError:
                 continue
-            for copy in self.copy_offsets(image['start'], image['size']):
-                end = copy + image['size']
-                if self.blob[end - 16:end - 1] != b'\xff' * 15:
-                    return False
+            if not self.padded(at):
+                return False
         return True
+
+    def padded(self, at):
+        """True when the data image holding at ends with 15 0xff bytes and its checksum in every chain."""
+        image = self.owner(at, 1)
+        return all(self.blob[copy + image['size'] - 16:copy + image['size'] - 1] == b'\xff' * 15
+                   for copy in self.copy_offsets(image['start'], image['size']))
 
     def power_rows(self):
         at = self.pointer('P', 0x2C)
@@ -286,24 +324,37 @@ class TableRom:
                     same_channel_rows=same)
 
     def ampere_policies(self, role):
-        """Ampere power rows of one role, identified by class, unit and power channel.
+        """Ampere and Turing power rows of one role, identified by class, unit and power channel.
 
         Roles: slot_power (class 4 mW) and slot_current (class 5 mA) on the PCIe
-        slot channel (byte-identical to the Ada SLOT_CHANNEL); input_current
-        (class 5 mA) on the 12 V input channel, rail 0xe0; connector_power (class
-        4 mW) on the external connector channels (AMPERE_CONNECTOR_RAILS);
-        nvvdd_current (class 0 mA) on an NVVDD output channel (class 1, rail 1).
-        Input channels are class 5 at 12 V with no parameter but the provider
-        byte 15. Rows must keep 0 <= minimum <= rated <= maximum, as on Ada.
+        slot channel (byte-identical to the Ada SLOT_CHANNEL); connector_power (class
+        4 mW) and connector_current (class 5 mA) on the external connector channels
+        (AMPERE_CONNECTOR_RAILS); Ampere only: input_current (class 5 mA) on the 12 V
+        input channel, rail 0xe0, nvvdd_current (class 0 mA) on an NVVDD output
+        channel (class 1, rail 1), and connector_sum (class 4 mW) on a class-2 channel
+        that adds at least two distinct connector channels and nothing else, each with
+        weight 1.0 (relationships() gives the entry layout; the sum reads rail 0xe0 or
+        0xe4, so it is identified by its members, not by its rail), with the 12 V bytes
+        of its members and no other parameter (other class-2 sums of connector channels
+        hold another value in bytes 6..7); Turing only: nvvdd_current_limit
+        (class 10 mA) on the channel whose 22 bytes equal the Ada NVVDD current
+        sensor channel, and nvvdd_threshold (class 5 mA) on an NVVDD channel with
+        sensor byte 14 = 5. Input channels are class 5 at 12 V with no parameter but
+        the provider byte 15 (Turing connector channels: and the current correction
+        offset, bytes 10..13). Rows must keep 0 <= minimum <= rated <= maximum, as on Ada.
         Returns ada_policy-style items in row order; same_channel_rows lists other
         rows of the same class and unit on a byte-identical channel, and
         summed_cap_rows those on a class-2 sum channel that adds this channel (the
         RTX 3080 Ti and RTX A6000 cap their connector channels together).
         """
-        if self.family != 'ampere':
+        turing = self.family == 'turing'
+        if self.family not in ('ampere', 'turing') or role in (
+                ('nvvdd_current', 'input_current', 'connector_sum') if turing else
+                ('nvvdd_current_limit', 'nvvdd_threshold')):
             return []
         cls, units = {'slot_power': (4, 'mW'), 'slot_current': (5, 'mA'), 'input_current': (5, 'mA'),
-                      'connector_power': (4, 'mW'), 'nvvdd_current': (0, 'mA')}[role]
+                      'connector_power': (4, 'mW'), 'connector_current': (5, 'mA'), 'connector_sum': (4, 'mW'),
+                      'nvvdd_current': (0, 'mA'), 'nvvdd_current_limit': (10, 'mA'), 'nvvdd_threshold': (5, 'mA')}[role]
         rows, size = self.power_rows(), self.power_entry_size
         count = self.blob[self.pointer('P', 0x3C) + 3]
 
@@ -311,13 +362,29 @@ class TableRom:
             e = self.power_channel(index)
             if role == 'nvvdd_current':
                 return 1 if e[:2] == b'\x01\x01' else None
-            if e[0] != 5 or e[2:8] != CHANNEL_12V or any(e[8:15]) or any(e[16:]) or (e[1] == 0xFF and e[15]):
+            if role == 'nvvdd_current_limit':
+                return 1 if e == NVVDD_CURRENT_CHANNEL[:len(e)] else None
+            if role == 'nvvdd_threshold':
+                return 1 if e[:2] == b'\x01\x01' and e[14] == 5 else None
+            parameters = e[8:10] + e[14:15] if turing and e[1] in AMPERE_CONNECTOR_RAILS else e[8:15]
+            if e[0] != 5 or e[2:8] != CHANNEL_12V or any(parameters) or any(e[16:]) or (e[1] == 0xFF and e[15]):
                 return None
             return e[1]
         wanted = {'slot_power': (0xFF,), 'slot_current': (0xFF,), 'input_current': (0xE0,),
-                  'connector_power': AMPERE_CONNECTOR_RAILS, 'nvvdd_current': (1,)}[role]
+                  'connector_power': AMPERE_CONNECTOR_RAILS, 'connector_current': AMPERE_CONNECTOR_RAILS,
+                  'nvvdd_current': (1,), 'nvvdd_current_limit': (1,), 'nvvdd_threshold': (1,)}.get(role)
+
+        def match(index):
+            if role != 'connector_sum':
+                return rail(index) in wanted
+            entry, members = self.power_channel(index), self.relationships(index)
+            channels = [r[1] for r in members]
+            return (entry[0] == 2 and entry[2:8] == CHANNEL_12V and not any(entry[8:14]) and not any(entry[16:]) and
+                    len(set(channels)) == len(channels) >= 2 and
+                    all(r[0] == 1 and r[2:6] == UNIT_WEIGHT and not any(r[6:31]) and r[1] < count and
+                        rail(r[1]) in AMPERE_CONNECTOR_RAILS for r in members))
         found = [r for r in rows if r['type'] == cls and r['limit_unit'] == units and
-                 self.blob[r['offset'] + 1] < count and rail(self.blob[r['offset'] + 1]) in wanted and
+                 self.blob[r['offset'] + 1] < count and match(self.blob[r['offset'] + 1]) and
                  0 <= r['minimum_raw'] <= r['default_raw'] <= r['maximum_raw']]
         sums = [(o, c, self.summed_channels(c)) for o in rows for c in (self.blob[o['offset'] + 1],)
                 if o['type'] == cls and o['limit_unit'] == units and c < count]
@@ -340,11 +407,16 @@ class TableRom:
                                same_channel_rows=same, summed_cap_rows=summed))
         return result
 
-    def summed_channels(self, index):
-        """Channels a class-2 power channel adds: its relationship entries (bytes 14..15, first..last).
+    def relationships(self, index):
+        """Relationship entries of a class-2 power channel (its bytes 14..15: first..last entry), else [].
 
         The relationship table follows the channel entries (header bytes 4/5: entry
-        size and count); byte 1 of each entry is a channel index.
+        size and count; 46 or 31 bytes on Ampere). Every entry a sum names on the
+        Ampere corpus holds 1 in byte 0, a channel index in byte 1, a signed 32-bit
+        weight in bytes 2..5 and zeros in bytes 6..30. The weight reads as 20.12 fixed
+        point (inferred): 0x1000 = 1.0 on most entries, 0xfffff000 = -1.0 on the others
+        (channel 12 subtracts channel 11 on most images). Bytes 31..45 of a 46-byte
+        entry hold a second record of unknown meaning.
         """
         at = self.pointer('P', 0x3C)
         hs, size, count, rsize, rcount = self.blob[at + 1:at + 6]
@@ -353,7 +425,11 @@ class TableRom:
             return []
         base = at + hs + size * count
         self.owner(base, rsize * rcount)
-        return [self.blob[base + rsize * i + 1] for i in range(entry[14], entry[15] + 1)]
+        return [self.blob[base + rsize * i:base + rsize * (i + 1)] for i in range(entry[14], entry[15] + 1)]
+
+    def summed_channels(self, index):
+        """Channels a class-2 power channel adds: byte 1 of its relationship entries, weights ignored."""
+        return [r[1] for r in self.relationships(index)]
 
     def profile_table(self):
         """Offset of the power profile table, or None when the P token has no (or a null) pointer.
@@ -383,9 +459,10 @@ class TableRom:
         return self.power_profiles()
 
     def clock_ranges(self):
-        self.power_only('clock')
         at = self.pointer('C', 8)
         b = self.blob
+        if self.family == 'turing':
+            return self._turing_clock_ranges(at)
         if self.family == 'ampere':
             # Header size 0x0b (no trailing byte) or 0x0c; one 3-byte rail sub-entry per rail.
             if (b[at] != 0x40 or b[at + 1] not in (0x0B, 0x0C) or b[at + 2:at + 5] != bytes((0x0D, 0x0A, 3)) or
@@ -407,6 +484,30 @@ class TableRom:
             domain = self._ada_clock_row(i, row, size, b[at + 5])
             rows.append(dict(row=i, domain=domain, minimum_mhz=lo, maximum_mhz=hi,
                              minimum_offset=row + 3, maximum_offset=row + 5))
+        return rows
+
+    def _turing_clock_ranges(self, at):
+        """Rows of the Turing clocks table v0x35, gated by usage, ordering byte and fixed bytes.
+
+        The nvgpu v35 row: usage (byte 0), programming entries (1..2), parameter 1
+        (bytes 3..6: on a master row the signed MHz offset minimum/maximum),
+        ordering (7), byte 8 = 0 and ff ff (9..10). range_stored marks the master
+        rows; the slave rows (XBAR, SYS, VID, ...) follow another domain and store
+        other parameters in bytes 3..6.
+        """
+        b = self.blob
+        if b[at:at + len(TURING_CLOCK_HEADER)] != TURING_CLOCK_HEADER:
+            raise FormatError('unvalidated clock table variant')
+        hs, size, count = b[at + 1:at + 4]
+        self.owner(at, hs + size * count)
+        rows = []
+        for i, (name, usage, ordering) in enumerate(TURING_CLOCK_ROWS):
+            row = at + hs + size * i
+            if b[row] != usage or b[row + 7] != ordering or b[row + 8] or b[row + 9:row + 11] != b'\xff\xff':
+                raise FormatError(f'Turing clock row {i} does not match the GV HAL {name} row')
+            lo, hi = read(b, '<hh', row + 3)
+            rows.append(dict(row=i, domain=name, minimum_mhz=lo, maximum_mhz=hi, minimum_offset=row + 3,
+                             maximum_offset=row + 5, range_stored=usage == 1))
         return rows
 
     def _ada_clock_row(self, i, row, size, rails=1):
@@ -439,7 +540,8 @@ class TableRom:
         Returns (rail row, VFE, equation base, equation count, selectors). The
         equation count is u16 header bytes 5 and 10. Selectors must address
         equations and keep the order REL < ALT (if present) < VMIN = OV - 1 found
-        on every parseable Ada image and on the GET-reviewed GB20x rows.
+        on every parseable Ada image and on the GET-reviewed GB20x rows, or the
+        order the Ada follow-OV edit leaves: REL = OV, ALT absent or = OV.
         """
         rail, vfe = self.pointer('P', 0x68), self.pointer('P', 0x20)
         b = self.blob
@@ -458,10 +560,21 @@ class TableRom:
 
     def _selectors(self, row, count):
         b = self.blob
+        if self.family == 'turing':
+            # nvgpu 1x row; every Turing image keeps REL < ALT (if present) < BOOT = OV - 1, VMIN = OV + 1
+            # and no margin limit equation, which could select one of them.
+            rel, alt, ov, boot, vmin = (b[row + k] for k in (4, 5, 6, TURING_BOOT_OFFSET, TURING_VMIN_OFFSET))
+            ordered = rel < boot == ov - 1 and vmin == ov + 1 and (alt == 0xFF or rel < alt < boot)
+            if 0xFF in (rel, ov, boot, vmin) or vmin >= count or not ordered or b[row + TURING_MARGIN_OFFSET] != 0xFF:
+                raise FormatError('unvalidated Turing rail selectors (expected REL < ALT < BOOT = OV - 1, '
+                                  'VMIN = OV + 1, no margin limit)')
+            return {'REL': rel, 'ALT': alt, 'OV': ov}
         selectors = {role: b[row + offset] for role, offset in ADA_ROLE_OFFSETS}
         rel, alt, ov, vmin = (selectors[k] for k in ('REL', 'ALT', 'OV', 'VMIN'))
         ordered = rel < vmin and vmin == ov - 1 and (alt == 0xFF or rel < alt < vmin)
-        if 0xFF in (rel, ov, vmin) or ov >= count or not ordered:
+        # The Ada follow-OV edit points REL and ALT (if present) at the OV equation.
+        followed = self.family == 'ada' and rel == ov and alt in (0xFF, ov) and vmin == ov - 1
+        if 0xFF in (rel, ov, vmin) or ov >= count or not (ordered or followed):
             family = 'Ada' if self.family == 'ada' else 'Ampere'
             raise FormatError(f'unvalidated {family} rail selectors (expected REL < ALT < VMIN = OV - 1)')
         return selectors
@@ -471,33 +584,43 @@ class TableRom:
 
         Ada: the single logic rail. Ampere: one or two 17-byte V20 rows; the
         second is named MSVDD by inference only (the GPC clock row runs on rail
-        0; XBAR, DRAM and DISP on rail 1). The Ampere VFE count is u8 header
-        byte 5. Every rail keeps the selector order of _ada_rail.
+        0; XBAR, DRAM and DISP on rail 1). Turing: one 14-byte 1x row (NVVDD).
+        The Ampere and Turing VFE count is u8 header byte 5. Every rail keeps the
+        selector order of _selectors.
         """
-        self.power_only('rail and VFE')
-        if self.family != 'ampere':
+        if self.family not in ('ampere', 'turing'):
             row, vfe, base, count, selectors = self._ada_rail()
             return [(0, 'NVVDD', row, selectors)], vfe, base, count
         rail, vfe = self.pointer('P', 0x68), self.pointer('P', 0x20)
         b = self.blob
-        rails = AMPERE_RAIL_HEADERS.get(bytes(b[rail:rail + 5]))
+        if self.family == 'turing':
+            name, headers, size, prefix = 'Turing', {TURING_RAIL_HEADER: 1}, 0x0E, TURING_VFE_PREFIX
+            layout = 'one 1x rail of 14 bytes'
+        else:
+            name, headers, size, prefix = 'Ampere', AMPERE_RAIL_HEADERS, 0x11, AMPERE_VFE_PREFIX
+            layout = 'one or two V20 rails of 17 bytes'
+        rails = headers.get(bytes(b[rail:rail + 5]))
         if not rails:
-            raise FormatError('unvalidated Ampere rail layout; expected one or two V20 rails of 17 bytes')
-        if b[vfe:vfe + 5] != AMPERE_VFE_PREFIX:
-            raise FormatError('unvalidated Ampere VFE dimensions')
-        self.owner(rail, 5 + 0x11 * rails)
+            raise FormatError(f'unvalidated {name} rail layout; expected {layout}')
+        if b[vfe:vfe + 5] != prefix:
+            raise FormatError(f'unvalidated {name} VFE dimensions')
+        self.owner(rail, 5 + size * rails)
         count = b[vfe + 5]
         base = vfe + b[vfe + 1] + b[vfe + 2] * b[vfe + 3]
         if not count:
-            raise FormatError('Ampere VFE table has no equations')
+            raise FormatError(f'{name} VFE table has no equations')
         self.owner(vfe, base - vfe + 24 * count)
-        rows = [rail + 5 + 0x11 * i for i in range(rails)]
+        rows = [rail + 5 + size * i for i in range(rails)]
         return ([(i, AMPERE_RAIL_NAMES[i], row, self._selectors(row, count)) for i, row in enumerate(rows)],
                 vfe, base, count)
 
+    def _role_offsets(self):
+        """Selector roles of a rail row: the Turing 1x row has REL/ALT/OV; Ada and Ampere add the VMIN slot."""
+        return TURING_ROLE_OFFSETS if self.family == 'turing' else ADA_ROLE_OFFSETS
+
     def _equation_layout(self):
-        """(equation size, link width in bytes): Ada 25 bytes with u16 links, Ampere 24 with u8."""
-        return (24, 1) if self.family == 'ampere' else (25, 2)
+        """(equation size, link width in bytes): Ada 25 bytes with u16 links, Ampere and Turing 24 with u8."""
+        return (24, 1) if self.family in ('ampere', 'turing') else (25, 2)
 
     def _ada_references(self, base, count):
         """Equation indices another VFE equation references, or None for unknown kinds.
@@ -577,21 +700,26 @@ class TableRom:
                 raise FormatError('REL variable index exceeds VFE variable table')
             variable = vfe + b[vfe + 1] + var_index * b[vfe + 2]
             self.owner(variable, 25)
-            if b[variable] != 3:
+            # A constant REL (zero slopes) does not read its variable: the OV equation a
+            # followed REL selects reads another one.
+            constant = not coefficients[1] and not coefficients[2]
+            if b[variable] != 3 and not constant:
                 raise FormatError('unvalidated REL input variable (expected temperature)')
             kind = self._ada_equation_kind(vfe, base, index, refs)
+            sensed = (dict(index=var_index, offset=variable, type=3, meaning='sensed temperature',
+                           thermal_channel=b[variable + 9], units_inferred='degrees Celsius') if b[variable] == 3 else
+                      dict(index=var_index, offset=variable, type=b[variable], meaning='not read by a constant equation'))
             result.append(dict(rail_index=rail_index, rail_name_inferred=name, rail_entry=row,
                                rel_equation_index_inferred=index, equation_offset=equation,
                                equation_type=b[equation], output_minimum_uv=lo, output_maximum_uv=hi,
                                maximum_offset=equation + 7, equation_coefficients=list(coefficients),
                                equation_kind=kind, editable_ceiling=kind == 'temperature-derated',
-                               thermal_derating_preserved=True, input_variable=dict(index=var_index,
-                               offset=variable, type=3, meaning='sensed temperature',
-                               thermal_channel=b[variable + 9], units_inferred='degrees Celsius')))
+                               thermal_derating_preserved=True, input_variable=sensed))
         return result
 
     def rail_equations(self):
-        """REL/ALT/OV/VMIN selector roles of every logic rail (Ada: NVVDD; Ampere: NVVDD, MSVDD).
+        """REL/ALT/OV/VMIN selector roles of every logic rail (Ada: NVVDD; Ampere: NVVDD, MSVDD; Turing: NVVDD
+        with REL/ALT/OV only).
 
         Only temperature-derated REL and ALT equations take a ceiling edit (see
         _ada_equation_kind). Constant equations (every OV, every Ampere REL/ALT,
@@ -604,7 +732,7 @@ class TableRom:
         size = self._equation_layout()[0]
         result = []
         for rail_index, name, row, selectors in rails:
-            for role, offset in ADA_ROLE_OFFSETS:
+            for role, offset in self._role_offsets():
                 selector = selectors[role]
                 item = dict(logical_rail_id=name, rail_index=rail_index, rail_entry=row, role=role,
                             selector_offset=row + offset, selector_width_bits=8, selector_raw=selector,
@@ -628,26 +756,30 @@ class TableRom:
         return result
 
     def rail_vmin(self):
-        """Per rail, the equation of the evaluated VMIN (row byte 7) and whether its clamp pins it.
+        """Per rail, the equation of the evaluated VMIN (row byte 7; Turing byte 9) and whether its clamp pins it.
 
         The clamp pins the value when the equation is a float voltage output
         (type 1, unit 2) with a finite clamp minimum equal to its maximum, which
-        no other equation references and no other role selects; its chained
-        equations (next link) add added_uv to the clamped value. The RTX 2000 Ada
-        driver reported VMIN 90 mV above this value, at both the stock and an
-        edited clamp, inside the 70..162 mV its chain adds. rel_lowest_uv is the
-        lowest value of the REL equation list (vfe_range).
+        no other equation references and no other role selects (on Turing the
+        boot voltage selector, byte 8, counts as a role); its chained equations
+        (next link) add added_uv to the clamped value. The RTX 2000 Ada driver
+        reported VMIN 90 mV above this value, at both the stock and an edited
+        clamp, inside the 70..162 mV its chain adds. Turing byte 9 is the nvgpu 1x
+        vmin_limit_vfe_equ_idx. rel_lowest_uv is the lowest value of the REL
+        equation list (vfe_range).
         """
         rails, vfe, base, count = self._rails()
         refs = self._ada_references(base, count)
         size, width = self._equation_layout()
         roles = self.rail_equations()
+        turing = self.family == 'turing'
+        offset = TURING_VMIN_OFFSET if turing else ADA_VMIN_OFFSET
         result = []
         for rail_index, name, row, selectors in rails:
-            selector = self.blob[row + ADA_VMIN_OFFSET]
+            selector = self.blob[row + offset]
             rel = vfe_range(self.blob, base, size, width, count, selectors['REL'])  # _selectors: REL present
             item = dict(logical_rail_id=name, rail_index=rail_index, rail_entry=row,
-                        selector_offset=row + ADA_VMIN_OFFSET, selector_raw=selector, equation_offset=None,
+                        selector_offset=row + offset, selector_raw=selector, equation_offset=None,
                         equation_size=size, equation_type=None, value_uv=None, pinned=False,
                         rel_lowest_uv=rel and rel[0], added_uv=None)
             if selector == 0xFF or selector >= count:
@@ -660,7 +792,8 @@ class TableRom:
             item.update(equation_offset=at, equation_type=self.blob[at],
                         added_uv=vfe_range(self.blob, base, size, width, count, link, frozenset((selector,))))
             selected = ([r for r in roles if r['equation_offset'] == at] or
-                        [r for _, _, r, _ in rails if r != row and self.blob[r + ADA_VMIN_OFFSET] == selector])
+                        [r for _, _, r, _ in rails if r != row and self.blob[r + offset] == selector] or
+                        (turing and self.blob[row + TURING_BOOT_OFFSET] == selector))
             if self.blob[at] != 1 or self.blob[at + 23] & 15 != 2:
                 diagnostic = 'is not a float voltage output'
             elif not (math.isfinite(lo) and lo == hi):
@@ -675,14 +808,103 @@ class TableRom:
             result.append(item)
         return result
 
+    def rail_boot_equations(self):
+        """Turing: per rail, the equation the boot voltage selector (1x row byte 8) picks; other families: none.
+
+        It is not a role of rail_equations, and no field writes it.
+        """
+        if self.family != 'turing':
+            return []
+        rails, _, base, _ = self._rails()
+        size = self._equation_layout()[0]
+        return [dict(logical_rail_id=name, rail_index=index, selector_offset=row + TURING_BOOT_OFFSET,
+                     selector_raw=self.blob[row + TURING_BOOT_OFFSET],
+                     equation_offset=base + size * self.blob[row + TURING_BOOT_OFFSET], equation_size=size)
+                for index, name, row, _ in rails]
+
+    def rail_table(self):
+        """(offset, size) of the rail table (P+0x68) in the primary chain: its 5-byte header and rows."""
+        rail = self.pointer('P', 0x68)
+        header = bytes(self.blob[rail:rail + 5])
+        rows = {'ada': {ADA_RAIL_HEADER: 1}, 'turing': {TURING_RAIL_HEADER: 1}}.get(self.family,
+                                                                                   AMPERE_RAIL_HEADERS).get(header)
+        if not rows:
+            raise FormatError('unvalidated rail layout')
+        size = 5 + self.blob[rail + 2] * rows
+        self.owner(rail, size)
+        return rail, size
+
+    def rail_fixed(self):
+        """Ada and Turing NVVDD REL and ALT equations that hold a fixed value, and the value of the OV equation.
+
+        A fixed equation is the constant kind of _ada_equation_kind (zero slopes, no link,
+        no reference from another equation) whose constant equals its clamp maximum (the
+        images store it as the clamp minimum too), and that no other role and not the
+        evaluated VMIN (Ada row byte 7, Turing byte 9) selects; on Turing the boot voltage
+        selector (byte 8) counts as a role too. Ada row byte 10 holds 2, the REL index, on
+        every image; its meaning is unknown and it is not counted as a role (Turing byte 10,
+        the voltage margin limit, is absent: _selectors). lowest_uv and highest_uv bound a
+        role's equation list (vfe_range; an unlinked equation, such as a compare REL head,
+        also by its own clamp). ov_uv is set when OV is a constant voltage equation with
+        minimum = maximum = constant; boot_uv is the stored boot voltage (row bytes 0..3).
+        """
+        if self.family not in ('ada', 'turing'):
+            return None
+        rails, vfe, base, count = self._rails()
+        _, _, row, selectors = rails[0]
+        refs = self._ada_references(base, count)
+        size, width = self._equation_layout()
+        b = self.blob
+        turing = self.family == 'turing'
+        selected = {{'VMIN': 'the VMIN slot'}.get(k, k): v for k, v in selectors.items()}
+        if turing:
+            selected['the boot voltage'] = b[row + TURING_BOOT_OFFSET]
+        selected['the evaluated VMIN'] = b[row + (TURING_VMIN_OFFSET if turing else ADA_VMIN_OFFSET)]
+
+        def span(index):
+            at = base + size * index
+            lo, hi = read(b, '<ff', at + 3)
+            bounded = vfe_range(b, base, size, width, count, index)
+            unlinked = (b[at + 2] | (b[at + 24] << 8 if width == 2 else 0)) == (1 << 8 * width) - 1
+            if bounded is None and b[at + 23] & 15 == 2 and unlinked and -1e30 < lo <= hi < 1e30:
+                bounded = lo, hi
+            return bounded or (None, None)
+
+        roles = {}
+        for role in ('REL', 'ALT'):
+            index = selectors[role]
+            if index == 0xFF:
+                roles[role] = None
+                continue
+            at = base + size * index
+            lo, hi, value = read(b, '<fff', at + 3)
+            kind = self._ada_equation_kind(vfe, base, index, refs)
+            shared = [name for name, other in selected.items() if name != role and other == index]
+            diagnostic = ('is used by another equation' if kind == 'shared' else
+                          f'is not a constant (a {kind} equation)' if kind != 'constant' else
+                          'does not hold its constant at its clamp maximum' if value != hi else
+                          'is also selected by ' + ' and '.join(shared) if shared else None)
+            lowest, highest = span(index)
+            roles[role] = dict(role=role, selector_raw=index, selector_offset=row + dict(self._role_offsets())[role],
+                               equation_offset=at, equation_kind=kind,
+                               minimum_uv=lo, maximum_uv=hi, value_uv=value, fixed=diagnostic is None,
+                               lowest_uv=lowest, highest_uv=highest, maximum_offset=at + 7, value_offset=at + 11,
+                               **({'diagnostic': diagnostic} if diagnostic else {}))
+        at = base + size * selectors['OV']
+        lo, hi, value = read(b, '<fff', at + 3)
+        constant = self._ada_equation_kind(vfe, base, selectors['OV'], refs) == 'constant' and lo == hi == value
+        return dict(rail_entry=row, selectors=selectors, roles=roles, ov_uv=value if constant else None,
+                    boot_uv=read(b, '<I', row)[0])
+
     def fan_regions(self):
-        """(start, size) of every Ada/Ampere fan table in every chain, at the reviewed sizes.
+        """(start, size) of every Ada/Ampere/Turing fan table in every chain, at the reviewed sizes.
 
         Sizes come from the reviewed layout whether or not a table decodes, so an
         unexpected header stays protected too.
         """
         regions = []
-        for pointer, _, header_size, entry_size, entries in ADA_FAN_TABLES.values():
+        tables = TURING_FAN_TABLES if self.family == 'turing' else ADA_FAN_TABLES
+        for pointer, _, header_size, entry_size, entries in tables.values():
             try:
                 at = self.pointer('P', pointer)
             except FormatError:
@@ -710,9 +932,11 @@ class TableRom:
         Rows carry the GB20x row limits, policy curve and speed value. Enabled
         policy entries past the two cooler rows (entry 2, and 3 on most images)
         store further curves, listed in extra_curves. Ampere boards that stop
-        the fan store 0 % and 0 RPM as the row minimum.
+        the fan store 0 % and 0 RPM as the row minimum. Turing: see
+        _turing_fan_coolers.
         """
-        self.power_only('fan')
+        if self.family == 'turing':
+            return self._turing_fan_coolers()
         b = self.blob
         try:
             at = self.pointer('P', 0x58)
@@ -768,6 +992,71 @@ class TableRom:
         return dict(offset=at, policy_offset=tables['policy'](0) - 4, mapping_offset=tables['mapping'](0) - 4,
                     control_offset=tables['control'](0) - 4, speed_offset=tables['speed'](0) - 4,
                     channels=listed, rows=rows, extra_curves=extra)
+
+    def _turing_fan_coolers(self):
+        """Turing fan channels across the cooler, policy and mapping tables (TURING_FAN_TABLES).
+
+        The policy table repeats the cooler channel list (header bytes 4..5). A
+        listed channel i has a nonzero enable in all three tables, policy byte 2 =
+        i, policy bytes 9..16 = TURING_POLICY_BYTES and mapping byte 1 = i; an
+        unlisted one is disabled in all three. Both
+        lists 0xff with every enable 0 means no GPU-driven fan (Max-Q and laptop
+        images); returns None. Rows have the fan_coolers keys: policy_offset is
+        the policy entry + TURING_CURVE_SHIFT, where the Ada curve offsets apply,
+        and there are no control or speed entries and no extra curves. The disabled
+        entries hold bytes that differ from the active ones, so no channel count
+        is offered (fan_layouts does not run on Turing).
+        """
+        b = self.blob
+        try:
+            at = self.pointer('P', 0x58)
+        except FormatError:
+            return None
+        tables = {}
+        for name, (pointer, header, header_size, entry_size, entries) in TURING_FAN_TABLES.items():
+            start = at if name == 'cooler' else self.pointer('P', pointer)
+            if b[start:start + 4] != header:
+                raise FormatError(f'unsupported fan {name} table')
+            self.owner(start, header_size + entry_size * entries)
+            tables[name] = lambda i, start=start, header_size=header_size, entry_size=entry_size: (
+                start + header_size + entry_size * i)
+        n = ADA_FAN_CHANNELS
+        header, policy_list = list(b[at + 4:at + 4 + n]), list(b[tables['policy'](0) - n:tables['policy'](0)])
+        if (header == policy_list == [0xFF] * n and
+                not any(b[tables[name](i)] for name in tables for i in range(n))):
+            return None
+        if policy_list != header:
+            raise FormatError('fan policy channel list disagrees with the cooler list')
+        end = header.index(0xFF) if 0xFF in header else n
+        listed = header[:end]
+        if any(i != 0xFF for i in header[end:]) or listed != list(range(len(listed))) or not listed:
+            raise FormatError('unrecognized fan channel list')
+        rows = []
+        for i in range(n):
+            row, pol, mapped = tables['cooler'](i), tables['policy'](i), tables['mapping'](i)
+            curve = pol + TURING_CURVE_SHIFT
+            rows.append(dict(index=i, offset=row, enable=b[row], active=i in listed,
+                             pwm_frequency_hz=int.from_bytes(b[row + 11:row + 14], 'little'),
+                             pwm_frequency_offset=row + 11,
+                             level_minimum=b[row + 2], level_maximum=b[row + 3],
+                             rpm_minimum=read(b, '<H', row + 14)[0], rpm_maximum=read(b, '<H', row + 16)[0],
+                             **fan_curve(b, curve),
+                             policy_offset=curve, policy_enable=b[pol], mapping_offset=mapped,
+                             mapping_enable=b[mapped], mapping_row=b[mapped + 1],
+                             control_offset=None, control_enable=0, speed_offset=None, speed_enable=0, speed_rpm=0,
+                             stored=b[pol + 2] == i and b[mapped + 1] == i))
+        if [r['index'] for r in rows if r['enable']] != listed:
+            raise FormatError('fan channel list disagrees with the enabled rows')
+        for r in rows:
+            if any(bool(r[k]) != r['active'] for k in ('policy_enable', 'mapping_enable')):
+                raise FormatError('fan channel enables disagree across the fan tables')
+            if r['active'] and not r['stored']:
+                raise FormatError('an active fan channel is not stored in every fan table')
+            entry = tables['policy'](r['index'])
+            if r['active'] and b[entry + 9:entry + 17] != TURING_POLICY_BYTES:
+                raise FormatError('unrecognized Turing fan policy entry layout')
+        return dict(offset=at, policy_offset=tables['policy'](0) - 6, mapping_offset=tables['mapping'](0) - 4,
+                    control_offset=None, speed_offset=None, channels=listed, rows=rows, extra_curves=[])
 
     def copy_offsets(self, at, size):
         self.owner(at, size)

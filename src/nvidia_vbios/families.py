@@ -9,7 +9,8 @@ unknown. No hardware is accessed.
 """
 SOURCE = 'https://raw.githubusercontent.com/NVIDIA/open-gpu-kernel-modules/615.71.09/README.md'
 # Turing (TU102 0x1E0x-0x1E7x, TU104 0x1E8x-0x1EFx, TU106 0x1F0x-0x1F7x, TU117 0x1F8x-0x1FFx,
-# TU116 0x218x-0x21Dx) is experimental: no Turing board has run an edited image.
+# TU116 0x218x-0x21Dx) is experimental: one RTX 2080 Ti has run an edited board power limit;
+# nothing else is tested on Turing hardware.
 DEVICES = {
     0x1E02: ('turing', 'NVIDIA TITAN RTX'),
     0x1E04: ('turing', 'NVIDIA GeForce RTX 2080 Ti'),

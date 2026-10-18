@@ -1,5 +1,6 @@
-"""Turing (TU102-TU117): board power fields and loader payloads on generated images and reference ROMs."""
+"""Turing (TU102-TU117): editor fields and loader payloads on generated images and reference ROMs."""
 import contextlib
+from decimal import Decimal
 import io
 import json
 import os
@@ -11,22 +12,54 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from nvidia_vbios.editor import edit, normalize_manifest
+from nvidia_vbios.editor import edit, normalize_manifest, plan
+from nvidia_vbios.editor.registry import registry
 from nvidia_vbios.families import architecture
 from nvidia_vbios.gui.controller import loader_messages, open_document, save_document, stage_document
 from nvidia_vbios.rom import FormatError, VbiosError, from_bytes, inspect_image, load, normalize
 from nvidia_vbios.rom.image import backend
 from nvidia_vbios.rom.structure import image_chains, scan_images
 from nvidia_vbios.rom.turing import npde
+from test_ada_fields import patched
 
 POWER = ['power_max_w', 'power_default_w', 'power_min_w']
 E0_END = 'turing-e0-end-v1'
 DESKTOP_CHANNELS = {0: '02 df 00 1b b7 00 00 10', 9: '02 f5 00 1b b7 00 00 10'}
 NOTEBOOK_CHANNELS = {0: '02 f5 00 1b b7 00 00 10'}
+# Per-input power channels of a two-connector desktop board: PCIe slot 3, connectors 4/5 (rails
+# 0xfa/0xfb, provider bytes 1/2) and the NVVDD current sensor 19 (class 1, rail 1, sensor 6).
+INPUT_CHANNELS = {3: '05 ff 00 1b b7 00 00 10', 4: '05 fa 00 1b b7 00 00 10 00 00 00 00 00 00 00 01',
+                  5: '05 fb 00 1b b7 00 00 10 00 00 00 00 00 00 00 02',
+                  19: '01 01 00 1b b7 00 00 10 00 00 00 00 00 00 06'}
+# Their rows: (flags byte 0, channel, parameter byte 0, minimum/rated/maximum). Slot and connector
+# power (class 4 mW), the slot and connector current thresholds 0/1/2 (class 5 mA) and the NVVDD
+# current limit (class 10 mA).
+INPUT_ROWS = {3: (0x04, 3, 0, (1000, 63000, 74000)), 4: (0x04, 4, 0, (1000, 143000, 167000)),
+              5: (0x04, 5, 0, (1000, 143000, 167000)), 7: (0x15, 3, 0, (1000, 11000, 16500)),
+              8: (0x15, 4, 1, (1000, 22500, 33750)), 9: (0x15, 5, 2, (1000, 22500, 33750)),
+              13: (0x1A, 19, 0, (1000, 350780, 390000))}
+INPUTS = ['slot_power_max_w', 'slot_power_rated_w'] + [
+    f'connector_{n}_{kind}' for n in (1, 2) for kind in ('power_max_w', 'power_rated_w')]
+THRESHOLDS = ['slot_current_threshold_max_ma', 'slot_current_threshold_rated_ma'] + [
+    f'connector_{n}_current_threshold_{side}_ma' for n in (1, 2) for side in ('max', 'rated')] + [
+    'nvvdd_output_ocp_max_ma', 'nvvdd_output_ocp_rated_ma']
+VOLTAGES = ['nvvdd_vmin_mv', 'nvvdd_rel_fixed_mv', 'nvvdd_alt_fixed_mv']
+CLOCKS = ['gpc_offset_max_mhz', 'gpc_offset_min_mhz', 'memory_offset_max_mhz', 'memory_offset_min_mhz',
+          'dram_max_table_mhz', 'dram_min_table_mhz']
+# v0x35 clock rows (usage, offset minimum/maximum or other parameters, ordering byte) in the GV
+# HAL order; the XBAR slave row holds a nonzero parameter where master rows hold their range.
+CLOCK_ROWS = ((1, -1000, 1000, 0x13), (2, -500, 500, 0x24), (1, -1000, 3000, 0x62), (2, 0, 0, 0x35),
+              (2, 7, 0, 0x71), (2, 0, 0, 0x46), (0, 9, 0, 0xFF), (1, 0, 0, 0x80), (2, 2, 0, 0x08), (2, 0, 0, 0x57))
+# Rail row (legacy image) and VFE equations: REL 0, ALT 1, BOOT 2 (fixed point), OV 3, VMIN 4 (clamp
+# 692.5 mV) chained to 5 (-112.5..+75 mV).
+RAIL_ROW = '00 35 0c 00 00 01 03 00 02 04 ff 00 00 00'
+EQUATIONS = {0: (1, 10, 1068750, 1068750, (1068750, 0, 0)), 1: (1, 10, 1093750, 1093750, (1093750, 0, 0)),
+             2: (4, 7, 0, 0, (0, 0, 0)), 3: (1, 7, 1125000, 1125000, (1125000, 0, 0)),
+             4: (1, 7, 692500, 692500, (0, 0, 0)), 5: (1, 7, -112500, 75000, (0, 1, 0))}
 
 
 def synthetic_turing(*, device=0x1F06, efi_image=True, notebook=False, header=0x2C, channels=None, tgp_channel=None,
-                     limits=(125000, 175000, 200000), copies=2):
+                     limits=(125000, 175000, 200000), copies=2, inputs=False, rails=False, clocks=False, fans=0):
     """NVGI banks holding a generated Turing chain, then a type-0x70 image outside the banks.
 
     Chain: legacy [+ EFI] + E0 + E0 (not flagged last; its NPDE has a last-image byte) + a
@@ -34,6 +67,11 @@ def synthetic_turing(*, device=0x1F06, efi_image=True, notebook=False, header=0x
     0x27: 30/27/42) with the TGP row 2 (min/rated/max mW in limits) and the 20-entry power
     channel table; the board-total channel (class 2, rail 0xf5) is 9 on the desktop layout
     and 0 on the notebook one (header bytes 10..13 ff ff ff 02).
+
+    inputs adds INPUT_ROWS (16 power rows) on INPUT_CHANNELS; rails adds the 1x rail row (legacy
+    image) and the VFE table (second E0 image, EQUATIONS); clocks adds the v0x35 clock table
+    (legacy image, CLOCK_ROWS); fans adds the cooler, v0x10 policy and mapping tables (second E0
+    image) with 1 or 2 active channels (negative: no GPU-driven fan, as on laptops).
     """
     bank_size, prefix = 16384, 512
     images = [(2048, b'\x55\xaa', 0, device, 0x80 if not efi_image else 0)]
@@ -69,19 +107,56 @@ def synthetic_turing(*, device=0x1F06, efi_image=True, notebook=False, header=0x
     efi = 512 if efi_image else 0
     data = regions[-2][0]
     power, table = data + 0x100, data + 0x600
-    for offset, target in ((0x2C, power), (0x3C, table)):
-        struct.pack_into('<I', bank, legacy + 256 + offset, target - legacy - efi)
-    bank[power:power + 4] = bytes((0x30, header, 0x42, 3))
+
+    def point(token, offset, target):
+        # Pointers past the legacy image skip the EFI image.
+        struct.pack_into('<I', bank, legacy + (256 if token == 'P' else 600) + offset,
+                         target - legacy - (efi if target >= legacy + 2048 else 0))
+    point('P', 0x2C, power)
+    point('P', 0x3C, table)
+    count = 16 if inputs else 3
+    bank[power:power + 4] = bytes((0x30, header, 0x42, count))
     bank[power + 10] = 2
     if notebook:
         bank[power + 10:power + 14] = bytes((0xFF, 0xFF, 0xFF, 2))
     row = power + header + 2 * 0x42
     bank[row:row + 2] = bytes((0x21, (0 if notebook else 9) if tgp_channel is None else tgp_channel))
     struct.pack_into('<III', bank, row + 2, *limits)
+    for index, (flags, channel, parameter, values) in (INPUT_ROWS.items() if inputs else ()):
+        row = power + header + index * 0x42
+        bank[row:row + 2], bank[row + 14] = bytes((flags, channel)), parameter
+        struct.pack_into('<III', bank, row + 2, *values)
     bank[table:table + 6] = bytes.fromhex('20 06 16 14 00 00')
-    for index, entry in (channels or (NOTEBOOK_CHANNELS if notebook else DESKTOP_CHANNELS)).items():
+    for index, entry in (channels or {**(NOTEBOOK_CHANNELS if notebook else DESKTOP_CHANNELS),
+                                      **(INPUT_CHANNELS if inputs else {})}).items():
         entry = bytes.fromhex(entry)
         bank[table + 6 + 0x16 * index:table + 6 + 0x16 * index + len(entry)] = entry
+    if rails:
+        rail, vfe = legacy + 800, data + 0x800
+        point('P', 0x68, rail)
+        point('P', 0x20, vfe)
+        bank[rail:rail + 19] = bytes.fromhex('10 05 0e 01 00 ' + RAIL_ROW)
+        bank[vfe:vfe + 6] = bytes.fromhex('30 09 19 14 18 08')
+        bank[vfe + 9 + 10 * 25], bank[vfe + 9 + 7 * 25] = 3, 4  # variables 10 (sensed temperature) and 7
+        base = vfe + 9 + 20 * 25
+        for index in range(8):
+            bank[base + 24 * index + 2] = 0xFF  # no next link
+        for index, (kind, variable, low, high, coefficients) in EQUATIONS.items():
+            eq = base + 24 * index
+            bank[eq:eq + 3] = bytes((kind, variable, 5 if index == 4 else 0xFF))
+            struct.pack_into('<5f', bank, eq + 3, low, high, *coefficients)
+            bank[eq + 23] = 2
+    if clocks:
+        at = legacy + 900
+        point('C', 8, at)
+        bank[at:at + 9] = bytes.fromhex('35 09 0b 0a 03 e8 03 00 00')
+        for i, (usage, low, high, ordering) in enumerate(CLOCK_ROWS):
+            row = at + 9 + 11 * i
+            bank[row:row + 3] = bytes((usage, i, i))
+            struct.pack_into('<hh', bank, row + 3, low, high)
+            bank[row + 7:row + 11] = bytes((ordering, 0, 0xFF, 0xFF))
+    if fans:
+        turing_fan_tables(bank, data, point, fans)
     for start, end in regions:
         bank[end - 1] = (bank[end - 1] - sum(bank[start:end])) & 255
     tail = bytearray(b'\xff' * 512)
@@ -90,6 +165,34 @@ def synthetic_turing(*, device=0x1F06, efi_image=True, notebook=False, header=0x
     struct.pack_into('<H', tail, 0x30, 1)
     tail[0x34:0x36] = bytes((0x70, 0x80))
     return bytes(bank) * copies + bytes(tail)
+
+
+def turing_fan_tables(bank, data, point, fans):
+    """Cooler (P+0x58), v0x10 policy (P+0x5c) and mapping (P+0x64) tables with two entries each.
+
+    The policy entry holds the Ada curve layout from byte 3 on: the fixed bytes 9..16, levels 20/50/100 %
+    at bytes 17..19 and three (1/32 C, RPM) points from byte 21 that reach the row limits (20-100 %,
+    1000-3300 RPM).
+    """
+    cooler, policy, mapping = data + 0xC00, data + 0xC80, data + 0xD00
+    for offset, at, header in ((0x58, cooler, (0x10, 6, 0x1A, 2)), (0x5C, policy, (0x10, 6, 0x36, 2)),
+                               (0x64, mapping, (0x10, 4, 5, 2))):
+        point('P', offset, at)
+        bank[at:at + 4] = bytes(header)
+    active = max(fans, 0)
+    bank[cooler + 4:cooler + 6] = bank[policy + 4:policy + 6] = bytes(i if i < active else 0xFF for i in range(2))
+    for i in range(2):
+        on = i < active
+        row, entry = cooler + 6 + 26 * i, policy + 6 + 54 * i
+        bank[row] = 2 if on else 0
+        bank[row + 2:row + 6], bank[row + 10] = bytes((20, 100, 0x3D, 0x02 + i)), 9 + i
+        struct.pack_into('<I', bank, row + 11, 27000)
+        struct.pack_into('<HH', bank, row + 14, 1000, 3300)
+        bank[entry:entry + 3] = bytes((int(on), 1, i if on else 0))
+        bank[entry + 9:entry + 17] = bytes.fromhex('23 2b 0a 01 00 02 80 00')
+        bank[entry + 17:entry + 20] = bytes((20, 50, 100))
+        struct.pack_into('<6H', bank, entry + 21, 55 * 32, 1000, 70 * 32, 2000, 85 * 32, 3300)
+        bank[mapping + 4 + 5 * i:mapping + 6 + 5 * i] = bytes((int(on), i))
 
 
 def patch_banks(blob, change):
@@ -115,6 +218,25 @@ def descriptors(image):
 def tgp_offsets(blob):
     parser = backend(from_bytes(blob))
     return parser.copy_offsets(parser.power_rows()[parser.tgp_index]['maximum_offset'] - 8, 12)
+
+
+def messages(image):
+    return [d['message'] for d in inspect_image(image)['diagnostics']]
+
+
+def changed_within(test, image, result, offsets, width=4):
+    """Only the declared bytes and the checksum bytes changed, in both banks."""
+    allowed = {at + k for at in offsets for k in range(width)}
+    allowed |= {r['offset'] for r in result.manifest['integrity_repairs']}
+    changed = {i for i, (a, b) in enumerate(zip(image.blob, result.blob)) if a != b}
+    test.assertLessEqual(changed, allowed)
+    test.assertEqual({at // 16384 for at in changed}, {0, 1})
+    test.assertTrue(backend(result.image).integrity()['valid'])
+
+
+def turing_evidence(field):
+    return any(e.get('source', '').startswith('Turing VBIOS corpus') or e.get('format', '').startswith('Turing')
+               for e in field['evidence'])
 
 
 class TuringStructureTests(unittest.TestCase):
@@ -205,18 +327,19 @@ class TuringStructureTests(unittest.TestCase):
 
 
 class TuringPowerTests(unittest.TestCase):
-    def test_board_power_fields_only_experimental_with_the_turing_caveats(self):
+    def test_board_power_fields_are_experimental_with_the_turing_caveats(self):
         image = from_bytes(synthetic_turing())
         report = inspect_image(image)
         fields = {f['key']: f for f in report['fields']}
         self.assertEqual([fields[k]['current'] for k in POWER], [200, 175, 125])
         self.assertEqual(sorted(k for k, f in fields.items() if f['editable']), sorted(POWER))
-        self.assertEqual(sorted(fields), sorted(POWER + ['current_limit_a', 'ocp_limit_a']))
+        # Without the other tables only the placeholders remain.
+        self.assertEqual(sorted(fields), sorted(POWER + ['current_limit_a', 'ocp_limit_a', 'memory_offset_max_mhz']))
         for key in POWER:
             field = fields[key]
             self.assertTrue(field['experimental'], key)
-            for text in ('decodes like the Ampere one', 'not hardware-tested on Turing', 'signed hash list',
-                         'whether the driver checks it is unknown'):
+            for text in ('decodes like the Ampere one', 'nvidia-smi reported an edited TGP', 'signed hash list',
+                         'not confirmed'):
                 self.assertIn(text, field['reason'], key)
             self.assertIn('Turing 30/2c/42', field['evidence'][0]['recognized_variants'])
             self.assertIn('integrity-observation', [e['kind'] for e in field['evidence']])
@@ -224,9 +347,7 @@ class TuringPowerTests(unittest.TestCase):
         self.assertEqual((fields['power_max_w']['bounds']['minimum'], fields['power_min_w']['bounds']['minimum']),
                          (175, 1))
         self.assertIsNone(fields['power_max_w']['bounds']['hardware_safe_maximum'])
-        messages = ' '.join(d['message'] for d in report['diagnostics'])
-        for tables in ('rail and VFE', 'clock', 'fan'):
-            self.assertIn(f'Turing {tables} tables are not reviewed', messages)
+        self.assertEqual(set(messages(image)), {'requested table is absent'})
 
     def test_header_variant_and_notebook_layout(self):
         fields = descriptors(from_bytes(synthetic_turing(header=0x27)))
@@ -234,7 +355,7 @@ class TuringPowerTests(unittest.TestCase):
         notebook = descriptors(from_bytes(synthetic_turing(notebook=True, efi_image=False, limits=(1000, 80000, 95000))))
         self.assertEqual([notebook[k]['current'] for k in POWER], [95, 80, 1])
         self.assertIn('stored notebook TGP', notebook['power_max_w']['reason'])
-        self.assertIn('not hardware-tested on Turing', notebook['power_default_w']['reason'])
+        self.assertIn('no Turing laptop reading', notebook['power_default_w']['reason'])
 
     def test_tgp_row_must_read_the_only_board_total_channel(self):
         refused = (dict(tgp_channel=0),                                               # another class-2 sum
@@ -276,6 +397,479 @@ class TuringPowerTests(unittest.TestCase):
         blob[end - 1] = (blob[end - 1] + 0xFF) & 255
         report = inspect_image(from_bytes(bytes(blob)))
         self.assertEqual([f['key'] for f in report['fields'] if f['editable']], [])
+
+
+class TuringInputTests(unittest.TestCase):
+    """Slot, connector and NVVDD rows (INPUT_ROWS) on the channels of a two-connector board."""
+    def setUp(self):
+        self.image = from_bytes(synthetic_turing(inputs=True))
+        self.parser = backend(self.image)
+        self.rows = self.parser.power_rows()
+        self.channels = self.parser.pointer('P', 0x3C) + 6
+
+    def test_rows_by_class_unit_and_channel(self):
+        fields = descriptors(self.image)
+        expected = {'slot_power_max_w': 74, 'slot_power_rated_w': 63, 'connector_1_power_max_w': 167,
+                    'connector_1_power_rated_w': 143, 'connector_2_power_max_w': 167, 'connector_2_power_rated_w': 143,
+                    'slot_current_threshold_max_ma': 16500, 'slot_current_threshold_rated_ma': 11000,
+                    'connector_1_current_threshold_max_ma': 33750, 'connector_1_current_threshold_rated_ma': 22500,
+                    'connector_2_current_threshold_max_ma': 33750, 'connector_2_current_threshold_rated_ma': 22500,
+                    'nvvdd_output_ocp_max_ma': 390000, 'nvvdd_output_ocp_rated_ma': 350780}
+        self.assertEqual(sorted(k for k, f in fields.items() if f['editable']), sorted(POWER + list(expected)))
+        for key, value in expected.items():
+            with self.subTest(key=key):
+                field = fields[key]
+                self.assertEqual(field['current'], value)
+                self.assertTrue(field['experimental'] and turing_evidence(field))
+                self.assertEqual(field.get('opt_in', False), key in THRESHOLDS)
+                self.assertIn('not hardware-tested on Turing', field['reason'])
+                self.assertNotRegex(field['reason'], 'reading; not hardware|not hardware-tested; not hardware')
+        self.assertEqual([fields[f'connector_{n}_power_max_w']['channel_rail'] for n in (1, 2)], [0xFA, 0xFB])
+        self.assertEqual([fields[f'connector_{n}_current_threshold_rated_ma']['threshold_index'] for n in (1, 2)],
+                         [1, 2])
+        self.assertEqual([fields[f'connector_{n}_current_threshold_rated_ma']['policy_indices'] for n in (1, 2)],
+                         [[8], [9]])
+        self.assertEqual(fields['nvvdd_output_ocp_rated_ma']['policy_indices'], [13])
+        self.assertIn('class 10', fields['nvvdd_output_ocp_rated_ma']['reason'])
+        self.assertNotIn('nvvdd_threshold_rows', fields['nvvdd_output_ocp_rated_ma'])
+        self.assertNotIn('input_current_max_ma', fields)
+
+    def test_edits_write_both_banks_and_their_checksums_and_revert(self):
+        changes = {'slot_power_max_w': 80, 'slot_power_rated_w': 75, 'connector_1_power_max_w': 260,
+                   'connector_1_power_rated_w': 250, 'connector_2_power_rated_w': 160,
+                   'slot_current_threshold_rated_ma': 12000, 'connector_2_current_threshold_max_ma': 40000,
+                   'connector_2_current_threshold_rated_ma': 30000, 'nvvdd_output_ocp_rated_ma': 360000}
+        result = edit(self.image, changes)
+        rows = {3: (75000, 80000), 4: (250000, 260000), 5: (160000, 167000), 7: (12000, 16500),
+                9: (30000, 40000), 13: (360000, 390000)}
+        for index, (before, after) in enumerate(zip(self.rows, backend(result.image).power_rows())):
+            if index in rows:
+                self.assertEqual((after['default_raw'], after['maximum_raw']), rows[index])
+                self.assertEqual(after['minimum_raw'], before['minimum_raw'])
+            else:
+                self.assertEqual(after, before)
+        offsets = [at for i in rows for o in (6, 10) for at in self.parser.copy_offsets(self.rows[i]['offset'] + o, 4)]
+        changed_within(self, self.image, result, offsets)
+        self.assertEqual(len(result.manifest['integrity_repairs']), 2)
+        self.assertEqual(result.manifest['preservation']['changed_rated_defaults'],
+                         sorted(k for k in changes if 'rated' in k))
+        revert = {key: descriptors(self.image)[key]['current'] for key in changes}
+        self.assertEqual(edit(result.image, revert).blob, self.image.blob)
+        for refused in ({'connector_1_current_threshold_rated_ma': 34000}, {'slot_power_max_w': 60}):
+            with self.subTest(refused=refused), self.assertRaises(VbiosError) as exc:
+                edit(self.image, refused)
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+
+    def test_a_current_correction_offset_is_accepted_on_turing_only(self):
+        # nvgpu curr_corr_offset (channel bytes 10..13), as on the RTX 2070 connector channels.
+        blob = patched(self.image.blob, self.channels + 0x16 * 4 + 10, struct.pack('<I', 200))
+        fields = descriptors(from_bytes(blob))
+        for key in ('connector_1_power_max_w', 'connector_1_current_threshold_rated_ma'):
+            self.assertTrue(fields[key]['editable'], key)
+        self.assertEqual(fields['connector_1_power_max_w']['policy_indices'], [4])
+        from test_rom_formats import synthetic_rom
+        ampere = synthetic_rom(family='ampere', copies=2, policies=True)
+        table = backend(from_bytes(ampere)).pointer('P', 0x3C)
+        refused = descriptors(from_bytes(patched(ampere, table + 6 + 22 * 5 + 10, struct.pack('<I', 200))))
+        self.assertEqual(refused['connector_1_power_max_w']['policy_indices'], [7])  # channel 5 refused
+        self.assertNotIn('connector_2_power_max_w', refused)
+
+    def test_a_slot_channel_with_a_provider_byte_or_another_rail_is_refused(self):
+        # Provider byte; the laptop slot rail 0xf1; a current correction offset (connector channels only).
+        for at, data in ((15, b'\x01'), (1, b'\xf1'), (10, struct.pack('<I', 200))):
+            with self.subTest(at=at):
+                fields = descriptors(from_bytes(patched(self.image.blob, self.channels + 0x16 * 3 + at, data)))
+                self.assertFalse(any(k.startswith('slot_') for k in fields))
+                self.assertIn('connector_1_power_max_w', fields)
+
+    def test_a_rail_0xe0_channel_gives_no_input_current_field(self):
+        # The Ampere 12 V input rail: on Turing no input current role, and the channel is no connector.
+        image = from_bytes(patched(self.image.blob, self.channels + 0x16 * 4 + 1, b'\xe0'))
+        fields = descriptors(image)
+        self.assertFalse(any(k.startswith('input_current') for k in fields))
+        self.assertNotIn('connector_2_power_max_w', fields)
+        self.assertEqual(fields['connector_1_power_max_w']['policy_indices'], [5])
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'input_current_rated_ma': 20000})
+        self.assertEqual(exc.exception.code, 'UNKNOWN_FIELD')
+
+    def test_a_connector_threshold_needs_threshold_index_1_or_2(self):
+        for index in (0, 3):
+            with self.subTest(index=index):
+                fields = descriptors(from_bytes(patched(self.image.blob, self.rows[8]['offset'] + 14, bytes((index,)))))
+                self.assertFalse(any(k.startswith('connector_1_current') for k in fields))
+                self.assertTrue(fields['connector_2_current_threshold_rated_ma']['editable'])
+                self.assertTrue(fields['connector_1_power_max_w']['editable'])
+
+    def test_class_0_rows_give_no_threshold_or_nvvdd_field(self):
+        # The ASUS XOC shape: rows 7, 8, 9 and 13 turned into class 0 mA rows.
+        blob = self.image.blob
+        for index in (7, 8, 9, 13):
+            blob = patched(blob, self.rows[index]['offset'], b'\x10')
+        fields = descriptors(from_bytes(blob))
+        self.assertFalse(any('_current_threshold_' in k or 'output_ocp' in k for k in fields))
+        self.assertTrue(all(fields[k]['editable'] for k in INPUTS))
+
+    def test_a_threshold_without_a_connector_power_row_gives_no_field(self):
+        # Row 4 (channel 4) is no longer class 4: connector 1 is channel 5 (row 5) with its threshold row 9.
+        fields = descriptors(from_bytes(patched(self.image.blob, self.rows[4]['offset'], b'\x00')))
+        self.assertNotIn('connector_2_power_max_w', fields)
+        self.assertNotIn('connector_2_current_threshold_max_ma', fields)
+        self.assertEqual(fields['connector_1_current_threshold_max_ma']['policy_indices'], [9])
+        self.assertEqual(fields['connector_1_current_threshold_max_ma']['threshold_index'], 2)
+
+    def test_a_second_nvvdd_current_row_is_named(self):
+        blob = patched(self.image.blob, self.channels + 0x16 * 18,
+                       bytes.fromhex('01 01 00 1b b7 00 00 10 00 00 00 00 00 00 05 02'))
+        blob = patched(blob, self.rows[12]['offset'], bytes((0x15, 18)) + struct.pack('<III', 1000, 155880, 155880))
+        fields = descriptors(from_bytes(blob))
+        for key in ('nvvdd_output_ocp_max_ma', 'nvvdd_output_ocp_rated_ma'):
+            with self.subTest(key=key):
+                self.assertTrue(fields[key]['editable'])
+                self.assertIn('row 12 is a class-5 mA threshold on another NVVDD channel (18; 155.88 A rated',
+                              fields[key]['reason'])
+                self.assertEqual(fields[key]['nvvdd_threshold_rows'],
+                                 [{'row': 12, 'power_channel': 18, 'minimum': 1000, 'rated': 155880,
+                                   'maximum': 155880, 'units': 'mA'}])
+        self.assertFalse(any('threshold' in k and k.startswith('nvvdd') for k in fields))
+
+
+class TuringVoltageTests(unittest.TestCase):
+    """The 1x rail row (legacy image) and the VFE equations (EQUATIONS)."""
+    def setUp(self):
+        self.image = from_bytes(synthetic_turing(rails=True))
+        self.parser = backend(self.image)
+        self.row = self.parser.pointer('P', 0x68) + 5
+
+    def test_constant_limits_read_only_and_the_vmin_clamp_editable(self):
+        fields = descriptors(self.image)
+        for role, value, selector in (('rel', 1068.75, 0), ('alt', 1093.75, 1), ('ov', 1125, 3)):
+            with self.subTest(role=role):
+                field = fields[f'nvvdd_{role}_equation_max_mv']
+                self.assertEqual((field['current'], field['editable'], field['equation_kind']),
+                                 (value, False, 'constant'))
+                self.assertIn('constant equation', field['reason'])
+                self.assertTrue(turing_evidence(field))
+                self.assertEqual(fields[f'nvvdd_{role}_selector_index']['current'], selector)
+        self.assertNotIn('nvvdd_vmin_equation_max_mv', fields)  # the 1x row has no VMIN slot
+        self.assertFalse(fields['nvvdd_rel_max_mv']['editable'])
+        self.assertEqual(fields['nvvdd_boot_voltage_uv']['current'], 800000)
+        self.assertIsNone(fields['msvdd_rel_max_mv']['current'])
+        vmin = fields['nvvdd_vmin_mv']
+        self.assertEqual((vmin['current'], vmin['editable'], vmin['experimental']), (692.5, True, True))
+        self.assertEqual((vmin['bounds']['minimum'], vmin['bounds']['maximum']), (400, 993.75))  # REL - 75 mV
+        self.assertEqual(vmin['selector']['raw'], 4)
+        self.assertIn('rail row byte 9', vmin['reason'])
+        self.assertIn('not hardware-tested on Turing', vmin['reason'])
+        self.assertTrue(vmin['evidence'][0]['format'].startswith('Turing rail row byte 9'))
+        self.assertEqual(sorted(k for k, f in fields.items() if f['editable']), sorted(POWER + VOLTAGES))
+        self.assertEqual(messages(self.image), ['requested table is absent'])  # the clock table
+
+    def test_vmin_edit_writes_the_clamp_in_both_banks(self):
+        result = edit(self.image, {'nvvdd_vmin_mv': 750})
+        item = backend(result.image).rail_vmin()[0]
+        self.assertEqual((item['value_uv'], item['pinned']), (750000, True))
+        source = self.parser.rail_vmin()[0]
+        changed_within(self, self.image, result, self.parser.copy_offsets(source['minimum_offset'], 4) +
+                       self.parser.copy_offsets(source['maximum_offset'], 4))
+        self.assertEqual(edit(result.image, {'nvvdd_vmin_mv': 692.5}).blob, self.image.blob)
+        for key, value, code in (('nvvdd_vmin_mv', 994, 'OUT_OF_BOUNDS'),
+                                 ('nvvdd_rel_equation_max_mv', 1100, 'FIELD_READ_ONLY')):
+            with self.subTest(key=key), self.assertRaises(VbiosError) as exc:
+                edit(self.image, {key: value})
+            self.assertEqual(exc.exception.code, code)
+
+    def test_fixed_rel_and_alt_write_their_constant_and_clamp_maximum_in_both_banks(self):
+        fields = descriptors(self.image)
+        for key, value, bounds in (('nvvdd_rel_fixed_mv', 1068.75, (1068.75, 1093.75)),  # clamp minimum .. ALT
+                                   ('nvvdd_alt_fixed_mv', 1093.75, (1093.75, 1125))):  # clamp minimum .. OV
+            with self.subTest(key=key):
+                field = fields[key]
+                self.assertEqual((field['current'], field['editable'], field['opt_in'], field['experimental']),
+                                 (value, True, True, True))
+                self.assertEqual((field['bounds']['minimum'], field['bounds']['maximum']), bounds)
+                self.assertEqual((field['value_semantics'], field['ordering_group']),
+                                 ('stored-fixed-equation-value', 'nvvdd-rel-alt'))
+                self.assertIn('the stored boot voltage and the highest VMIN', field['reason'])
+                self.assertIn('not hardware-tested on Turing', field['reason'])
+                self.assertTrue(turing_evidence(field))
+        self.assertEqual(fields['nvvdd_vmin_mv']['ordering_group'], 'nvvdd-rel-alt')
+        rel = self.parser.rail_equations()[0]['equation_offset']
+        result = edit(self.image, {'nvvdd_rel_fixed_mv': 1093.75})
+        changed_within(self, self.image, result, [o for k in (7, 11) for o in self.parser.copy_offsets(rel + k, 4)])
+        # The clamp minimum keeps the stored value, the lowest value offered, so the copy reverts exactly.
+        self.assertEqual(struct.unpack_from('<5f', result.blob, rel + 3), (1068750, 1093750, 1093750, 0, 0))
+        after = descriptors(result.image)
+        rel_field = after['nvvdd_rel_equation_max_mv']
+        self.assertEqual((rel_field['current'], rel_field['equation_kind'], after['nvvdd_vmin_mv']['bounds']['maximum']),
+                         (1093.75, 'constant', 1018.75))
+        self.assertEqual((after['nvvdd_rel_fixed_mv']['current'], after['nvvdd_rel_fixed_mv']['bounds']['minimum']),
+                         (1093.75, 1068.75))
+        self.assertEqual(edit(result.image, {'nvvdd_rel_fixed_mv': 1068.75}).blob, self.image.blob)
+        flat = edit(self.image, {'nvvdd_rel_fixed_mv': 1125, 'nvvdd_alt_fixed_mv': 1125})
+        self.assertEqual(edit(flat.image, {'nvvdd_rel_fixed_mv': 1068.75, 'nvvdd_alt_fixed_mv': 1093.75}).blob,
+                         self.image.blob)
+        # VMIN joins their ordering group: raised past the old REL together, it lifts the REL floor (+75 mV chain).
+        higher = edit(self.image, {'nvvdd_vmin_mv': 1000, 'nvvdd_rel_fixed_mv': 1100, 'nvvdd_alt_fixed_mv': 1100})
+        self.assertEqual(backend(higher.image).rail_vmin()[0]['value_uv'], 1000000)
+        self.assertEqual(descriptors(higher.image)['nvvdd_rel_fixed_mv']['bounds']['minimum'], 1075)
+
+    def test_rel_alt_ov_and_vmin_keep_their_order(self):
+        for changes in ({'nvvdd_rel_fixed_mv': 1100},                                     # above ALT
+                        {'nvvdd_rel_fixed_mv': 1060},                                     # below its clamp minimum
+                        {'nvvdd_alt_fixed_mv': 1050},                                     # below REL
+                        {'nvvdd_alt_fixed_mv': 1130},                                     # above OV
+                        {'nvvdd_rel_fixed_mv': 790},                                      # below the boot voltage
+                        {'nvvdd_rel_fixed_mv': 1130, 'nvvdd_alt_fixed_mv': 1130},
+                        {'nvvdd_rel_fixed_mv': 1110, 'nvvdd_alt_fixed_mv': 1100},
+                        # VMIN plus its chain (+75 mV) would pass REL: refused on the joint result.
+                        {'nvvdd_vmin_mv': 1050, 'nvvdd_rel_fixed_mv': 1100, 'nvvdd_alt_fixed_mv': 1100}):
+            with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
+                edit(self.image, changes)
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        # A raised VMIN lifts the REL floor: REL goes back down only with VMIN, in one edit.
+        raised = edit(edit(self.image, {'nvvdd_rel_fixed_mv': 1093.75}).image, {'nvvdd_vmin_mv': 1018.75}).image
+        with self.assertRaises(VbiosError) as exc:
+            edit(raised, {'nvvdd_rel_fixed_mv': 1068.75})
+        self.assertEqual((exc.exception.code, exc.exception.details['field']), ('OUT_OF_BOUNDS', 'nvvdd_rel_fixed_mv'))
+        self.assertEqual(edit(raised, {'nvvdd_rel_fixed_mv': 1068.75, 'nvvdd_vmin_mv': 692.5}).blob, self.image.blob)
+
+    def test_fixed_rel_and_alt_stay_at_or_above_the_boot_voltage(self):
+        # A stored boot voltage (row bytes 0..3) above REL leaves REL outside its range; ALT keeps its own.
+        fields = descriptors(from_bytes(patched(self.image.blob, self.row, struct.pack('<I', 1080000))))
+        self.assertFalse(fields['nvvdd_rel_fixed_mv']['editable'])
+        self.assertIn('outside 1080 mV up to 1093.75 mV', fields['nvvdd_rel_fixed_mv']['reason'])
+        self.assertTrue(fields['nvvdd_alt_fixed_mv']['editable'])
+
+    def test_fixed_rel_and_alt_need_unshared_constants(self):
+        rel, alt = (r['equation_offset'] for r in self.parser.rail_equations()[:2])
+        sloped = descriptors(from_bytes(patched(self.image.blob, rel + 15, struct.pack('<f', 1))))
+        self.assertFalse(sloped['nvvdd_rel_fixed_mv']['editable'])
+        self.assertIn('not a constant', sloped['nvvdd_rel_fixed_mv']['reason'])
+        self.assertIn('REL equation is not a constant', sloped['nvvdd_alt_fixed_mv']['reason'])
+        shared = descriptors(from_bytes(patched(self.image.blob, rel + 6 * 24, bytes((1, 7, 1)))))
+        self.assertFalse(shared['nvvdd_alt_fixed_mv']['editable'])  # equation 6 continues into ALT
+        self.assertEqual(shared['nvvdd_alt_fixed_mv']['reason'],
+                         'read-only: the NVVDD ALT equation is used by another equation')
+        self.assertTrue(shared['nvvdd_rel_fixed_mv']['editable'])
+        no_alt = descriptors(from_bytes(patched(self.image.blob, self.row + 5, b'\xff')))
+        self.assertNotIn('nvvdd_alt_fixed_mv', no_alt)
+        self.assertEqual(no_alt['nvvdd_rel_fixed_mv']['bounds']['maximum'], 1125)  # up to OV
+        # A custom binding cannot rewrite the REL equation outside the reviewed one.
+        from test_extended_fields import custom_registry
+        with self.assertRaises(VbiosError) as exc:
+            edit(self.image, {'nvvdd_rel_fixed_mv': 1080},
+                 field_registry=custom_registry('nvvdd_rel_fixed_mv', self.parser.copy_offsets(rel + 11, 4),
+                                                encoding='<f', scale=1000))
+        self.assertEqual(exc.exception.code, 'INVALID_FIELD_EVIDENCE')
+
+    def test_a_custom_binding_cannot_rewrite_the_boot_voltage_equation(self):
+        # Equation 2, picked by the boot voltage selector (row byte 8), is no role of rail_equations.
+        from test_extended_fields import custom_registry
+        boot = self.parser.rail_boot_equations()[0]
+        self.assertEqual((boot['selector_offset'], boot['selector_raw'], boot['equation_offset']),
+                         (self.row + 8, 2, self.parser.rail_equations()[0]['equation_offset'] + 2 * 24))
+        for at in (3, 7, 11):
+            with self.subTest(byte=at), self.assertRaises(VbiosError) as exc:
+                edit(self.image, {'x_mv': 900},
+                     field_registry=custom_registry('x_mv', self.parser.copy_offsets(boot['equation_offset'] + at, 4),
+                                                    encoding='<f', scale=1000))
+            self.assertEqual((exc.exception.code, str(exc.exception)),
+                             ('PRESERVED_FIELD_CHANGED', 'the boot voltage equation bytes must be preserved'))
+
+    def test_selector_order_and_layout_gates(self):
+        cases = (('VMIN != OV + 1', self.row + 9, b'\x05', 'unvalidated Turing rail selectors'),
+                 ('BOOT = VMIN', self.row + 8, b'\x04', 'unvalidated Turing rail selectors'),
+                 ('ALT after BOOT', self.row + 5, b'\x02', 'unvalidated Turing rail selectors'),
+                 ('margin limit', self.row + 10, b'\x04', 'unvalidated Turing rail selectors'),
+                 ('V20 header', self.row - 5, b'\x20', 'unvalidated Turing rail layout'))
+        for name, at, data, message in cases:
+            with self.subTest(case=name):
+                image = from_bytes(patched(self.image.blob, at, data))
+                self.assertFalse(any(k.startswith('nvvdd_') for k in descriptors(image)))
+                self.assertIn(message, ' '.join(messages(image)))
+
+    def test_a_shared_vmin_equation_stays_read_only(self):
+        # Equation 6 now continues into the VMIN equation 4.
+        vmin = self.parser.rail_vmin()[0]['equation_offset']
+        field = descriptors(from_bytes(patched(self.image.blob, vmin + 2 * 24, bytes((1, 7, 4)))))['nvvdd_vmin_mv']
+        self.assertFalse(field['editable'])
+        self.assertIn('is used by another equation or role', field['reason'])
+
+
+class TuringClockTests(unittest.TestCase):
+    def setUp(self):
+        self.image = from_bytes(synthetic_turing(clocks=True))
+        self.parser = backend(self.image)
+        self.table = self.parser.pointer('C', 8)
+
+    def test_master_rows_only_and_every_chain_written(self):
+        rows = self.parser.clock_ranges()
+        self.assertEqual([r['domain'] for r in rows], ['GPC', 'XBAR', 'DRAM', 'SYS', 'HUB', 'VID', 'PWR', 'DISP',
+                                                       'PCIEGEN', 'HOST'])
+        self.assertEqual([r['range_stored'] for r in rows], [u == 1 for u, *_ in CLOCK_ROWS])
+        fields = descriptors(self.image)
+        self.assertEqual(sorted(k for k, f in fields.items() if f['editable']), sorted(POWER + CLOCKS))
+        self.assertFalse(any(k.startswith(('xbar_', 'sys_', 'vid_')) for k in fields))  # slave rows
+        self.assertEqual([fields[k]['current'] for k in CLOCKS], [1000, -1000, 6000, -2000, 3000, -1000])
+        self.assertTrue(all(turing_evidence(fields[k]) and fields[k]['experimental'] for k in CLOCKS))
+        result = edit(self.image, {'gpc_offset_max_mhz': 1500, 'memory_offset_min_mhz': -4000})
+        named = {r['domain']: r for r in rows}
+        changed_within(self, self.image, result, [at for o in (named['GPC']['maximum_offset'],
+                                                               named['DRAM']['minimum_offset'])
+                                                  for at in self.parser.copy_offsets(o, 2)], width=2)
+        after = {r['domain']: (r['minimum_mhz'], r['maximum_mhz']) for r in backend(result.image).clock_ranges()}
+        self.assertEqual((after['GPC'], after['DRAM']), ((-1000, 1500), (-2000, 3000)))
+        self.assertEqual(edit(result.image, {'gpc_offset_max_mhz': 1000, 'memory_offset_min_mhz': -2000}).blob,
+                         self.image.blob)
+
+    def test_a_disabled_range_stays_read_only_and_no_range_collapses(self):
+        fields = descriptors(from_bytes(patched(self.image.blob, self.table + 9 + 3, bytes(4))))  # GPC 0..0
+        for key in ('gpc_offset_max_mhz', 'gpc_offset_min_mhz'):
+            self.assertFalse(fields[key]['editable'])
+            self.assertIn('0..0', fields[key]['reason'])
+        self.assertTrue(fields['memory_offset_max_mhz']['editable'])
+        with self.assertRaises(VbiosError) as exc:
+            edit(self.image, {'memory_offset_min_mhz': 0, 'memory_offset_max_mhz': 0})
+        self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        self.assertIn('a Turing clock offset range must not collapse', str(exc.exception))
+
+    def test_an_unpadded_legacy_image_keeps_the_clocks_read_only_while_power_stays_editable(self):
+        image = from_bytes(patched(self.image.blob, self.parser.legacy['end'] - 2, b'\x00'))
+        fields = descriptors(image)
+        self.assertEqual(sorted(k for k, f in fields.items() if f['editable']), sorted(POWER))
+        for key in CLOCKS:
+            self.assertIn('legacy image holding the clock table lacks the reviewed checksum padding',
+                          fields[key]['reason'])
+        self.assertFalse(any('checksum padding' in m for m in messages(image)))
+        self.assertEqual(backend(edit(image, {'power_max_w': 250}).image).power_rows()[2]['maximum_raw'], 250000)
+
+    def test_header_usage_and_ordering_gates(self):
+        for name, at, data, message in (('header', 8, b'\x01', 'unvalidated clock table variant'),
+                                        ('GPC usage', 9, b'\x02', 'does not match the GV HAL GPC row'),
+                                        ('DRAM ordering', 9 + 2 * 11 + 7, b'\x63', 'GV HAL DRAM row'),
+                                        ('XBAR fixed byte', 9 + 11 + 8, b'\x01', 'GV HAL XBAR row')):
+            with self.subTest(gate=name):
+                image = from_bytes(patched(self.image.blob, self.table + at, data))
+                fields = descriptors(image)
+                self.assertFalse(any(k in fields for k in CLOCKS if k != 'memory_offset_max_mhz'))
+                self.assertIsNone(fields['memory_offset_max_mhz']['current'])  # the placeholder
+                self.assertIn(message, ' '.join(messages(image)))
+
+
+class TuringFanTests(unittest.TestCase):
+    def setUp(self):
+        self.image = from_bytes(synthetic_turing(fans=2))
+        self.parser = backend(self.image)
+
+    def test_pwm_limits_and_curves_at_the_shifted_policy_entry(self):
+        from test_ada_fields import fan_curves, fan_limits
+        fields = descriptors(self.image)
+        keys = ['fan_pwm_frequency_hz'] + fan_limits(2) + fan_curves(2, 0)
+        self.assertEqual(sorted(k for k, f in fields.items() if f['editable']), sorted(POWER + keys))
+        self.assertTrue(all(turing_evidence(fields[k]) for k in keys))
+        for key in keys:
+            self.assertIn('not hardware-tested on Turing', fields[key]['reason'])
+            self.assertNotIn('; not hardware-tested; not hardware-tested', fields[key]['reason'])
+        self.assertEqual([fields[k]['current'] for k in ('fan_pwm_frequency_hz', 'fan_1_min_rpm', 'fan_2_max_pct',
+                                                         'fan_1_curve_2_temp_c', 'fan_2_curve_3_rpm')],
+                         [27000, 1000, 100, 70, 3300])
+        channels = fields['fan_channels']
+        self.assertEqual((channels['current'], channels['editable']), (2, False))
+        self.assertIn('no other channel count is offered', channels['reason'])
+        changes = {'fan_1_curve_2_temp_c': 72, 'fan_2_curve_1_rpm': 1200, 'fan_1_curve_3_pct': 95,
+                   'fan_pwm_frequency_hz': 25000}
+        result = edit(self.image, changes)
+        # Policy entries start after a 6-byte header; the Ada curve offsets apply from entry byte 3.
+        entry = self.parser.pointer('P', 0x5C) + 6
+        written = [(entry + 3 + 18 + 4, 2), (entry + 54 + 3 + 20, 2), (entry + 3 + 16, 1)]
+        written += [(r['pwm_frequency_offset'], 2) for r in self.parser.fan_coolers()['rows']]
+        changed_within(self, self.image, result,
+                       [c for at, size in written for c in self.parser.copy_offsets(at, size)], width=2)
+        b = result.blob
+        self.assertEqual((struct.unpack_from('<H', b, written[0][0])[0], struct.unpack_from('<H', b, written[1][0])[0],
+                          b[written[2][0]]), (72 * 32, 1200, 95))
+        self.assertEqual(edit(result.image, {k: fields[k]['current'] for k in changes}).blob, self.image.blob)
+        with self.assertRaises(VbiosError) as exc:
+            edit(self.image, {'fan_channels': 1})
+        self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
+
+    def test_tables_that_disagree_are_refused(self):
+        cases = (('policy list', 0x5C, 5, b'\xff', 'policy channel list disagrees with the cooler list'),
+                 ('mapping row', 0x64, 4 + 5 + 1, b'\x00', 'not stored in every fan table'),
+                 ('mapping enable', 0x64, 4, b'\x00', 'enables disagree across the fan tables'),
+                 ('policy channel', 0x5C, 6 + 2, b'\x01', 'not stored in every fan table'),
+                 ('policy layout', 0x5C, 6 + 54 + 9, b'\x24', 'unrecognized Turing fan policy entry layout'))
+        for name, pointer, at, data, message in cases:
+            with self.subTest(case=name):
+                image = from_bytes(patched(self.image.blob, self.parser.pointer('P', pointer) + at, data))
+                self.assertFalse(any(k.startswith('fan_') for k in descriptors(image)))
+                self.assertIn(message, ' '.join(messages(image)))
+
+    def test_laptops_without_a_gpu_driven_fan_have_no_fan_field(self):
+        for options in (dict(fans=-1), dict(fans=-1, notebook=True, efi_image=False)):
+            with self.subTest(options=options):
+                image = from_bytes(synthetic_turing(**options))
+                self.assertFalse(any(k.startswith('fan_') for k in descriptors(image)))
+                self.assertFalse(any('fan' in m for m in messages(image)))
+        one = descriptors(from_bytes(synthetic_turing(fans=1)))
+        self.assertIn('fan_1_max_rpm', one)
+        self.assertFalse(any(k.startswith('fan_2_') for k in one))
+
+
+class TuringJointTests(unittest.TestCase):
+    def test_joint_edit_of_every_field_writes_every_copy_and_reverts(self):
+        image = from_bytes(synthetic_turing(inputs=True, rails=True, clocks=True, fans=2))
+        joint_edit(self, image)
+
+
+def joint_step(field):
+    """A different in-bounds value for a joint edit of every canonical field (the Ampere corpus rule)."""
+    from test_extended_fields import curve_step
+    bounds, current = field['bounds'], Decimal(str(field['current']))
+    if field['value_semantics'] == 'stored-fixed-equation-value':
+        return current + 5  # REL and ALT: above their clamp minimum (the stored value), below OV
+    if 'fan_policy' in field:
+        return curve_step(field)
+    if 'fan_channel' in field and bounds['minimum'] == bounds['maximum']:
+        return current  # a limit flush with its curve moves only with the curve
+    delta = {'W': 1, 'mA': 100, 'Hz': -1000, '%': -1}.get(field['units'], 100)
+    delta *= 2 if field['key'].startswith('memory_offset') else 1
+    if field['key'].endswith(('_min_w', '_min_mhz', '_min_rpm')):
+        delta = -abs(delta)
+    value = current + delta
+    if bounds['minimum'] is not None and value < Decimal(str(bounds['minimum'])):
+        value = current - delta
+    if 'rated' in field['key'] and value > Decimal(str(bounds['maximum'])):
+        value = current - abs(delta)
+    return value
+
+
+def joint_edit(test, image):
+    """Step every editable canonical field at once (as on Ampere), check the bytes, then revert."""
+    parser = backend(image)
+    bindings = {b.descriptor['key']: b for b in registry.bindings(image, parser)[0]}
+    fields = descriptors(image)
+    chosen, used, spans = {}, set(), {}
+    for key, field in fields.items():
+        if not field['editable']:
+            continue
+        binding = bindings[key]
+        spans[key] = {at for o in binding.offsets for at in range(o, o + struct.calcsize(binding.encoding))}
+        if field.get('alias_of') or spans[key] & used:
+            continue
+        test.assertEqual(len(binding.offsets) % len(parser.chains), 0, key)
+        used |= spans[key]
+        chosen[key] = joint_step(field)
+    result = plan(image, chosen)
+    test.assertTrue(result.manifest['integrity']['valid'])
+    repairs = {r['offset'] for r in result.manifest['integrity_repairs']}
+    test.assertLessEqual({i for i, (a, b) in enumerate(zip(image.blob, result.blob)) if a != b}, used | repairs)
+    after = descriptors(result.image)
+    for key, value in chosen.items():
+        test.assertEqual(Decimal(str(after[key]['current'])), value, key)
+    test.assertEqual(edit(result.image, {k: fields[k]['current'] for k in chosen}).blob, image.blob)
+    return chosen
 
 
 class TuringPayloadTests(unittest.TestCase):

@@ -3,11 +3,14 @@
 Offline editor for NVIDIA Blackwell (GB20x) VBIOS images, for Linux and Windows, with a
 GTK editor window and a JSON command line. It edits power limits, voltage ceilings, the minimum voltage
 (VMIN), clock offset ranges, 12 V input current and output OCP limits, fan PWM frequency, fan channels,
-per-channel fan speed limits and the stored fan curves (experimental). Ada (AD10x) images get power limits,
-clock offset ranges, slot power, fans and, where they apply, voltage ceilings and VMIN (experimental).
+per-channel fan speed limits, the stored fan curves and zero RPM (experimental). Ada (AD10x) images get power limits,
+clock offset ranges, slot power, fans and, where they apply, voltage ceilings, VMIN, fixed REL/ALT voltages
+and the XOC-style flat voltage limit (experimental).
 Ampere (GA10x) images get power limits, power connector channels, clock offset ranges, slot power, fans
-and, where it applies, VMIN (experimental). Turing (TU10x/TU11x) images get the board power limits only
-(experimental, not tested on any Turing card; see the
+and, where it applies, VMIN (experimental). Turing (TU10x/TU11x) images get power limits, slot and
+connector power and current limits, VMIN, fixed REL/ALT voltages, clock offset ranges and fans
+(experimental; on one RTX 2080 Ti an edited board power limit was reported by `nvidia-smi`, nothing else is
+tested on a Turing card; see the
 [Turing tester guide](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/turing.md)).
 
 **Not affiliated with, endorsed by or sponsored by NVIDIA Corporation.** NVIDIA and
@@ -128,8 +131,8 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
   workstation) or `--representation ampere-relocated-v1` (Ampere GA102–GA107). Both are experimental;
   so far they have been loaded on an RTX 4090 and an RTX A2000. Turing payloads fit without relocation:
   saving an edited Turing copy saves `<name>-loader.bin` (load it first) and `<name>-loader-e0end.bin`
-  (`--representation turing-e0-end-v1`, to try if the first does not apply the edit); neither is tested
-  on hardware.
+  (`--representation turing-e0-end-v1`, to try if the first does not apply the edit); both have loaded
+  on an RTX 2080 Ti through the Windows loader.
 - **YOU ARE SOLELY RESPONSIBLE FOR WHAT YOU DO WITH THIS SOFTWARE.** Every modification
   you make, and any damage, malfunction, data loss or other harm to your hardware,
   your system or anything else that results from using this software or the images it

@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.1.19
+
+- **Turing: more fields (experimental).** Besides the board power limits, Turing images now get the PCIe slot and
+  connector power limits (`slot_power_*_w`, `connector_N_power_*_w`), the slot and connector current thresholds and
+  the NVVDD output current limit (advanced, opt-in: `slot_current_threshold_*_ma`,
+  `connector_N_current_threshold_*_ma`, `nvvdd_output_ocp_*_ma`), the minimum voltage (`nvvdd_vmin_mv`), the core
+  and memory clock offset ranges, and the fan PWM frequency, speed and level limits and fan curves. The fixed REL
+  and ALT voltages (`nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv`, the fields Ada gets below; constant values,
+  1068.75/1093.75 mV on most boards) are advanced, opt-in fields: from the stored value up to OV (1125 mV,
+  read-only), REL at most ALT, and at least the boot voltage and VMIN plus its chained equations; their effect is
+  untested. Each table was decoded by structure on the 22 Turing images examined; edits go to both banks with their
+  checksums. On one RTX 2080 Ti the override loaded through the Windows loader and `nvidia-smi` reported an edited
+  board power limit, but the card still stopped near 300 W under load: raising the board power probably needs the
+  connector limits raised too (inferred; see the
+  [tester guide](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/turing.md), which also says
+  what to report). Nothing else is tested on Turing hardware. One RTX 2080 image keeps its clock ranges read-only
+  (its legacy image lacks the checksum padding), the Quadro RTX 8000 stores them as 0..0, and the GTX 1650 SUPER
+  fan tables disagree (no fan field).
+- **Ada: REL and ALT follow OV (advanced, experimental).** `nvvdd_rel_alt_follow_ov` now works on Ada too: 1 points
+  the NVVDD REL and ALT selectors at the OV equation, a constant 1200 mV on every Ada image, in both banks, and
+  repairs the legacy image checksums (the Ada rail table has no hash directory). On the RTX 4080 that takes REL
+  from a fixed 1075 mV (ALT 1095 mV) to 1200 mV; images with a lower REL take a larger step (up to +325 mV on
+  the RTX 4080 Laptop image), and the field's note gives the stored REL. Images without an ALT selector move REL
+  alone. Save it on its
+  own; at 1 the field is read-only, so keep the original image to go back. A copy saved this way opens again
+  and its loader file is still verified. Not tested on Ada hardware.
+- **Ada: fixed REL and ALT voltages (experimental).** Where the REL or ALT equation is a constant (the newer
+  RTX 4090 image, RTX 4080, RTX 4000 Ada; ALT alone on the 4080 SUPER, 4070 Ti SUPER and 4060), the new
+  `nvvdd_rel_fixed_mv` and `nvvdd_alt_fixed_mv` fields set that value, from the clamp minimum up to the OV value
+  (1200 mV), with REL at most ALT: change both together to raise REL past ALT. The edit writes the equation's
+  constant and clamp maximum and keeps its clamp minimum, so a copy can be set back exactly. A voltage edit that
+  would push another voltage field out of its range (for example REL lowered below a raised VMIN) is refused:
+  change both together. Raising REL lets the GPU request
+  a higher voltage on its VF curve; the power and thermal limits still apply. Until now the RTX 4080 showed only
+  VMIN under Voltage. Not tested on hardware. Turing images get the same fields (see above).
+- **Blackwell: REL and ALT follow OV confirmed on one RTX 5090.** A copy edited with `nvvdd_rel_alt_follow_ov`
+  loaded as an override on an RTX 5090 without problems (0.1.16 listed it as not tested on hardware).
+- **Fan zero RPM (experimental, opt-in, GB20x).** New field `fan_zero_rpm`: bits 1 and 2 of byte `0x32` of every
+  enabled fan policy entry, both set (1) or both clear (0). GSP-RM 615.78.08 contains its own parser for this
+  entry (static analysis) and decodes the two bits as separate booleans; every GeForce GB20x image sets both and
+  every RTX PRO image clears both, and owner reports that came with the contribution tie them to fans that stand
+  still at idle (inferred meaning). Each entry keeps its other flag bits. The field is read-only when an entry
+  sets one bit alone or the entries disagree, and offers 1 only where the entries store fan-stop parameters (not
+  on the RTX PRO 6000 Max-Q). The editor window shows 0/1 fields as switches, with On/Off text. Not
+  hardware-tested. Contributed by @bitninja0 (PR #2).
+- **Ampere: connector power sum (experimental, not tested on Ampere hardware).** New `connector_sum_power_rated_w`
+  / `connector_sum_power_max_w` fields edit the power row that caps the external 12 V connector channels
+  together, where the BIOS has one: 300 W rated / 350 W maximum on an RTX 3080 Ti BIOS with two connector
+  channels, 450 W on one with three, 280 W on the RTX A6000. Raising the per-connector limits alone may have no
+  effect there.
+- **Ampere: connector current thresholds (experimental, opt-in).** `connector_N_current_threshold_*_ma`, the
+  hardware current threshold on the channel of connector power row N, on the desktop and workstation images
+  that store one (rows 9 and 10). Not hardware-tested.
+- **GUI: the connector rows show the sum limit.** When another row also caps the sum of the connector channels,
+  each connector row now notes the sum row's rated and maximum values and, where that row has a field, that the
+  connector power sum must be raised too. Before, only `nvbios fields` showed this warning.
+
 ## 0.1.18
 
 - **Turing (experimental, not tested on Turing hardware).** TU102, TU104, TU106, TU116 and TU117 images

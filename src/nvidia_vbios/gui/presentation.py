@@ -12,11 +12,15 @@ FIELD_KEYS = frozenset(('power_min_w', 'power_max_w', 'nvvdd_rel_max_mv', 'msvdd
                         'memory_offset_min_mhz', 'dram_min_table_mhz',
                         'input_current_policy7_limit_ma', 'slot_power_rated_w', 'slot_power_max_w',
                         'board_fixed_rated_w', 'fan_pwm_frequency_hz', 'fan_channels', 'nvvdd_rel_alt_follow_ov',
+                        'fan_zero_rpm',
                         'slot_current_threshold_rated_ma', 'slot_current_threshold_max_ma',
-                        'nvvdd_power_threshold_rated_w', 'nvvdd_power_threshold_max_w'))
-# Ampere external 12 V connector-channel power policies, numbered in power-row order
-# (a sense channel, not a physical connector: one connector may span several).
+                        'nvvdd_power_threshold_rated_w', 'nvvdd_power_threshold_max_w',
+                        'connector_sum_power_max_w', 'connector_sum_power_rated_w'))
+# Ampere/Turing external 12 V connector-channel power policies, numbered in power-row order
+# (a sense channel, not a physical connector: one connector may span several), and the
+# current hardware threshold on the same channel.
 CONNECTOR_KEY = re.compile(r'connector_(\d+)_power_(max|rated)_w')
+CONNECTOR_CURRENT_KEY = re.compile(r'connector_(\d+)_current_threshold_(max|rated)_ma')
 # Per-channel fan limits, numbered from 1 like the fan channels; stored curve points, of a
 # channel or of an extra curve (numbered from 1 in policy entry order).
 FAN_KEY = re.compile(r'fan_(\d+)_(min|max)_(rpm|pct)')
@@ -50,11 +54,14 @@ def field_label(field, language='en'):
         return text('field.input_threshold_' + key[len('input_current_'):])
     if key in FIELD_KEYS:
         return text('field.' + key)
+    # An opt-in output current limit (Turing row 13) or fixed voltage (Turing) is shown with the
+    # advanced fields.
+    advanced = '_advanced' if field.get('opt_in') else ''
     for rail in ('nvvdd', 'msvdd'):
         if key == f'{rail}_output_ocp_max_ma':
-            return text('field.output_ocp', rail=rail.upper())
+            return text('field.output_ocp' + advanced, rail=rail.upper())
         if key == f'{rail}_output_ocp_rated_ma':
-            return text('field.output_ocp_rated', rail=rail.upper())
+            return text('field.output_ocp_rated' + advanced, rail=rail.upper())
         if key == f'{rail}_vmin_mv':
             return text('field.vmin', rail=rail.upper())
         if key == f'{rail}_vmin_equation_max_mv':
@@ -63,9 +70,14 @@ def field_label(field, language='en'):
         for role in ('rel', 'alt', 'ov'):
             if key == f'{rail}_{role}_equation_max_mv':
                 return text('field.equation', role=role.upper(), rail=rail.upper())
+            if key == f'{rail}_{role}_fixed_mv':
+                return text('field.fixed' + advanced, role=role.upper(), rail=rail.upper())
     match = CONNECTOR_KEY.fullmatch(key)
     if match:
         return text('field.connector_power_' + match.group(2), connector=match.group(1))
+    match = CONNECTOR_CURRENT_KEY.fullmatch(key)
+    if match:
+        return text('field.connector_current_threshold_' + match.group(2), connector=match.group(1))
     match = FAN_KEY.fullmatch(key)
     if match:
         return text(f'field.fan_{match.group(2)}_{match.group(3)}', fan=match.group(1))
@@ -90,6 +102,27 @@ def read_only_reason(field, language='en'):
     # Unmapped evidence stays in English (the JSON manifest keeps it). Avoid pretending
     # to translate an arbitrary extension's backend explanation.
     return reason if language == 'en' and reason else text('reason.generic')
+
+
+def summed_cap_notes(field, fields, language='en'):
+    """One note per row that caps a sum of power channels adding this field's (Ampere connector) channel.
+
+    Channels are named by their connector numbers when every one has a connector field.
+    The row shares the field's class and unit (mW or mA), shown as W or A.
+    """
+    text = Messages(language)
+    connectors = {f['power_channel']: f['connector'] for f in fields if 'connector' in f and 'power_channel' in f}
+    own = {i for f in fields if f['key'] == 'connector_sum_power_rated_w' for i in f.get('policy_indices', ())}
+    notes = []
+    for cap in field.get('summed_cap_rows', ()):
+        channels = cap['summed_channels']
+        named = all(c in connectors for c in channels)
+        note = text('summed_cap.connectors' if named else 'summed_cap.channels', row=cap['row'],
+                    channels=', '.join(str(connectors[c] if named else c) for c in channels),
+                    rated=number(Decimal(cap['rated']) / 1000), maximum=number(Decimal(cap['maximum']) / 1000),
+                    units=display_units(field))
+        notes.append(note + (' ' + text('summed_cap.raise') if cap['row'] in own else ''))
+    return notes
 
 
 def technical_field_keys(report):
@@ -118,9 +151,11 @@ SECTIONS = (
     ('power', ('power_max_w', 'power_default_w', 'power_min_w', 'board_fixed_rated_w',
                'slot_power_max_w', 'slot_power_rated_w') +
               tuple(f'connector_{n}_power_{side}_w' for n in range(1, 5) for side in ('max', 'rated')) +
-              ('nvvdd_power_threshold_max_w', 'nvvdd_power_threshold_rated_w')),
-    ('voltage', ('nvvdd_rel_equation_max_mv', 'nvvdd_rel_max_mv', 'nvvdd_ov_equation_max_mv', 'nvvdd_vmin_mv',
-                 'nvvdd_vmin_equation_max_mv', 'nvvdd_alt_equation_max_mv', 'nvvdd_rel_alt_follow_ov',
+              ('connector_sum_power_max_w', 'connector_sum_power_rated_w',
+               'nvvdd_power_threshold_max_w', 'nvvdd_power_threshold_rated_w')),
+    ('voltage', ('nvvdd_rel_equation_max_mv', 'nvvdd_rel_max_mv', 'nvvdd_rel_fixed_mv', 'nvvdd_alt_fixed_mv',
+                 'nvvdd_ov_equation_max_mv', 'nvvdd_vmin_mv', 'nvvdd_vmin_equation_max_mv', 'nvvdd_alt_equation_max_mv',
+                 'nvvdd_rel_alt_follow_ov',
                  'msvdd_rel_equation_max_mv', 'msvdd_rel_max_mv', 'msvdd_ov_equation_max_mv', 'msvdd_vmin_mv',
                  'msvdd_vmin_equation_max_mv', 'msvdd_alt_equation_max_mv')),
     ('clocks', ('gpc_offset_max_mhz', 'gpc_offset_min_mhz', 'memory_offset_max_mhz', 'memory_offset_min_mhz',
@@ -129,14 +164,15 @@ SECTIONS = (
     ('current', ('input_current_rated_ma', 'input_current_max_ma', 'input_current_policy7_limit_ma',
                  'nvvdd_output_ocp_rated_ma', 'nvvdd_output_ocp_max_ma',
                  'msvdd_output_ocp_rated_ma', 'msvdd_output_ocp_max_ma', 'slot_current_threshold_rated_ma',
-                 'slot_current_threshold_max_ma')),
-    # Each channel's limits, then its curve points; then the extra curves.
+                 'slot_current_threshold_max_ma') +
+                tuple(f'connector_{n}_current_threshold_{side}_ma' for n in range(1, 5) for side in ('rated', 'max'))),
+    # Each channel's limits, then its curve points; then the extra curves; then zero RPM.
     ('fans', ('fan_channels', 'fan_pwm_frequency_hz') +
              tuple(key for n in range(1, 5) for key in
                    tuple(f'fan_{n}_{side}_{unit}' for unit in ('rpm', 'pct') for side in ('max', 'min')) +
                    tuple(f'fan_{n}_curve_{k}_{unit}' for k in (1, 2, 3) for unit in FAN_CURVE_UNITS)) +
              tuple(f'fan_extra_{m}_curve_{k}_{unit}' for m in range(1, 8) for k in (1, 2, 3)
-                   for unit in FAN_CURVE_UNITS)),
+                   for unit in FAN_CURVE_UNITS) + ('fan_zero_rpm',)),
 )
 # Windows tools such as MSI Afterburner show the stored table value: half of
 # the NVML/Linux memory offset, the same value for the core (observed on hardware).
@@ -215,6 +251,13 @@ def number(value):
     return format(amount.normalize(), 'f')
 
 
+def value_text(field, value, language='en'):
+    """Row text of a display value: On/Off for a 0/1 flag field, else number(value)."""
+    if field.get('units') == 'flag' and value is not None and value in (0, 1):
+        return Messages(language)('flag_on' if value else 'flag_off')
+    return number(value)
+
+
 def windows_value(field, value):
     """Value as Windows tools show it, when that scale differs; else None."""
     scale = WINDOWS_SCALE.get(field['key'])
@@ -254,14 +297,17 @@ def to_stored(field, text):
 # A shunt mod lowers the 12 V input sense resistance, so the card reads power and
 # current divided by its factor: a limit measured there allows about that many
 # times more. These fields read the total board power (channel 0, the sum of the
-# inputs), the 12 V input current, an external 12 V connector (Ampere) or the PCIe
-# slot input. NVVDD/MSVDD output current and NVVDD output power are VRM sensors
-# and are not scaled.
+# inputs), the 12 V input current, an external 12 V connector (Ampere, Turing; power
+# or current) or their sum (Ampere) or the PCIe slot input. NVVDD/MSVDD output current
+# and NVVDD output power are VRM sensors and are not scaled.
 SHUNT_KEYS = frozenset(('power_min_w', 'power_default_w', 'power_max_w', 'board_fixed_rated_w',
                         'slot_power_rated_w', 'slot_power_max_w', 'input_current_rated_ma',
                         'input_current_max_ma', 'input_current_policy7_limit_ma',
-                        'slot_current_threshold_rated_ma', 'slot_current_threshold_max_ma') +
-                       tuple(f'connector_{n}_power_{side}_w' for n in range(1, 5) for side in ('max', 'rated')))
+                        'slot_current_threshold_rated_ma', 'slot_current_threshold_max_ma',
+                        'connector_sum_power_max_w', 'connector_sum_power_rated_w') +
+                       tuple(f'connector_{n}_power_{side}_w' for n in range(1, 5) for side in ('max', 'rated')) +
+                       tuple(f'connector_{n}_current_threshold_{side}_ma' for n in range(1, 5)
+                             for side in ('max', 'rated')))
 
 
 def shunt_scaled(field):

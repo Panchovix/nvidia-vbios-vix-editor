@@ -57,6 +57,8 @@ FAN_TABLES = {
     'control': (0xDC, bytes((0x10, 4, 0x0D, 4)), 4, 0x0D, 4, 0x80),
     'speed': (0xE0, bytes((0x10, 4, 6, 4)), 4, 6, 4, 0x83),
 }
+# Policy entry byte 0x32, the last byte of the 51-byte entry: the entry's flag byte.
+FAN_POLICY_FLAG_OFFSET = 0x32
 
 
 class BlackwellRom:
@@ -499,7 +501,9 @@ class BlackwellRom:
         the cooler rows (4 and 5 on every source) store further curves, listed
         in extra_curves. On every active row the row limits hold the channel's
         own curve and the extra curves. Speed entry bytes 2..3 hold an RPM
-        value inside the channel's row limits (meaning unknown).
+        value inside the channel's row limits (meaning unknown). Policy entry
+        byte 0x32 is the entry's flag byte; rows and extra curves carry its
+        offset and raw value as flag_offset and flag_byte.
         """
         b = self.blob
         try:
@@ -536,6 +540,7 @@ class BlackwellRom:
                              mapping_enable=b[mapped], mapping_row=b[mapped + 1],
                              control_offset=control, control_enable=b[control],
                              speed_offset=speed, speed_enable=b[speed], speed_rpm=unpack(b, '<H', speed + 2)[0],
+                             flag_offset=pol + FAN_POLICY_FLAG_OFFSET, flag_byte=b[pol + FAN_POLICY_FLAG_OFFSET],
                              stored=(b[pol + 1] == 1 and b[mapped + 1] == i and b[control + 2] == i and
                                      b[control + 5] == 0x30 | 1 << i and b[speed + 1] == i)))
         if [r["index"] for r in rows if r["enable"]] != listed:
@@ -546,7 +551,9 @@ class BlackwellRom:
             if r["active"] and not r["stored"]:
                 raise FormatError("an active fan channel is not stored in every fan table")
         policies = b[tables['policy'](0) - 1]  # entry count, header byte 3
-        extra = [dict(index=k, policy_offset=tables['policy'](k), **fan_curve(b, tables['policy'](k)))
+        extra = [dict(index=k, policy_offset=tables['policy'](k),
+                      flag_offset=tables['policy'](k) + FAN_POLICY_FLAG_OFFSET,
+                      flag_byte=b[tables['policy'](k) + FAN_POLICY_FLAG_OFFSET], **fan_curve(b, tables['policy'](k)))
                  for k in range(len(rows), policies) if b[tables['policy'](k)]]
         return dict(offset=at, policy_offset=tables['policy'](0) - 4, mapping_offset=tables['mapping'](0) - 4,
                     control_offset=tables['control'](0) - 4, speed_offset=tables['speed'](0) - 4,

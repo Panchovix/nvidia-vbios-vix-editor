@@ -470,12 +470,14 @@ def synthetic_blackwell(*, shared_objects=False, rails=2, clock_subsize=2, power
             b[mapping + 4 + 5 * i:mapping + 9 + 5 * i] = bytes((enable, row, 0x0A, 0x10, 0x27))
         # Curves: levels 20/50/100 % and three (1/32 C, RPM) points reaching the row limits, on the
         # channel entries and on entries 4/5, enabled past the cooler rows as on every source.
+        # Bytes 30..33 hold the fan-stop temperatures 43/50 C (1/32 C), as on the RTX 5080.
         for i in range(6):
             entry, start = policy + 4 + 0x33 * i, 50 if i < 4 else 93
             if i >= 4:
                 b[entry] = 1
             b[entry + 14:entry + 17] = bytes((20, 50, 100))
             struct.pack_into('<6H', b, entry + 18, start * 32, 1050, (start + 5) * 32, 2200, (start + 10) * 32, 3500)
+            struct.pack_into('<HH', b, entry + 30, 43 * 32, 50 * 32)
         objects += [(0x1E, policy, 4 + 0x33 * 0x0B), (0x20, mapping, 4 + 5 * 4)]
         # Control (P+0xdc) and speed (P+0xe0) entries: channels 0-2 stored, 3 a placeholder.
         control, speed = 26848, 26912

@@ -29,6 +29,36 @@ def connectors(count):
     return [f'connector_{n}_power_{side}_w' for n in range(1, count + 1) for side in ('max', 'rated')]
 
 
+CONNECTOR_SUM = ['connector_sum_power_max_w', 'connector_sum_power_rated_w']
+
+
+def connector_sum(blob, members=(5, 6), weight=0x1000, rows=(11,)):
+    """Channel 16 as a class-2 sum (rail 0xe4, the 12 V bytes of a connector channel) of relationship entries 1..
+    (members, each with weight; 0x1000 = 1.0) and each of rows a class-4 mW row on it at 280 W."""
+    parser = backend(from_bytes(blob))
+    table = parser.pointer('P', 0x3C)
+    relationships = table + 6 + 22 * 32
+    blob = patched(blob, table + 6 + 22 * 16, bytes.fromhex('02 e4 00 1b b7 00 00 10') + bytes(6) +
+                   bytes((1, len(members))))
+    for entry, channel in enumerate(members, 1):
+        blob = patched(blob, relationships + 46 * entry, bytes((1, channel)) + struct.pack('<I', weight))
+    for row in rows:
+        blob = patched(blob, parser.power_rows()[row]['offset'],
+                       bytes((0x04, 16)) + struct.pack('<III', 1000, 280000, 280000))
+    return blob
+
+
+def connector_currents(count):
+    return [f'connector_{n}_current_threshold_{side}_ma' for n in range(1, count + 1) for side in ('max', 'rated')]
+
+
+def with_connector_current(blob, channel=5, threshold=1):
+    """Row 9 of a synthetic Ampere image (policies=True) as a class-5 mA current threshold on a power channel."""
+    row = backend(from_bytes(blob)).power_rows()[9]['offset']
+    blob = patched(blob, row, bytes((0x15, channel)) + struct.pack('<III', 1000, 16000, 19200))
+    return patched(blob, row + 14, bytes((threshold,)))
+
+
 def recomputed(blob):
     """Repair the additive checksum of every image of every chain after a raw patch."""
     blob = bytearray(blob)
@@ -187,15 +217,9 @@ class AmperePowerTests(unittest.TestCase):
         self.assertNotIn('connector_2_power_max_w', fields)
         self.assertEqual(fields['connector_1_power_max_w']['policy_indices'], [7])
 
-    def test_a_cap_on_a_sum_of_connector_channels_is_named(self):
+    def test_a_cap_on_a_sum_of_connector_channels_is_named_and_editable(self):
         # Channel 16: class-2 sum of relationship entries 1..2 (channels 5 and 6); row 11 caps it at 280 W.
-        table = self.parser.pointer('P', 0x3C)
-        relationships = table + 6 + 22 * 32
-        blob = patched(self.image.blob, table + 6 + 22 * 16, bytes.fromhex('02 e4') + bytes(12) + bytes((1, 2)))
-        for entry, channel in ((1, 5), (2, 6)):
-            blob = patched(blob, relationships + 46 * entry, bytes((1, channel)))
-        blob = patched(blob, self.rows[11]['offset'], bytes((0x04, 16)) + struct.pack('<III', 1000, 280000, 280000))
-        image = from_bytes(blob)
+        image = from_bytes(connector_sum(self.image.blob))
         self.assertEqual(backend(image).summed_channels(16), [5, 6])
         fields = descriptors(image)
         for key in connectors(2):
@@ -205,8 +229,108 @@ class AmperePowerTests(unittest.TestCase):
                                  [{'row': 11, 'power_channel': 16, 'summed_channels': [5, 6], 'minimum': 1000,
                                    'rated': 280000, 'maximum': 280000, 'units': 'mW'}])
                 self.assertIn('row 11 caps the sum of power channels 5, 6 at 280 W rated', fields[key]['reason'])
+                self.assertIn('raise connector_sum_power_rated_w and connector_sum_power_max_w too',
+                              fields[key]['reason'])
+        for key in CONNECTOR_SUM:
+            with self.subTest(key=key):
+                self.assertEqual((fields[key]['current'], fields[key]['policy_indices'], fields[key]['summed_channels'],
+                                  fields[key]['channel_rail']), (280, [11], [5, 6], 0xE4))
+                self.assertTrue(fields[key]['editable'] and fields[key]['experimental'])
+                self.assertNotIn('opt_in', fields[key])
+        self.assertIn('per-connector and slot limits', fields['connector_sum_power_rated_w']['reason'])
         self.assertNotIn('summed_cap_rows', fields['slot_power_max_w'])
         self.assertNotIn('summed_cap_rows', descriptors(self.image)['connector_1_power_max_w'])
+        self.assertFalse(set(CONNECTOR_SUM) & set(descriptors(self.image)))
+        # Only row 11 changes, in both chains, with the image checksums.
+        rows = backend(image).power_rows()
+        result = edit(image, {'connector_sum_power_max_w': 500, 'connector_sum_power_rated_w': 450})
+        self.assertTrue(result.manifest['integrity']['valid'])
+        after = backend(result.image).power_rows()
+        self.assertEqual((after[11]['minimum_raw'], after[11]['default_raw'], after[11]['maximum_raw']),
+                         (1000, 450000, 500000))
+        self.assertEqual([r for i, r in enumerate(after) if i != 11], [r for i, r in enumerate(rows) if i != 11])
+        offsets = [at for o in (6, 10) for at in backend(image).copy_offsets(rows[11]['offset'] + o, 4)]
+        self.assertEqual(len(offsets), 4)
+        changed_bytes_within(self, image, result, offsets)
+        self.assertEqual(len({r['offset'] for r in result.manifest['integrity_repairs']}), 2)
+        self.assertEqual(result.manifest['preservation']['changed_rated_defaults'], ['connector_sum_power_rated_w'])
+        self.assertEqual(edit(result.image, {'connector_sum_power_max_w': 280, 'connector_sum_power_rated_w': 280}).blob,
+                         image.blob)
+        for changes in ({'connector_sum_power_rated_w': 300}, {'connector_sum_power_max_w': 270},
+                        {'connector_sum_power_max_w': 400, 'connector_sum_power_rated_w': 420}):
+            with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
+                edit(image, changes)
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+
+    def test_a_sum_row_gets_a_field_only_with_unit_weight_connector_members(self):
+        # Weight -1.0, a slot member, one member, a repeated member, a member past the channel table, an entry with
+        # byte 0 = 2 or a nonzero byte 6, a sum channel scaled in bytes 6..7 (0x11c7, as on a real sum of connector
+        # channels) or with a parameter in byte 10, or two rows on the sum: named, no field.
+        table = self.parser.pointer('P', 0x3C)
+        channel, entry, base = table + 6 + 22 * 16, table + 6 + 22 * 32 + 46, connector_sum(self.image.blob)
+        for name, blob in (('negative weight', connector_sum(self.image.blob, weight=0xFFFFF000)),
+                           ('slot member', connector_sum(self.image.blob, members=(4, 5, 6))),
+                           ('one member', connector_sum(self.image.blob, members=(5,))),
+                           ('repeated member', connector_sum(self.image.blob, members=(5, 5, 6))),
+                           ('member past the table', connector_sum(self.image.blob, members=(5, 6, 32))),
+                           ('entry byte 0', patched(base, entry, b'\x02')),
+                           ('entry byte 6', patched(base, entry + 6, b'\x01')),
+                           ('scaled sum', patched(base, channel + 6, bytes.fromhex('c7 11'))),
+                           ('sum parameter', patched(base, channel + 10, b'\x05')),
+                           ('two rows', connector_sum(self.image.blob, rows=(11, 12)))):
+            with self.subTest(name):
+                fields = descriptors(from_bytes(blob))
+                self.assertFalse(set(CONNECTOR_SUM) & set(fields))
+                self.assertIn('may bind first', fields['connector_1_power_max_w']['reason'])
+                self.assertNotIn('connector_sum_power', fields['connector_1_power_max_w']['reason'])
+
+    def test_a_current_threshold_on_a_connector_channel_is_an_opt_in_pair(self):
+        image = from_bytes(with_connector_current(self.image.blob))
+        fields = descriptors(image)
+        keys = connector_currents(1)
+        self.assertEqual([fields[k]['current'] for k in keys], [19200, 16000])
+        for key in keys:
+            with self.subTest(key=key):
+                field = fields[key]
+                self.assertTrue(field['editable'] and field['experimental'] and field['opt_in'])
+                self.assertEqual((field['policy_indices'], field['power_channel'], field['channel_rail'],
+                                  field['threshold_index'], field['policy_class']),
+                                 ([9], 5, 0xFA, 1, 'hardware-threshold'))
+                self.assertIn('no Ampere reading', field['reason'])
+                self.assertEqual(field['evidence'][0]['source'], 'Ampere VBIOS corpus, 34 parseable GA102-GA107 images')
+        self.assertNotIn('connector_2_current_threshold_max_ma', fields)
+        # The 12 V input row (rail 0xe0) stays the input current field.
+        self.assertEqual(fields['input_current_rated_ma']['policy_indices'], [10])
+        result = edit(image, {'connector_1_current_threshold_max_ma': 25000,
+                              'connector_1_current_threshold_rated_ma': 20000})
+        parser = backend(image)
+        row = parser.power_rows()[9]['offset']
+        changed_bytes_within(self, image, result, parser.copy_offsets(row + 6, 4) + parser.copy_offsets(row + 10, 4))
+        self.assertEqual((backend(result.image).power_rows()[9]['default_raw'],
+                          backend(result.image).power_rows()[9]['maximum_raw']), (20000, 25000))
+        self.assertEqual(result.manifest['preservation']['changed_rated_defaults'],
+                         ['connector_1_current_threshold_rated_ma'])
+        self.assertEqual(edit(result.image, {k: fields[k]['current'] for k in keys}).blob, image.blob)
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'connector_1_current_threshold_rated_ma': 19300})
+        self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+
+    def test_a_current_threshold_needs_one_connector_power_row_on_its_channel(self):
+        # Channel 7 (rail 0xfc) has no connector power row: no field, as on the Ampere laptops.
+        table = self.parser.pointer('P', 0x3C)
+        blob = patched(self.image.blob, table + 6 + 22 * 7, bytes.fromhex('05 fc 00 1b b7 00 00 10'))
+        fields = descriptors(from_bytes(with_connector_current(blob, channel=7)))
+        self.assertFalse(any('_current_threshold_' in k and k.startswith('connector_') for k in fields))
+        # Two connector power rows on channel 5 (connectors 1 and 3): no field for either.
+        row = self.rows[11]['offset']
+        blob = patched(self.image.blob, row, bytes((0x04, 5)) + struct.pack('<III', 1000, 120000, 120000))
+        fields = descriptors(from_bytes(with_connector_current(blob)))
+        self.assertIn('connector_3_power_max_w', fields)
+        self.assertFalse(any(k.startswith('connector_') and '_current_' in k for k in fields))
+        # A second current threshold on the channel: none either.
+        blob = patched(with_connector_current(self.image.blob), self.rows[12]['offset'],
+                       bytes((0x15, 5)) + struct.pack('<III', 1000, 16000, 19200))
+        self.assertNotIn('connector_1_current_threshold_max_ma', descriptors(from_bytes(blob)))
 
     def test_notebook_header_names_row_2(self):
         image = from_bytes(synthetic_rom(family='ampere', copies=2, notebook=True))

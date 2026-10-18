@@ -72,25 +72,28 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `*_alt_equation_max_mv` | VFE output clamp maximum addressed by ALT selector | Reviewed Blackwell when present; Ada temperature-derated ALT (experimental) |
 | `*_ov_equation_max_mv` | VFE output clamp maximum addressed by OV selector | Reviewed Blackwell |
 | `*_vmin_equation_max_mv` | VFE output clamp maximum addressed by the rail INFO VMIN slot (GB20x row+`0x21`, Ada/Ampere row byte 11); **not** the evaluated VMIN | Read-only |
-| `*_vmin_mv` | Evaluated minimum voltage (VMIN): the equation at GB20x row+`0x13`, Ada/Ampere row byte 7 | Experimental, constant (GB20x) or clamp-pinned (Ada/Ampere) equations only, kept below the lowest REL value |
-| `nvvdd_rel_alt_follow_ov` | 1 when the NVVDD REL and ALT selectors (REL alone without ALT) point at the OV equation (XOC-style) | Experimental, opt-in, GB20x; only 0 -> 1 |
+| `*_vmin_mv` | Evaluated minimum voltage (VMIN): the equation at GB20x row+`0x13`, Ada/Ampere row byte 7, Turing row byte 9 | Experimental, constant (GB20x) or clamp-pinned (Ada/Ampere/Turing) equations only, kept below the lowest REL value |
+| `nvvdd_rel_alt_follow_ov` | 1 when the NVVDD REL and ALT selectors (REL alone without ALT) point at the OV equation (XOC-style) | Experimental, opt-in, GB20x and Ada; only 0 -> 1 |
+| `nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv` | Value of a constant NVVDD REL or ALT equation: its constant and clamp maximum | Experimental, Ada and Turing (opt-in); from the clamp minimum up to the OV value, REL <= ALT; on Turing also at least the boot voltage and the highest VMIN |
+| `fan_zero_rpm` | Bits 1\|2 of byte `0x32` of every enabled fan policy entry: 1 both set, 0 both clear (inferred meaning: the fans may stand still at low temperature) | Experimental, opt-in, GB20x; 1 only where the entries store fan-stop parameters; read-only when an entry sets one bit alone or the entries disagree |
 | `*_rel/alt/ov/vmin_selector_index` | Full stored selector index | Read-only |
 | `*_boot_voltage_uv` | Stored boot voltage | Read-only, preserved |
-| `*_output_ocp_max_ma` | Reviewed output-OCP policy maximum (client ceiling) | Reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images |
-| `*_output_ocp_rated_ma` | Reviewed output-OCP rated value, enforced from boot | Experimental, reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images |
-| `slot_power_rated_w`, `slot_power_max_w` | PCIe slot power policy: row 19 (SFF), row 18 (5060 Ti), Ada row 5 | Experimental, reviewed row shapes only |
-| `slot_current_threshold_rated/max_ma`, `nvvdd_power_threshold_rated/max_w` | Ada hardware-threshold policies (slot 12 V current, NVVDD output power) | Experimental, opt-in, Ada only |
+| `*_output_ocp_max_ma` | Reviewed output-OCP policy maximum (client ceiling) | Reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images; Turing NVVDD row 13 (class 10, experimental, opt-in) |
+| `*_output_ocp_rated_ma` | Reviewed output-OCP rated value, enforced from boot | Experimental, reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images; Turing NVVDD row 13 (opt-in) |
+| `slot_power_rated_w`, `slot_power_max_w` | PCIe slot power policy: row 19 (SFF), row 18 (5060 Ti), Ada and Ampere row 5, Turing row 3 | Experimental, reviewed row shapes only |
+| `connector_N_power_rated/max_w`, `connector_N_current_threshold_rated/max_ma` | Power policy and current hardware threshold of external 12 V connector sense channel N, numbered in power-row order | Experimental, Ampere and Turing; current thresholds opt-in |
+| `slot_current_threshold_rated/max_ma`, `nvvdd_power_threshold_rated/max_w` | Hardware-threshold policies (slot 12 V current; Ada NVVDD output power) | Experimental, opt-in; slot current on Ada, Ampere and Turing, NVVDD power on Ada only |
 | `board_fixed_rated_w` | Rated value of the fixed board policies 2/7 | Experimental, opt-in (hidden in the GUI by default) |
 | `input_current_rated_ma`, `input_current_max_ma` | 12 V board input-current policy, row 9 (Ada: thresholds 0/1, rows 9/10) | Experimental, reviewed row shapes |
 | `input_current_policy7_limit_ma` | Policy 7 limit linked to the 12 V input policy | Experimental, reviewed Blackwell row shape |
 | `input_policy_9_max_raw` | Row 9 raw maximum; units unknown | Read-only, only when row 9 is unrecognized |
-| `fan_channels` | Active fan channels across the five fan tables | Experimental, Blackwell and Ada, up to the stored channels |
-| `fan_pwm_frequency_hz` | PWM frequency of every active fan channel | Experimental, Blackwell and Ada, 21-28 kHz |
-| `fan_N_min/max_rpm`, `fan_N_min/max_pct` | Speed (RPM) and level (%) limits of active fan channel N, numbered from 1 | Experimental, Blackwell, Ada and Ampere; move alone only as far as the stored fan curves, past them together with the curve points; level limits opt-in |
-| `fan_N_curve_K_temp_c/rpm/pct`, `fan_extra_M_curve_K_temp_c/rpm/pct` | Point K (1..3) of channel N's stored fan curve or of extra curve M: temperature (°C, 1/32 °C steps), speed (RPM), level (%) | Experimental, Blackwell, Ada and Ampere; points stay in order and inside the limits; levels opt-in |
-| `power_default_w` | Rated TGP value used at boot | Experimental; Blackwell, Ada, Ampere |
-| `gpc_offset_min/max_mhz`, `memory_offset_min_mhz` | Clock offset range in MHz (NVML scale) | Experimental, reviewed Blackwell and Ada |
-| `xbar/sys/vid_min/max_table_mhz`, `dram_min_table_mhz` | Clock offset range in table MHz | Experimental, reviewed Blackwell and Ada |
+| `fan_channels` | Active fan channels across the five fan tables | Experimental, Blackwell, Ada and Ampere, up to the stored channels; read-only on Turing |
+| `fan_pwm_frequency_hz` | PWM frequency of every active fan channel | Experimental, Blackwell, Ada, Ampere and Turing, 21-28 kHz |
+| `fan_N_min/max_rpm`, `fan_N_min/max_pct` | Speed (RPM) and level (%) limits of active fan channel N, numbered from 1 | Experimental, Blackwell, Ada, Ampere and Turing; move alone only as far as the stored fan curves, past them together with the curve points; level limits opt-in |
+| `fan_N_curve_K_temp_c/rpm/pct`, `fan_extra_M_curve_K_temp_c/rpm/pct` | Point K (1..3) of channel N's stored fan curve or of extra curve M: temperature (°C, 1/32 °C steps), speed (RPM), level (%) | Experimental, Blackwell, Ada, Ampere and Turing; points stay in order and inside the limits; levels opt-in |
+| `power_default_w` | Rated TGP value used at boot | Experimental; Blackwell, Ada, Ampere, Turing |
+| `gpc_offset_min/max_mhz`, `memory_offset_min_mhz` | Clock offset range in MHz (NVML scale) | Experimental, reviewed Blackwell and Ada; Ampere and Turing by analogy |
+| `xbar/sys/vid_min/max_table_mhz`, `dram_min_table_mhz` | Clock offset range in table MHz | Experimental, reviewed Blackwell and Ada; Ampere; Turing `dram_min_table_mhz` only (its XBAR/SYS/VID rows store no range) |
 
 Each selector field uses one complete role name, for example
 `msvdd_vmin_selector_index`. Original `nvvdd_rel_max_mv` and
@@ -155,11 +158,11 @@ it is read-only and labelled as such:
   lowest MSVDD REL value (760.2 mV, see below): all read-only.
 - Ada and Ampere: a float voltage equation whose clamp minimum equals its maximum,
   which no other equation references and no other role selects. The edit writes the
-  clamp minimum and maximum in every chain. Corpus: 7 of the 20 parseable Ada images
-  (RTX 2000 Ada, RTX 4090 95.02.18, 4080, 4080 SUPER, 4070, 4070 SUPER, RTX 4500 Ada;
+  clamp minimum and maximum in every chain. Corpus: 8 of the 21 parseable Ada images
+  (RTX 2000 Ada, RTX 4090 95.02.18, both 4080 images, 4080 SUPER, 4070, 4070 SUPER, RTX 4500 Ada;
   the newer RTX 4090 image chains another equation into it, and a compare REL on
-  fused inputs gives no bound on the 4070 Ti SUPER) and 20 of the 33 Ampere images,
-  both rails on eight two-rail GA102 images. The A40 stores 668088.3125 uV, which an
+  fused inputs gives no bound on the 4070 Ti SUPER) and 21 of the 34 Ampere images,
+  both rails on nine two-rail GA102 images. The A40 stores 668088.3125 uV, which an
   edit in whole uV could not write back, so it stays read-only.
 
 The value goes from 450 mV (GB20x) or 400 mV (Ada, Ampere; no voltage device
@@ -210,8 +213,65 @@ there only REL moves (REL = OV). At 1 the field is
 read-only: the image keeps no record of the original REL and ALT selectors, so keep
 the source image to go back. The field is edited alone among the voltage fields
 (`SEPARATE_EDIT_REQUIRED`), because moving REL changes the equation the REL ceiling
-binds. Not hardware-tested: whether the firmware accepts an edited legacy image
-through the override loader is unknown.
+binds. Confirmed on one RTX 5090: the edited copy loaded as an override without
+problems. Other GB20x boards have not run it.
+
+**Ada.** The same field moves the u8 REL and ALT selectors (row bytes 4 and 5) of
+the Ada rail row. That row also lies in the legacy image, which has no object
+directory on Ada: the field writes both selectors in every chain and repairs each
+legacy image checksum, so the legacy image must keep the reviewed checksum padding
+like the other edited tables. Every parseable Ada image selects a constant 1200 mV
+OV equation, so the copy reads REL = ALT = OV = 1200 mV; on the RTX 4080 that is
++125 mV over its fixed 1075 mV REL, a larger step than the +90 mV over the RTX 5090
+REL ceiling. The step follows the stored REL, which the field's reason gives: +245 to
++285 mV over the temperature-derated REL of the RTX 2000 Ada, and +225 to +325 mV
+over the compare REL (on fused speedo inputs) of the RTX 4080 Laptop image. 0 -> 1
+is offered on every parseable Ada image except the RTX 4070 Laptop image (no
+checksum padding); images without an ALT selector move REL alone.
+The parser reads the result (REL = OV, ALT absent or = OV, VMIN = OV - 1) as 1,
+read-only; the REL equation is then the OV constant, whose input variable is not a
+temperature, and the `ada-relocated-v2` loader payload still decodes the rail. The
+evaluated VMIN may then go up to 1200 mV less what its chained equations add
+(939 mV on the RTX 4080). Row byte 10 holds 2, the REL index, on every Ada image; its
+meaning is unknown and this field leaves it. No Ada vendor image is known to do
+this, and no Ada board has run it: not hardware-tested on Ada.
+
+## Fixed REL and ALT values (`nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv`)
+
+On some Ada images REL or ALT is a constant equation: REL and ALT of the newer RTX 4090
+image (1050 and 1070 mV) and of both RTX 4080 images (1075 and 1095 mV), REL of the RTX
+4000 Ada (950 mV, no ALT), and ALT alone on the 4080 SUPER, 4070 Ti SUPER and 4060
+(1100 mV). A ceiling edit cannot move a constant, so these fields set its value: the
+edit writes the constant (byte 11) and the clamp maximum (byte 7) in every chain.
+The clamp minimum (byte 3) is kept; it is the lowest value offered (the stored value
+on every image of the corpus), so an edited copy can be set back byte for byte. The highest value is the OV value
+(1200 mV). REL stays at most the lowest ALT value and ALT at least the highest REL
+value (a compare REL counts with its clamp maximum), so raising REL past ALT needs
+ALT in the same edit: both fields form one ordering group. Every voltage edit is
+checked against the result: the requested voltage fields must lie in their new
+ranges, and an edit that would leave another editable voltage field outside its new
+range (and so read-only) is refused, for example lowering REL below a raised VMIN or
+raising a temperature-derated REL ceiling past a fixed ALT; change both together.
+
+A field is offered for a constant (type 1, unit 2, zero slopes, no link, no
+reference from another equation) that holds its constant at its clamp maximum,
+when no other role and not the evaluated VMIN select it and OV is a constant. On a
+copy whose REL and ALT follow OV it is read-only, and it is saved apart from
+`nvvdd_rel_alt_follow_ov`. Raising REL lets the GPU request a higher voltage on its
+VF curve; the board power and thermal limits still apply, and the VMIN bound rises
+with the lowest REL value. Row byte 10 (the REL index on every image) reads the same
+equation, as it did when a REL ceiling (a temperature-derated REL) was raised on the
+RTX 2000 Ada. Experimental: no board has run a fixed value.
+
+Turing uses the same fields, opt-in, on the REL and ALT constants its 1x rail row
+selects (1068.75 and 1093.75 mV on most images, OV 1125 mV; see
+[Turing fields](#turing-fields)): the same bytes are written in both banks, with the
+same bounds. Turing adds its own rules: REL and ALT also stay at or above the stored
+boot voltage and the highest evaluated VMIN (its clamp plus what its chained
+equations can add), `nvvdd_vmin_mv` joins their ordering group (so VMIN can be raised
+past the old REL together with REL), ALT needs a constant REL, and a REL or ALT
+equation that is not a constant, or that another equation uses, keeps a read-only
+field with the reason. Not hardware-tested on Turing.
 
 ## Output-OCP association and narrow gate
 
@@ -520,8 +580,11 @@ unchanged, and each range that contained 0 must still contain it.
 A binding with the reviewed key, offsets, encoding and scale always uses the
 reviewed bounds, even when an extension supplies it. Other extension bindings keep
 their own bounds, as before. Only a canonical `power_min_w`, `power_default_w`,
-`input_current_rated_ma`, `*_output_ocp_rated_ma`, `slot_power_rated_w` or
-`board_fixed_rated_w` binding may change a minimum or rated value, and only the
+`input_current_rated_ma`, `*_output_ocp_rated_ma`, `slot_power_rated_w`,
+`slot_current_threshold_rated_ma`, `nvvdd_power_threshold_rated_w`,
+`connector_N_power_rated_w`, `connector_sum_power_rated_w`,
+`connector_N_current_threshold_rated_ma` or `board_fixed_rated_w` binding may change
+a minimum or rated value, and only the
 canonical `input_current_policy7_limit_ma` binding may write row 7's opaque bytes
 61:65. Any other binding with one of these keys fails with `INVALID_FIELD_EVIDENCE`.
 Aliases, partial offsets, other rows and non-matching profiles stay protected.
@@ -774,10 +837,12 @@ and every active channel is stored. Fan fields are offered only when that holds.
     meaning is unconfirmed. Byte 3 is 100 on every active row, so `fan_N_max_pct`
     moves alone only where the curves top out lower (RTX 5060 Ti 81 %, RTX 5070
     92 %); elsewhere it lowers with the top level points.
-- `fan_channels` and a channel limit or curve point are refused together
-  (`SEPARATE_EDIT_REQUIRED`): the count adds or removes channel fields and changes
-  the limits the extra curves must fit, so save it first and edit the limits and
-  curves on the copy. The PWM frequency combines with them.
+- `fan_channels` and a channel limit, curve point or `fan_zero_rpm` are refused
+  together (`SEPARATE_EDIT_REQUIRED`): the count adds or removes channel fields,
+  changes the limits the extra curves must fit and which policy entries the
+  zero-RPM flag reads, so save it first and edit the limits, curves and flag on the
+  copy.
+  The PWM frequency combines with them.
 - **Preserved.** Speed values, the other policy entry bytes and the remaining bytes.
 
 `fan_channels` uses a data-only layout binding: for each allowed count it lists the
@@ -792,10 +857,53 @@ reviewed resolvers: an extension binding cannot unlock them, relax the band or t
 curve bounds, redirect their bytes or substitute a layout. No fan edit has been
 booted on hardware.
 
+### Zero RPM (`fan_zero_rpm`, opt-in)
+
+Byte `0x32`, the last byte of each 51-byte policy entry, is a flag byte.
+
+- **Firmware (static analysis).** GSP-RM 615.78.08 (`gsp_ga10x.bin`) contains its own
+  parser for this entry. It unpacks each entry with the schema `2b12d1b` (2 bytes, 12
+  dwords, 1 byte), decodes only entries whose byte 0 is 1 and reads the flag byte bit
+  by bit: bits 1 and 2 become two separate booleans, kept with the temperature pair at
+  bytes 30..33 (1/32 °C) and byte 46 of the same entry. The contribution that proposed
+  the field reports the same decode in the Windows driver (nvlddmkm.sys 617.42,
+  booleans at structure offsets +0x80 and +0x81).
+- **Corpus.** Every GeForce GB20x image sets both bits on every enabled entry: 0x17 on
+  the channel entries and 0x07 on the extra curves, or 0x16/0x06 (bit 0 clear) on the
+  ASUS XOC and MSI Lightning images. Every RTX PRO image clears both: 0x11/0x01 on the
+  PRO 4000 SFF, 0x01 on the PRO 6000 Workstation and Max-Q. No image sets one bit
+  alone. Bytes 30..33 hold two rising temperatures (43/50, 50/55 or 50/60 °C on the
+  channel entries) and byte 46 holds 0, except on the RTX PRO 6000 Max-Q, which stores
+  zeros and 0xff there.
+- **Owner reports.** The contribution came with owner reports for images outside the
+  reviewed corpus: the fans stand still at idle on the Palit GameRock RTX 5090, the
+  ASUS TUF RTX 5090 and the ASUS TUF RTX 5070 Ti (0x17/0x07), and keep turning at
+  about 1100 RPM on the HP Omen RTX 5090 (0x11/0x01). "1 lets the fans stand still at
+  low temperature" is therefore an inferred meaning.
+- **Field.** `fan_zero_rpm` is 1 when both bits are set on every enabled entry (the
+  active channels' entries and the enabled curves past the cooler rows) and 0 when
+  both are clear. A write sets or clears both bits on all of them at once, the only
+  forms the images store, and keeps the other bits of each flag byte; the manifest
+  lists the flag bytes as layout bytes. Like the PWM frequency, a write also covers
+  the stored channel entries a larger `fan_channels` count may enable (the third
+  channel of the ASUS XOC and MSI Lightning images, whose bits already match), so the
+  count and the flag can change in either order. The field is read-only when an entry
+  sets only one of the two bits (some Ampere images store 0x13/0x03, and the firmware
+  reads the bits separately), when the enabled entries disagree or when such a stored
+  channel entry differs from them. The value 1 is offered only when every written
+  entry stores two rising nonzero temperatures at bytes 30..33 and a byte 46 other
+  than 0xff, so the Max-Q stays read-only at 0. An image that sets the bits without
+  those parameters (none in the corpus) still offers 0, but the copy is then read-only
+  at 0, so that change cannot be undone in the editor. The window shows the field,
+  like the other 0/1 fields, as a switch behind the advanced toggle.
+
+The other policy entry bytes are preserved. No `fan_zero_rpm` edit has been booted on
+hardware.
+
 ## Ada fields
 
 Every Ada rule is structural and was checked on each parseable image of the Ada
-corpus (19 of 20 images; the RTX 4090 Laptop image has no EFI image and is
+corpus (20 of 21 images; the RTX 4090 Laptop image has no EFI image and is
 refused by the image-chain parser). Writes go to the same field in every
 duplicate chain, and the additive checksum of each touched image is repaired.
 Only the RTX 2000 Ada (10de:28b0, 95.07.47.00.19) runs edited images on the maintainers' Linux machine: its
@@ -850,7 +958,8 @@ placeholder rows stay unexposed.
 are u8: REL +4, ALT +5, OV +6 and VMIN +11 (0xff = absent); the RTX 2000 Ada runtime
 INFO selectors REL 2, ALT absent, OV 4 and VMIN 3 equal those bytes. Every
 parseable image keeps REL < ALT < VMIN = OV - 1, as the GET-reviewed GB20x rows,
-and the rule is required. The VFE equation count is the u16 at header bytes 5/10
+and the rule is required; the only other order accepted is the follow-OV result
+(REL = OV, ALT absent or = OV). The VFE equation count is the u16 at header bytes 5/10
 and equation links are u16 (bytes 2 and 24). A ceiling edit is offered only for a
 REL or ALT equation of the hardware-tested REL shape: float quadratic in uV on a
 sensed-temperature variable, nonzero slope, no link and no reference from another
@@ -858,7 +967,7 @@ equation. Read-only kinds carry `equation_kind`:
 
 | Kind | Images | Why read-only |
 | --- | --- | --- |
-| `constant` | every OV; REL of the RTX 4090, 4080 and RTX 4000 Ada; ALT of 4090, 4080, 4080 SUPER, 4070 Ti SUPER, 4060 | A ceiling-only edit keeps the evaluated value |
+| `constant` | every OV; REL of the RTX 4090, 4080 and RTX 4000 Ada; ALT of 4090, 4080, 4080 SUPER, 4070 Ti SUPER, 4060 | A ceiling-only edit keeps the evaluated value; a constant REL or ALT takes a fixed value instead (see [Fixed REL and ALT values](#fixed-rel-and-alt-values-nvvdd_rel_fixed_mv-nvvdd_alt_fixed_mv)) |
 | `compare` | REL of the 4070 Ti SUPER, 4060 Ti, 4060 and laptops | The value comes from child terms on fused (speedo) inputs |
 | `fixed-point` | every VMIN slot (byte 11) | Output scale unverified; the selector is shown. It is the rail INFO VMIN slot, not the evaluated VMIN: changing it did not move the driver VMIN (see [Evaluated VMIN](#evaluated-vmin-nvvdd_vmin_mv-msvdd_vmin_mv)) |
 
@@ -893,7 +1002,7 @@ channel could not be raised back to two).
 ## Ampere fields
 
 Ampere GA102-GA107 images use the Ada table set with narrower rows. Every rule
-below is structural and was checked on the 33 images of the Ampere corpus (desktop,
+below is structural and was checked on the 34 images of the Ampere corpus (desktop,
 workstation, datacenter and laptop); all are recognized. No Ampere board runs on
 the maintainers' Linux machine, so **every Ampere field is experimental** and none
 has a runtime reading there. An RTX A2000 took an edited power floor through the
@@ -923,22 +1032,33 @@ byte 15:
 | --- | --- | --- |
 | `slot_power_rated_w`, `_max_w` | class 4 mW on the slot channel (byte-identical to the Ada one) | Row 5, 66 W rated |
 | `connector_N_power_rated_w`, `_max_w` | class 4 mW on a connector channel, rails 0xfa, 0xfb, 0xfc, 0xe4 | One per connector sense channel, numbered in row order; 150-175 W or 75-87.5 W rated. The PCIe CEM 8-pin (150 W) and 6-pin (75 W) ratings are a hint, not an identity: one physical connector can span several channels (RTX A6000 and A40 EPS 8-pin: two at 150 W; RTX 3090 Ti 16-pin: three at 162 W) |
+| `connector_sum_power_rated_w`, `_max_w` | class 4 mW on a class-2 channel with the 12 V bytes of a connector channel that adds only connector channels, at least two, each with weight 1.0 | Only where exactly one such row exists: row 11 of two RTX 3080 Ti images (300 W rated / 350 W maximum over two connector channels; 450 W over three) and of the RTX A6000 (280 W over two) |
 | `slot_current_threshold_rated_ma`, `_max_ma` (opt-in) | class 5 mA on the slot channel | Hardware threshold, as on Ada |
 | `input_current_rated_ma`, `_max_ma` (opt-in) | class 5 mA on the 12 V input channel, rail 0xe0 | Every such row written together (two on the RTX 3090 Ti) |
+| `connector_N_current_threshold_rated_ma`, `_max_ma` (opt-in) | class 5 mA on the channel of connector N | Rows 9 and 10 (threshold index 1 and 2 in parameter byte 0); 13-22.75 A rated, 13-32 A maximum; a field only where the channel carries one connector power row and one such row (none on the 3-connector RTX 3080 Ti channel 7, the RTX 3070 0xfc channel and the laptops) |
 | `nvvdd_output_ocp_max_ma` | class 0 mA on the NVVDD output channel | Read-only, as on Ada |
 
 With the slot policy, the connector-channel policies probably cap the board power
 below a TGP raised past their sum (inferred, untested). A class-2 power channel sums
 the channels its relationship entries name (bytes 14..15 give the first and last
 entry; the 46- or 31-byte relationship table follows the channel entries, header
-bytes 4/5, and byte 1 of each entry is a channel index). A class-4 mW row on a sum
-that adds a connector channel is listed in that field's `summed_cap_rows` and
-reason, and may bind before the per-channel limits: the RTX 3080 Ti caps channels
-5-7 at 450 W (3 x 162 W = 486 W) and the RTX A6000 channels 5-6 at 280 W
-(2 x 150 W = 300 W), so raising a connector channel alone may have no effect
-there. The connector fields stay editable; the sum rows have no field. The
-same-channel rule of Ada applies, and rows must keep minimum <= rated <= maximum.
-Not exposed: the class-5 connector current thresholds, the two rows on the NVVDD
+bytes 4/5). Each entry a sum names holds 1 in byte 0, a channel index in byte 1 and
+a signed weight in bytes 2..5, read as 20.12 fixed point (inferred): 0x1000 (1.0)
+on most entries, 0xfffff000 (-1.0) on the others (channel 12 subtracts channel 11
+on most images).
+A class-4 mW row on a sum that adds a connector channel is listed in that field's
+`summed_cap_rows` and reason, and may bind before the per-channel limits: one
+RTX 3080 Ti image caps channels 5-6 at 300 W rated, 350 W maximum (2 x 162 W =
+324 W rated), another channels 5-7 at 450 W (3 x 162 W = 486 W), and the RTX A6000
+channels 5-6 at 280 W (2 x 150 W = 300 W), so raising a connector channel alone
+may have no effect there. Where the sum adds only connector channels, at least two,
+each with weight 1.0, its channel holds the 12 V bytes of a connector channel and no
+other parameter (channel 1 of the three-connector RTX 3080 Ti adds channels 6 and 7
+but holds 0x11c7 in bytes 6..7), and exactly one row reads it, that row is the
+`connector_sum_power_*_w` field, and the connector reasons and the GUI connector
+rows name it; any other sum row stays without a field. The same-channel rule of
+Ada applies, and rows must keep minimum <= rated <= maximum.
+Not exposed: the two rows on the NVVDD
 power channel (12.5-250 W, mostly class 5; some above the TGP, as on the GA103
 RTX 3060 Ti and the RTX 3070 Ti Laptop; class 0 on the RTX 3090 Ti, row 16, and
 the A2000, row 17; meaning unknown), the MSVDD output-current row of the two-rail
@@ -948,8 +1068,8 @@ boards and the laptop rows.
 (GA102 except the RTX 3090 Ti: NVVDD and MSVDD, the second name inferred from the
 clock domains). Rows are the first 17 bytes of the Ada row, with the same
 selectors and order rule on every rail. VFE equations are 24 bytes with a u8 count
-(header byte 5) and u8 links. REL and OV are `constant` equations on all 33 images
-(REL 900-1087.5 mV, OV 1100 mV); ALT is constant (1100 mV) on the 17 desktop
+(header byte 5) and u8 links. REL and OV are `constant` equations on all 34 images
+(REL 900-1087.5 mV, OV 1100 mV); ALT is constant (1100 mV) on the 18 desktop
 GeForce images and absent (selector 0xff) on the 16 workstation and laptop images.
 Every voltage field is therefore
 read-only: a ceiling-only edit would not change the voltage, and writing the
@@ -966,8 +1086,10 @@ disabled and could not be reverted. The RTX 2050 has
 fixed HUB and DISP rows, which no field uses.
 
 **Fans.** The Ada tables and rules, except that the speed table may be unused
-(disabled on every channel: RTX 3080/3090 boards, RTX 3060 8GB). PWM frequency on
-23 images with GPU-driven fans, channel count on the 15 that store a second channel.
+(disabled on every channel: RTX 3080/3090 boards except the RTX 3080 Ti with two
+connector channels, RTX 3060 8GB). PWM frequency on 24 images with GPU-driven fans,
+channel count on 15 of the 16 that store a second channel (not that RTX 3080 Ti,
+whose extra curves top out at 4000 RPM, above both channel maxima).
 The A40 (passive) and the RTX 3050 6GB/8GB tables disagree and keep no fan field;
 laptops list no channel. Channel limits and curve points as on Ada; the speed value
 holds the maximum only where the speed table is enabled. Boards that stop the fan (RTX
@@ -978,13 +1100,13 @@ points, which stay editable. The GA103 3060 Ti, A4000 and A2000 curves top out b
 
 **Load path.** GA102-GA107 load `gsp_ga10x.bin`, the same GSP firmware as Ada, which
 loads at most 512 KiB counted from the legacy image; a larger payload is ignored and
-the stock VBIOS boots. The current normalizer accepts 32 of the 33 images; their
+the stock VBIOS boots. The current normalizer accepts 33 of the 34 images; their
 payloads keep the whole bank and exceed that capacity. The examined A40 dump is already refused
 because its primary-bank padding is unrecognized. The chain itself (legacy to last data image) fits only on the A40 and the
-four EFI-less laptops (20-76 KiB too large elsewhere) and would fit on all 33
+four EFI-less laptops (20-76 KiB too large elsewhere) and would fit on all 34
 without the EFI image. The experimental `ampere-relocated-v1` representation
 exports exactly that: legacy and E0 images unchanged, EFI and trailing bank bytes
-dropped, refused unless every check passes. 32 images verify; none is tested on
+dropped, refused unless every check passes. 33 images verify; none is tested on
 hardware. The loader rejects GA10x and AD10x
 payloads above 512 KiB from the selected legacy image, in both profile
 preparation and direct enrollment/reconciliation validation, so plain
@@ -993,10 +1115,14 @@ firmware whose limit is unknown; this check does not infer it.
 
 ## Turing fields
 
-Turing TU102-TU117 images (BIOS 90.xx) are recognized for their **board power
-policy only**. The rules below were checked on the 22 images of the Turing corpus
-(desktop, laptop, Max-Q, Quadro and TITAN); no Turing board has run an edited image, so
-**every Turing field is experimental**. The tester guide is in [turing.md](turing.md).
+Turing TU102-TU117 images (BIOS 90.xx) are recognized for their board power, per-input
+power and current rows, voltage minimum, clock offset ranges and fans. The rules below
+were checked on the 22 images of the Turing corpus (desktop, laptop, Max-Q, Quadro and
+TITAN). One RTX 2080 Ti ran an edited image through the Windows loader (driver 617.70,
+GSP 615.78.08): `nvidia-smi` reported the edited TGP (500 W default and maximum), but
+the card still stopped near 300 W under load (cause unknown). No other Turing field has
+run on hardware, so **every Turing field is experimental**. The tester guide is in
+[turing.md](turing.md).
 
 **Image chains.** Each bank holds legacy + EFI + two E0 images (laptops without EFI:
 legacy marked last + two E0 images), and the second E0 image is not flagged last: a
@@ -1013,19 +1139,104 @@ notebook header `ff ff ff 02`). It must read the board-total power channel, the 
 class-2 sum on rail 0xf5 of the 20-entry, 22-byte channel table (P+0x3C): channel 9 on
 the desktop TU10x/TU116 images (channel 0 there is another sum, rail 0xdf), channel 0
 on TU117 and the laptops. `power_max_w`, `power_default_w` and `power_min_w` keep the
-Ampere bounds. The checksum padding is checked on the power table's image only (the
-second E0 image; one RTX 2080 legacy image lacks it, which does not matter here).
-Writes go to both banks and repair the checksum of each touched image.
+Ampere bounds.
+
+**Per-input rows.** The other rows follow the Ampere rule (class, unit and channel; a
+single input channel is class 5 at 12 V with no parameter but its provider byte 15),
+except that Turing connector channels may hold a current correction offset at bytes
+10..13 (nvgpu `curr_corr_offset`; 200 and 300 on the RTX 2070 connector channels),
+accepted on Turing connector channels only; the slot channel stays byte-identical to
+the Ada one. Threshold rows carry their index in parameter byte 0: 0 slot, 1 and 2
+connectors, as on Ampere; a connector threshold field needs index 1 or 2. The Ampere
+12 V input role (rail 0xe0, `input_current_*_ma`) is not used on Turing.
+
+| Field | Row | Notes |
+| --- | --- | --- |
+| `slot_power_rated_w`, `_max_w` | 3: class 4 mW on the slot channel 3 (byte-identical to the Ada one) | 14 desktop and workstation images; 63-64 W rated, 63-76 W maximum |
+| `connector_N_power_rated_w`, `_max_w` | 4 and 5: class 4 mW on channels 4 and 5 (rails 0xfa, 0xfb, 0xfc) | Two on the TU10x boards, one on the GTX 1660, 1660 SUPER, 1660 Ti and 1650 SUPER; 70-147 W rated, 82-172 W maximum |
+| `slot_current_threshold_rated_ma`, `_max_ma` (opt-in) | 7: class 5 mA on the slot channel, threshold 0 | 10-11 A rated, 11-16.5 A maximum |
+| `connector_N_current_threshold_rated_ma`, `_max_ma` (opt-in) | 8 and 9: class 5 mA on the channel of connector N, thresholds 1 and 2 | 14.5-22.5 A rated, 14.5-33.75 A maximum; a field only where the channel carries one connector power row and one such row |
+| `nvvdd_output_ocp_rated_ma`, `_max_ma` (opt-in) | 13: class 10 mA on channel 19, whose 22 bytes equal the Ada NVVDD current sensor channel | 21 images, 40.25-350.94 A rated; class 10 is not described in nvgpu |
+
+The relationship entries of the TGP policy name rows 3, 4, 5, 7, 8, 9 and 13 (meaning
+of the link unknown): with stock values the slot and connector rows sum to about the
+stock board power, so a TGP raised past that sum probably needs them raised too
+(inferred). The ASUS RTX 2080 Ti XOC image raises rows 3/4/5 (372.8/648/648 W) with its
+1000 W TGP and turns rows 7, 8, 9 and 13 into class 0; those rows then give no field,
+and the editor does not reproduce such a change. Five images (RTX 2060, GTX 1660,
+1660 SUPER, 1660 Ti, 1650 SUPER) also store a class-5 mA row 12 on another NVVDD
+channel (sensor 5, provider 2; 155.88 A, 276 A on the RTX 2060): it has no field and is
+named in the NVVDD reason and in `nvvdd_threshold_rows`. The Max-Q and laptop images
+read the slot rows through another rail (0xf1) and have no slot or connector field;
+the Ampere class-0 NVVDD rule is not used on Turing. Not decoded: the class-8 row 11
+on the sum of the inputs, the 5001 W and 1001 W rows on other sums, the relationship
+table entries, the TGP flag byte and the power sensor table (P+0x28).
+
+**Voltage (P+0x68, P+0x20).** Rail table `10 05 0e 01 00`: one 14-byte nvgpu 1x row
+(`vbios_voltage_rail_table_1x_entry`) in the legacy image, with selectors REL +4, ALT +5,
+OV +6, power equation +7, boot voltage +8, VMIN limit +9 and voltage margin limit +10
+(u8, 0xff absent). Every image keeps REL < ALT (if present) < BOOT = OV - 1 and VMIN =
+OV + 1 with no margin limit equation; another order, or a margin limit, is refused.
+VFE `30 09 19 14 18` (20 variables) with the Ampere 24-byte equations, u8 count and u8
+links. REL, ALT and OV are `constant` equations on all 22 images (REL 1068.75 mV,
+950 mV on three Max-Q and laptop images; ALT 1093.75 mV, 1118.25 mV on one partner RTX
+2080 image, absent on the Quadro RTX 8000 and six Max-Q and laptop images; OV 1125 mV),
+so the REL/ALT/OV ceiling fields, selectors and boot voltage are read-only, as on Ampere.
+An edit may not change the equation the boot voltage selector picks.
+`nvvdd_rel_fixed_mv` and `nvvdd_alt_fixed_mv` (opt-in) set the REL or ALT constant as
+on Ada (see [Fixed REL and ALT values](#fixed-rel-and-alt-values-nvvdd_rel_fixed_mv-nvvdd_alt_fixed_mv)): the
+edit writes the constant and the clamp maximum (bytes 11 and 7) in both banks and keeps
+the clamp minimum (byte 3, the stored value), so a value goes from the stored value up
+to the OV constant, with REL <= ALT, and an edited copy can be set back byte for byte.
+Only a constant that no other selector or equation uses is editable. REL and ALT also
+stay at or above the stored boot voltage and the highest evaluated VMIN (its clamp
+plus the chain maximum); REL, ALT and `nvvdd_vmin_mv` form the ordering group
+`nvvdd-rel-alt`, checked on the joint result. The edit's effect is untested; the VF
+curve and the other limits still apply.
+`nvvdd_vmin_mv` edits the equation selected at row byte 9: a float voltage output whose
+clamp pins 668-703.75 mV, used by no other equation or selector (the boot selector
+included), with chained equations that add -112.5 to +75 mV; the Ada VMIN rule then
+applies (400 mV up to the lowest REL value less the chain maximum, the clamp minimum and
+maximum written in both banks). How it relates to the driver VMIN on Turing is unknown.
+
+**Clocks (C+8).** Header `35 09 0b 0a 03 e8 03 00 00`: the nvgpu v0x35 table
+(`vbios_clocks_table_35`), ten 11-byte rows in the GV HAL order, in the legacy image.
+Each row is gated by its usage (1 master: GPC, DRAM, DISP; 2 slave; 0 PWR), its ordering
+byte, byte 8 = 0 and `ff ff` at bytes 9..10. Master rows store the signed MHz offset
+minimum/maximum at bytes 3/5 (nvgpu parameter 1): GPC -1000..1000 and DRAM -1000..3000
+on every image but the Quadro RTX 8000 (0..0, read-only) and the ASUS XOC (GPC maximum
+8000, DRAM maximum 5000). The slave rows (XBAR, SYS, VID) store other parameters there
+and have no field. Units as on Ampere (GPC MHz = table, memory MHz = 2 x table, by
+analogy). An edit may not collapse a range to 0..0.
+
+**Fans.** The Ada cooler (P+0x58) and mapping (P+0x64) tables, and a policy table v0x10
+(P+0x5C, `10 06 36 02`) with its own channel list (header bytes 4..5) and two 54-byte
+entries. The entries keep the Ada and Ampere entry layout three bytes later (entry byte
+5 = Ada byte 2), so the curve levels sit at entry bytes 17..19 and the three (1/32 C,
+RPM) points from byte 21. The P token ends before the control and speed table pointers.
+The policy list must equal the cooler list; a listed channel needs nonzero enables in
+all three tables, policy byte 2 and mapping byte 1 equal to its index and policy bytes
+9..16 = `23 2b 0a 01 00 02 80 00` (every active entry; Ada bytes 6..13, the same bytes
+on most Ada and Ampere images); an unlisted one is disabled in all three. PWM
+frequency (25 or 27 kHz), channel limits and curve points then follow the Ada rules
+(15 GPU-driven images). The disabled entries hold bytes unlike the active ones and
+there is no control or speed table, so `fan_channels` is read-only. The Max-Q and
+laptop images list no channel and enable none (no fan field); the GTX 1650 SUPER
+disables its fan 0 mapping entry while the other tables list it and keeps no fan field.
+
+**Checksum padding.** The checksum padding is checked on the images of the edited
+tables in the second E0 image (power, VFE, fans: padded on all 22 images). The clock
+table sits in the legacy image, which lacks the padding on one RTX 2080 image: its
+clock fields alone stay read-only, with that reason. Writes go to both banks and
+repair the checksum of each touched image.
 
 **Signed digest list.** The type-0x70 image at the end of each bank's chain holds a
-signed list of 16-byte digests (algorithm unknown) covering the power table and
-other parts of the E0 images. The editor cannot update it. On Ampere and Ada the same
-kind of list sits before the legacy image and is not sent to GSP; on Turing it is inside
-the loaded bytes, and whether the driver or GSP checks it is unknown.
-
-**Not decoded.** Rail and VFE (rail table `10 05 0e 01`, 14-byte rows), clocks (C+8
-`35 09 0b 0a`, in the legacy image), fans (policy `10 06 36 02`), profiles and the other
-power rows. Those resolvers report `Turing ... tables are not reviewed` and give no field.
+signed list of 16-byte digests (algorithm unknown). Its chunks cover the E0 images and
+the legacy image, except three small gaps just after the clock table, so every Turing
+write leaves it stale; the editor cannot update it. On Ampere and Ada the same kind of
+list sits before the legacy image and is not sent to GSP; on Turing it is inside the
+loaded bytes. The RTX 2080 Ti reading above shows that the driver used an edited TGP
+with a stale list; for the other tables it is not known.
 
 **Load path.** TU10x/TU11x load `gsp_tu10x.bin`, whose override receiver matches the
 GA10x/AD10x one with the same 512 KiB capacity (static emulation of the 615.78.08
@@ -1042,8 +1253,9 @@ kernel patch lists TU102, TU104, TU106, TU116 and TU117 in its chip scope.
 
 Edits preserve selector/boot identity, equation minima and all expression bytes
 outside the maximum float, including temperature curves and opaque equation7
-payloads. They preserve unrequested power minima and rated/default values,
-unrelated policies, unknown bytes and board records. Affected object/directory
+payloads; the Turing boot voltage equation keeps every byte. They preserve
+unrequested power minima and rated/default values, unrelated policies, unknown
+bytes and board records. Affected object/directory
 SHA384 and bounded additive checksums are repaired, then the image is reparsed and
 verified.
 

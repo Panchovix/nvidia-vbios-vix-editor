@@ -1,22 +1,53 @@
-# Turing (experimental, not tested on Turing hardware)
+# Turing (experimental)
 
 English | [Español](turing_es.md)
 
 Turing GPUs (TU102, TU104, TU106, TU116 and TU117: GeForce RTX 20 and GTX 16 series, TITAN RTX, Quadro RTX
-and the T series) are recognized by the editor and by both loaders, **experimentally**. No Turing card has
-run an edited image yet: nothing below is tested on hardware. If you own one, the test at the end tells us
-whether it works.
+and the T series) are recognized by the editor and by both loaders, **experimentally**. One RTX 2080 Ti has run
+an edited image through the Windows loader (driver 617.70): the override loaded and `nvidia-smi` reported the
+edited board power limit (500 W default and maximum), but the card still stopped near 300 W under load, and
+why is not known yet. Nothing else below is tested on hardware. If you own a Turing card, the tester guide at
+the end tells us what works.
 
 ## What the editor does
 
-- **Board power only**: `power_max_w` (ceiling), `power_default_w` (boot default) and `power_min_w` (floor),
-  all marked experimental. Voltage, clock and fan tables use other layouts on Turing and are not decoded: they
-  have no field.
-- The power table decodes like the Ampere one on the 22 Turing images examined (desktop, laptop, Max-Q,
-  Quadro and TITAN, TU102 to TU117). The edit is written to both banks of the image, and the checksum of the
-  touched image is repaired. Bounds follow the Ampere rules; they are not hardware-safe limits.
-- Turing images carry a **signed list of digests that covers the power table**. The editor cannot update
-  it, and whether the driver checks it is unknown. That is the main reason an edit may not apply.
+Every Turing field is marked experimental. Fields marked *advanced* appear after ticking **Show advanced
+XOC-style fields**.
+
+- **Board power**: `power_max_w` (ceiling), `power_default_w` (boot default) and `power_min_w` (floor).
+- **Per-input power limits** (desktop and workstation images): `slot_power_max_w` / `slot_power_rated_w` for
+  the PCIe slot, and `connector_N_power_max_w` / `connector_N_power_rated_w` for each external 12 V connector
+  sense channel (two on most RTX 20 boards, one on the GTX 1660, 1660 SUPER, 1660 Ti and 1650 SUPER).
+- **Current thresholds** (advanced): `slot_current_threshold_*_ma` and `connector_N_current_threshold_*_ma`,
+  the hardware overcurrent thresholds of the slot and of each connector channel.
+- **NVVDD output current limit** (advanced): `nvvdd_output_ocp_max_ma` / `nvvdd_output_ocp_rated_ma`. It guards
+  the GPU core VRM; its exact meaning on Turing is unknown.
+- **Minimum voltage**: `nvvdd_vmin_mv`, the equation the rail table names as the VMIN limit. How it relates to
+  the voltage the driver reports on Turing is unknown.
+- **Fixed REL and ALT voltages** (advanced): `nvvdd_rel_fixed_mv` and `nvvdd_alt_fixed_mv`, the constant values
+  of the REL and ALT voltage limits (1068.75 and 1093.75 mV on most boards), the same fields as on Ada. Each goes
+  from its stored value up to OV (1125 mV, read-only), with REL at most ALT: raise ALT first, or both together.
+  Both also stay at or above the boot voltage and VMIN plus what its chained equations add. The edit keeps the
+  stored value in the equation, so the copy can be set back exactly. Whether the card then runs at a higher
+  voltage is not known: the VF curve and the other limits still apply, and more voltage means more heat, power
+  and wear.
+- **Clock offset ranges**: `gpc_offset_max_mhz` / `gpc_offset_min_mhz` (core) and `memory_offset_max_mhz` /
+  `memory_offset_min_mhz`, the ranges an overclocking tool may use. They do not change the clocks by themselves.
+- **Fans**: `fan_pwm_frequency_hz`, the speed (RPM) and level (%, advanced) limits of each fan and the points of
+  its fan curve.
+- **Read-only**: the OV voltage limit (1125 mV), the REL/ALT/OV equation and selector fields, the boot voltage
+  and the number of fan channels.
+- Not every image has every field: Max-Q and laptop images have no slot or connector rows and no GPU-driven fan;
+  the GTX 1630 and 1650 have no slot or connector rows either; the ASUS RTX 2080 Ti XOC image disables the
+  current thresholds and the NVVDD limit, so they have no field there; the Quadro RTX 8000 stores its clock
+  ranges as 0..0 (read-only); one RTX 2080 image lacks the checksum padding of the image that holds the clock
+  table, so its clock ranges are read-only; the GTX 1650 SUPER fan tables disagree and give no fan field.
+- The tables are decoded by structure, checked on the 22 Turing images examined (desktop, laptop, Max-Q, Quadro
+  and TITAN, TU102 to TU117). Edits are written to both banks of the image, and the checksum of each touched
+  image is repaired. Bounds keep the stored order (minimum <= rated <= maximum, a fan curve inside its limits);
+  they are not hardware-safe limits.
+- Turing images carry a **signed list of digests that covers the edited tables**. The editor cannot update it.
+  On the RTX 2080 Ti above the driver used the edited board power anyway; for the other tables it is not known.
 - Saving an edited Turing copy also saves two loader files next to it:
   - `<name>-loader.bin`: the first bank of the copy, unchanged. Load this one first.
   - `<name>-loader-e0end.bin`: the same bank, ending at its last data image. The small image after it, which
@@ -28,7 +59,8 @@ whether it works.
   static analysis of `gsp_tu10x.bin` 615.78.08, not on hardware). The files are larger, 364-500 KB, because
   they keep the bank prefix before the legacy image (about 162 KiB on most boards), which is not sent. A file
   whose second bank is erased keeps flash bytes after its image chain and would send more than 512 KiB; the
-  editor then saves only `<name>-loader-e0end.bin` and says why.
+  editor then saves only `<name>-loader-e0end.bin` and says why. On the RTX 2080 Ti above both files loaded
+  through the Windows loader (checked by reading the running VBIOS back).
 
 **An override that the driver rejects falls back to the stock VBIOS.** Nothing is written to the card. On
 Linux the kernel log says `rejected override at ... using stock VBIOS` when the loader refuses it. When the
@@ -56,7 +88,24 @@ setup so the module is rebuilt with the Turing chips.
    `<name>-loader.bin` and reboot. Run `nvidia-smi -q -d POWER`: does Min (or Max, or Default) Power Limit
    show the new value?
 4. **If it does not change**, load `<name>-loader-e0end.bin` (same edit) instead, reboot and check again.
-5. To go back, remove the override with the loader (Linux: **Remove override** or `nvbios system disable`;
+5. **Raising the board power** above the stock limit probably takes more than the board power fields (inferred,
+   not tested): each input has its own limit, and with stock values their sum is close to the stock maximum
+   board power. One step at a time, testing under load after each:
+   1. `power_max_w` and `power_default_w` to the target, and both `connector_N_power_rated_w` and
+      `connector_N_power_max_w` to about the target divided by the number of connectors (for example 500 W and
+      250 W on a two-connector RTX 2080 Ti).
+   2. Keep the slot at its stock values (63 W rated and 74 W maximum on the RTX 2080 Ti). If you change it,
+      keep `slot_power_rated_w` at most 66 W: the slot channel measures only the 12 V pins, which the PCIe CEM
+      rates at 66 W (the 75 W slot figure includes the 3.3 V rail).
+   3. If the card still stops at the same power: the advanced connector current thresholds
+      (`connector_N_current_threshold_*_ma`), only where the stored value is below the new connector power
+      divided by 12 V (250 W / 12 V is about 20.8 A). Never lower them; on the RTX 2080 Ti the stock 22.5 A
+      rated and 33.75 A maximum already cover 250 W.
+   4. Keep the NVVDD current limit at its stock value unless a load log shows the NVVDD current near it.
+
+   These values can exceed the ratings of the connectors (150 W per 8-pin), of the cables and of the power
+   supply; the card's own VRM and cooling still apply.
+6. To go back, remove the override with the loader (Linux: **Remove override** or `nvbios system disable`;
    Windows: **Remove override**).
 
 **If the card does not start** (no image, `nvidia-smi` fails): on Linux, choose your **normal** entry in the
@@ -69,5 +118,8 @@ Report that too.
 **What to report** (an issue in the editor repository): the GPU model and PCI ID (Linux:
 `lspci -nn | grep -i nvidia`; Windows: the loader's GPU list), the VBIOS version
 (`nvidia-smi -q | grep -i "VBIOS Version"`), the driver version and the OS; which file you loaded at each step
-and the edit; `nvidia-smi -q -d POWER` before and after each step. On Linux also the `vbios_override` line of
-the kernel log; on Windows the result of the loader's **Verify**.
+and the edit; `nvidia-smi -q -d POWER,CLOCK,PERFORMANCE` before and after each step, taken **under load** (a
+game or a benchmark at full load), whose `Clocks Event Reasons` (PerfCap) show what limits the card. On Windows,
+a HWiNFO log under load with the per-input powers (PCIe slot, 8-pin #1 and #2), the GPU core (NVVDD) current
+and the performance limit reasons helps most, as does the loader's **Verify** result. On Linux also the
+`vbios_override` line of the kernel log.

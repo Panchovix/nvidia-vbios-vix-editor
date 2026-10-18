@@ -13,15 +13,17 @@ import time
 from ..rom import BiosImage, VbiosError
 from ..rom.blackwell import BlackwellRom
 from ..rom.image import backend, inspect_image
-from .registry import (registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, connector_power,
-                       evaluated_vmin, rail_follow_ov, VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS)
+from .registry import (registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
+                       connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov, fixed_voltage,
+                       VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS)
 
 # Reviewed resolvers whose bindings are canonical for range and joint checks.
-REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresholds, fans, connector_power,
-                      evaluated_vmin, rail_follow_ov)
+REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
+                      connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov, fixed_voltage)
 # Fields that change otherwise preserved rail bytes, each only through its reviewed binding:
-# the evaluated VMIN equation and the XOC-style NVVDD REL/ALT selectors.
-RAIL_EXCEPTIONS = (VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS)
+# the evaluated VMIN equation, the XOC-style NVVDD REL/ALT selectors and the fixed Ada/Turing
+# REL/ALT values.
+RAIL_EXCEPTIONS = (VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS)
 # The only requests that may change otherwise preserved power-row values:
 # canonical key -> preserved row attribute it may change. 'linked_limit' is
 # the opaque policy7 copy of the 12 V input limit, limited to its own bytes.
@@ -32,8 +34,11 @@ PRESERVATION_EXCEPTIONS = {'power_min_w': 'minimum_raw', 'power_default_w': 'def
                            'slot_current_threshold_rated_ma': 'default_raw',
                            'nvvdd_power_threshold_rated_w': 'default_raw',
                            'input_current_policy7_limit_ma': 'linked_limit',
-                           # Ampere external connector policies, numbered in power-row order.
-                           **{f'connector_{n}_power_rated_w': 'default_raw' for n in range(1, 5)}}
+                           # Ampere/Turing external connector policies, numbered in power-row order, and
+                           # their sum (Ampere).
+                           **{f'connector_{n}_power_rated_w': 'default_raw' for n in range(1, 5)},
+                           'connector_sum_power_rated_w': 'default_raw',
+                           **{f'connector_{n}_current_threshold_rated_ma': 'default_raw' for n in range(1, 5)}}
 # Fields bound to a top-level override profile -> its (policy, field) entries.
 TOP_PROFILE_ENTRIES = {'power_max_w': {(2, 'maximum'), (7, 'maximum'), (8, 'maximum')},
                        'power_default_w': {(8, 'default')}, 'board_fixed_rated_w': {(2, 'default'), (7, 'default')},
@@ -150,13 +155,14 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     for key in changes:
         if key in available and key in reviewed and not reviewed[key].descriptor['editable']:
             raise VbiosError('FIELD_READ_ONLY', f'{key} is read-only', details={'field': reviewed[key].descriptor})
-    # A channel count adds or removes per-channel fan fields and changes the limits every
-    # extra curve has to fit: change it and the fan limits or curves in separate edits.
+    # A channel count adds or removes per-channel fan fields, changes the limits every extra
+    # curve has to fit and the policy entries fan_zero_rpm covers: change it and the fan
+    # limits, curves or zero-RPM flag in separate edits.
     per_channel = sorted(k for k in changes if k in reviewed and
-                         {'fan_channel', 'fan_policy'} & set(reviewed[k].descriptor))
+                         ({'fan_channel', 'fan_policy'} & set(reviewed[k].descriptor) or k == 'fan_zero_rpm'))
     if 'fan_channels' in changes and per_channel:
-        raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change fan_channels and the fan limits or curves in separate edits',
-                         details={'fields': ['fan_channels'] + per_channel})
+        raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change fan_channels and the fan limits, curves or zero-RPM flag '
+                         'in separate edits', details={'fields': ['fan_channels'] + per_channel})
     # Moving the REL/ALT selectors changes which equation the voltage fields bind.
     voltages = sorted(k for k in changes if k in available and available[k].descriptor.get('units') == 'mV')
     if 'nvvdd_rel_alt_follow_ov' in changes and voltages:
@@ -314,16 +320,32 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                              'top level: %s' % (source_top['index'], reason), details=details) from None
         if target_top['index'] != source_top['index']:
             raise VbiosError('PRESERVED_FIELD_CHANGED', 'the top-level override profile must stay the same')
-    if joint:
+    # A voltage value moves the bounds of the reviewed voltage fields (VMIN below REL, a fixed REL <= ALT), so
+    # with a voltage field in the request every requested reviewed voltage field is checked against the result
+    # too, and every other one that was editable must stay so: outside its new range it turns read-only.
+    checked, kept = set(joint), set()
+    if voltages:
+        checked |= {key for key, b in canonical.items() if b.descriptor['units'] == 'mV'}
+        kept = {key for key, b in reviewed.items()
+                if key not in changes and b.descriptor['units'] == 'mV' and b.descriptor['editable']}
+    if checked or kept:
         # A reviewed resolver refuses a result whose minimum/default/maximum
         # ordering is broken, so a missing binding is also out of bounds.
         after_reviewed = _reviewed(output, rebuilt)
-        for key in sorted(joint):
+        for key in sorted(checked):
             after = after_reviewed.get(key)
             bounds = after.descriptor['bounds'] if after is not None else None
-            if bounds is None or not _within(_amount(changes[key], key), bounds['minimum'], bounds['maximum']):
+            if (bounds is None or not _within(_amount(changes[key], key), bounds['minimum'], bounds['maximum']) or
+                    key not in joint and not after.descriptor['editable']):
+                # A field read-only in the result may keep no range to report.
                 raise VbiosError('OUT_OF_BOUNDS', f'{key} violates the minimum/default/maximum ordering of the joint result',
-                                 details={'field': key, 'bounds': bounds, 'joint_fields': sorted(joint)})
+                                 details={'field': key, 'bounds': bounds if bounds and bounds['minimum'] is not None
+                                          else None, 'joint_fields': sorted(checked)})
+        for key in sorted(kept):
+            if key not in after_reviewed or not after_reviewed[key].descriptor['editable']:
+                raise VbiosError('OUT_OF_BOUNDS', f'{key} would be outside its range in the result; change it in the '
+                                 'same edit', details={'field': key, 'bounds': None,
+                                                       'joint_fields': sorted(set(changes) | {key})})
     try:
         source_rows = parser.power_rows()
     except FormatError:
@@ -416,8 +438,8 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                     raise VbiosError('PRESERVED_FIELD_CHANGED', 'power profile metadata and opaque bytes must be preserved')
     # Clock rows keep their identity, and every range that contained a zero
     # offset still contains it, including simultaneous minimum/maximum edits.
-    # An Ampere range stored as 0..0 reads as disabled (read-only), so an edit
-    # may not collapse a wider Ampere range to 0..0: it could not be reverted.
+    # An Ampere or Turing range stored as 0..0 reads as disabled (read-only), so an
+    # edit may not collapse a wider one to 0..0: it could not be reverted.
     try:
         source_clocks = parser.clock_ranges()
     except FormatError:
@@ -434,14 +456,19 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
             if left['minimum_mhz'] <= 0 <= left['maximum_mhz'] and not right['minimum_mhz'] <= 0 <= right['maximum_mhz']:
                 raise VbiosError('OUT_OF_BOUNDS', 'clock offset ranges must keep minimum <= 0 <= maximum',
                                  details={'clock_row': right['row'], 'domain': right['domain']})
-            if (getattr(parser, 'family', None) == 'ampere' and (left['minimum_mhz'], left['maximum_mhz']) != (0, 0)
+            family = getattr(parser, 'family', None)
+            if (family in ('ampere', 'turing') and (left['minimum_mhz'], left['maximum_mhz']) != (0, 0)
                     and (right['minimum_mhz'], right['maximum_mhz']) == (0, 0)):
-                raise VbiosError('OUT_OF_BOUNDS', 'an Ampere clock offset range must not collapse to 0..0 '
-                                 '(it would read as disabled and become read-only)',
+                article = 'an Ampere' if family == 'ampere' else 'a Turing'
+                raise VbiosError('OUT_OF_BOUNDS', f'{article} clock offset range must not collapse to '
+                                 '0..0 (it would read as disabled and become read-only)',
                                  details={'clock_row': right['row'], 'domain': right['domain']})
     # Only the canonical REL/ALT follow-OV field moves the NVVDD REL and ALT selectors.
     moved = ({('NVVDD', 'REL'), ('NVVDD', 'ALT')} if any(b.descriptor['value_semantics'] == FOLLOW_OV_SEMANTICS
                                                          for b in canonical.values()) else set())
+    # Only the canonical fixed REL/ALT fields change an equation's constant (with its clamp maximum).
+    fixed_bytes = {at for binding in canonical.values() if binding.descriptor['value_semantics'] == FIXED_SEMANTICS
+                   for start in binding.offsets for at in range(start, start + 4)}
     try:
         source_rails = parser.rail_limits()
     except FormatError:
@@ -456,17 +483,20 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
         for source_rail, target_rail in zip(source_rails, target_rails):
             if (source_rail['rail_name_inferred'], 'REL') in moved:
                 continue  # the declared selector bytes alone changed; its old equation is checked below
-            source_fixed = {k: v for k, v in source_rail.items() if k != 'output_maximum_uv'}
-            target_fixed = {k: v for k, v in target_rail.items() if k != 'output_maximum_uv'}
+            # The coefficient bytes are compared instead, except a declared fixed-value constant.
+            values = ('output_maximum_uv', 'equation_coefficients')
+            source_fixed = {k: v for k, v in source_rail.items() if k not in values}
+            target_fixed = {k: v for k, v in target_rail.items() if k not in values}
             at = source_rail['maximum_offset'] + 4
-            if source_fixed != target_fixed or image.blob[at:at + 12] != output.blob[at:at + 12]:
+            if source_fixed != target_fixed or any(image.blob[i] != output.blob[i] and i not in fixed_bytes
+                                                   for i in range(at, at + 12)):
                 raise VbiosError('PRESERVED_FIELD_CHANGED', 'rail minima, identity and equation coefficients must be preserved')
     # All recognized extended equations preserve selectors, boot values and the
     # entire expression payload except the explicitly editable maximum float.
     # This covers constant/other equation kinds without interpreting their bytes
     # as quadratic coefficients and catches changes through shared references.
     if metadata_family := getattr(parser, 'family', None):
-        extended_roles = metadata_family in ('ada', 'ampere')
+        extended_roles = metadata_family in ('ada', 'ampere', 'turing')
     else:
         extended_roles = isinstance(parser, BlackwellRom)
     if extended_roles:
@@ -489,20 +519,26 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                 at = left['equation_offset']
                 if at is not None:
                     width = left['equation_size']
-                    if (image.blob[at:at + 7] != output.blob[at:at + 7] or
-                            image.blob[at + 11:at + width] != output.blob[at + 11:at + width]):
+                    if any(image.blob[i] != output.blob[i] and i not in fixed_bytes
+                           for i in (*range(at, at + 7), *range(at + 11, at + width))):
                         raise VbiosError('PRESERVED_FIELD_CHANGED', 'equation expression bytes must be preserved')
-    # The GB20x rail table (legacy image) changes only at the REL/ALT selector bytes of the canonical
-    # follow-OV binding; the role checks above cover its selectors and boot values again.
-    if isinstance(parser, BlackwellRom):
-        try:
-            rail, length = parser.rail_table()
-        except FormatError:
-            rail, length = 0, 0
-        follow = {at for binding in canonical.values() if binding.descriptor['value_semantics'] == FOLLOW_OV_SEMANTICS
-                  for start in binding.offsets for at in range(start, start + 2)}
-        if any(image.blob[i] != output.blob[i] and i not in follow for i in range(rail, rail + length)):
-            raise VbiosError('PRESERVED_FIELD_CHANGED', 'rail table bytes must be preserved')
+            # Turing: no field writes the equation the boot voltage selector (1x row byte 8) picks.
+            for item in parser.rail_boot_equations() if hasattr(parser, 'rail_boot_equations') else ():
+                at, width = item['equation_offset'], item['equation_size']
+                if image.blob[at:at + width] != output.blob[at:at + width]:
+                    raise VbiosError('PRESERVED_FIELD_CHANGED', 'the boot voltage equation bytes must be preserved',
+                                     details={'rail': item['logical_rail_id']})
+    # The rail table (legacy image; Ada/Ampere/Turing: of every chain) changes only at the REL/ALT selector
+    # bytes of the canonical follow-OV binding; the role checks above cover its selectors and boot values again.
+    try:
+        rail, length = parser.rail_table()
+        tables = [rail] if isinstance(parser, BlackwellRom) else parser.copy_offsets(rail, length)
+    except FormatError:
+        tables, length = [], 0
+    follow = {at for binding in canonical.values() if binding.descriptor['value_semantics'] == FOLLOW_OV_SEMANTICS
+              for start in binding.offsets for at in range(start, start + struct.calcsize(binding.encoding))}
+    if any(image.blob[i] != output.blob[i] and i not in follow for start in tables for i in range(start, start + length)):
+        raise VbiosError('PRESERVED_FIELD_CHANGED', 'rail table bytes must be preserved')
     # The evaluated VMIN selector stays, and its equation changes only at the floats
     # the canonical *_vmin_mv binding declares (GB20x minimum, maximum and value;
     # Ada/Ampere clamp minimum and maximum).
@@ -525,9 +561,10 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                                  'preserved', details={'rail': left['logical_rail_id']})
     # The per-fan-channel tables change only through the reviewed fan fields,
     # and only at the bytes their bindings declare: the PWM frequency bytes,
-    # the channel list/enable bytes, the row limits of the active channels and
-    # the points of the enabled curves. They must still decode and agree
-    # afterwards. Tables that do not decode or agree accept no change at all.
+    # the channel list/enable bytes, the row limits of the active channels,
+    # the points of the enabled curves and the policy entry flag bytes (0x32)
+    # fan_zero_rpm covers. They must still decode and agree afterwards. Tables
+    # that do not decode or agree accept no change at all.
     regions = parser.fan_regions() if hasattr(parser, 'fan_regions') else []
     if regions:
         try:

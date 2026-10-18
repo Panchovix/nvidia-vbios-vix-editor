@@ -15,6 +15,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'section.fans': 'Ventiladores',
  'field.fan_pwm_frequency_hz': 'Frecuencia PWM de los ventiladores (experimental)',
  'field.fan_channels': 'Canales de ventilador (experimental)',
+ 'field.fan_zero_rpm': 'Parada de ventiladores en reposo (avanzado, experimental)',
  'reason.fan_layout': 'Esta tabla no guarda otra disposición de canales de ventilador, o los límites de un canal '
                        'guardado no contienen las curvas adicionales.',
  'field.fan_min_rpm': 'Velocidad mínima del ventilador {fan} (experimental)',
@@ -28,7 +29,10 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.fan_extra_curve_rpm': 'Curva adicional {curve}, punto {point}: velocidad (experimental)',
  'field.fan_extra_curve_pct': 'Curva adicional {curve}, punto {point}: nivel (avanzado, experimental)',
  'section.readonly': 'Campos de solo lectura ({count})',
- 'section.voltage_note': 'REL y OV son techos de ecuación. VMIN cambia un valor guardado; las ecuaciones encadenadas pueden cambiar el mínimo efectivo.',
+ 'section.voltage_note': ('REL y OV son techos de ecuación; un voltaje fijo REL o ALT fija el valor de una ecuación '
+                          'constante, y un REL fijo queda igual o por debajo de ALT: para subirlo más, sube ALT en la '
+                          'misma edición. VMIN cambia un valor guardado; las ecuaciones encadenadas pueden cambiar el '
+                          'mínimo efectivo.'),
  'badge.experimental': 'experimental',
  'changes_heading': 'Cambios',
  'live_none': 'Sin cambios. Edita un valor y la vista previa se actualiza aquí.',
@@ -37,6 +41,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'live_same': 'Sin diferencias con el original.',
  'not_a_number': 'Introduce un número',
  'order_hint': 'Rompe el orden mínimo ≤ nominal ≤ máximo de su grupo',
+ 'order_hint_voltage': 'Rompe el orden VMIN < REL ≤ ALT; cambia estos valores juntos',
  'out_of_range': 'Valor fuera de rango',
  'range_min': 'Mínimo: {minimum} {units}',
  'fix_fields': 'Corrige los campos marcados en rojo.',
@@ -98,6 +103,8 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'staging': 'Construyendo y verificando vista previa…',
  'reset_done': 'Cambios restablecidos al original inmutable.',
  'unknown': 'Desconocido',
+ 'flag_on': 'Activado',
+ 'flag_off': 'Desactivado',
  'unknown_version': 'desconocida',
  'unrecognized': 'no reconocido',
  'format': 'Formato: {format}',
@@ -132,6 +139,8 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.ocp_limit_a': 'Protección contra sobrecorriente (OCP)',
  'field.output_ocp': 'Techo de corriente OCP de salida de {rail}',
  'field.output_ocp_rated': 'Límite de corriente OCP de salida de {rail}, nominal (experimental)',
+ 'field.output_ocp_advanced': 'Techo del límite de corriente de salida de {rail} (avanzado, experimental)',
+ 'field.output_ocp_rated_advanced': 'Límite de corriente de salida de {rail}, nominal (avanzado, experimental)',
  'field.slot_power_rated_w': 'Límite de potencia del slot PCIe, nominal (experimental)',
  'field.slot_power_max_w': 'Techo de potencia del slot PCIe (experimental)',
  'field.slot_current_threshold_rated_ma': 'Umbral de corriente del slot PCIe, nominal (avanzado, experimental)',
@@ -140,6 +149,19 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.nvvdd_power_threshold_max_w': 'Techo del umbral de potencia de salida NVVDD (avanzado, experimental)',
  'field.connector_power_max': 'Techo del canal de potencia de conector {connector} (experimental)',
  'field.connector_power_rated': 'Límite del canal de potencia de conector {connector}, nominal (experimental)',
+ 'field.connector_sum_power_max_w': 'Techo de la suma de potencia de conectores (experimental)',
+ 'field.connector_sum_power_rated_w': 'Límite de la suma de potencia de conectores, nominal (experimental)',
+ 'summed_cap.connectors': 'La fila {row} también limita la suma de los canales de potencia de conector {channels} a '
+                          '{rated} {units} nominal / {maximum} {units} máximo y puede actuar primero: subir solo este '
+                          'límite puede no tener efecto.',
+ 'summed_cap.channels': 'La fila {row} también limita la suma de los canales de potencia {channels} a {rated} {units} '
+                        'nominal / {maximum} {units} máximo y puede actuar primero: subir solo este límite puede no '
+                        'tener efecto.',
+ 'summed_cap.raise': 'Suba también los límites de la suma de potencia de conectores.',
+ 'field.connector_current_threshold_rated': ('Umbral de corriente del canal de conector {connector}, nominal '
+                                             '(avanzado, experimental)'),
+ 'field.connector_current_threshold_max': ('Techo del umbral de corriente del canal de conector {connector} '
+                                           '(avanzado, experimental)'),
  'field.board_fixed_rated_w': 'Potencia nominal de las políticas fijas 2/7 de la placa (avanzado, estilo XOC, '
                               'experimental)',
  'show_advanced': 'Mostrar campos avanzados (estilo XOC)',
@@ -151,6 +173,8 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.equation': 'Techo de ecuación {role} de {rail}',
  'field.vmin': 'Voltaje mínimo (VMIN) de {rail} (experimental)',
  'field.vmin_slot': 'Techo de la ecuación del slot VMIN de la info del riel {rail} (no es el VMIN evaluado)',
+ 'field.fixed': 'Voltaje fijo {role} de {rail} (experimental)',
+ 'field.fixed_advanced': 'Voltaje fijo {role} de {rail} (avanzado, experimental)',
  'field.nvvdd_rel_alt_follow_ov': ('REL y ALT de NVVDD siguen a OV (límite de voltaje plano estilo XOC; avanzado, '
                                    'experimental)'),
  'field.power_default_w': 'Potencia por defecto al arrancar (experimental)',
@@ -199,8 +223,8 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'error.UNSUPPORTED_ARCHITECTURE': 'Esta arquitectura sólo permite inspección',
  'error.UNSUPPORTED_FORMAT': 'Este formato sólo permite inspección',
  'error.SEPARATE_EDIT_REQUIRED': ('Guarde primero la cantidad de canales de ventilador o el ajuste REL/ALT siguen a '
-                                  'OV y luego abra la copia para cambiar los límites o las curvas de los ventiladores '
-                                  'o los voltajes'),
+                                  'OV y luego abra la copia para cambiar los límites, las curvas o la parada en reposo '
+                                  'de los ventiladores o los voltajes'),
  'cli_usage': 'uso: ',
  'cli_positionals': 'argumentos posicionales',
  'cli_options': 'opciones',

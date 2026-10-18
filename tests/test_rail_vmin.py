@@ -9,10 +9,10 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from nvidia_vbios.editor import edit
-from nvidia_vbios.rom import VbiosError, from_bytes, inspect_image, load
+from nvidia_vbios.rom import VbiosError, ada_general, from_bytes, inspect_image, load, normalize
 from nvidia_vbios.rom.blackwell import BlackwellRom
 from nvidia_vbios.rom.image import backend
-from test_ada_fields import patched
+from test_ada_fields import messages, patched
 from test_extended_fields import changed_bytes_within, custom_registry, descriptors, extended_fixture, repair_fixture
 from test_rom_formats import synthetic_rom
 
@@ -277,6 +277,9 @@ class FollowOvTests(unittest.TestCase):
                          (0, True, True, True))
         self.assertEqual((field['bounds']['minimum'], field['bounds']['maximum']), (0, 1))
         self.assertIn('1200 mV', field['reason'])
+        self.assertIn('confirmed on one RTX 5090', field['reason'])
+        self.assertEqual([(e['kind'], e['set_tested']) for e in field['evidence'][:2]],
+                         [('hardware-test', True), ('vendor-image-comparison', False)])
         self.assertEqual(edit(image, {'nvvdd_rel_alt_follow_ov': 0}).manifest['changed_bytes'], 0)
         result = edit(image, {'nvvdd_rel_alt_follow_ov': 1})
         row = parser.pointer('P', 0x68) + 5
@@ -358,6 +361,227 @@ class FollowOvTests(unittest.TestCase):
         self.assertTrue(report['valid'])
         self.assertEqual(report['legacy_directory']['bad_object_ids'], [0x35])
         self.assertFalse(descriptors(image)['nvvdd_rel_alt_follow_ov']['editable'])
+
+
+def ada_xoc(*, rel='constant', alt='constant'):
+    """Ada rail with REL 2 (constant 955 mV or derated 915..955 mV) and ALT 3 (constant 975 mV, derated 935..975 mV or
+    absent), in two chains; OV (5, or 4 without ALT) is a constant 1200 mV reading a fixed-point variable, as on Ada."""
+    blob = synthetic_rom(copies=2, alt=alt is not None, rel=rel)
+    parsed = backend(from_bytes(blob))
+    rail, (vfe, base) = parsed.pointer('P', 0x68), vfe_base(parsed)
+    if alt == 'constant':
+        eq = bytearray(25)
+        constant(eq, 0, 975000)
+        blob = patched(blob, base + 3 * 25, bytes(eq))
+    blob = patched(blob, vfe + 11 + 25, b'\x04')  # variable 1: a fixed-point input, not a temperature
+    return patched(blob, base + 25 * parsed.blob[rail + 5 + 6] + 1, b'\x01')
+
+
+class AdaFollowOvTests(unittest.TestCase):
+    def test_rel_and_alt_follow_ov_in_both_chains(self):
+        image = from_bytes(ada_xoc(rel='derated', alt='derated'))
+        parser = backend(image)
+        field = descriptors(image)['nvvdd_rel_alt_follow_ov']
+        self.assertEqual((field['current'], field['editable'], field['experimental'], field['opt_in']),
+                         (0, True, True, True))
+        self.assertEqual((field['bounds']['minimum'], field['bounds']['maximum']), (0, 1))
+        self.assertIn('OV equation (1200 mV) in every chain: REL = ALT = OV,', field['reason'])
+        self.assertIn('REL spans 915 to 955 mV in this image', field['reason'])
+        self.assertIn('not hardware-tested on Ada', field['reason'])
+        self.assertFalse(any(e.get('set_tested') for e in field['evidence']))
+        self.assertEqual(edit(image, {'nvvdd_rel_alt_follow_ov': 0}).manifest['changed_bytes'], 0)
+        row = parser.pointer('P', 0x68) + 5
+        selectors = [copy + k for copy in parser.copy_offsets(row + 4, 2) for k in (0, 1)]
+        result = edit(image, {'nvvdd_rel_alt_follow_ov': 1})
+        self.assertEqual(sorted(e['offset'] for e in result.manifest['edits']), sorted(selectors))
+        changed_bytes_within(self, image, result, selectors, width=1)
+        self.assertLessEqual({c[0]['end'] - 1 for c in parser.chains}, {r['offset'] for r in result.manifest['integrity_repairs']})
+        for copy in parser.copy_offsets(row, 0x1F):
+            self.assertEqual(result.blob[copy + 4:copy + 7], bytes((5, 5, 5)))
+        target = backend(result.image)
+        self.assertTrue(target.integrity()['valid'])
+        # REL now selects the constant OV equation, whose variable is not a temperature.
+        self.assertEqual(target.rail_limits()[0]['input_variable']['type'], 4)
+        after = descriptors(result.image)
+        self.assertEqual((after['nvvdd_rel_alt_follow_ov']['current'], after['nvvdd_rel_alt_follow_ov']['editable']),
+                         (1, False))
+        self.assertIn('cannot restore', after['nvvdd_rel_alt_follow_ov']['reason'])
+        self.assertEqual((after['nvvdd_rel_equation_max_mv']['current'], after['nvvdd_alt_equation_max_mv']['current']),
+                         (1200, 1200))
+        self.assertFalse(after['nvvdd_rel_max_mv']['editable'])
+        # The followed REL is the OV equation: it takes no fixed value.
+        self.assertFalse(after['nvvdd_rel_fixed_mv']['editable'])
+        self.assertIn('is also selected by ALT and OV', after['nvvdd_rel_fixed_mv']['reason'])
+
+    def test_followed_image_reopens_as_1(self):
+        blob = ada_xoc()
+        row = backend(from_bytes(blob)).pointer('P', 0x68) + 5
+        field = descriptors(from_bytes(patched(blob, row + 4, bytes((5, 5)))))['nvvdd_rel_alt_follow_ov']
+        self.assertEqual((field['current'], field['editable']), (1, False))
+        # REL alone at OV (ALT kept) is no reviewed order.
+        image = from_bytes(patched(blob, row + 4, bytes((5,))))
+        self.assertNotIn('nvvdd_rel_alt_follow_ov', descriptors(image))
+        self.assertTrue(any('unvalidated Ada rail selectors' in m for m in messages(image)))
+
+    def test_without_alt_only_rel_moves(self):
+        image = from_bytes(ada_xoc(rel='derated', alt=None))
+        parser = backend(image)
+        field = descriptors(image)['nvvdd_rel_alt_follow_ov']
+        self.assertEqual((field['current'], field['editable']), (0, True))
+        self.assertIn('REL selector (this image has no ALT selector)', field['reason'])
+        row = parser.pointer('P', 0x68) + 5
+        result = edit(image, {'nvvdd_rel_alt_follow_ov': 1})
+        changed_bytes_within(self, image, result, parser.copy_offsets(row + 4, 1), width=1)
+        self.assertEqual(result.blob[row + 4:row + 7], bytes((4, 0xFF, 4)))
+        self.assertEqual(descriptors(result.image)['nvvdd_rel_alt_follow_ov']['current'], 1)
+
+    def test_guards_refuse_other_rail_bytes_and_joint_voltage_edits(self):
+        image = from_bytes(ada_xoc())
+        parser = backend(image)
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'nvvdd_rel_alt_follow_ov': 1, 'nvvdd_rel_fixed_mv': 960})
+        self.assertEqual(exc.exception.code, 'SEPARATE_EDIT_REQUIRED')
+        row = parser.pointer('P', 0x68) + 5
+        # Row byte 10 holds the REL index on the Ada images; only the canonical binding moves selectors.
+        for at, value, text in ((row + 10, 5, 'rail table bytes must be preserved'),
+                                (row + 4, 5, 'recognized rail table')):
+            with self.subTest(offset=at - row):
+                probe = custom_registry('probe', parser.copy_offsets(at, 1), encoding='<B', scale=1,
+                                        bounds={'minimum': 0, 'maximum': 9})
+                with self.assertRaises(VbiosError) as exc:
+                    edit(image, {'probe': value}, field_registry=probe)
+                self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+                self.assertIn(text, str(exc.exception))
+
+    def test_ov_must_be_a_constant_and_the_legacy_image_padded(self):
+        blob = ada_xoc()
+        parser = backend(from_bytes(blob))
+        base = vfe_base(parser)[1]
+        image = from_bytes(patched(blob, base + 5 * 25 + 15, struct.pack('<f', -1000)))
+        fields = descriptors(image)
+        self.assertFalse(fields['nvvdd_rel_alt_follow_ov']['editable'])
+        self.assertIn('another shape', fields['nvvdd_rel_alt_follow_ov']['reason'])
+        self.assertIn('OV equation is not a constant', fields['nvvdd_rel_fixed_mv']['reason'])
+        # The rail table lies in the legacy image: without its checksum padding every field is read-only.
+        image = from_bytes(patched(blob, parser.legacy['end'] - 2, b'\x00'))
+        self.assertFalse(any(f['editable'] for f in descriptors(image).values()))
+        self.assertTrue(any('checksum padding' in m for m in messages(image)))
+
+
+class AdaFixedVoltageTests(unittest.TestCase):
+    def test_constant_rel_and_alt_take_values_in_both_chains_and_revert(self):
+        image = from_bytes(ada_xoc())
+        parser = backend(image)
+        fields = descriptors(image)
+        rel, alt = fields['nvvdd_rel_fixed_mv'], fields['nvvdd_alt_fixed_mv']
+        self.assertEqual((rel['current'], rel['bounds']['minimum'], rel['bounds']['maximum'], rel['editable'],
+                          rel['experimental']), (955, 955, 975, True, True))
+        self.assertEqual((alt['current'], alt['bounds']['minimum'], alt['bounds']['maximum']), (975, 975, 1200))
+        self.assertEqual(rel['ordering_group'], alt['ordering_group'])
+        self.assertIn('higher voltage on its VF curve', rel['reason'])
+        self.assertIn('power and thermal limits still apply', rel['reason'])
+        at = rel['equation_offset']
+        offsets = parser.copy_offsets(at + 7, 4) + parser.copy_offsets(at + 11, 4)
+        result = edit(image, {'nvvdd_rel_fixed_mv': 970})
+        self.assertEqual(sorted(e['offset'] for e in result.manifest['edits']), sorted(offsets))
+        changed_bytes_within(self, image, result, offsets)
+        self.assertTrue(result.manifest['integrity']['valid'])
+        for copy in parser.copy_offsets(at, 25):
+            # The clamp minimum keeps the stock value: the lower bound, and the value to revert to.
+            self.assertEqual(struct.unpack_from('<fffff', result.blob, copy + 3), (955000, 970000, 970000, 0, 0))
+        after = descriptors(result.image)
+        self.assertEqual((after['nvvdd_rel_fixed_mv']['current'], after['nvvdd_rel_fixed_mv']['bounds']['minimum']),
+                         (970, 955))
+        self.assertEqual(after['nvvdd_rel_equation_max_mv']['equation_kind'], 'constant')
+        self.assertEqual(edit(result.image, {'nvvdd_rel_fixed_mv': 955}).blob, image.blob)
+        both = edit(image, {'nvvdd_rel_fixed_mv': 1100, 'nvvdd_alt_fixed_mv': 1200})
+        alt_at = alt['equation_offset']
+        changed_bytes_within(self, image, both, offsets + parser.copy_offsets(alt_at + 7, 4) +
+                             parser.copy_offsets(alt_at + 11, 4))
+        after = descriptors(both.image)
+        self.assertEqual((after['nvvdd_rel_fixed_mv']['current'], after['nvvdd_alt_fixed_mv']['current']), (1100, 1200))
+        self.assertEqual(edit(both.image, {'nvvdd_rel_fixed_mv': 955, 'nvvdd_alt_fixed_mv': 975}).blob, image.blob)
+
+    def test_bounds_keep_rel_at_most_alt_and_values_at_least_stock(self):
+        image = from_bytes(ada_xoc())
+        for changes in ({'nvvdd_rel_fixed_mv': 950}, {'nvvdd_rel_fixed_mv': 980}, {'nvvdd_alt_fixed_mv': 970},
+                        {'nvvdd_alt_fixed_mv': 1205}, {'nvvdd_rel_fixed_mv': 1100, 'nvvdd_alt_fixed_mv': 1050}):
+            with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
+                edit(image, changes)
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        # Without ALT, REL goes up to the OV value; a derated ALT bounds it at its lowest value.
+        fields = descriptors(from_bytes(ada_xoc(alt=None)))
+        self.assertNotIn('nvvdd_alt_fixed_mv', fields)
+        self.assertEqual(fields['nvvdd_rel_fixed_mv']['bounds']['maximum'], 1200)
+        field = descriptors(from_bytes(ada_xoc(alt='derated')))['nvvdd_rel_fixed_mv']
+        self.assertFalse(field['editable'])
+        self.assertIn('outside 955 mV up to 935 mV', field['reason'])
+        # A derated REL keeps its ceiling field; ALT stays at least REL's highest value, also in a joint edit.
+        image = from_bytes(ada_xoc(rel='derated'))
+        fields = descriptors(image)
+        self.assertNotIn('nvvdd_rel_fixed_mv', fields)
+        self.assertEqual(fields['nvvdd_alt_fixed_mv']['bounds']['minimum'], 975)
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'nvvdd_rel_equation_max_mv': 990})
+        self.assertEqual((exc.exception.code, exc.exception.details['field']), ('OUT_OF_BOUNDS', 'nvvdd_alt_fixed_mv'))
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'nvvdd_rel_equation_max_mv': 990, 'nvvdd_alt_fixed_mv': 980})
+        self.assertEqual((exc.exception.code, exc.exception.details['field']), ('OUT_OF_BOUNDS', 'nvvdd_alt_fixed_mv'))
+        edit(image, {'nvvdd_rel_equation_max_mv': 990, 'nvvdd_alt_fixed_mv': 990})
+
+    def test_vmin_stays_below_the_rel_of_the_result(self):
+        blob = ada_vmin()  # no ALT; the VMIN clamp (560 mV) and its chain (0..75 mV)
+        eq = bytearray(25)
+        constant(eq, 0, 955000)
+        image = from_bytes(patched(blob, vfe_base(backend(from_bytes(blob)))[1] + 2 * 25, bytes(eq)))
+        raised = edit(image, {'nvvdd_rel_fixed_mv': 1000}).image
+        self.assertEqual(descriptors(raised)['nvvdd_vmin_mv']['bounds']['maximum'], 925)
+        # VMIN would be read-only in the result: no range is reported.
+        with self.assertRaises(VbiosError) as exc:
+            edit(raised, {'nvvdd_rel_fixed_mv': 955, 'nvvdd_vmin_mv': 900})
+        self.assertEqual((exc.exception.code, exc.exception.details['field'], exc.exception.details['bounds']),
+                         ('OUT_OF_BOUNDS', 'nvvdd_vmin_mv', None))
+        self.assertEqual(descriptors(edit(raised, {'nvvdd_rel_fixed_mv': 955, 'nvvdd_vmin_mv': 880}).image)
+                         ['nvvdd_vmin_mv']['current'], 880)
+        # REL lowered alone may not leave a raised VMIN above the new bound; together they go back to stock.
+        vmin = edit(raised, {'nvvdd_vmin_mv': 925}).image
+        with self.assertRaises(VbiosError) as exc:
+            edit(vmin, {'nvvdd_rel_fixed_mv': 955})
+        self.assertEqual((exc.exception.code, exc.exception.details['field']), ('OUT_OF_BOUNDS', 'nvvdd_vmin_mv'))
+        self.assertEqual(edit(vmin, {'nvvdd_rel_fixed_mv': 955, 'nvvdd_vmin_mv': 560}).blob, image.blob)
+
+    def test_shared_and_unpinned_constants_are_read_only(self):
+        blob = ada_xoc()
+        parser = backend(from_bytes(blob))
+        row, base = parser.pointer('P', 0x68) + 5, vfe_base(parser)[1]
+        # The evaluated VMIN (row byte 7) selects the REL equation.
+        field = descriptors(from_bytes(patched(blob, row + 7, b'\x02')))['nvvdd_rel_fixed_mv']
+        self.assertFalse(field['editable'])
+        self.assertIn('is also selected by the evaluated VMIN', field['reason'])
+        # An ALT constant below its clamp maximum.
+        field = descriptors(from_bytes(patched(blob, base + 3 * 25 + 11, struct.pack('<f', 960000))))['nvvdd_alt_fixed_mv']
+        self.assertFalse(field['editable'])
+        self.assertIn('does not hold its constant at its clamp maximum', field['reason'])
+        # Ampere and GB20x images have no fixed-value fields.
+        for image in (from_bytes(synthetic_rom(family='ampere')), from_bytes(blackwell_vmin(legacy=True))):
+            self.assertFalse({'nvvdd_rel_fixed_mv', 'nvvdd_alt_fixed_mv'} & set(descriptors(image)))
+
+    def test_guard_allows_only_the_canonical_floats(self):
+        image = from_bytes(ada_xoc())
+        parser = backend(image)
+        at = descriptors(image)['nvvdd_rel_fixed_mv']['equation_offset']
+        alias = custom_registry('nvvdd_rel_fixed_mv', parser.copy_offsets(at + 11, 4), encoding='<f', scale=1000,
+                                bounds={'minimum': 0, 'maximum': 2000})
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'nvvdd_rel_fixed_mv': 960}, field_registry=alias)
+        self.assertEqual(exc.exception.code, 'INVALID_FIELD_EVIDENCE')
+        # Neither the clamp minimum nor the constant alone may change outside the canonical binding.
+        for offset in (3, 11):
+            probe = custom_registry('probe', parser.copy_offsets(at + offset, 4), encoding='<f', scale=1000,
+                                    bounds={'minimum': 0, 'maximum': 2000})
+            with self.subTest(offset=offset), self.assertRaises(VbiosError) as exc:
+                edit(image, {'probe': 960}, field_registry=probe)
+            self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
 
 
 if __name__ == '__main__':

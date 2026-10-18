@@ -70,17 +70,24 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    current values are stored policy values, not hardware-safe ratings; connector,
    slot and cable limits still apply. **Show advanced XOC-style fields** (off by
    default) reveals opt-in fields such as the rated power of the fixed board
-   policies 2/7, the Ada hardware thresholds (slot current, NVVDD output
-   power and, on Ada, the 12 V input current, labelled "threshold") and, on
-   Blackwell, **NVVDD REL and ALT follow OV** (0 or 1: 1 gives the flat XOC-style
-   voltage limit; save it on its own, and keep the original image to go back);
-   values typed before ticking it are kept. **Shunt multiplier (x)** (1 = off, up to 10)
-   is display only: for board power, PCIe slot power/current and 12 V input
-   current rows it adds a note with the real limit on a shunt-modded card, about
+   policies 2/7, the hardware thresholds (slot current; on Ampere and Turing
+   the connector current; on Ada the NVVDD output power and the 12 V input
+   current, labelled "threshold"), the Turing NVVDD output current limit and
+   fixed REL/ALT voltages and, on Blackwell and Ada, **NVVDD REL and ALT follow
+   OV** (a switch: on gives the flat XOC-style voltage limit; save it on its own,
+   and keep the original image to go back) and, on Blackwell, **Fan zero RPM** (a
+   switch for the flag bits that, by inference, let the fans stand still at idle;
+   experimental); values typed before ticking it are kept. Read-only 0/1 fields
+   show On or Off. **Shunt multiplier (x)** (1 = off, up to 10) is display only:
+   for board power, PCIe slot power/current, connector power/current and 12 V
+   input current rows it adds a note with the real limit on a shunt-modded card, about
    the stored value times the multiplier, assuming the same factor on every 12 V
    input shunt.
    NVVDD/MSVDD output limits are measured by the VRM and are not scaled; nothing
-   is written to the ROM. Rated output OCP and the
+   is written to the ROM. On Ampere images where another power row also caps the
+   sum of the connector channels, each connector row notes that row's rated and
+   maximum values; where that row has a field, raise **Connector power sum** too.
+   Rated output OCP and the
    SFF slot power fields are also experimental: a rated value is what the firmware
    enforces from boot, so lowering it caps the card. On Blackwell the floor
    edits TGP row8 and preserves the distinct rows2/7 minima; recognized profiles
@@ -108,7 +115,7 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    points above it, including those of the extra curves, and they are checked and
    saved together as one copy. The minimum and maximum level (%) of each channel
    and the curve levels appear with the advanced fields. Save a new channel count
-   before changing channel limits or curves on the copy.
+   before changing channel limits, curves or zero RPM on the copy.
    Voltage compatibility aliases, selector indices and stored boot values are
    not shown; `nvbios fields` lists them. Each equation ceiling, including ALT, is an
    expression bound, not an evaluated VOP reading or runtime offset. **Minimum
@@ -116,7 +123,16 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    evaluates as VMIN; on Ada the driver adds its chained terms (+90 mV on an RTX
    2000 Ada), so the value goes up to the lowest REL value less the most those terms
    can add (753 mV on that board). The read-only "rail INFO VMIN-slot" ceiling
-   is a different equation and does not set VMIN. The full
+   is a different equation and does not set VMIN. On Ada images whose REL or ALT
+   is a constant (the newer RTX 4090 image, 4080, RTX 4000 Ada; ALT on the 4080
+   SUPER, 4070 Ti SUPER and 4060), **NVVDD REL/ALT fixed voltage** (experimental)
+   sets that value, from its clamp minimum up to the OV value (1200 mV), with REL at
+   most ALT: change both together to raise REL past ALT. Lowering REL below a raised
+   VMIN likewise needs VMIN in the same edit. Turing images get the same row with the
+   advanced fields (REL 1068.75 mV and ALT 1093.75 mV on most boards, OV 1125 mV); there
+   REL and ALT also stay at or above the boot voltage and VMIN plus its chained terms,
+   and VMIN can be raised past the old REL when REL is raised with it (VMIN plus its chain
+   stays at most REL). The full
    source SHA256 and integrity scope are in the saved manifest.
    Ada/Ampere do not inherit the Blackwell memory conversion.
 3. The preview is live. Typing marks the row, shows original → new value and the

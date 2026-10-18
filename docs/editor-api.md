@@ -60,16 +60,17 @@ editable.
 | Field key | Public unit | Stored unit | Recognized support |
 | --- | --- | --- | --- |
 | `power_min_w` | W | mW, uint32 | TGP minimum: Ada/Ampere/Turing header index; GB20x row8, 1 W through the TGP rated default |
-| `power_default_w`, `input_current_*_ma`, `*_output_ocp_rated_ma`, `slot_power_*_w`, `connector_N_power_*_w`, `board_fixed_rated_w`, clock offset ranges | W, mA, MHz | see `extended-fields.md` | Experimental, not hardware-tested; `board_fixed_rated_w` and the Ada/Ampere `input_current_*_ma`, `slot_current_threshold_*_ma` and Ada `nvvdd_power_threshold_*_w` hardware thresholds (`policy_class: "hardware-threshold"`) are opt-in (`opt_in: true`); `connector_N_power_*_w` are the Ampere external connector-channel policies (a sense channel, not a physical connector) |
-| `power_max_w` | W | mW, uint32 | Ada V3x 30/32/53, 30/34/5b and 30/2c/4b; Ampere V3x 30/2c/47, 30/2c/43 and 30/32/47 (every Ampere field is experimental); Turing V3x 30/2c/42 and 30/27/42 (the only Turing fields with the default and floor; experimental, see `turing.md`); GB20x V40 40/38-or-3d/66 |
-| `nvvdd_rel_max_mv` | mV | uV, exact float32 | Ada single logic rail V20; GB20x V30; Ampere read-only (constant equations) |
+| `power_default_w`, `input_current_*_ma`, `*_output_ocp_rated_ma`, `slot_power_*_w`, `connector_N_power_*_w`, `connector_sum_power_*_w`, `connector_N_current_threshold_*_ma`, `board_fixed_rated_w`, clock offset ranges, `nvvdd_vmin_mv`, fan fields | W, mA, MHz, mV, Hz, RPM, %, °C | see `extended-fields.md` | Experimental, not hardware-tested; `board_fixed_rated_w` and the Ada/Ampere `input_current_*_ma`, Ada/Ampere/Turing `slot_current_threshold_*_ma`, Ampere/Turing `connector_N_current_threshold_*_ma` and Ada `nvvdd_power_threshold_*_w` hardware thresholds (`policy_class: "hardware-threshold"`) are opt-in (`opt_in: true`), as is the Turing `nvvdd_output_ocp_*_ma` (row 13, class 10); `connector_N_power_*_w` are the Ampere/Turing external connector-channel policies (a sense channel, not a physical connector) and `connector_N_current_threshold_*_ma` the current threshold row on the same channel; `connector_sum_power_*_w` is the Ampere policy on their sum, where one row caps it |
+| `power_max_w` | W | mW, uint32 | Ada V3x 30/32/53, 30/34/5b and 30/2c/4b; Ampere V3x 30/2c/47, 30/2c/43 and 30/32/47 (every Ampere field is experimental); Turing V3x 30/2c/42 and 30/27/42 (experimental, see `turing.md`); GB20x V40 40/38-or-3d/66 |
+| `nvvdd_rel_max_mv` | mV | uV, exact float32 | Ada single logic rail V20; GB20x V30; Ampere and Turing read-only (constant equations) |
+| `nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv` | mV | uV, exact float32 (constant and clamp maximum; the clamp minimum is kept) | Constant Ada and Turing REL/ALT equations; experimental (opt-in on Turing); ordering group `nvvdd-rel-alt`, with `nvvdd_vmin_mv` on Turing |
 | `msvdd_rel_max_mv` | mV | uV, exact float32 | GB20x; Ampere two-rail GA102 read-only (constant equations); Ada exposes one rail and refuses MSVDD |
-| `dram_max_table_mhz` | table MHz | signed int16 | GB20x clock V50 with reviewed identity descriptors; Ada/Ampere GV HAL clocks table, experimental |
-| `memory_offset_max_mhz` | MHz | signed int16 table MHz | GB20x; MHz (NVML/Linux scale) = 2 × table MHz, validated relationship supplied by user (Ada: NVML reading; Ampere: by analogy, experimental); Windows tools such as MSI Afterburner show the table value |
+| `dram_max_table_mhz` | table MHz | signed int16 | GB20x clock V50 with reviewed identity descriptors; Ada/Ampere GV HAL clocks table and Turing v0x35 clocks table, experimental |
+| `memory_offset_max_mhz` | MHz | signed int16 table MHz | GB20x; MHz (NVML/Linux scale) = 2 × table MHz, validated relationship supplied by user (Ada: NVML reading; Ampere and Turing: by analogy, experimental); Windows tools such as MSI Afterburner show the table value |
 | `current_limit_a`, `ocp_limit_a` | A | unknown | Read-only pending independent field evidence |
 
 The two GB20x memory keys edit the same field. Supply one representation per
-request; an overlapping request produces `CONFLICTING_FIELDS`. When an Ada or Ampere
+request; an overlapping request produces `CONFLICTING_FIELDS`. When an Ada, Ampere or Turing
 clock table is not recognized, a read-only `memory_offset_max_mhz` with unknown current value remains, so callers
 can explicitly present the missing unit/domain evidence.
 
@@ -107,6 +108,9 @@ changing `integrity.valid`. A write inside the legacy image (only the opt-in
 `nvvdd_rel_alt_follow_ov`) requires that directory to verify, repairs every legacy
 object it touches, its digest and the legacy image checksum, and must reparse
 valid; those repairs carry `"directory": "legacy"` in the manifest.
+On Ada the rail table lies in the legacy image of every chain, without an object
+directory: `nvvdd_rel_alt_follow_ov` writes its selectors in each chain and repairs
+each legacy image checksum, which needs the reviewed checksum padding.
 The examined portable Blackwell EFI GOP explicitly allows identity `0000:0000`;
 NVIDIA/chip identities remain checked on legacy, metadata and NPDS images.
 Unknown directory/envelope versions do not become editable merely because they
@@ -127,7 +131,10 @@ values stay unchanged (see `extended-fields.md`). Ada power uses its header's TG
 fixed board row. Ada REL editing changes only the clamp maximum and preserves
 its temperature equation coefficients and sensed-temperature input. The evaluated
 VMIN equation and the NVVDD REL/ALT selectors change only through the canonical
-`*_vmin_mv` and `nvvdd_rel_alt_follow_ov` bindings, at their declared bytes.
+`*_vmin_mv` and `nvvdd_rel_alt_follow_ov` bindings, and the constant and clamp maximum
+of a constant Ada or Turing REL/ALT equation only through `nvvdd_rel_fixed_mv` and
+`nvvdd_alt_fixed_mv`, at their declared bytes; the rail table of every chain
+changes nowhere else.
 
 ## Architecture gate and sources
 

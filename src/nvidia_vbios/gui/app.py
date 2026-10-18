@@ -19,7 +19,7 @@ from .controller import (Controller, controls, loader_messages, open_document, r
 from .presentation import (classify_number, display_units, field_label, field_section, number, opt_in_field_keys,
                            parse_number,
                            primary_preview, read_only_reason, row_title, section_order, shunt_real, shunt_scaled,
-                           technical_field_keys, to_display, to_stored, windows_value)
+                           summed_cap_notes, technical_field_keys, to_display, to_stored, value_text, windows_value)
 
 # Typing pauses this long before the copy is rebuilt and verified.
 LIVE_DELAY_MS = 350
@@ -117,6 +117,16 @@ def texts(widget):
         found.extend(texts(child))
         child = child.get_next_sibling()
     return found
+
+
+class FlagSwitch(Gtk.Switch):
+    """Gtk.Switch speaking the text surface of the field entries: a flag field stores 0 and 1."""
+
+    def get_text(self):
+        return '1' if self.get_active() else '0'
+
+    def set_text(self, text):
+        self.set_active(str(text).strip() == '1')
 
 
 class EditorWindow(Gtk.ApplicationWindow):
@@ -727,23 +737,32 @@ class EditorWindow(Gtk.ApplicationWindow):
             badge.set_valign(Gtk.Align.CENTER)
             title_line.append(badge)
         left.append(title_line)
-        sub = [self.text('original', value=number(to_display(field, field['current'])), units=units).rstrip()]
+        sub = [self.text('original', value=value_text(field, to_display(field, field['current']), self.language),
+                         units=units).rstrip()]
         hint = windows_value(field, field['current'])
         if hint is not None:
             sub.append(self.text('windows_equivalent', value=hint))
         left.append(label(' · '.join(sub), wrap=True, css=('vb-note',)))
+        for note in summed_cap_notes(field, self.controller.document.report.get('fields', []), self.language):
+            left.append(label(note, wrap=True, css=('vb-note',)))
         top.append(left)
-        entry = Gtk.Entry()
-        entry.set_width_chars(9)
-        entry.set_max_width_chars(14)
-        entry.set_alignment(1.0)
-        entry.set_valign(Gtk.Align.CENTER)
-        entry.add_css_class('vb-entry')
-        entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
+        if field['units'] == 'flag':
+            # A 0/1 flag reads better as a switch than as a number entry.
+            entry = FlagSwitch()
+            entry.set_valign(Gtk.Align.CENTER)
+            entry.set_halign(Gtk.Align.CENTER)
+        else:
+            entry = Gtk.Entry()
+            entry.set_width_chars(9)
+            entry.set_max_width_chars(14)
+            entry.set_alignment(1.0)
+            entry.set_valign(Gtk.Align.CENTER)
+            entry.add_css_class('vb-entry')
+            entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
         entry.set_text(text)
         entry.update_property([Gtk.AccessibleProperty.LABEL], [field_label(field, self.language)])
-        entry.set_tooltip_text(field['key'] + ' · ' + units)
-        entry.connect('changed', self._input_changed)
+        entry.set_tooltip_text((field['key'] + ' · ' + units).rstrip(' ·'))
+        entry.connect('notify::active' if isinstance(entry, Gtk.Switch) else 'changed', self._input_changed)
         name.set_mnemonic_widget(entry)
         top.append(entry)
         unit = label(units, css=('vb-unit',), selectable=False)
@@ -766,7 +785,8 @@ class EditorWindow(Gtk.ApplicationWindow):
         name = label(title, wrap=True, css=('vb-title',))
         name.set_hexpand(True)
         top.append(name)
-        value = number(to_display(field, field['current'])) if field['current'] is not None else None
+        value = (value_text(field, to_display(field, field['current']), self.language)
+                 if field['current'] is not None else None)
         units = display_units(field) if value is not None and field['units'] not in ('unknown', 'index') else ''
         top.append(label(f"{value if value is not None else self.text('unknown')} {units}".strip(), css=('vb-note',)))
         row.append(top)
@@ -853,8 +873,9 @@ class EditorWindow(Gtk.ApplicationWindow):
             self._show_changes(self._typed_changes(), checking=self.verifying)
         elif doc.proposal:
             preview = primary_preview(doc)
-            self._show_changes([(row_title(before, self.language)[0], to_display(before, before['current']),
-                                 to_display(after, after['current']), display_units(after))
+            self._show_changes([(row_title(before, self.language)[0],
+                                 self._shown(before, to_display(before, before['current'])),
+                                 self._shown(after, to_display(after, after['current'])), display_units(after))
                                 for before, after in preview])
             if announce and not self.verifying and not self.busy:
                 self.status.set_text(self.text('live_ok', count=len(preview),
@@ -862,6 +883,10 @@ class EditorWindow(Gtk.ApplicationWindow):
                                      if preview else self.text('live_same'))
         else:
             self._show_changes([])
+
+    def _shown(self, field, amount):
+        """A display value for the change list, On/Off for a flag field."""
+        return value_text(field, amount, self.language) if field['units'] == 'flag' else amount
 
     def _typed_changes(self):
         """Changes as typed, before verification: (label, before, after, units)."""
@@ -871,7 +896,8 @@ class EditorWindow(Gtk.ApplicationWindow):
             amount = parse_number(self.entries[key].get_text())
             current = to_display(field, field['current'])
             if amount is not None and amount != current:
-                changes.append((row_title(field, self.language)[0], current, amount, display_units(field)))
+                changes.append((row_title(field, self.language)[0], self._shown(field, current),
+                                self._shown(field, amount), display_units(field)))
         fields = {f['key']: f for f in controls(self.controller.document.report)}
         # Staged values are stored units; typed hidden values are display units.
         hidden = {key: to_display(fields[key], value) for key, value in self.controller.document.changes.items()
@@ -879,8 +905,10 @@ class EditorWindow(Gtk.ApplicationWindow):
         hidden.update({key: parse_number(text) for key, text in self.hidden_text.items() if key in fields})
         for key, value in hidden.items():
             if key not in self.rows and value is not None:
-                changes.append((row_title(fields[key], self.language)[0], to_display(fields[key], fields[key]['current']),
-                                value, display_units(fields[key])))
+                field = fields[key]
+                changes.append((row_title(field, self.language)[0],
+                                self._shown(field, to_display(field, field['current'])), self._shown(field, value),
+                                display_units(field)))
         return changes
 
     def _mark_rows(self, invalid=(), owner=None, bounds=None):
@@ -900,7 +928,8 @@ class EditorWindow(Gtk.ApplicationWindow):
                 row.add_css_class('changed')
                 change = amount - current
                 sign = '+' if change > 0 else ''
-                message = f"{number(current)} → {number(amount)} {display_units(field)}  ({sign}{number(change)})"
+                message = (f"{self._shown(field, current)} → {self._shown(field, amount)}" if field['units'] == 'flag'
+                           else f"{number(current)} → {number(amount)} {display_units(field)}  ({sign}{number(change)})")
                 hint = windows_value(field, amount)
                 if hint is not None:
                     message += ' · ' + self.text('windows_short', value=hint)
@@ -908,7 +937,7 @@ class EditorWindow(Gtk.ApplicationWindow):
                 row.add_css_class('invalid')
                 delta.add_css_class('vb-error')
                 # Bounds belong to the failing field only; partners get the order hint.
-                message = self.text('order_hint')
+                message = self.text('order_hint_voltage' if field.get('units') == 'mV' else 'order_hint')
                 if key == owner and isinstance(bounds, dict):
                     minimum, maximum = to_display(field, bounds.get('minimum')), to_display(field, bounds.get('maximum'))
                     # Encoding limits (about 2^31) are not a useful maximum to show.

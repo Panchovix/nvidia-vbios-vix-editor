@@ -1410,6 +1410,174 @@ class FanCoolerTests(unittest.TestCase):
                 edit(image, {'fan_pwm_frequency_hz': value})
             self.assertEqual(exc.exception.code, code)
 
+    def zero_rpm_fixture(self, flags=None, *, stop=True, entries=None):
+        """The fan fixture with flag bytes (channel entries, extra curves) on the policy entries the field writes
+        (zero_rpm_offsets), or on the given ones; stop=False empties their fan-stop parameters as the RTX PRO
+        6000 Max-Q does."""
+        blob = bytearray(synthetic_blackwell(fans=True))
+        t = self.table(blob)
+        covered = t['rows'][:3] + t['extra_curves']
+        for e in covered if entries is None else [e for e in covered if e['index'] in entries]:
+            if flags is not None:
+                blob[e['flag_offset']] = flags[e['index'] >= len(t['rows'])]
+            if not stop:
+                struct.pack_into('<HH', blob, e['policy_offset'] + 30, 0, 0)
+                blob[e['policy_offset'] + 46] = 0xFF
+        return from_bytes(repair_fixture(blob))
+
+    def zero_rpm_offsets(self, blob):
+        # Channels 0/1, the stored third channel a larger count enables and the enabled curves 4/5.
+        t = self.table(blob)
+        return [r['flag_offset'] for r in t['rows'][:3]] + [c['flag_offset'] for c in t['extra_curves']]
+
+    def test_zero_rpm_flag_covers_enabled_entries_and_round_trips(self):
+        image = from_bytes(synthetic_blackwell(fans=True))
+        field = descriptors(image)['fan_zero_rpm']
+        # Channels 0/1, the stored third channel a larger count enables (as the PWM frequency covers
+        # it) and the enabled curves 4/5 past the cooler rows; every flag byte holds 0.
+        self.assertEqual((field['current'], field['units'], field['editable'], field['experimental'], field['opt_in'],
+                          field['fan_entries']), (0, 'flag', True, True, True, [0, 1, 2, 4, 5]))
+        self.assertEqual((field['bounds']['minimum'], field['bounds']['maximum']), (0, 1))
+        self.assertEqual([e['kind'] for e in field['evidence']],
+                         ['static-firmware-analysis', 'structural-table', 'static-driver-analysis',
+                          'idle-fan-behavior-correlation'])
+        # Not a curve point: curve selections and the fan_policy key stay with the curves.
+        self.assertNotIn('fan_policy', field)
+        offsets = self.zero_rpm_offsets(image.blob)
+        on = edit(image, {'fan_zero_rpm': 1})
+        self.assertTrue(on.manifest['integrity']['valid'])
+        changed_bytes_within(self, image, on, offsets, width=1)
+        self.assertEqual([on.blob[at] for at in offsets], [0x06] * len(offsets))
+        t = self.table(on.blob)
+        self.assertEqual([r['flag_byte'] for r in t['rows']] + [c['flag_byte'] for c in t['extra_curves']],
+                         [6, 6, 6, 0, 6, 6])
+        self.assertEqual(descriptors(on.image)['fan_zero_rpm']['current'], 1)
+        self.assertEqual(edit(on.image, {'fan_zero_rpm': 0}).blob, image.blob)
+        self.assertEqual(edit(image, {'fan_zero_rpm': 0}).manifest['changed_bytes'], 0)
+        for value in (2, -1):
+            with self.subTest(value=value), self.assertRaises(VbiosError) as exc:
+                edit(image, {'fan_zero_rpm': value})
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        # The other flag bits stay: the RTX PRO bytes 0x11/0x01 become the GeForce 0x17/0x07 and back.
+        pro = self.zero_rpm_fixture((0x11, 0x01))
+        self.assertEqual(descriptors(pro)['fan_zero_rpm']['current'], 0)
+        on = edit(pro, {'fan_zero_rpm': 1})
+        self.assertEqual([on.blob[at] for at in offsets], [0x17, 0x17, 0x17, 0x07, 0x07])
+        self.assertEqual(edit(on.image, {'fan_zero_rpm': 0}).blob, pro.blob)
+        # Bit 0 clear, as on the XOC-class images: 0x16/0x06 clears to 0x10/0x00.
+        xoc = self.zero_rpm_fixture((0x16, 0x06))
+        off = edit(xoc, {'fan_zero_rpm': 0})
+        self.assertEqual([off.blob[at] for at in offsets], [0x10, 0x10, 0x10, 0x00, 0x00])
+        self.assertEqual(edit(off.image, {'fan_zero_rpm': 1}).blob, xoc.blob)
+
+    def test_zero_rpm_read_only_when_enabled_entries_disagree(self):
+        image = self.zero_rpm_fixture((0x07, 0x07), entries=(0,))  # only channel 0 sets both bits
+        field = descriptors(image)['fan_zero_rpm']
+        self.assertEqual((field['current'], field['editable'], field['opt_in']), (None, False, True))
+        self.assertIn('disagree', field['reason'])
+        for value in (0, 1):
+            with self.subTest(value=value), self.assertRaises(VbiosError) as exc:
+                edit(image, {'fan_zero_rpm': value})
+            self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
+
+    def test_zero_rpm_read_only_with_one_bit_alone(self):
+        # GSP-RM decodes bits 1 and 2 separately; some Ampere images store 0x13/0x03 (bit 1 alone).
+        for flags in ((0x13, 0x03), (0x15, 0x05), (0x17, 0x03)):
+            with self.subTest(flags=flags):
+                image = self.zero_rpm_fixture(flags)
+                field = descriptors(image)['fan_zero_rpm']
+                self.assertEqual((field['current'], field['editable']), (None, False))
+                self.assertIn('only one of bits 1 and 2', field['reason'])
+                with self.assertRaises(VbiosError) as exc:
+                    edit(image, {'fan_zero_rpm': 0})
+                self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
+
+    def test_zero_rpm_one_needs_the_fan_stop_parameters(self):
+        # The RTX PRO 6000 Max-Q: 0x01 on every enabled entry, zero temperatures and 0xff at byte 46.
+        maxq = self.zero_rpm_fixture((0x01, 0x01), stop=False)
+        field = descriptors(maxq)['fan_zero_rpm']
+        self.assertEqual((field['current'], field['editable'], field['bounds']['maximum']), (0, False, None))
+        self.assertIn('RTX PRO 6000 Max-Q', field['reason'])
+        with self.assertRaises(VbiosError) as exc:
+            edit(maxq, {'fan_zero_rpm': 1})
+        self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
+        # One entry without them is enough to withhold 1: zero, falling or 0xff-marked parameters.
+        blob = synthetic_blackwell(fans=True)
+        extra = self.table(blob)['extra_curves'][1]['policy_offset']
+        third = self.table(blob)['rows'][2]['policy_offset']
+        for name, at, value in (('temperatures zero', extra + 30, bytes(4)),
+                                ('temperatures falling', extra + 30, struct.pack('<HH', 50 * 32, 43 * 32)),
+                                ('byte 46', extra + 46, b'\xff'), ('stored third channel', third + 30, bytes(4))):
+            with self.subTest(case=name):
+                image = from_bytes(repair_fixture(bytearray(blob[:at] + value + blob[at + len(value):])))
+                self.assertFalse(descriptors(image)['fan_zero_rpm']['editable'])
+        # Set bits can still be cleared there; the copy then offers nothing.
+        stopped = self.zero_rpm_fixture((0x07, 0x07), stop=False)
+        field = descriptors(stopped)['fan_zero_rpm']
+        self.assertEqual((field['current'], field['editable']), (1, True))
+        off = edit(stopped, {'fan_zero_rpm': 0})
+        self.assertEqual(descriptors(off.image)['fan_zero_rpm']['editable'], False)
+
+    def test_channel_count_and_zero_rpm_are_separate_edits(self):
+        image = from_bytes(synthetic_blackwell(fans=True))
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_channels': 3, 'fan_zero_rpm': 1})
+        self.assertEqual((exc.exception.code, exc.exception.details['fields']),
+                         ('SEPARATE_EDIT_REQUIRED', ['fan_channels', 'fan_zero_rpm']))
+        # The channel count first: the stored third channel's entry stays in the field.
+        three = edit(image, {'fan_channels': 3})
+        field = descriptors(three.image)['fan_zero_rpm']
+        self.assertEqual((field['current'], field['editable'], field['fan_entries']), (0, True, [0, 1, 2, 4, 5]))
+        on = edit(three.image, {'fan_zero_rpm': 1})
+        offsets = self.zero_rpm_offsets(three.blob)
+        changed_bytes_within(self, three.image, on, offsets, width=1)
+        self.assertEqual([on.blob[at] for at in offsets], [0x06] * 5)
+        self.assertEqual(edit(on.image, {'fan_zero_rpm': 0}).blob, three.blob)
+        # The other order gives the same bytes: the third channel's entry already took the bits.
+        early = edit(image, {'fan_zero_rpm': 1})
+        late = edit(early.image, {'fan_channels': 3})
+        self.assertEqual(late.blob, on.blob)
+        self.assertNotIn('fan_zero_rpm', [a['field'] for a in late.manifest['affected_fields']])
+        # Lowering the count leaves the entries as they are, so the field still covers the third channel.
+        lower = edit(on.image, {'fan_channels': 2})
+        self.assertEqual(lower.blob, early.blob)
+        self.assertEqual(descriptors(lower.image)['fan_zero_rpm']['fan_entries'], [0, 1, 2, 4, 5])
+        # A stored third channel whose bits differ from the enabled entries leaves the field read-only.
+        mixed = self.zero_rpm_fixture((0x17, 0x07), entries=(0, 1, 4, 5))
+        field = descriptors(mixed)['fan_zero_rpm']
+        self.assertEqual((field['current'], field['editable']), (1, False))
+        self.assertIn('larger channel count', field['reason'])
+        with self.assertRaises(VbiosError) as exc:
+            edit(mixed, {'fan_zero_rpm': 0})
+        self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
+
+    def test_extensions_cannot_rewrite_the_flag_bytes(self):
+        from nvidia_vbios.editor import FieldRegistry
+        from nvidia_vbios.editor.registry import fan_zero_rpm
+        image = from_bytes(synthetic_blackwell(fans=True))
+        t = self.table(image.blob)
+        reviewed = fan_zero_rpm(image, backend(image))[0]
+        probes = {'enabled entry flag': (t['rows'][0]['flag_offset'],), 'inactive entry flag': (t['rows'][2]['flag_offset'],),
+                  'byte before the flag': (t['rows'][0]['flag_offset'] - 1,)}
+        for name, offsets in probes.items():
+            with self.subTest(probe=name), self.assertRaises(VbiosError) as exc:
+                edit(image, {'probe': 6}, field_registry=custom_registry('probe', offsets, encoding='<B', scale=1,
+                                                                         bounds={'minimum': 0, 'maximum': 255}))
+            self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+        # The reviewed key over fewer offsets is not canonical, so its bytes are refused.
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_zero_rpm': 6}, field_registry=custom_registry(
+                'fan_zero_rpm', reviewed.offsets[:1], encoding='<B', scale=1, bounds={'minimum': 0, 'maximum': 255}))
+        self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+        # A canonical zero RPM request does not make the neighboring byte writable.
+        both = FieldRegistry()
+        both.register(fan_zero_rpm)
+        both.register(custom_registry('probe', (t['rows'][0]['flag_offset'] - 1,), encoding='<B', scale=1,
+                                      bounds={'minimum': 0, 'maximum': 255})._resolvers[0])
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_zero_rpm': 1, 'probe': 1}, field_registry=both)
+        self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+
     def test_channel_count_writes_all_three_tables_and_round_trips(self):
         image = from_bytes(synthetic_blackwell(fans=True))
         t = self.table(image.blob)
