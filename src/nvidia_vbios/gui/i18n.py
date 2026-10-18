@@ -61,6 +61,9 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'saved': 'Copy saved: {output}\nManifest: {manifest}',
  'saved_loader': 'For the VBIOS loaders, load this file instead of the copy: {output}',
  'saved_loader_failed': 'No file for the VBIOS loaders: {reason}',
+ 'saved_loader_other_failed': 'The other file for the VBIOS loaders was not saved: {reason}',
+ 'saved_loader_alternative': ('If the loaded file does not apply the edit, try this one instead '
+                              '(experimental): {output}'),
  'verified': 'Preview verified. Save Copy creates ROM + JSON manifest without overwriting files.',
  'loaded': 'ROM loaded. Offline editing; this copy has not been validated on hardware.',
  'loading': 'Reading and inspecting ROM…',
@@ -184,7 +187,7 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'error.SOURCE_OVERWRITE': 'Choose a destination different from the source',
  'error.SOURCE_CHANGED': 'The source changed since it was opened',
  'error.OUTPUT_EXISTS': 'The output or manifest already exists',
- 'error.LOADER_OUTPUT_EXISTS': ('A -loader.bin file for this name already exists, maybe from an earlier '
+ 'error.LOADER_OUTPUT_EXISTS': ('A -loader file for this name already exists, maybe from an earlier '
                                 'copy: delete it or choose another name'),
  'error.IO_ERROR': 'Unable to read or write the file',
  'error.INVALID_PATH': 'Choose a valid local path',

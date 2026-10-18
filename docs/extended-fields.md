@@ -991,6 +991,53 @@ preparation and direct enrollment/reconciliation validation, so plain
 `normalize` output of an Ampere ROM is not loadable. GA100 uses different GSP
 firmware whose limit is unknown; this check does not infer it.
 
+## Turing fields
+
+Turing TU102-TU117 images (BIOS 90.xx) are recognized for their **board power
+policy only**. The rules below were checked on the 22 images of the Turing corpus
+(desktop, laptop, Max-Q, Quadro and TITAN); no Turing board has run an edited image, so
+**every Turing field is experimental**. The tester guide is in [turing.md](turing.md).
+
+**Image chains.** Each bank holds legacy + EFI + two E0 images (laptops without EFI:
+legacy marked last + two E0 images), and the second E0 image is not flagged last: a
+small type-0x70 NPDS image flagged last (NBSI signature in its body) ends the chain.
+The editor accepts that tail for Turing only; no table is read from it. Table pointers
+follow the GA10x rule (logical view = legacy + E0 images, EFI length added past the
+legacy image). BIT tokens are smaller than on Ampere (P 0xC4, or 0xE0 on the GTX 1630;
+C 0x1C, M 0x1D, i 0x68): pointers past a token's end are absent.
+
+**Power policy table (P+0x2C).** `30/2c/42`, and `30/27/42` on one RTX 2080 image (the
+first 0x27 header bytes of `30/2c/42`). Rows hold minimum/rated/maximum at bytes 2/6/10
+as on Ampere; the TGP row is row 2 on every image (header byte 10, or byte 13 with the
+notebook header `ff ff ff 02`). It must read the board-total power channel, the only
+class-2 sum on rail 0xf5 of the 20-entry, 22-byte channel table (P+0x3C): channel 9 on
+the desktop TU10x/TU116 images (channel 0 there is another sum, rail 0xdf), channel 0
+on TU117 and the laptops. `power_max_w`, `power_default_w` and `power_min_w` keep the
+Ampere bounds. The checksum padding is checked on the power table's image only (the
+second E0 image; one RTX 2080 legacy image lacks it, which does not matter here).
+Writes go to both banks and repair the checksum of each touched image.
+
+**Signed digest list.** The type-0x70 image at the end of each bank's chain holds a
+signed list of 16-byte digests (algorithm unknown) covering the power table and
+other parts of the E0 images. The editor cannot update it. On Ampere and Ada the same
+kind of list sits before the legacy image and is not sent to GSP; on Turing it is inside
+the loaded bytes, and whether the driver or GSP checks it is unknown.
+
+**Not decoded.** Rail and VFE (rail table `10 05 0e 01`, 14-byte rows), clocks (C+8
+`35 09 0b 0a`, in the legacy image), fans (policy `10 06 36 02`), profiles and the other
+power rows. Those resolvers report `Turing ... tables are not reviewed` and give no field.
+
+**Load path.** TU10x/TU11x load `gsp_tu10x.bin`, whose override receiver matches the
+GA10x/AD10x one with the same 512 KiB capacity (static emulation of the 615.78.08
+firmware, not hardware). Plain `normalize` keeps the first bank with the type-0x70
+image: 260-355 KB from the legacy image. The experimental `turing-e0-end-v1`
+representation keeps the same bank up to the end of the second E0 image, sets its NPDS
+(byte 0x15) and NPDE (byte 0x0a) last-image bits as GA10x/AD10x mark their last E0
+image, repairs its checksum, and drops the type-0x70 image and the rest of the bank
+(7.5-12.5 KiB less). Whether GSP on Turing needs the type-0x70 image is unknown; the
+GUI saves both shapes (`<name>-loader.bin`, `<name>-loader-e0end.bin`). The Linux
+kernel patch lists TU102, TU104, TU106, TU116 and TU117 in its chip scope.
+
 ## Preservation, aliases and manifests
 
 Edits preserve selector/boot identity, equation minima and all expression bytes
@@ -1038,9 +1085,10 @@ The tests generate small structured images; no ROM file, GPU or driver is needed
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_extended_fields.py'
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_ada_fields.py'
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_ampere_fields.py'
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_turing.py'
 ```
 
 They cover full u16 selectors, both output-OCP ceilings, exact allowed byte ranges,
 hashes/checksums, shared references and preservation. The maintainers also check
-real reference ROMs, which cover every Ada and Ampere image listed above; those ROMs
+real reference ROMs, which cover every Ada, Ampere and Turing image listed above; those ROMs
 are not distributed, and the suite here is synthetic only.

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.18
+
+- **Turing (experimental, not tested on Turing hardware).** TU102, TU104, TU106, TU116 and TU117 images
+  (GeForce RTX 20 and GTX 16, TITAN RTX, Quadro RTX, T series; BIOS 90.xx) are recognized. Only the board power
+  limits are editable: `power_max_w`, `power_default_w` and `power_min_w`. The power table decodes like the
+  Ampere one on the 22 Turing images examined, and edits go to both banks with their checksums. Turing
+  images carry a signed digest list over this table that the editor cannot update; whether the driver checks
+  it is unknown. Voltage, clock and fan tables are not decoded on Turing. Saving an edited Turing copy saves
+  two loader files: `<name>-loader.bin` (the first bank, unchanged; load it first) and
+  `<name>-loader-e0end.bin` (the same bank ending at its last data image, new representation
+  `turing-e0-end-v1`; try it if the first does not apply the edit). Both send 250-355 KB from the legacy
+  image, under the 512 KiB the Turing GSP firmware reads (the files keep a bank prefix of up to about 162 KiB
+  that is not sent). If you own a Turing card, see the
+  [tester guide](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/turing.md):
+  an override the driver rejects falls back to the stock VBIOS.
+
 ## 0.1.17
 
 - **Windows: the programs start again on CPUs without AVX-512.** The 0.1.15 and 0.1.16 `.exe` files closed at

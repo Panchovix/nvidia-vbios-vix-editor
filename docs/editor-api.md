@@ -59,9 +59,9 @@ editable.
 
 | Field key | Public unit | Stored unit | Recognized support |
 | --- | --- | --- | --- |
-| `power_min_w` | W | mW, uint32 | TGP minimum: Ada/Ampere header index; GB20x row8, 1 W through the TGP rated default |
+| `power_min_w` | W | mW, uint32 | TGP minimum: Ada/Ampere/Turing header index; GB20x row8, 1 W through the TGP rated default |
 | `power_default_w`, `input_current_*_ma`, `*_output_ocp_rated_ma`, `slot_power_*_w`, `connector_N_power_*_w`, `board_fixed_rated_w`, clock offset ranges | W, mA, MHz | see `extended-fields.md` | Experimental, not hardware-tested; `board_fixed_rated_w` and the Ada/Ampere `input_current_*_ma`, `slot_current_threshold_*_ma` and Ada `nvvdd_power_threshold_*_w` hardware thresholds (`policy_class: "hardware-threshold"`) are opt-in (`opt_in: true`); `connector_N_power_*_w` are the Ampere external connector-channel policies (a sense channel, not a physical connector) |
-| `power_max_w` | W | mW, uint32 | Ada V3x 30/32/53, 30/34/5b and 30/2c/4b; Ampere V3x 30/2c/47, 30/2c/43 and 30/32/47 (every Ampere field is experimental); GB20x V40 40/38-or-3d/66 |
+| `power_max_w` | W | mW, uint32 | Ada V3x 30/32/53, 30/34/5b and 30/2c/4b; Ampere V3x 30/2c/47, 30/2c/43 and 30/32/47 (every Ampere field is experimental); Turing V3x 30/2c/42 and 30/27/42 (the only Turing fields with the default and floor; experimental, see `turing.md`); GB20x V40 40/38-or-3d/66 |
 | `nvvdd_rel_max_mv` | mV | uV, exact float32 | Ada single logic rail V20; GB20x V30; Ampere read-only (constant equations) |
 | `msvdd_rel_max_mv` | mV | uV, exact float32 | GB20x; Ampere two-rail GA102 read-only (constant equations); Ada exposes one rail and refuses MSVDD |
 | `dram_max_table_mhz` | table MHz | signed int16 | GB20x clock V50 with reviewed identity descriptors; Ada/Ampere GV HAL clocks table, experimental |
@@ -82,9 +82,10 @@ recognized image reports failed integrity and cannot be edited or normalized.
 ## Structural and preservation checks
 
 PCI and NPDS image lengths bound every read and table. BIT header sums, token
-uniqueness, token bounds and requested pointer widths are checked. Ada/Ampere
-require contiguous legacy/EFI/NPDS chains (Ampere: or a legacy image marked last
-followed directly by its NPDS images), an explicit last NPDS image, consistent
+uniqueness, token bounds and requested pointer widths are checked. Ada/Ampere/Turing
+require contiguous legacy/EFI/NPDS chains (Ampere and Turing: or a legacy image marked last
+followed directly by its NPDS images), an explicit last NPDS image (Turing: a type-0x70
+NPDS image flagged last after the data images), consistent
 PCI/chip identity (Ampere also accepts the shared GA10x NPDS ID 0x2200) and
 identical duplicate image chains. The complete primary NVGI bank
 can be selected using repeated chain positions and NVGI bank headers, independently

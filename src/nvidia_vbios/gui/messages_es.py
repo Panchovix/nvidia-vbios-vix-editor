@@ -62,6 +62,9 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'saved': 'Copia guardada: {output}\nManifiesto: {manifest}',
  'saved_loader': 'Para los cargadores de VBIOS, carga este archivo en vez de la copia: {output}',
  'saved_loader_failed': 'Sin archivo para los cargadores de VBIOS: {reason}',
+ 'saved_loader_other_failed': 'El otro archivo para los cargadores de VBIOS no se guardó: {reason}',
+ 'saved_loader_alternative': ('Si el archivo cargado no aplica el cambio, prueba este en su lugar '
+                              '(experimental): {output}'),
  'verified': 'Vista previa verificada. Guardar copia crea ROM + manifiesto JSON; no sobrescribe '
              'archivos.',
  'loaded': 'ROM cargada. Edición offline; sin validación de esta copia en hardware.',
@@ -189,7 +192,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'error.SOURCE_OVERWRITE': 'Elija un destino diferente del original',
  'error.SOURCE_CHANGED': 'El original cambió desde que se abrió',
  'error.OUTPUT_EXISTS': 'La copia o el manifiesto ya existe',
- 'error.LOADER_OUTPUT_EXISTS': ('Ya existe un archivo -loader.bin con este nombre, quizás de una copia '
+ 'error.LOADER_OUTPUT_EXISTS': ('Ya existe un archivo -loader con este nombre, quizás de una copia '
                                 'anterior: bórralo o elige otro nombre'),
  'error.IO_ERROR': 'No se pudo leer o escribir el archivo',
  'error.INVALID_PATH': 'Elija una ruta local válida',

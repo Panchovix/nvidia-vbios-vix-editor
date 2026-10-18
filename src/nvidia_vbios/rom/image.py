@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import hashlib
 from pathlib import Path
 import re
-from . import ada_general, ampere_relocated
+from . import ada_general, ampere_relocated, turing
 from .ada_relocated import REPRESENTATION, recognize_payload, relocate
 from .architecture import architecture
 from .blackwell import BlackwellRom
@@ -81,7 +81,7 @@ def backend(image, *, require_scope=True):
                          details={'architecture': arch})
     if arch['family'] == 'blackwell-gb20x':
         return BlackwellRom(image.blob, image.name)
-    if arch['family'] in ('ada', 'ampere'):
+    if arch['family'] in ('ada', 'ampere', 'turing'):
         return TableRom(image.blob, image.name, family=arch['family'])
     raise FormatError('no supported parser for this architecture')
 
@@ -147,7 +147,8 @@ def inspect(path):
 def normalize(image, *, representation=None):
     if not isinstance(image, BiosImage):
         raise VbiosError('INVALID_IMAGE', 'operation requires an immutable BiosImage')
-    if representation not in (None, REPRESENTATION, ada_general.REPRESENTATION, ampere_relocated.REPRESENTATION):
+    if representation not in (None, REPRESENTATION, ada_general.REPRESENTATION, ampere_relocated.REPRESENTATION,
+                              turing.REPRESENTATION):
         raise VbiosError('UNKNOWN_REPRESENTATION', 'unrecognized override representation')
     if recognize_payload(image.blob) is not None:
         return image
@@ -172,4 +173,6 @@ def normalize(image, *, representation=None):
     if representation == ampere_relocated.REPRESENTATION:
         payload, _ = ampere_relocated.relocate(rebuilt)
         return BiosImage(payload, '<normalized ampere-relocated-v1>', image.source_sha256, image.source_path)
+    if representation == turing.REPRESENTATION:
+        return BiosImage(turing.e0_end(rebuilt), '<normalized turing-e0-end-v1>', image.source_sha256, image.source_path)
     return result

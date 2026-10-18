@@ -121,6 +121,10 @@ def ampere(parser):
     return isinstance(parser, TableRom) and parser.family == 'ampere'
 
 
+def turing(parser):
+    return isinstance(parser, TableRom) and parser.family == 'turing'
+
+
 # The only Ada board that runs edited images here. Booted edits: TGP ceiling
 # 100 W (NVML maximum) and NVVDD REL ceiling 1100 mV (runtime evaluated REL); a
 # second image also changed the GPC offset ceiling and the memory offset floor
@@ -185,6 +189,33 @@ AMPERE_NOTEBOOK_REASON = ('experimental: stored notebook TGP; the platform (Dyna
 AMPERE_NOTEBOOK_DEFAULT_REASON = ('experimental: stored notebook rated TGP; taken as the default power limit by '
                                   'structural analogy with the GB20x notebook layout; no Ampere reading; the platform '
                                   'requests the running limit; not hardware-tested')
+# Turing (TU102-TU117): only the board power policy is decoded, on the rules checked
+# on the 22 images of the Turing corpus. No Turing board has run an edited image.
+TURING_STRUCTURAL_EVIDENCE = {
+    'kind': 'structural-row-comparison',
+    'source': 'Turing VBIOS corpus, 22 TU102-TU117 images', 'set_tested': False, 'runtime_get': False}
+TURING_POWER_EVIDENCE = dict(
+    TURING_STRUCTURAL_EVIDENCE,
+    format='Turing 3x power 30/2c/42 or 30/27/42 (the first 0x27 header bytes of 30/2c/42); TGP row = header byte '
+           '10 (notebook: byte 13 when bytes 10..12 are ff); class 1 mW on the board-total power channel, the only '
+           'class-2 sum on rail 0xf5 of the 20-entry channel table (channel 9 on desktop TU10x/TU116, 0 on TU117 and '
+           'laptops)',
+    observation='the table decodes like the Ampere power table: minimum/rated/maximum u32 mW at row bytes 2/6/10; '
+                'the TGP row is row 2 on every image; its rated value is the board power of the model (for example '
+                'RTX 2080 Ti 260 W, TITAN RTX 280 W, GTX 1660 SUPER 125 W, GTX 1650 75 W)')
+TURING_HASH_EVIDENCE = {
+    'kind': 'integrity-observation', 'source': 'Turing VBIOS corpus, 22 TU102-TU117 images',
+    'observation': 'the type-0x70 image that ends each Turing chain holds a signed list of 16-byte digests (algorithm '
+                   'unknown) covering this table; the editor cannot update it, and the loader payload carries it; '
+                   'whether the driver or GSP checks it is unknown', 'set_tested': False}
+TURING_NOTE = ('the table decodes like the Ampere one on the Turing images examined; not hardware-tested on Turing; '
+               'Turing images carry a signed hash list over this table that the editor cannot update, and whether '
+               'the driver checks it is unknown')
+TURING_NOTEBOOK_REASON = ('experimental: stored notebook TGP; the platform (Dynamic Boost, nvidia-powerd) requests the '
+                          'running limit and may keep it lower; ' + TURING_NOTE)
+TURING_NOTEBOOK_DEFAULT_REASON = ('experimental: stored notebook rated TGP; taken as the default power limit by '
+                                  'structural analogy with the GB20x notebook layout; no Turing reading; the platform '
+                                  'requests the running limit; ' + TURING_NOTE)
 
 
 @registry.register
@@ -328,9 +359,12 @@ def power(image, parser):
         evidence = [{'kind': 'nvidia-struct-prefix-and-reviewed-variant', 'source': SOURCE,
                      'format': '3x power policy; TGP index from header; limit_unit flag mW',
                      'recognized_variants': ['Ada 30/32/53', 'Ada 30/34/5b', 'Ada 30/2c/4b'] if ada(parser) else
+                                            ['Turing 30/2c/42', 'Turing 30/27/42'] if turing(parser) else
                                             ['Ampere 30/2c/47', 'Ampere 30/2c/43', 'Ampere 30/32/47']}]
         if ada(parser):
             evidence = evidence + [dict(ADA_POWER_EVIDENCE)] + ([dict(ADA_NOTEBOOK_EVIDENCE)] if notebook else [])
+        elif turing(parser):
+            evidence = evidence + [dict(TURING_POWER_EVIDENCE), dict(TURING_HASH_EVIDENCE)]
         else:
             evidence = evidence + [dict(AMPERE_POWER_EVIDENCE)]
         default_evidence = evidence
@@ -338,10 +372,12 @@ def power(image, parser):
         {'use': 'structural analogy only: no NVML or nvidia-smi reading of an Ada laptop exists'}
         if notebook and ada(parser) else
         {'use': 'structural analogy only: no NVML or nvidia-smi reading of an Ampere board exists'}
-        if ampere(parser) else {}))])
+        if ampere(parser) else
+        {'use': 'structural analogy only: no NVML or nvidia-smi reading of a Turing board exists'}
+        if turing(parser) else {}))])
     # Ada notebook TGP rows are never the hardware-tested board; Ampere is never tested.
     flags = {'experimental': True} if notebook and ada(parser) else experimental_flag(image, parser, 'power_max_w')
-    untested = 'not hardware-tested on this board; ' if flags else ''
+    untested = TURING_NOTE + '; ' if turing(parser) else 'not hardware-tested on this board; ' if flags else ''
     top_extra = {} if top is None else dict(bound_profile=top['index'], base_values={
         'power_max_w': rows[8]['maximum_raw'] / 1000, 'power_default_w': rows[8]['default_raw'] / 1000})
     return [field('power_max_w', 'Board power ceiling', 'W', tgp['maximum_raw'] / 1000,
@@ -350,7 +386,7 @@ def power(image, parser):
                   factory_default=tgp['default_raw'] / 1000,
                   ordering_group='board-power', encoding_bounds=(0, 0x7FFFFFFF / 1000),
                   reason=(ADA_NOTEBOOK_REASON if ada(parser) else AMPERE_NOTEBOOK_REASON if ampere(parser) else
-                          NOTEBOOK_POWER_REASON) if notebook else
+                          TURING_NOTEBOOK_REASON if turing(parser) else NOTEBOOK_POWER_REASON) if notebook else
                   'experimental: encoding ceiling only; ' + untested + 'firmware/current/hardware restrictions remain'
                   if untested else
                   'experimental: ' + top_profile_note(top, '%g W' % (rows[8]['maximum_raw'] / 1000)) +
@@ -367,10 +403,12 @@ def power(image, parser):
                   ordering_group='board-power', encoding_bounds=(0, 0x7FFFFFFF / 1000),
                   reason=ADA_NOTEBOOK_DEFAULT_REASON if notebook and ada(parser) else
                   AMPERE_NOTEBOOK_DEFAULT_REASON if notebook and ampere(parser) else
+                  TURING_NOTEBOOK_DEFAULT_REASON if notebook and turing(parser) else
                   'experimental: notebook default TGP (nvidia-smi Default Power Limit); the platform '
                   'requests the running limit; not hardware-tested' if notebook else
                   'experimental: ' + top_profile_note(top, '%g W' % (rows[8]['default_raw'] / 1000)) +
                   'rated TGP limit used at boot without a client cap' if top else
+                  'experimental: rated TGP limit used at boot without a client cap; ' + TURING_NOTE if turing(parser) else
                   'experimental: rated TGP limit used at boot without a client cap; not hardware-tested',
                   **top_extra),
             field('power_min_w', 'Board power floor', 'W', tgp['minimum_raw'] / 1000,

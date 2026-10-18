@@ -6,7 +6,9 @@ GTK editor window and a JSON command line. It edits power limits, voltage ceilin
 per-channel fan speed limits and the stored fan curves (experimental). Ada (AD10x) images get power limits,
 clock offset ranges, slot power, fans and, where they apply, voltage ceilings and VMIN (experimental).
 Ampere (GA10x) images get power limits, power connector channels, clock offset ranges, slot power, fans
-and, where it applies, VMIN (experimental).
+and, where it applies, VMIN (experimental). Turing (TU10x/TU11x) images get the board power limits only
+(experimental, not tested on any Turing card; see the
+[Turing tester guide](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/turing.md)).
 
 **Not affiliated with, endorsed by or sponsored by NVIDIA Corporation.** NVIDIA and
 GeForce are trademarks of NVIDIA Corporation.
@@ -124,7 +126,10 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
   `<name>-loader.bin`. From the command line:
   `nvbios normalize edited.rom payload.bin --representation ada-relocated-v2` (Ada desktop and
   workstation) or `--representation ampere-relocated-v1` (Ampere GA102–GA107). Both are experimental;
-  so far they have been loaded on an RTX 4090 and an RTX A2000.
+  so far they have been loaded on an RTX 4090 and an RTX A2000. Turing payloads fit without relocation:
+  saving an edited Turing copy saves `<name>-loader.bin` (load it first) and `<name>-loader-e0end.bin`
+  (`--representation turing-e0-end-v1`, to try if the first does not apply the edit); neither is tested
+  on hardware.
 - **YOU ARE SOLELY RESPONSIBLE FOR WHAT YOU DO WITH THIS SOFTWARE.** Every modification
   you make, and any damage, malfunction, data loss or other harm to your hardware,
   your system or anything else that results from using this software or the images it
@@ -134,8 +139,8 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
   of any kind for any of it. If you do not accept this, do not use the software.
 - Fields marked *experimental* have not been tested on hardware. Raising power,
   current or voltage limits can damage hardware.
-- Recognized images: GB20x object-directory v3 (GB202, GB203, GB205, GB206). Ada (AD10x)
-  and Ampere (GA10x) images are supported with the same restriction as any other
+- Recognized images: GB20x object-directory v3 (GB202, GB203, GB205, GB206). Ada (AD10x),
+  Ampere (GA10x) and Turing (TU10x/TU11x) images are supported with the same restriction as any other
   image: they can be inspected, and only the fields validated for them can be edited.
 - Laptops: the RTX 5080 Laptop GPU layout is recognized. On a laptop the platform
   (Dynamic Boost) sets the running power limit, so a raised power ceiling may not raise

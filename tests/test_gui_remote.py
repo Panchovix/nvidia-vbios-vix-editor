@@ -118,6 +118,19 @@ class RemoteEditorTests(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(),self.original)
         self.assertEqual(existing.read_bytes(),b'KEEP')
 
+    def test_turing_copy_reports_both_loader_files(self):
+        from test_turing import synthetic_turing
+        self.source.write_bytes(synthetic_turing());self.open_path()
+        self.window.entries['power_max_w'].set_text('220')
+        self.until(lambda: not self.window.busy and not self.window.verifying and not self.window.dirty)
+        dest=Path(self.tmp.name)/'turing.rom'
+        picker=self.window._choose_path(True)
+        picker.path_entry.set_text(str(dest));picker.accept_button.emit('clicked')
+        self.until(lambda:not self.window.busy and dest.exists())
+        text=self.window.status.get_text()
+        self.assertIn(self.window.text('saved_loader',output=str(dest.with_name('turing-loader.bin'))),text)
+        self.assertIn(self.window.text('saved_loader_alternative',output=str(dest.with_name('turing-loader-e0end.bin'))),text)
+
     def test_stale_save_picker_cannot_save_after_reset(self):
         self.open_path();self.stage();dest=Path(self.tmp.name)/'stale.rom'
         picker=self.window._choose_path(True);self.window._reset()

@@ -14,7 +14,7 @@ from .. import __version__
 from .arguments import parse_arguments, resolve_file_dialog, resolve_theme
 from .i18n import Messages
 from .file_pickers import show_builtin_picker, show_path_dialog
-from .controller import (Controller, controls, open_document, reset_document,
+from .controller import (Controller, controls, loader_messages, open_document, reset_document,
                          save_document, stage_document)
 from .presentation import (classify_number, display_units, field_label, field_section, number, opt_in_field_keys,
                            parse_number,
@@ -394,11 +394,10 @@ class EditorWindow(Gtk.ApplicationWindow):
             else:
                 self._refresh()
             if document.last_saved:
-                saved, loader = document.last_saved, document.last_saved.get('loader')
+                saved = document.last_saved
                 text = self.text('saved', output=saved['output'], manifest=saved['manifest'])
-                if loader:
-                    text += '\n' + (self.text('saved_loader', output=loader['output']) if 'output' in loader
-                                     else self.text('saved_loader_failed', reason=loader['error']))
+                for key, arguments in loader_messages(saved):
+                    text += '\n' + self.text(key, **arguments)
                 self.status.set_text(text)
             elif document.proposal:
                 self.status.set_text(self.text('verified'))

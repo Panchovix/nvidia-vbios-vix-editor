@@ -93,6 +93,17 @@ def scan_images(blob):
     return pci, extended, issues
 
 
+def npde(blob, image):
+    """Offset of the NPDE after an image's NPDS (16-byte aligned) when it holds a last-image byte, else None."""
+    header = image['npds']
+    at = (header + struct.unpack_from('<H', blob, header + 0x0A)[0] + 0xF) & ~0xF
+    if (blob[at:at + 4] != b'NPDE' or at + 0x0B > image['end'] or
+            struct.unpack_from('<H', blob, at + 4)[0] not in (0x100, 0x101) or
+            struct.unpack_from('<H', blob, at + 6)[0] < 0x0B):
+        return None
+    return at
+
+
 def parse_bit(blob, legacy):
     start, end = legacy['start'], legacy['end']
     at, candidates = start, []
@@ -131,6 +142,12 @@ def image_chains(blob, pci, extended, *, family=None):
     EFI image), and NPDS images stamped with the GA102 base ID 0x2200, which the
     GA102, GA104 and GA106 images all carry. Every data image of a chain must
     carry the same NPDS ID.
+
+    Turing (family 'turing') accepts the same EFI-less chain. Its last data image
+    is not flagged last (neither NPDS byte 0x15 nor NPDE byte 0x0a): a type-0x70
+    NPDS image (NBSI signature in its body) flagged last, stamped with no device
+    (0000) or this chip, ends the chain after the data images. No table is read
+    from it.
     """
     by_start = {p['start']: p for p in pci + extended}
     chains = []
@@ -138,7 +155,7 @@ def image_chains(blob, pci, extended, *, family=None):
         if legacy['vendor'] != 0x10DE or legacy['type'] != 0:
             continue
         efi = by_start.get(legacy['end'])
-        if family == 'ampere' and legacy['last'] and efi and efi['type'] == 0xE0 and 'npds' in efi:
+        if family in ('ampere', 'turing') and legacy['last'] and efi and efi['type'] == 0xE0 and 'npds' in efi:
             images, cursor = [legacy], legacy['end']
         else:
             if not efi or efi['type'] != 3 or 'pcir' not in efi:
@@ -161,6 +178,15 @@ def image_chains(blob, pci, extended, *, family=None):
             cursor = image['end']
             if image['last']:
                 break
+        tail = by_start.get(cursor)
+        if (family == 'turing' and len(images) > first and not images[-1]['last'] and tail and
+                tail['type'] == 0x70 and 'npds' in tail and tail['vendor'] == 0x10DE and tail['last'] and
+                (tail['device'] == 0 or tail['device'] & 0xFF80 in chip)):
+            # A loader that reads the NPDE byte would end the chain at a data image it flags last:
+            # such a chain is refused instead of being read two ways.
+            at = npde(blob, images[-1])
+            if at is None or not blob[at + 0x0A] & 0x80:
+                images.append(tail)
         if len(images) == first or not images[-1]['last']:
             raise FormatError('NPDS data chain lacks a complete last image')
         chains.append(images)

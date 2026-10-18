@@ -6,12 +6,20 @@ from typing import Any
 
 from nvidia_vbios import editor
 from nvidia_vbios.families import GA100_DEVICE_IDS, architecture
+from nvidia_vbios.rom.structure import scan_images
 
 # Ampere and Ada full ROMs usually hold two banks or more than the 512 KiB their GSP firmware
 # reads, so saving such a copy also saves the relocated payload the VBIOS loaders take next to
 # it. Ada uses v2: ada-relocated-v1 accepts only the unedited reviewed archive, and on that
 # layout v2 writes the same bytes. GPUs outside the loaders' scope (GA100, editor-only IDs) get none.
 LOADER_REPRESENTATIONS = {'ampere': 'ampere-relocated-v1', 'ada': 'ada-relocated-v2'}
+# Turing gets two experimental payloads: the single bank as it is, and the same bank ending at
+# its last data image (turing-e0-end-v1), to try when the first one does not apply the edit.
+TURING_LOADERS = (('-loader.bin', None), ('-loader-e0end.bin', 'turing-e0-end-v1'))
+# The loaders refuse a payload that sends more than this from its legacy image: the GSP receiver
+# capacity of TU10x/TU11x, GA10x and AD10x, the GPUs that get loader files. The Ampere and Ada
+# relocations already fit it; a Turing file that keeps flash bytes after its chain may not.
+LOADER_GSP_LIMIT = 512 * 1024
 
 
 @dataclass(frozen=True)
@@ -85,37 +93,43 @@ def reset_document(document):
     return replace(document, changes={}, proposal=None, last_saved=None)
 
 
-def loader_representation(document):
-    """The relocation the VBIOS loaders need for this document's GPU, or None."""
+def loader_outputs(document):
+    """(file suffix, representation) of each payload the VBIOS loaders take for this document's GPU."""
     try:
         device = int(document.report['pci_device'].split(':')[1], 16)
     except (KeyError, AttributeError, IndexError, ValueError):
-        return None
+        return ()
     if device in GA100_DEVICE_IDS:
-        return None
-    return LOADER_REPRESENTATIONS.get(architecture(device)['family'])
+        return ()
+    family = architecture(device)['family']
+    if family == 'turing':
+        return TURING_LOADERS
+    return (('-loader.bin', LOADER_REPRESENTATIONS[family]),) if family in LOADER_REPRESENTATIONS else ()
 
 
-def loader_path(path):
+def loader_path(path, suffix='-loader.bin'):
     path = Path(path)
-    return path.with_name(path.stem + '-loader.bin')
+    return path.with_name(path.stem + suffix)
 
 
-def save_loader_payload(document, path):
-    """After saving an Ampere or Ada copy at path: save its loader payload next to it.
+def save_loader_payload(document, path, suffix='-loader.bin', representation=None):
+    """After saving a Turing, Ampere or Ada copy at path: save one loader payload next to it.
 
-    Returns None when the GPU gets no payload, dict(output=, manifest=, representation=)
-    when saved, or dict(error=) when the relocation is refused or the file cannot be
+    Returns dict(output=, manifest=, representation=) when saved, or dict(error=) when the
+    relocation is refused, the payload is too large for the loaders or the file cannot be
     written; the copy itself stays saved either way.
     """
-    representation = loader_representation(document)
-    if representation is None:
-        return None
     image = document.proposal.image
     try:
         payload = editor.normalize(image, representation=representation)
+        sent = len(payload.blob) - min((p['start'] for p in scan_images(payload.blob)[0]
+                                        if p['vendor'] == 0x10DE and p['type'] == 0), default=0)
+        if sent > LOADER_GSP_LIMIT:
+            raise editor.VbiosError('RELOCATION_DOES_NOT_FIT',
+                                    f'this payload sends {sent} bytes from its legacy image; the GSP firmware '
+                                    f'accepts at most {LOADER_GSP_LIMIT} and the loaders refuse it')
         manifest = editor.normalize_manifest(image, payload, representation, path)
-        return dict(editor.save(payload, loader_path(path), manifest=manifest), representation=representation)
+        return dict(editor.save(payload, loader_path(path, suffix), manifest=manifest), representation=representation)
     except editor.VbiosError as exc:
         return dict(error=str(exc))
 
@@ -125,14 +139,31 @@ def save_document(document, path):
         raise editor.VbiosError('INVALID_IMAGE', 'Open a ROM first.')
     if document.proposal is None:
         raise editor.VbiosError('INVALID_CHANGES', 'Preview the copy before saving.')
-    if loader_representation(document) is not None:
+    outputs = loader_outputs(document)
+    for suffix, _ in outputs:
         # A payload left by an earlier copy of the same name would sit next to this copy.
-        target = loader_path(path)
+        target = loader_path(path, suffix)
         for existing in (target, target.with_name(target.name + '.json')):
             if existing.exists() or existing.is_symlink():
                 raise editor.VbiosError('LOADER_OUTPUT_EXISTS', f'refusing to overwrite {existing}')
     saved = editor.save(document.proposal, path)
-    return replace(document, last_saved=dict(saved, loader=save_loader_payload(document, path)))
+    # 'loader' is the payload to load first; 'loaders' lists every saved payload in that order.
+    loaders = [save_loader_payload(document, path, suffix, representation) for suffix, representation in outputs]
+    return replace(document, last_saved=dict(saved, loader=loaders[0] if loaders else None, loaders=loaders))
+
+
+def loader_messages(saved):
+    """(message key, arguments) of the status lines about the loader files saved with a copy.
+
+    The first saved file is the one to load, a second one (Turing) the alternative to try when it
+    does not apply the edit; files that could not be saved are reported after them.
+    """
+    loaders = saved.get('loaders') or ([saved['loader']] if saved.get('loader') else [])
+    files = [loader['output'] for loader in loaders if 'output' in loader]
+    lines = [('saved_loader' if index == 0 else 'saved_loader_alternative', dict(output=output))
+             for index, output in enumerate(files)]
+    failed = 'saved_loader_other_failed' if files else 'saved_loader_failed'
+    return lines + [(failed, dict(reason=loader['error'])) for loader in loaders if 'output' not in loader]
 
 
 class Controller:

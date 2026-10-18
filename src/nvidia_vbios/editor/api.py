@@ -775,6 +775,9 @@ def normalize_manifest(source, result, representation, source_label):
         note = ('Experimental, not hardware validated. Verified only while exporting from the source ROM; '
                 f'inspect and verify {recognized} recognize this payload, so re-run normalize on the source to '
                 're-verify. ' + note)
+    elif representation == 'turing-e0-end-v1':
+        note = ('Experimental, not hardware validated. The chain ends at its last data image: the type-0x70 image '
+                'and the bytes after it are dropped and two last-image flags are set. ' + note)
     return dict(schema_version=1, operation='normalize', representation=representation,
                 source=str(source_label), source_sha256=source.sha256, source_size=len(source.blob),
                 output_sha256=result.sha256, output_size=len(result.blob),

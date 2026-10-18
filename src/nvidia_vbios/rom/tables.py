@@ -1,10 +1,13 @@
-"""PCI/BIT/NPDS table layout of the Ada and Ampere (GA10x) ROMs.
+"""PCI/BIT/NPDS table layout of the Ada, Ampere (GA10x) and Turing ROMs.
 
 Field locations derive from NVIDIA-authored nvgpu bios.h 3x power/1x rail/clock
 prefixes and VFE output equations; every rule below is structural and was
 checked on each parseable image of the Ada corpus and of the 33-image Ampere
 corpus. Ampere shares the Ada table set with narrower rows (power 0x47/0x43,
 rail 0x11, VFE equations of 24 bytes with 8-bit links) and up to two rails.
+Turing (22-image corpus) is read for its board power policy only: its power
+table decodes like Ampere's with 0x42-byte rows; its rail, VFE, clock and fan
+tables use other layouts and are refused.
 No board serial, complete-file size, table-address, or source-hash pins.
 """
 import copy
@@ -90,6 +93,13 @@ CHANNEL_12V = bytes.fromhex('00 1b b7 00 00 10')
 # 8-pin/6-pin ratings, but one connector can span several channels (A6000/A40
 # EPS 8-pin: two; RTX 3090 Ti 16-pin: three).
 AMPERE_CONNECTOR_RAILS = (0xFA, 0xFB, 0xFC, 0xE4)
+# Turing power policy 30/2c/42 and 30/27/42 (the first 0x27 header bytes of 30/2c/42),
+# rows 0..0x41 as Ampere's. The power channel table has 20 entries of 22 bytes; the TGP
+# row reads the board-total channel (class-2 sum on rail 0xf5), which is channel 9 on
+# the desktop TU10x/TU116 images (channel 0 there is another sum) and 0 on TU117 and laptops.
+TURING_POWER_VARIANTS = ((0x30, 0x2C, 0x42), (0x30, 0x27, 0x42))
+# The only table the Turing fields write (power policy, in the second data image).
+TURING_EDITED_TABLES = (('P', 0x2C),)
 
 
 class TableRom:
@@ -131,8 +141,14 @@ class TableRom:
         self.owner(at, 16)
         return at
 
+    def power_only(self, tables):
+        """Turing: only the board power policy is read; other tables give no field and accept no edit."""
+        if self.family == 'turing':
+            raise FormatError(f'Turing {tables} tables are not reviewed; only the board power policy is read')
+
     def owner(self, at, size):
-        owners = [p for p in self.chains[0] if p['start'] <= at and at + size <= p['end']]
+        # The type-0x70 image that ends a Turing chain is never a table owner: no table is read from it.
+        owners = [p for p in self.chains[0] if p['start'] <= at and at + size <= p['end'] and p['type'] != 0x70]
         if len(owners) != 1:
             raise FormatError('table is outside or crosses a primary image boundary')
         return owners[0]
@@ -161,7 +177,7 @@ class TableRom:
         return self._padding
 
     def _checksum_padding(self):
-        for token, offset in ADA_EDITED_TABLES:
+        for token, offset in TURING_EDITED_TABLES if self.family == 'turing' else ADA_EDITED_TABLES:
             try:
                 image = self.owner(self.pointer(token, offset), 1)
             except FormatError:
@@ -175,7 +191,7 @@ class TableRom:
     def power_rows(self):
         at = self.pointer('P', 0x2C)
         version, hs, size, count = self.blob[at:at + 4]
-        variants = AMPERE_POWER_VARIANTS if self.family == 'ampere' else ADA_POWER_VARIANTS
+        variants = {'ampere': AMPERE_POWER_VARIANTS, 'turing': TURING_POWER_VARIANTS}.get(self.family, ADA_POWER_VARIANTS)
         if (version, hs, size) not in variants or not count:
             raise FormatError('unvalidated 3x power table variant')
         self.owner(at, hs + size * count)
@@ -198,9 +214,15 @@ class TableRom:
         if tgp['type'] != 1 or tgp['limit_unit'] != 'mW' or not 0 <= tgp['minimum_raw'] <= tgp['default_raw'] <= tgp['maximum_raw']:
             raise FormatError('TGP policy has unknown identity, units, or inconsistent bounds')
         # The TGP row reads channel 0, the class-2 sum on rail 0xf5 (the total
-        # board power monitor in the reviewed Ada and GB20x GET readings).
+        # board power monitor in the reviewed Ada and GB20x GET readings). On
+        # Turing it reads the only such channel, wherever the table puts it.
         channel = self.blob[tgp['offset'] + 1]
-        if channel != 0 or self.power_channel(0)[:2] != b'\x02\xf5':
+        if self.family == 'turing':
+            count = self.blob[self.pointer('P', 0x3C) + 3]
+            total = [i for i in range(count) if self.power_channel(i)[:2] == b'\x02\xf5'] == [channel]
+        else:
+            total = channel == 0 and self.power_channel(0)[:2] == b'\x02\xf5'
+        if not total:
             raise FormatError('TGP policy does not read the total board power channel (class 2, rail 0xf5)')
         return rows
 
@@ -208,12 +230,13 @@ class TableRom:
         """One entry of the power channel table (P+0x3c, v0x20, 32 entries).
 
         Ada entries are 26 bytes; Ampere entries are 22 or 26 bytes (the last four zero).
+        Turing has 20 entries of 22 bytes.
         """
         at = self.pointer('P', 0x3C)
         version, hs, size, count = self.blob[at:at + 4]
-        sizes = (0x16, 0x1A) if self.family == 'ampere' else (0x1A,)
-        if version != 0x20 or hs not in (6, 0x0A) or size not in sizes or count != 0x20:
-            raise FormatError('unvalidated Ada power channel table')
+        sizes, entries = {'ampere': ((0x16, 0x1A), 0x20), 'turing': ((0x16,), 0x14)}.get(self.family, ((0x1A,), 0x20))
+        if version != 0x20 or hs not in (6, 0x0A) or size not in sizes or count != entries:
+            raise FormatError(f"unvalidated {'Turing' if self.family == 'turing' else 'Ada'} power channel table")
         self.owner(at, hs + size * count)
         if not 0 <= index < count:
             raise FormatError('power channel index is outside the table')
@@ -360,6 +383,7 @@ class TableRom:
         return self.power_profiles()
 
     def clock_ranges(self):
+        self.power_only('clock')
         at = self.pointer('C', 8)
         b = self.blob
         if self.family == 'ampere':
@@ -450,6 +474,7 @@ class TableRom:
         0; XBAR, DRAM and DISP on rail 1). The Ampere VFE count is u8 header
         byte 5. Every rail keeps the selector order of _ada_rail.
         """
+        self.power_only('rail and VFE')
         if self.family != 'ampere':
             row, vfe, base, count, selectors = self._ada_rail()
             return [(0, 'NVVDD', row, selectors)], vfe, base, count
@@ -687,6 +712,7 @@ class TableRom:
         store further curves, listed in extra_curves. Ampere boards that stop
         the fan store 0 % and 0 RPM as the row minimum.
         """
+        self.power_only('fan')
         b = self.blob
         try:
             at = self.pointer('P', 0x58)

@@ -73,10 +73,12 @@ def parser():
     p = commands.add_parser('normalize', help='export a validated single-chain driver payload')
     p.add_argument('input', type=Path)
     p.add_argument('output', type=Path)
-    p.add_argument('--representation', choices=('ada-relocated-v1', 'ada-relocated-v2', 'ampere-relocated-v1'),
+    p.add_argument('--representation', choices=('ada-relocated-v1', 'ada-relocated-v2', 'ampere-relocated-v1',
+                                                'turing-e0-end-v1'),
                    help='Ada: relocate tables so the loaded image fits the 512 KiB GSP limit; v1: reviewed '
                         'layouts only; v2: experimental, layout derived from the ROM, refused unless verified. '
-                        'ampere-relocated-v1: experimental GA102-GA107 export without the EFI image')
+                        'ampere-relocated-v1: experimental GA102-GA107 export without the EFI image. '
+                        'turing-e0-end-v1: experimental Turing export whose chain ends at its last data image')
     p.add_argument('--json', action='store_true')
     commands.add_parser('gui', help='open the standalone graphical VBIOS editor', add_help=False)
     return root
