@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Fan zero RPM (experimental, `fan_zero_rpm`, GB20x).** Bits 1|2 of policy entry byte `0x32` gate whether
+  the fans may stand still at low temperature: the Windows driver decodes the last byte of every 51-byte
+  fan policy entry bit by bit and keeps bits 1 and 2 as two separate booleans. On the reviewed corpus both
+  bits are set on every enabled policy entry of images whose owners report the fans standing still at idle
+  (0x17/0x07) and clear on the image whose card keeps spinning (0x11/0x01). The field writes both bits to
+  every enabled policy entry at once — the only form the images store — and preserves each entry's other
+  flag bits; the editor window renders it as a switch. The host driver forwards the decoded entry to
+  GSP-RM, where the fan logic sits, so the field is experimental and not hardware-tested.
+
 ## 0.1.18
 
 - **Turing (experimental, not tested on Turing hardware).** TU102, TU104, TU106, TU116 and TU117 images

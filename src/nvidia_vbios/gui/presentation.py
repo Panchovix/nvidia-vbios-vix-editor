@@ -12,6 +12,7 @@ FIELD_KEYS = frozenset(('power_min_w', 'power_max_w', 'nvvdd_rel_max_mv', 'msvdd
                         'memory_offset_min_mhz', 'dram_min_table_mhz',
                         'input_current_policy7_limit_ma', 'slot_power_rated_w', 'slot_power_max_w',
                         'board_fixed_rated_w', 'fan_pwm_frequency_hz', 'fan_channels', 'nvvdd_rel_alt_follow_ov',
+                        'fan_zero_rpm',
                         'slot_current_threshold_rated_ma', 'slot_current_threshold_max_ma',
                         'nvvdd_power_threshold_rated_w', 'nvvdd_power_threshold_max_w'))
 # Ampere external 12 V connector-channel power policies, numbered in power-row order
@@ -130,13 +131,13 @@ SECTIONS = (
                  'nvvdd_output_ocp_rated_ma', 'nvvdd_output_ocp_max_ma',
                  'msvdd_output_ocp_rated_ma', 'msvdd_output_ocp_max_ma', 'slot_current_threshold_rated_ma',
                  'slot_current_threshold_max_ma')),
-    # Each channel's limits, then its curve points; then the extra curves.
+    # Each channel's limits, then its curve points; then the extra curves; then zero RPM.
     ('fans', ('fan_channels', 'fan_pwm_frequency_hz') +
              tuple(key for n in range(1, 5) for key in
                    tuple(f'fan_{n}_{side}_{unit}' for unit in ('rpm', 'pct') for side in ('max', 'min')) +
                    tuple(f'fan_{n}_curve_{k}_{unit}' for k in (1, 2, 3) for unit in FAN_CURVE_UNITS)) +
              tuple(f'fan_extra_{m}_curve_{k}_{unit}' for m in range(1, 8) for k in (1, 2, 3)
-                   for unit in FAN_CURVE_UNITS)),
+                   for unit in FAN_CURVE_UNITS) + ('fan_zero_rpm',)),
 )
 # Windows tools such as MSI Afterburner show the stored table value: half of
 # the NVML/Linux memory offset, the same value for the core (observed on hardware).

@@ -13,12 +13,12 @@ import time
 from ..rom import BiosImage, VbiosError
 from ..rom.blackwell import BlackwellRom
 from ..rom.image import backend, inspect_image
-from .registry import (registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, connector_power,
-                       evaluated_vmin, rail_follow_ov, VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS)
+from .registry import (registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
+                       connector_power, evaluated_vmin, rail_follow_ov, VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS)
 
 # Reviewed resolvers whose bindings are canonical for range and joint checks.
-REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresholds, fans, connector_power,
-                      evaluated_vmin, rail_follow_ov)
+REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
+                      connector_power, evaluated_vmin, rail_follow_ov)
 # Fields that change otherwise preserved rail bytes, each only through its reviewed binding:
 # the evaluated VMIN equation and the XOC-style NVVDD REL/ALT selectors.
 RAIL_EXCEPTIONS = (VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS)

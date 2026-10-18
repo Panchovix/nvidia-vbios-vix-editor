@@ -15,6 +15,7 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'section.fans': 'Fans',
  'field.fan_pwm_frequency_hz': 'Fan PWM frequency (experimental)',
  'field.fan_channels': 'Fan channels (experimental)',
+ 'field.fan_zero_rpm': 'Fan zero RPM (experimental)',
  'reason.fan_layout': "This table stores no other fan channel layout, or a stored channel's limits do not hold the "
                        'extra fan curves.',
  'field.fan_min_rpm': 'Fan {fan} minimum speed (experimental)',

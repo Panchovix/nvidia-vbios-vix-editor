@@ -364,11 +364,11 @@ class PresentationNumberTests(unittest.TestCase):
                           'Curva adicional 2, punto 3: temperatura (experimental)',
                           'Curva adicional 2, punto 1: velocidad (experimental)',
                           'Curva adicional 1, punto 2: nivel (avanzado, experimental)'])
-        # Channels and PWM, then each channel's limits and curve points, then the extra curves.
+        # Channels and PWM, then each channel's limits and curve points, then the extra curves, then zero RPM.
         limits = lambda n: [f'fan_{n}_{side}_{unit}' for unit in ('rpm', 'pct') for side in ('max', 'min')]
         points = lambda prefix: [f'{prefix}_curve_{k}_{unit}' for k in (1, 2, 3) for unit in ('temp_c', 'rpm', 'pct')]
         expected = (['fan_channels', 'fan_pwm_frequency_hz'] + limits(1) + points('fan_1') + limits(2) + points('fan_2') +
-                    points('fan_extra_1') + points('fan_extra_2'))
+                    points('fan_extra_1') + points('fan_extra_2') + ['fan_zero_rpm'])
         self.assertEqual([f['key'] for f in section_order(fields.values()) if f['key'].startswith('fan_')], expected)
         self.assertTrue(all(field_section(fields[k]) == 'fans' for k in expected))
         self.assertEqual(opt_in_field_keys({'fields': list(fields.values())}) & set(expected),

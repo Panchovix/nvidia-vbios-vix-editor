@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from decimal import Decimal
 import struct
-from ..rom.blackwell import BlackwellRom
+from ..rom.blackwell import BlackwellRom, FAN_ZERO_RPM_BITS
 from ..rom.errors import VbiosError, FormatError
 from ..rom.image import metadata
 from ..rom.tables import SOURCE, TableRom
@@ -1652,6 +1652,65 @@ def fans(image, parser):
                          'band (21-28 kHz); not hardware-tested' if in_band else
                          'active fan rows disagree or hold a value outside the reviewed shape')] + fan_limits(
         writable, parser, table, evidence) + fan_curves(writable, parser, table, evidence)
+
+
+FAN_ZERO_RPM_DRIVER_EVIDENCE = {
+    'kind': 'static-driver-analysis',
+    'source': 'Windows driver nvlddmkm.sys 617.42, GB20x fan policy entry parser',
+    'observation': 'every 51-byte fan policy entry is read with schema 2b12d1b (2 bytes, 12 dwords, 1 byte); the '
+                   'last byte (+0x32) is decoded bit by bit and bits 1 and 2 become two separate booleans at '
+                   'driver structure offsets +0x80 and +0x81, not an enum value'}
+FAN_ZERO_RPM_CORPUS_EVIDENCE = {
+    'kind': 'idle-fan-behavior-correlation',
+    'source': 'owner reports and idle captures on the reviewed GB20x/GB203 image corpus',
+    'observation': 'bits 1|2 of policy byte 0x32 are set on every enabled entry of every image whose owners '
+                   'report the fans standing still at idle (0x17/0x07 on the Palit GameRock RTX 5090, the Asus '
+                   'TUF RTX 5090 and the Asus TUF RTX 5070 Ti) and clear on every entry of the image whose card '
+                   'keeps spinning at idle (0x11/0x01 on the HP Omen RTX 5090: about 1100 RPM at idle, NVAPI fan '
+                   'minimum 30 %); no reviewed entry of the corpus is an exception'}
+
+
+@registry.register
+def fan_zero_rpm(image, parser):
+    """GB20x: the fans may stand still at low temperature (bits 1|2 of the policy entry flag byte).
+
+    Written to every enabled policy entry at once (the channel rows and the enabled curves past them),
+    the only form real images store; each entry's other flag bits are preserved. The host driver only
+    forwards the decoded entry to GSP-RM — the fan logic itself sits in the GSP binary — so the claim
+    rests on the offline correlation and stays experimental and not hardware-tested.
+    """
+    if not isinstance(parser, BlackwellRom):
+        return []
+    table = parser.fan_coolers()
+    if table is None:
+        return []
+    entries = [r for r in table['rows'] if r['active']] + list(table['extra_curves'])
+    if not entries:
+        return []
+    offsets = [e['flag_offset'] for e in entries]
+    flag_bytes = [parser.blob[at] for at in offsets]
+    states = {(b & FAN_ZERO_RPM_BITS) == FAN_ZERO_RPM_BITS for b in flag_bytes}
+    state = None if len(states) > 1 else (1 if states.pop() else 0)
+    writable = can_edit(image, parser)
+    editable = state is not None and writable
+    offsets, layout = chain_copies(parser, offsets, 1, (
+        (0, tuple(bytes([b & ~FAN_ZERO_RPM_BITS]) for b in flag_bytes)),
+        (1, tuple(bytes([b | FAN_ZERO_RPM_BITS]) for b in flag_bytes))))
+    return [field('fan_zero_rpm', 'Fan zero RPM (fans may stand still at low temperature)', 'flag', state,
+                  0 if editable else None, 1 if editable else None, editable,
+                  [dict(FAN_ZERO_RPM_DRIVER_EVIDENCE), dict(FAN_ZERO_RPM_CORPUS_EVIDENCE)],
+                  offsets=offsets if editable else (), encoding='<B' if editable else '', scale=1,
+                  layout=layout if editable else (),
+                  writable_status=None if editable else 'unsupported', experimental=True,
+                  value_semantics='stored-fan-zero-rpm', fan_policy='flag-byte',
+                  fan_entries=[e['index'] for e in entries],
+                  reason='read-only: the enabled fan policy entries disagree about bits 1|2 of flag byte 0x32'
+                         if state is None else
+                         'experimental: bits 1|2 of byte 0x32 of every enabled fan policy entry (the channel '
+                         'rows and the enabled curves past them, as on every reviewed image); 1 lets the fans '
+                         'stand still at low temperature, 0 keeps them turning; each entry keeps its other flag '
+                         'bits; the host driver only forwards the decoded entry to GSP-RM, whose fan logic is '
+                         'not proven offline: not hardware-tested')]
 
 
 @registry.register

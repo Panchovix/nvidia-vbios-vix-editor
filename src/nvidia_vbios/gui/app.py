@@ -119,6 +119,16 @@ def texts(widget):
     return found
 
 
+class FlagSwitch(Gtk.Switch):
+    """Gtk.Switch speaking the text surface of the field entries: a flag field stores 0 and 1."""
+
+    def get_text(self):
+        return '1' if self.get_active() else '0'
+
+    def set_text(self, text):
+        self.set_active(str(text).strip() == '1')
+
+
 class EditorWindow(Gtk.ApplicationWindow):
     def __init__(self, application, initial_path=None, language='en', file_dialog='auto', theme='auto'):
         self.text = Messages(language)
@@ -733,17 +743,23 @@ class EditorWindow(Gtk.ApplicationWindow):
             sub.append(self.text('windows_equivalent', value=hint))
         left.append(label(' · '.join(sub), wrap=True, css=('vb-note',)))
         top.append(left)
-        entry = Gtk.Entry()
-        entry.set_width_chars(9)
-        entry.set_max_width_chars(14)
-        entry.set_alignment(1.0)
-        entry.set_valign(Gtk.Align.CENTER)
-        entry.add_css_class('vb-entry')
-        entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
+        if field['units'] == 'flag':
+            # A 0/1 flag reads better as a switch than as a number entry.
+            entry = FlagSwitch()
+            entry.set_valign(Gtk.Align.CENTER)
+            entry.set_halign(Gtk.Align.CENTER)
+        else:
+            entry = Gtk.Entry()
+            entry.set_width_chars(9)
+            entry.set_max_width_chars(14)
+            entry.set_alignment(1.0)
+            entry.set_valign(Gtk.Align.CENTER)
+            entry.add_css_class('vb-entry')
+            entry.set_input_purpose(Gtk.InputPurpose.NUMBER)
         entry.set_text(text)
         entry.update_property([Gtk.AccessibleProperty.LABEL], [field_label(field, self.language)])
-        entry.set_tooltip_text(field['key'] + ' · ' + units)
-        entry.connect('changed', self._input_changed)
+        entry.set_tooltip_text((field['key'] + ' · ' + units).rstrip(' ·'))
+        entry.connect('notify::active' if isinstance(entry, Gtk.Switch) else 'changed', self._input_changed)
         name.set_mnemonic_widget(entry)
         top.append(entry)
         unit = label(units, css=('vb-unit',), selectable=False)

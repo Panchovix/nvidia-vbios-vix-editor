@@ -74,6 +74,7 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `*_vmin_equation_max_mv` | VFE output clamp maximum addressed by the rail INFO VMIN slot (GB20x row+`0x21`, Ada/Ampere row byte 11); **not** the evaluated VMIN | Read-only |
 | `*_vmin_mv` | Evaluated minimum voltage (VMIN): the equation at GB20x row+`0x13`, Ada/Ampere row byte 7 | Experimental, constant (GB20x) or clamp-pinned (Ada/Ampere) equations only, kept below the lowest REL value |
 | `nvvdd_rel_alt_follow_ov` | 1 when the NVVDD REL and ALT selectors (REL alone without ALT) point at the OV equation (XOC-style) | Experimental, opt-in, GB20x; only 0 -> 1 |
+| `fan_zero_rpm` | 1 when the fans may stand still at low temperature: bits 1\|2 of byte `0x32` of every enabled fan policy entry | Experimental, GB20x; toggles every enabled entry at once, the other flag bits are preserved |
 | `*_rel/alt/ov/vmin_selector_index` | Full stored selector index | Read-only |
 | `*_boot_voltage_uv` | Stored boot voltage | Read-only, preserved |
 | `*_output_ocp_max_ma` | Reviewed output-OCP policy maximum (client ceiling) | Reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images |
@@ -791,6 +792,20 @@ change. All fan fields are
 reviewed resolvers: an extension binding cannot unlock them, relax the band or the
 curve bounds, redirect their bytes or substitute a layout. No fan edit has been
 booted on hardware.
+
+Policy entry byte `0x32` is the entry's flag byte. Bits 1 and 2 are two separate
+booleans in the driver's entry structure (the parser reads each 51-byte entry as
+2 bytes + 12 dwords + 1 byte and decodes the last byte bit by bit). Across the
+corpus they are set on every enabled entry of the images whose owners report the
+fans standing still at idle (0x17/0x07 on the Palit GameRock RTX 5090, the Asus
+TUF RTX 5090 and the TUF RTX 5070 Ti) and clear on the only image whose card
+keeps spinning (0x11/0x01 on the HP Omen RTX 5090, about 1100 RPM at idle). The
+field `fan_zero_rpm` writes both bits to every enabled policy entry — the
+channel rows and the enabled curves past them — at once, the only form the
+images store, and preserves the other bits of each flag byte; the window shows
+it as a switch. When the enabled entries disagree the field is read-only. The
+host driver forwards the decoded entry to GSP-RM, where the fan logic sits, so
+the offline correlation is as far as the claim goes.
 
 ## Ada fields
 

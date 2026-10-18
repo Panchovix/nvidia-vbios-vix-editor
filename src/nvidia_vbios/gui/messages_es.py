@@ -15,6 +15,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'section.fans': 'Ventiladores',
  'field.fan_pwm_frequency_hz': 'Frecuencia PWM de los ventiladores (experimental)',
  'field.fan_channels': 'Canales de ventilador (experimental)',
+ 'field.fan_zero_rpm': 'Ventiladores parados en reposo (experimental)',
  'reason.fan_layout': 'Esta tabla no guarda otra disposición de canales de ventilador, o los límites de un canal '
                        'guardado no contienen las curvas adicionales.',
  'field.fan_min_rpm': 'Velocidad mínima del ventilador {fan} (experimental)',

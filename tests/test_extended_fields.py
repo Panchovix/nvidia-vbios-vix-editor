@@ -1410,6 +1410,37 @@ class FanCoolerTests(unittest.TestCase):
                 edit(image, {'fan_pwm_frequency_hz': value})
             self.assertEqual(exc.exception.code, code)
 
+    def test_zero_rpm_flag_covers_enabled_entries_and_round_trips(self):
+        image = from_bytes(synthetic_blackwell(fans=True))
+        field = descriptors(image)['fan_zero_rpm']
+        # Channels 0/1 and the enabled curves 4/5 past the cooler rows; every flag byte holds 0.
+        self.assertEqual((field['current'], field['units'], field['editable'], field['experimental'],
+                          field['fan_entries']), (0, 'flag', True, True, [0, 1, 4, 5]))
+        self.assertEqual([e['kind'] for e in field['evidence']],
+                         ['static-driver-analysis', 'idle-fan-behavior-correlation'])
+        t = self.table(image.blob)
+        offsets = ([r['flag_offset'] for r in t['rows'] if r['active']] +
+                   [c['flag_offset'] for c in t['extra_curves']])
+        on = edit(image, {'fan_zero_rpm': 1})
+        self.assertTrue(on.manifest['integrity']['valid'])
+        changed_bytes_within(self, image, on, offsets, width=1)
+        self.assertEqual([on.blob[at] for at in offsets], [0x06] * len(offsets))
+        self.assertEqual([r['zero_rpm_allowed'] for r in self.table(on.blob)['rows']][:2], [True, True])
+        self.assertEqual(edit(on.image, {'fan_zero_rpm': 0}).blob, image.blob)
+        for value in (2, -1):
+            with self.subTest(value=value), self.assertRaises(VbiosError) as exc:
+                edit(image, {'fan_zero_rpm': value})
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_channels': 3, 'fan_zero_rpm': 1})
+        self.assertEqual(exc.exception.code, 'SEPARATE_EDIT_REQUIRED')
+
+    def test_zero_rpm_read_only_when_enabled_entries_disagree(self):
+        blob = bytearray(synthetic_blackwell(fans=True))
+        blob[self.table(bytes(blob))['rows'][0]['flag_offset']] = 0x07  # only channel 0 may stop
+        field = descriptors(from_bytes(bytes(blob)))['fan_zero_rpm']
+        self.assertEqual((field['current'], field['editable']), (None, False))
+
     def test_channel_count_writes_all_three_tables_and_round_trips(self):
         image = from_bytes(synthetic_blackwell(fans=True))
         t = self.table(image.blob)
