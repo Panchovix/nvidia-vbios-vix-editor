@@ -133,6 +133,10 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
   saving an edited Turing copy saves `<name>-loader.bin` (load it first) and `<name>-loader-e0end.bin`
   (`--representation turing-e0-end-v1`, to try if the first does not apply the edit); both have loaded
   on an RTX 2080 Ti through the Windows loader.
+- **Driver versions.** The loaders have only been tested with NVIDIA 615.x (R615) drivers on Linux and
+  616.x and 617.x drivers on Windows. A newer driver can change or remove the override path, so check that
+  the override still applies after every driver update (Linux: `nvbios system status` and an edited value in
+  `nvidia-smi`; Windows: **Verify**).
 - **YOU ARE SOLELY RESPONSIBLE FOR WHAT YOU DO WITH THIS SOFTWARE.** Every modification
   you make, and any damage, malfunction, data loss or other harm to your hardware,
   your system or anything else that results from using this software or the images it
