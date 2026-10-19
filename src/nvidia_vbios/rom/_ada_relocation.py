@@ -41,6 +41,7 @@ DEST_TAIL = 0xB200
 DEST_END_MARGIN = 0x80             # minimum distance to the following x86 code
 DEST_GAP = DEST_LOW - REVIEWED['reserved_zero_tables'][1]   # 0x16D7 kept free after the M zero tables
 DEST_ALIGN = 0x100                 # DEST_TAIL = DEST_LOW + R_LOW rounded up (0xB1FD -> 0xB200)
+LAPTOP_TABLE = 0xC8                # P pointer set on every Ada laptop image of the corpus, on no desktop one
 
 # Pointer fields (token, byte offsets). Every other 32-bit value was classified.
 POINTER_FIELDS = {
@@ -65,6 +66,10 @@ class RelocationError(Exception):
 
 class DoesNotFit(RelocationError):
     """The tables that must move do not fit the free legacy area or the receiver."""
+
+
+class LaptopDoesNotFit(DoesNotFit):
+    """DoesNotFit on a laptop image: its laptop-only performance tables are part of what must move."""
 
 
 def u16(b, at):
@@ -376,8 +381,9 @@ def plan_for(bank, pins=None):
     windows = ((dest_low, dest_low + low[1] - low[0]), (dest_tail, dest_tail + tail[1] - tail[0]))
     if not (pins['reserved_zero_tables'][1] < dest_low and windows[0][1] <= dest_tail
             and windows[1][1] <= zero1 - DEST_END_MARGIN):
-        raise DoesNotFit(f'destinations do not fit the zero area: {low[1] - low[0] + tail[1] - tail[0]} bytes '
-                         f'of tables must move, {zero1 - DEST_END_MARGIN - dest_low} free bytes are available')
+        kind = LaptopDoesNotFit if u32(view, tokens['P']['data'] + LAPTOP_TABLE) else DoesNotFit
+        raise kind(f'destinations do not fit the zero area: {low[1] - low[0] + tail[1] - tail[0]} bytes '
+                   f'of tables must move, {zero1 - DEST_END_MARGIN - dest_low} free bytes are available')
     if any(view[zero0:zero1]):
         raise RelocationError('legacy data area is not zero-filled')
     if any(b != 0xFF for b in view[regions['r_tail'][1]:tail[1]]):

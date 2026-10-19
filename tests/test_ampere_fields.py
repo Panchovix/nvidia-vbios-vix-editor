@@ -297,7 +297,7 @@ class AmperePowerTests(unittest.TestCase):
                                   field['threshold_index'], field['policy_class']),
                                  ([9], 5, 0xFA, 1, 'hardware-threshold'))
                 self.assertIn('no Ampere reading', field['reason'])
-                self.assertEqual(field['evidence'][0]['source'], 'Ampere VBIOS corpus, 34 parseable GA102-GA107 images')
+                self.assertEqual(field['evidence'][0]['source'], 'Ampere VBIOS corpus, 35 parseable GA102-GA107 images')
         self.assertNotIn('connector_2_current_threshold_max_ma', fields)
         # The 12 V input row (rail 0xe0) stays the input current field.
         self.assertEqual(fields['input_current_rated_ma']['policy_indices'], [10])

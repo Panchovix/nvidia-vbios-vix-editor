@@ -152,7 +152,8 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
   image: they can be inspected, and only the fields validated for them can be edited.
 - Laptops: the RTX 5080 Laptop GPU layout is recognized. On a laptop the platform
   (Dynamic Boost) sets the running power limit, so a raised power ceiling may not raise
-  it, and the fans belong to the laptop, not to the image.
+  it, and the fans belong to the laptop, not to the image. A lowered power ceiling loaded through the
+  Windows loader on one RTX 3050 6GB Laptop GPU (Ampere); no other laptop is tested.
 
 ## Run from source
 

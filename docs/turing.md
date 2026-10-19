@@ -17,7 +17,8 @@ XOC-style fields**.
 
 - **Board power**: `power_max_w` (ceiling), `power_default_w` (boot default) and `power_min_w` (floor).
 - **Per-input power limits** (desktop and workstation images): `slot_power_max_w` / `slot_power_rated_w` for
-  the PCIe slot, and `connector_N_power_max_w` / `connector_N_power_rated_w` for each external 12 V connector
+  the PCIe slot (on one MSI GTX 1650 the slot row has the board power's class; the same fields edit it), and
+  `connector_N_power_max_w` / `connector_N_power_rated_w` for each external 12 V connector
   sense channel (two on most RTX 20 boards, one on the GTX 1660, 1660 SUPER, 1660 Ti and 1650 SUPER, three on the
   Galax HOF XOC RTX 2080 Ti image, which leaves the third at 143/167 W while the others are at 2000 W).
 - **Current thresholds** (advanced): `slot_current_threshold_*_ma` and `connector_N_current_threshold_*_ma`,
@@ -42,11 +43,14 @@ XOC-style fields**.
 - **Read-only**: the OV voltage limit (1125 mV), the REL/ALT/OV equation and selector fields, the boot voltage
   and the number of fan channels.
 - Not every image has every field: Max-Q and laptop images have no slot or connector rows and no GPU-driven fan;
-  the GTX 1630 and 1650 have no slot or connector rows either; the ASUS RTX 2080 Ti XOC image disables the
+  the GTX 1630 and Gigabyte GTX 1650 images keep their slot and connector rows disabled (class 0), so they
+  show no slot field, while the MSI GTX 1650 image has an active slot row (63 W rated, 74 W maximum); the ASUS
+  RTX 2080 Ti XOC image disables the
   current thresholds and the NVVDD limit, so they have no field there; the Quadro RTX 8000 stores its clock
   ranges as 0..0 (read-only); one RTX 2080 image lacks the checksum padding of the image that holds the clock
-  table, so its clock ranges are read-only; the GTX 1650 SUPER fan tables disagree and give no fan field.
-- The tables are decoded by structure, checked on the 24 Turing images examined (desktop, laptop, Max-Q, Quadro,
+  table, so its clock ranges are read-only; the GTX 1650 SUPER fan tables disagree and give no fan field; the
+  MSI GTX 1650 stores RPM limits of 0, so only its fan percent limits are editable.
+- The tables are decoded by structure, checked on the 25 Turing images examined (desktop, laptop, Max-Q, Quadro,
   TITAN and two XOC images, TU102 to TU117). Edits are written to both banks of the image, and the checksum of
   each touched image is repaired. Bounds keep the stored order (minimum <= rated <= maximum, a fan curve inside
   its limits); they are not hardware-safe limits.
@@ -99,9 +103,14 @@ setup so the module is rebuilt with the Turing chips.
    1. `power_max_w` and `power_default_w` to the target, and both `connector_N_power_rated_w` and
       `connector_N_power_max_w` to about the target divided by the number of connectors (for example 500 W and
       250 W on a two-connector RTX 2080 Ti).
-   2. Keep the slot at its stock values (63 W rated and 74 W maximum on the RTX 2080 Ti). If you change it,
-      keep `slot_power_rated_w` at most 66 W: the slot channel measures only the 12 V pins, which the PCIe CEM
-      rates at 66 W (the 75 W slot figure includes the 3.3 V rail).
+   2. On a card with connectors, keep the slot at its stock values (63 W rated and 74 W maximum on the RTX
+      2080 Ti). On a card powered only by the slot, the slot row limits the whole board, so a higher board power
+      alone may change nothing (on one MSI GTX 1650, 63 W of slot plus the 3.3 V rail held it near 66 W under a
+      75 W and a 90 W board power): raise `slot_power_max_w` and `slot_power_rated_w` together, in the same edit
+      (rated at most the ceiling). The slot channel measures only the 12 V pins, which the PCIe CEM rates at
+      66 W (the 75 W slot figure includes the 3.3 V rail). A rated limit above 66 W permits a draw through the
+      slot beyond the specification, through its edge contacts and the motherboard slot or riser; actual draw
+      depends on the workload and other limits. Slot power edits are not tested on Turing hardware.
    3. If the card still stops at the same power: the advanced connector current thresholds
       (`connector_N_current_threshold_*_ma`), only where the stored value is below the new connector power
       divided by 12 V (250 W / 12 V is about 20.8 A). Never lower them; on the RTX 2080 Ti the stock 22.5 A

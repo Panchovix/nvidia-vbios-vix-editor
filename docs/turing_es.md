@@ -18,10 +18,11 @@ Todos los campos Turing están marcados como experimentales. Los marcados como *
 - **Potencia de la tarjeta**: `power_max_w` (techo), `power_default_w` (valor por defecto al arrancar) y
   `power_min_w` (mínimo).
 - **Límites de potencia por entrada** (imágenes de escritorio y workstation): `slot_power_max_w` /
-  `slot_power_rated_w` para el slot PCIe, y `connector_N_power_max_w` / `connector_N_power_rated_w` para cada
-  canal de medición de un conector externo de 12 V (dos en la mayoría de las RTX 20, uno en las GTX 1660,
-  1660 SUPER, 1660 Ti y 1650 SUPER, tres en la imagen Galax HOF XOC de la RTX 2080 Ti, que deja el tercero en
-  143/167 W mientras los demás están en 2000 W).
+  `slot_power_rated_w` para el slot PCIe (en una GTX 1650 de MSI la fila del slot tiene la clase de la
+  potencia de la tarjeta; los mismos campos la editan), y `connector_N_power_max_w` /
+  `connector_N_power_rated_w` para cada canal de medición de un conector externo de 12 V (dos en la mayoría
+  de las RTX 20, uno en las GTX 1660, 1660 SUPER, 1660 Ti y 1650 SUPER, tres en la imagen Galax HOF XOC de la
+  RTX 2080 Ti, que deja el tercero en 143/167 W mientras los demás están en 2000 W).
 - **Umbrales de corriente** (avanzados): `slot_current_threshold_*_ma` y `connector_N_current_threshold_*_ma`,
   los umbrales de sobrecorriente por hardware del slot y de cada canal de conector.
 - **Límite de corriente de salida NVVDD** (avanzado): `nvvdd_output_ocp_max_ma` / `nvvdd_output_ocp_rated_ma`.
@@ -46,13 +47,15 @@ Todos los campos Turing están marcados como experimentales. Los marcados como *
 - **Solo lectura**: el límite de voltaje OV (1125 mV), los campos de ecuación y de selector de REL/ALT/OV, el
   voltaje de arranque y la cantidad de canales de ventilador.
 - No todas las imágenes tienen todos los campos: las Max-Q y las de portátil no tienen filas de slot ni de
-  conector ni ventilador controlado por la GPU; las GTX 1630 y 1650 tampoco tienen filas de slot ni de
-  conector; la imagen ASUS RTX 2080 Ti XOC desactiva los umbrales de corriente y el límite NVVDD, así que ahí
-  no tienen campo; la Quadro RTX 8000 guarda sus rangos de reloj como 0..0 (solo lectura); una imagen de RTX
-  2080 no tiene el relleno de la suma de comprobación en la imagen que contiene la tabla de relojes, así que
-  sus rangos de reloj son de solo lectura; las tablas de ventilador de la GTX 1650 SUPER no concuerdan y no
-  dan campo de ventilador.
-- Las tablas se decodifican por su estructura, comprobada en las 24 imágenes Turing examinadas (escritorio,
+  conector ni ventilador controlado por la GPU; las imágenes de GTX 1630 y de GTX 1650 de Gigabyte tienen
+  desactivadas sus filas de slot y de conector (clase 0), así que no muestran campos de slot, mientras que
+  la imagen de GTX 1650 de MSI tiene una fila de slot activa (63 W nominal, 74 W máximo); la imagen ASUS RTX
+  2080 Ti XOC desactiva los umbrales de corriente y el límite NVVDD, así que ahí no tienen campo; la Quadro RTX
+  8000 guarda sus rangos de reloj como 0..0 (solo lectura); una imagen de RTX 2080 no tiene el relleno de la
+  suma de comprobación en la imagen que contiene la tabla de relojes, así que sus rangos de reloj son de solo
+  lectura; las tablas de ventilador de la GTX 1650 SUPER no concuerdan y no dan campo de ventilador; la GTX
+  1650 de MSI guarda límites de RPM en 0, así que solo sus límites de ventilador en porcentaje son editables.
+- Las tablas se decodifican por su estructura, comprobada en las 25 imágenes Turing examinadas (escritorio,
   portátil, Max-Q, Quadro, TITAN y dos imágenes XOC, de TU102 a TU117). El cambio se escribe en los dos bancos
   de la imagen y se repara la suma de comprobación de cada imagen tocada. Los límites mantienen el orden guardado
   (mínimo <= nominal <= máximo, una curva de ventilador dentro de sus límites); no son límites seguros para el
@@ -110,9 +113,16 @@ vuelve a ejecutar la configuración para que se recompile el módulo con los chi
    1. `power_max_w` y `power_default_w` al objetivo, y `connector_N_power_rated_w` y
       `connector_N_power_max_w` de cada conector a más o menos el objetivo dividido por la cantidad de
       conectores (por ejemplo 500 W y 250 W en una RTX 2080 Ti de dos conectores).
-   2. Deja el slot en sus valores de fábrica (63 W nominal y 74 W máximo en la RTX 2080 Ti). Si lo cambias,
-      deja `slot_power_rated_w` en 66 W como mucho: el canal del slot mide solo los pines de 12 V, que la
-      especificación PCIe CEM limita a 66 W (los 75 W del slot incluyen la línea de 3,3 V).
+   2. En una tarjeta con conectores, deja el slot en sus valores de fábrica (63 W nominal y 74 W máximo en la
+      RTX 2080 Ti). En una tarjeta que se alimenta solo del slot, la fila del slot limita toda la tarjeta, así
+      que subir solo la potencia de la tarjeta puede no cambiar nada (en una GTX 1650 de MSI, 63 W del slot
+      más la línea de 3,3 V la mantuvieron cerca de 66 W con 75 W y con 90 W de potencia de la tarjeta): sube
+      `slot_power_max_w` y `slot_power_rated_w` juntos, en el mismo cambio (el nominal como mucho igual al
+      techo). El canal del slot mide solo los pines de 12 V, que la especificación PCIe CEM limita a 66 W
+      (los 75 W del slot incluyen la línea de 3,3 V). Un límite nominal superior a 66 W permite tomar del slot
+      más de lo que admite la especificación, a través de sus contactos y del slot de la placa madre o del
+      riser; el consumo real depende de la carga y de otros límites. Los cambios de potencia del slot no están
+      probados en hardware Turing.
    3. Si la tarjeta sigue deteniéndose en la misma potencia: los umbrales de corriente avanzados de los
       conectores (`connector_N_current_threshold_*_ma`), solo donde el valor guardado sea menor que la nueva
       potencia del conector dividida por 12 V (250 W / 12 V son unos 20,8 A). No los bajes nunca; en la

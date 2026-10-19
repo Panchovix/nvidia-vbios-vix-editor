@@ -477,6 +477,25 @@ class TuringInputTests(unittest.TestCase):
         self.assertEqual(refused['connector_1_power_max_w']['policy_indices'], [7])  # channel 5 refused
         self.assertNotIn('connector_2_power_max_w', refused)
 
+    def test_a_class_1_slot_row_is_the_slot_power_policy(self):
+        # The MSI GTX 1650 stores its slot row in the TGP's class (1, mW); another class gives no field.
+        row = self.rows[3]['offset']
+        fields = descriptors(from_bytes(patched(self.image.blob, row, b'\x01')))
+        for key, value in (('slot_power_max_w', 74), ('slot_power_rated_w', 63)):
+            with self.subTest(key=key):
+                self.assertTrue(fields[key]['editable'])
+                self.assertEqual((fields[key]['current'], fields[key]['policy_indices']), (value, [3]))
+                self.assertIn('class 1 mW row (the TGP class)', fields[key]['evidence'][0]['format'])
+                self.assertIn('a class-1 policy like the TGP', fields[key]['reason'])
+        self.assertNotIn('class-1', descriptors(self.image)['slot_power_rated_w']['reason'])
+        self.assertNotIn('slot_power_max_w', descriptors(from_bytes(patched(self.image.blob, row, b'\x02'))))
+        from test_rom_formats import synthetic_rom
+        ampere = synthetic_rom(family='ampere', copies=2, policies=True)
+        at = backend(from_bytes(ampere)).ampere_policies('slot_power')[0]['offset']
+        self.assertIn('slot_power_max_w', descriptors(from_bytes(ampere)))
+        class_1 = patched(ampere, at, bytes([ampere[at] & 0xF0 | 1]))
+        self.assertNotIn('slot_power_max_w', descriptors(from_bytes(class_1)))
+
     def test_a_slot_channel_with_a_provider_byte_or_another_rail_is_refused(self):
         # Provider byte; the laptop slot rail 0xf1; a current correction offset (connector channels only).
         for at, data in ((15, b'\x01'), (1, b'\xf1'), (10, struct.pack('<I', 200))):

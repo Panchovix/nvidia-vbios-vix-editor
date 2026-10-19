@@ -161,7 +161,7 @@ it is read-only and labelled as such:
   clamp minimum and maximum in every chain. Corpus: 8 of the 21 parseable Ada images
   (RTX 2000 Ada, RTX 4090 95.02.18, both 4080 images, 4080 SUPER, 4070, 4070 SUPER, RTX 4500 Ada;
   the newer RTX 4090 image chains another equation into it, and a compare REL on
-  fused inputs gives no bound on the 4070 Ti SUPER) and 21 of the 34 Ampere images,
+  fused inputs gives no bound on the 4070 Ti SUPER) and 21 of the 35 Ampere images,
   both rails on nine two-rail GA102 images. The A40 stores 668088.3125 uV, which an
   edit in whole uV could not write back, so it stays read-only.
 
@@ -704,7 +704,8 @@ power policy table keeps the v0x40 format but places its rows differently:
 - **Fans.** The cooler list is empty and every per-channel enable is 0: the laptop's
   fans belong to the system, so no fan field is offered.
 
-There is no saved GET for a notebook, and no edited value has been booted on one.
+There is no saved GET for a notebook, and no edited value has been booted on a
+Blackwell one (one Ampere laptop has, see Ampere fields).
 The power and OCP descriptors carry `structural-row-comparison` evidence with
 `runtime_get: false`.
 
@@ -1009,12 +1010,14 @@ channel could not be raised back to two).
 ## Ampere fields
 
 Ampere GA102-GA107 images use the Ada table set with narrower rows. Every rule
-below is structural and was checked on the 34 images of the Ampere corpus (desktop,
+below is structural and was checked on the 35 images of the Ampere corpus (desktop,
 workstation, datacenter and laptop); all are recognized. No Ampere board runs on
 the maintainers' Linux machine, so **every Ampere field is experimental** and none
 has a runtime reading there. An RTX A2000 took an edited power floor through the
-Windows loader. Writes go to every duplicate chain and repair the additive checksum of
-each touched image.
+Windows loader. An RTX 3050 6GB Laptop GPU (75 W HP BIOS) took a 70 W ceiling and a
+55 W boot default the same way, and the driver reported a 70 W limit; a raised
+ceiling is not tested on a laptop. Writes go to every duplicate chain and repair the
+additive checksum of each touched image.
 
 **Image chains.** Laptop and headless dumps (A40, RTX 3070/3060/3050 Ti/3050
 Laptop) have no EFI image: the legacy image is marked last and the data images
@@ -1075,9 +1078,9 @@ boards and the laptop rows.
 (GA102 except the RTX 3090 Ti: NVVDD and MSVDD, the second name inferred from the
 clock domains). Rows are the first 17 bytes of the Ada row, with the same
 selectors and order rule on every rail. VFE equations are 24 bytes with a u8 count
-(header byte 5) and u8 links. REL and OV are `constant` equations on all 34 images
+(header byte 5) and u8 links. REL and OV are `constant` equations on all 35 images
 (REL 900-1087.5 mV, OV 1100 mV); ALT is constant (1100 mV) on the 18 desktop
-GeForce images and absent (selector 0xff) on the 16 workstation and laptop images.
+GeForce images and absent (selector 0xff) on the 17 workstation and laptop images.
 Every voltage field is therefore
 read-only: a ceiling-only edit would not change the voltage, and writing the
 constant itself is an unreviewed kind of edit.
@@ -1107,14 +1110,14 @@ points, which stay editable. The GA103 3060 Ti, A4000 and A2000 curves top out b
 
 **Load path.** GA102-GA107 load `gsp_ga10x.bin`, the same GSP firmware as Ada, which
 loads at most 512 KiB counted from the legacy image; a larger payload is ignored and
-the stock VBIOS boots. The current normalizer accepts 33 of the 34 images; their
+the stock VBIOS boots. The current normalizer accepts 34 of the 35 images; their
 payloads keep the whole bank and exceed that capacity. The examined A40 dump is already refused
 because its primary-bank padding is unrecognized. The chain itself (legacy to last data image) fits only on the A40 and the
-four EFI-less laptops (20-76 KiB too large elsewhere) and would fit on all 34
+four EFI-less laptops (20-76 KiB too large elsewhere) and would fit on all 35
 without the EFI image. The experimental `ampere-relocated-v1` representation
 exports exactly that: legacy and E0 images unchanged, EFI and trailing bank bytes
-dropped, refused unless every check passes. 33 images verify; none is tested on
-hardware. The loader rejects GA10x and AD10x
+dropped, refused unless every check passes. 34 images verify; on hardware, an RTX
+A2000 and one RTX 3050 6GB Laptop GPU loaded it. The loader rejects GA10x and AD10x
 payloads above 512 KiB from the selected legacy image, in both profile
 preparation and direct enrollment/reconciliation validation, so plain
 `normalize` output of an Ampere ROM is not loadable. GA100 uses different GSP
@@ -1124,7 +1127,7 @@ firmware whose limit is unknown; this check does not infer it.
 
 Turing TU102-TU117 images (BIOS 90.xx) are recognized for their board power, per-input
 power and current rows, voltage minimum, clock offset ranges and fans. The rules below
-were checked on the 24 images of the Turing corpus (desktop, laptop, Max-Q, Quadro,
+were checked on the 25 images of the Turing corpus (desktop, laptop, Max-Q, Quadro,
 TITAN and two XOC images). One RTX 2080 Ti (ROG Matrix BIOS) ran edited images through
 the Windows loader (driver 617.70, GSP 615.78.08): `nvidia-smi` reported the edited TGP
 (500 W default and maximum), but the card stopped near 300 W under load until the
@@ -1161,15 +1164,16 @@ connectors, as on Ampere; a connector threshold field needs index 1 or 2. The Am
 
 | Field | Row | Notes |
 | --- | --- | --- |
-| `slot_power_rated_w`, `_max_w` | 3: class 4 mW on the slot channel 3 (byte-identical to the Ada one) | 16 desktop and workstation images; 63-64 W rated, 63-76 W maximum on the stock images |
+| `slot_power_rated_w`, `_max_w` | 3: class 4 mW on the slot channel 3 (byte-identical to the Ada one); class 1 mW, the TGP's class, on the MSI GTX 1650 image | 16 desktop and workstation images; 63-64 W rated, 63-76 W maximum on the stock images. The slot-powered MSI GTX 1650 stores 30/63/74 W with the first parameter byte and the tail bytes of its TGP row (only the TGP sets flag 0x40 and parameter byte 22 = 6, which name the 3.3 V channel, inferred); its board power stopped near 66 W under a 75 W and a 90 W TGP while a load log read 62.5 W on the slot 12 V input, at the 63 W rated value (plus the 3.3 V channel, 1 W or 4 W by P-state, inferred), so this row is the limit. No other Turing, Ampere or Ada image has a class-1 row on a slot channel |
 | `connector_N_power_rated_w`, `_max_w` | 4 and 5: class 4 mW on channels 4 and 5 (rails 0xfa, 0xfb, 0xfc); a third, row 6 (rail 0xe4), on the Galax HOF XOC image | Two on the TU10x boards, one on the GTX 1660, 1660 SUPER, 1660 Ti and 1650 SUPER; 70-167 W rated, 82-172 W maximum on the stock images |
 | `slot_current_threshold_rated_ma`, `_max_ma` (opt-in) | 7: class 5 mA on the slot channel, threshold 0 | 10-11 A rated, 11-16.5 A maximum |
 | `connector_N_current_threshold_rated_ma`, `_max_ma` (opt-in) | 8 and 9: class 5 mA on the channel of connector N, thresholds 1 and 2 | 14.5-22.5 A rated, 14.5-33.75 A maximum; a field only where the channel carries one connector power row and one such row |
-| `nvvdd_output_ocp_rated_ma`, `_max_ma` (opt-in) | 13: class 10 mA on channel 19, whose 22 bytes equal the Ada NVVDD current sensor channel | 23 images, 40.25-350.94 A rated on the stock images; class 10 is not described in nvgpu |
+| `nvvdd_output_ocp_rated_ma`, `_max_ma` (opt-in) | 13: class 10 mA on channel 19, whose 22 bytes equal the Ada NVVDD current sensor channel | 24 images, 40.25-350.94 A rated on the stock images; class 10 is not described in nvgpu |
 
-The relationship entries of the TGP policy name rows 3, 4, 5, 7, 8, 9 and 13 (meaning of
-the link unknown): with stock values the slot and connector rows sum to about the stock
-board power, so a TGP raised past that sum needs them raised too. On the RTX 2080 Ti
+On the RTX 2080 Ti the relationship entries of the TGP policy name rows 3, 4, 5, 7, 8, 9
+and 13 (meaning of the link unknown); on the GTX 1630 and 1650 images they name none of
+them, yet the MSI GTX 1650's slot row still caps its board. With stock values the slot
+and connector rows sum to about the stock board power, so a TGP raised past that sum needs them raised too. On the RTX 2080 Ti
 above, a 500 W TGP alone stopped near 300 W; with both connector rows at 250 W the card
 reached about 458 W. The ASUS RTX 2080 Ti XOC image raises rows 3/4/5 (372.8/648/648 W)
 with its 1000 W TGP and turns rows 7, 8, 9 and 13 into class 0; those rows then give no
@@ -1192,7 +1196,7 @@ VMIN = OV + 1 with no margin limit equation; the Galax HOF XOC image points REL 
 at the OV equation (REL = ALT = OV = 1125 mV, BOOT and VMIN as stock), which is also
 accepted. Another order, or a margin limit, is refused.
 VFE `30 09 19 14 18` (20 variables) with the Ampere 24-byte equations, u8 count and u8
-links. REL, ALT and OV are `constant` equations on all 24 images (REL 1068.75 mV,
+links. REL, ALT and OV are `constant` equations on all 25 images (REL 1068.75 mV,
 950 mV on three Max-Q and laptop images; ALT 1093.75 mV, 1118.25 mV on one partner RTX
 2080 image, absent on the Quadro RTX 8000 and six Max-Q and laptop images; OV 1125 mV),
 so the REL/ALT/OV ceiling fields, selectors and boot voltage are read-only, as on Ampere.
@@ -1235,13 +1239,15 @@ all three tables, policy byte 2 and mapping byte 1 equal to its index and policy
 9..16 = `23 2b 0a 01 00 02 80 00` (every active entry; Ada bytes 6..13, the same bytes
 on most Ada and Ampere images); an unlisted one is disabled in all three. PWM
 frequency (25 or 27 kHz), channel limits and curve points then follow the Ada rules
-(17 GPU-driven images). The disabled entries hold bytes unlike the active ones and
+(18 GPU-driven images). The MSI GTX 1650 stores 135 kHz and RPM limits of 0 in its
+active row: its PWM frequency, RPM limits and curve points stay read-only and only the
+percent limits are offered. The disabled entries hold bytes unlike the active ones and
 there is no control or speed table, so `fan_channels` is read-only. The Max-Q and
 laptop images list no channel and enable none (no fan field); the GTX 1650 SUPER
 disables its fan 0 mapping entry while the other tables list it and keeps no fan field.
 
 **Checksum padding.** The checksum padding is checked on the images of the edited
-tables in the second E0 image (power, VFE, fans: padded on all 24 images). The clock
+tables in the second E0 image (power, VFE, fans: padded on all 25 images). The clock
 table sits in the legacy image, which lacks the padding on one RTX 2080 image: its
 clock fields alone stay read-only, with that reason. Writes go to both banks and
 repair the checksum of each touched image.

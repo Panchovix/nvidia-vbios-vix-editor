@@ -62,6 +62,10 @@ def relocate(bank_parser):
         payload = recipe.render(plan, bank)
         proof = recipe.verify_payload(bank, payload, pins)
         proof['semantic_probes'] = semantic_probes(bank_parser, plan, payload)
+    except recipe.LaptopDoesNotFit as exc:
+        raise VbiosError('RELOCATION_DOES_NOT_FIT',
+                         'Ada laptop images are not supported yet: their laptop-only performance tables leave no '
+                         f'room to relocate the image under the {GSP_LIMIT}-byte GSP limit ({exc})') from exc
     except recipe.DoesNotFit as exc:
         raise VbiosError('RELOCATION_DOES_NOT_FIT',
                          f'this Ada image cannot be relocated under the {GSP_LIMIT}-byte GSP limit: {exc}') from exc

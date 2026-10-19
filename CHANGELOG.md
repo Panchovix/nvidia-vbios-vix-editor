@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.21
+
+- **Ada laptop images: a clear refusal.** Saving a loader payload for an Ada laptop image (RTX 4050-4080 Laptop,
+  RTX 5000 Ada Laptop) now says that Ada laptop images are not supported yet, instead of only the byte counts.
+  These images carry about 35 KB of laptop-only performance tables, so the relocated image does not fit the
+  512 KiB the GSP firmware accepts.
+- **Ampere laptop: a lowered power ceiling confirmed on one RTX 3050 6GB Laptop GPU.** With a 75 W HP BIOS, an
+  image with the board power ceiling at 70 W and the boot default at 55 W loaded through the Windows loader
+  (`ampere-relocated-v1`, driver 617.42), and the driver then reported a 70 W limit. It is the first laptop
+  report; a raised ceiling is not tested on a laptop, where the platform (Dynamic Boost) sets the running limit.
+  Reported in [issue #4](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/4).
+- **Turing: PCIe slot power on the MSI GTX 1650.** That slot-powered image stores its slot power row in the
+  board power's class instead of the one the editor knew, so it showed no slot field. Under load the slot 12 V
+  input read 62.5 W, at its 63 W limit, and the card stayed near 66 W with the board power at 75 W or 90 W.
+  `slot_power_rated_w` and `slot_power_max_w` now edit that row (30/63/74 W stock); raising it is not tested on
+  Turing hardware yet. The Turing guide says
+  that on a slot-powered card the slot limit has to be raised with the board power, and that above 66 W rated
+  the slot can be asked for more than the PCIe specification allows.
+  Reported in [issue #5](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/5).
+
 ## 0.1.20
 
 - **Turing: board and connector power confirmed on one RTX 2080 Ti.** On an RTX 2080 Ti with the ROG Matrix BIOS,

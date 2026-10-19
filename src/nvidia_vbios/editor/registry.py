@@ -172,11 +172,11 @@ ADA_NOTEBOOK_DEFAULT_REASON = ('experimental: stored notebook rated TGP; taken a
 ADA_NOTEBOOK_REASON = ('experimental: stored notebook TGP; the platform (Dynamic Boost, nvidia-powerd) requests the '
                        'running limit and may keep it lower; laptop Ada images are not accepted by the loader; '
                        'not hardware-tested')
-# Ampere (GA10x): structural rules checked on the 34 images of the Ampere corpus.
+# Ampere (GA10x): structural rules checked on the 35 images of the Ampere corpus.
 # No Ampere board runs here, so no Ampere value has a runtime reading or a boot.
 AMPERE_STRUCTURAL_EVIDENCE = {
     'kind': 'structural-row-comparison',
-    'source': 'Ampere VBIOS corpus, 34 parseable GA102-GA107 images', 'set_tested': False, 'runtime_get': False}
+    'source': 'Ampere VBIOS corpus, 35 parseable GA102-GA107 images', 'set_tested': False, 'runtime_get': False}
 AMPERE_POWER_EVIDENCE = dict(
     AMPERE_STRUCTURAL_EVIDENCE,
     format='Ampere 3x power 30/2c/47, 30/2c/43 or 30/32/47; TGP row = header byte 10 (notebook: byte 13 when bytes '
@@ -189,13 +189,13 @@ AMPERE_NOTEBOOK_REASON = ('experimental: stored notebook TGP; the platform (Dyna
 AMPERE_NOTEBOOK_DEFAULT_REASON = ('experimental: stored notebook rated TGP; taken as the default power limit by '
                                   'structural analogy with the GB20x notebook layout; no Ampere reading; the platform '
                                   'requests the running limit; not hardware-tested')
-# Turing (TU102-TU117): structural rules checked on the 24 images of the Turing corpus.
+# Turing (TU102-TU117): structural rules checked on the 25 images of the Turing corpus.
 # On one RTX 2080 Ti (Windows loader) the override loaded and nvidia-smi reported an
 # edited TGP despite the stale signed hash list; with the connector power rows raised too,
 # the card reached about 458 W under load. No other Turing field has run on hardware.
 TURING_STRUCTURAL_EVIDENCE = {
     'kind': 'structural-row-comparison',
-    'source': 'Turing VBIOS corpus, 24 TU102-TU117 images', 'set_tested': False, 'runtime_get': False}
+    'source': 'Turing VBIOS corpus, 25 TU102-TU117 images', 'set_tested': False, 'runtime_get': False}
 TURING_POWER_EVIDENCE = dict(
     TURING_STRUCTURAL_EVIDENCE,
     format='Turing 3x power 30/2c/42 or 30/27/42 (the first 0x27 header bytes of 30/2c/42); TGP row = header byte '
@@ -227,8 +227,9 @@ TURING_CHANNEL_FORMAT = ('Turing power row class/unit flags (byte 0) and channel
                          'v0x20, 20 entries of 22 bytes: class 5 single input at 12 V (bytes 2..7), rail byte 1, no '
                          'parameter but the current correction offset (bytes 10..13, nvgpu curr_corr_offset) and the '
                          'provider byte 15')
-TURING_TGP_LINKS = ('the relationship entries of the TGP policy name rows 3, 4, 5, 7, 8, 9 and 13 (the slot and '
-                    'connector power and current rows and the NVVDD current row; meaning of the link unknown)')
+TURING_TGP_LINKS = ('the relationship entries of the TGP policy name rows 3, 4, 5, 7, 8, 9 and 13 on the RTX 2080 Ti '
+                    '(the slot and connector power and current rows and the NVVDD current row; meaning of the link '
+                    'unknown) and none of them on the GTX 1630 and 1650 images')
 # ASUS RTX 2080 Ti XOC image against the stock TU102 images: what it raises or disables.
 TURING_XOC_EVIDENCE = {'kind': 'vendor-image-comparison',
                        'source': 'ASUS RTX 2080 Ti XOC vendor image against the stock TU102 images',
@@ -239,8 +240,20 @@ TURING_SLOT_EVIDENCE = [
          observation='the slot channel 3 is byte-identical (zero padded) to the Ada slot channel of the GET-reviewed '
                      'RTX 2000 Ada policy 5 and to the Ampere one; one such row (row 3) on the 16 desktop and '
                      'workstation images, rated 63-64 W, maximum 63-76 W on the stock ones (2000 W on the Galax HOF '
-                     'XOC image); the Max-Q, laptop, GTX 1630 and GTX 1650 images store none; ' + TURING_TGP_LINKS),
+                     'XOC image); the Max-Q, laptop, GTX 1630 and Gigabyte GTX 1650 images store none; '
+                     + TURING_TGP_LINKS),
     dict(TURING_XOC_EVIDENCE, observation='the XOC image stores row 3 at 372.8 W rated and maximum (stock 63/74 W)')]
+# An MSI GTX 1650 stores its slot power row in the TGP's class.
+TURING_SLOT_CLASS1_EVIDENCE = [
+    dict(TURING_STRUCTURAL_EVIDENCE,
+         format=TURING_CHANNEL_FORMAT + '; class 1 mW row (the TGP class) on the PCIe slot channel (rail 0xff)',
+         observation='one slot-powered MSI GTX 1650 image stores row 3 as class 1, 30/63/74 W, with the first '
+                     'parameter byte and the tail bytes of its TGP row (the TGP alone sets flag 0x40 and parameter '
+                     'byte 22 = 6, which name the 3.3 V channel, inferred); there the board power stopped near 66 W '
+                     'under a 75 W and a 90 W TGP while a load log read 62.5 W on the slot 12 V input, at this '
+                     'row\'s 63 W rated value (plus the 3.3 V channel, 1 W or 4 W by P-state, inferred), so this row '
+                     'is the limit; no other Turing, Ampere or Ada image of the corpus has a class-1 row on a slot '
+                     'channel')]
 TURING_CONNECTOR_EVIDENCE = [
     dict(TURING_STRUCTURAL_EVIDENCE,
          format=TURING_CHANNEL_FORMAT + '; class 4 mW rows on the external 12 V connector channels, rails 0xfa, '
@@ -260,7 +273,7 @@ TURING_SLOT_CURRENT_EVIDENCE = [
          format=TURING_CHANNEL_FORMAT + '; class 5 (hardware threshold, nvgpu bios.h) mA row on the PCIe slot '
                                         'channel, threshold index 0 (parameter byte 0)',
          observation='the same class, unit and channel as the GET-reviewed RTX 2000 Ada policy 8 (CONTROL current = '
-                     'rated there); row 7 on 15 desktop and workstation images, rated 10-11 A, maximum 11-16.5 A on the '
+                     'rated there); row 7 on 16 desktop and workstation images, rated 10-11 A, maximum 11-16.5 A on the '
                      'stock ones (2000 A on the Galax HOF XOC image); the Max-Q and laptop images read another rail '
                      '(0xf1) there and give no field'),
     dict(TURING_XOC_EVIDENCE, observation='the XOC image changes rows 7, 8 and 9 to class 0 (no field), which the '
@@ -278,7 +291,7 @@ TURING_NVVDD_LIMIT_EVIDENCE = [
     dict(TURING_STRUCTURAL_EVIDENCE,
          format='Turing power row class 10 mA on the NVVDD output current channel (class 1, rail 1, sensor byte '
                 '14 = 6)',
-         observation='row 13 on 23 images reads channel 19, whose 22 bytes equal the first 22 bytes of the Ada NVVDD '
+         observation='row 13 on 24 images reads channel 19, whose 22 bytes equal the first 22 bytes of the Ada NVVDD '
                      'output current channel 19 (the GB20x NVVDD current sensor identified by saved GET); rated '
                      '40.25-350.94 A (2000 A on the Galax HOF XOC image); class 10 is not described in nvgpu, so '
                      'whether the firmware enforces the row is unknown; ' + TURING_TGP_LINKS),
@@ -601,8 +614,8 @@ AMPERE_VOLTAGE_EVIDENCE = dict(
            'VMIN +11 (u8, ff absent) as on Ada; VFE 30/09/19/32/18 with 24-byte equations, u8 count (header byte 5) '
            'and u8 links (byte 2; children bytes 11/12 and 15/16)',
     observation='every rail of every image keeps REL < ALT (if present) < VMIN = OV - 1; REL and OV are constant '
-                'equations (value, minimum and maximum one constant) on all 34 images; ALT is constant (1100 mV) on '
-                'the 18 desktop GeForce images and absent (selector 0xff) on the 16 workstation and laptop images; '
+                'equations (value, minimum and maximum one constant) on all 35 images; ALT is constant (1100 mV) on '
+                'the 18 desktop GeForce images and absent (selector 0xff) on the 17 workstation and laptop images; '
                 'rail 1 of the two-rail GA102 images is named MSVDD by inference only (GPC runs on rail 0; XBAR, '
                 'DRAM and DISP on rail 1)')
 
@@ -614,13 +627,13 @@ TURING_VOLTAGE_EVIDENCE = dict(
            '24-byte equations, u8 count (header byte 5) and u8 links, as on Ampere',
     observation='every image but one keeps REL < ALT (if present) < BOOT = OV - 1, VMIN = OV + 1; the Galax HOF XOC '
                 'image points REL and ALT at the OV equation (REL = ALT = OV = 1125 mV); REL, ALT and OV are '
-                'constant equations on all 24 images (REL 1068.75 mV, 950 mV on three Max-Q and laptop images; ALT '
+                'constant equations on all 25 images (REL 1068.75 mV, 950 mV on three Max-Q and laptop images; ALT '
                 '1093.75 mV, 1118.25 mV on one partner RTX 2080 image, absent on the Quadro RTX 8000 and six Max-Q '
                 'and laptop images; OV 1125 mV); the boot voltage equation is fixed point')
 TURING_VMIN_EVIDENCE = dict(
     TURING_STRUCTURAL_EVIDENCE, source=SOURCE,
     format='Turing rail row byte 9 (u8, nvgpu 1x vmin_limit_vfe_equ_idx) selects the VFE equation of the VMIN limit',
-    observation='on all 24 images a float voltage output whose clamp pins 668-703.75 mV, referenced by no other '
+    observation='on all 25 images a float voltage output whose clamp pins 668-703.75 mV, referenced by no other '
                 'equation or selector, with chained equations adding -112.5 to +75 mV: the shape of the Ada row byte '
                 '7 equation whose edit moved the driver VMIN (hardware test)')
 
@@ -1433,7 +1446,14 @@ def slot_power(image, parser):
         item = parser.ada_policy('slot_power') if ada(parser) else ampere_policy(parser, 'slot_power')
         if item is None:
             return []
-        if turing(parser):
+        if turing(parser) and item['type'] == 1:
+            reasons = ('experimental: ceiling of the PCIe slot power policy, a class-1 policy like the TGP; SET and '
+                       'enforcement untested; ' + TURING_UNTESTED + '; stored value, not a hardware-safe slot rating',
+                       'experimental: rated slot power limit, a class-1 policy like the TGP on the slot 12 V channel; '
+                       'at stock it held the slot input of one slot-powered GTX 1650 at 62.5 W (63 W rated) and the '
+                       'board near 66 W under a raised TGP; an edit of it is ' + TURING_UNTESTED + '; the PCIe CEM rates '
+                       'the slot at 66 W (12 V) and 75 W in all; stored value, not a hardware-safe slot rating')
+        elif turing(parser):
             reasons = ('experimental: ceiling of the PCIe slot power policy; SET and enforcement untested; '
                        + TURING_UNTESTED + '; stored value, not a hardware-safe slot rating',
                        'experimental: rated slot power limit; on the RTX 2000 Ada the same row is enforced from boot '
@@ -1449,8 +1469,8 @@ def slot_power(image, parser):
         return ada_policy_fields(
             image, parser, [item], ('slot_power_max_w', 'slot_power_rated_w'),
             ('PCIe slot power ceiling', 'PCIe slot power limit (rated)'), group='slot-power',
-            evidence=ADA_SLOT_EVIDENCE if ada(parser) else TURING_SLOT_EVIDENCE if turing(parser) else
-            AMPERE_SLOT_EVIDENCE, reasons=reasons)
+            evidence=ADA_SLOT_EVIDENCE if ada(parser) else AMPERE_SLOT_EVIDENCE if not turing(parser) else
+            TURING_SLOT_CLASS1_EVIDENCE if item['type'] == 1 else TURING_SLOT_EVIDENCE, reasons=reasons)
     item = parser.slot_power_policy()
     if not item['association_recognized']:
         return []
@@ -1847,8 +1867,10 @@ TURING_FAN_EVIDENCE = [
                 '2b 0a 01 00 02 80 00, Ada bytes 6..13): levels at entry bytes 17..19 and three (1/32 C, RPM) curve '
                 'points from byte 21; no control or speed table (the P token ends before their pointers)',
          observation='the cooler and policy lists agree and name exactly the enabled entries, with policy byte 2 and '
-                     'mapping byte 1 = channel, on the 17 GPU-driven images; active rows hold 25000 or 27000 at bytes '
-                     '11..13 and byte 13 is 0; Max-Q and laptop images list no channel and enable none; the GTX 1650 '
+                     'mapping byte 1 = channel, on the 18 GPU-driven images; active rows hold 25000 or 27000 at bytes '
+                     '11..13 and byte 13 is 0, except on the MSI GTX 1650 (135000, RPM limits 0), whose PWM '
+                     'frequency, RPM limits and curve points stay read-only; Max-Q and laptop images list no channel '
+                     'and enable none; the GTX 1650 '
                      'SUPER disables its fan 0 mapping entry while the other tables list it and keeps no fan field; '
                      'the disabled entries hold bytes unlike the active ones, so the channel count stays read-only'),
     ADA_FAN_EVIDENCE[1],

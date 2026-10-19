@@ -2,10 +2,10 @@
 
 Field locations derive from NVIDIA-authored nvgpu bios.h 3x power/1x rail/clock
 prefixes and VFE output equations; every rule below is structural and was
-checked on each parseable image of the Ada corpus and of the 34-image Ampere
+checked on each parseable image of the Ada corpus and of the 35-image Ampere
 corpus. Ampere shares the Ada table set with narrower rows (power 0x47/0x43,
 rail 0x11, VFE equations of 24 bytes with 8-bit links) and up to two rails.
-Turing (22-image corpus) reads its power policy and input channels like
+Turing (25-image corpus) reads its power policy and input channels like
 Ampere (0x42-byte rows, 22-byte channels), its rail (nvgpu 1x row), VFE (as
 Ampere with 20 variables), clock (nvgpu v35) and fan tables (the Ada cooler and
 mapping tables, a v0x10 policy table) through Turing variants below.
@@ -341,7 +341,9 @@ class TableRom:
         sensor channel, and nvvdd_threshold (class 5 mA) on an NVVDD channel with
         sensor byte 14 = 5. Input channels are class 5 at 12 V with no parameter but
         the provider byte 15 (Turing connector channels: and the current correction
-        offset, bytes 10..13). Rows must keep 0 <= minimum <= rated <= maximum, as on Ada.
+        offset, bytes 10..13). On Turing a slot_power row may also be class 1 mW, the
+        TGP's class (one MSI GTX 1650 image); the TGP row itself is never a role row.
+        Rows must keep 0 <= minimum <= rated <= maximum, as on Ada.
         Returns ada_policy-style items in row order; same_channel_rows lists other
         rows of the same class and unit on a byte-identical channel, and
         summed_cap_rows those on a class-2 sum channel that adds this channel (the
@@ -383,11 +385,12 @@ class TableRom:
                     len(set(channels)) == len(channels) >= 2 and
                     all(r[0] == 1 and r[2:6] == UNIT_WEIGHT and not any(r[6:31]) and r[1] < count and
                         rail(r[1]) in AMPERE_CONNECTOR_RAILS for r in members))
-        found = [r for r in rows if r['type'] == cls and r['limit_unit'] == units and
+        classes = (cls, 1) if turing and role == 'slot_power' else (cls,)
+        found = [r for r in rows if r['type'] in classes and r['limit_unit'] == units and r['row'] != self.tgp_index and
                  self.blob[r['offset'] + 1] < count and match(self.blob[r['offset'] + 1]) and
                  0 <= r['minimum_raw'] <= r['default_raw'] <= r['maximum_raw']]
         sums = [(o, c, self.summed_channels(c)) for o in rows for c in (self.blob[o['offset'] + 1],)
-                if o['type'] == cls and o['limit_unit'] == units and c < count]
+                if o['type'] in classes and o['limit_unit'] == units and o['row'] != self.tgp_index and c < count]
         result = []
         for row in found:
             index = self.blob[row['offset'] + 1]
@@ -395,11 +398,12 @@ class TableRom:
             raw = self.blob[row['offset']:row['offset'] + size]
             same = [dict(row=o['row'], parameter_byte_0=self.blob[o['offset'] + 14], minimum_raw=o['minimum_raw'],
                          default_raw=o['default_raw'], maximum_raw=o['maximum_raw'], units=o['limit_unit'])
-                    for o in rows if o['row'] != row['row'] and o['type'] == cls and o['limit_unit'] == units and
-                    self.blob[o['offset'] + 1] < count and self.power_channel(self.blob[o['offset'] + 1]) == channel]
+                    for o in rows if o['row'] != row['row'] and o['type'] == row['type'] and
+                    o['limit_unit'] == units and self.blob[o['offset'] + 1] < count and
+                    self.power_channel(self.blob[o['offset'] + 1]) == channel]
             summed = [dict(row=o['row'], channel_index=c, summed_channels=members, minimum_raw=o['minimum_raw'],
                            default_raw=o['default_raw'], maximum_raw=o['maximum_raw'], units=o['limit_unit'])
-                      for o, c, members in sums if index in members]
+                      for o, c, members in sums if index in members and o['type'] == row['type']]
             result.append(dict(row, vbios_row_index=row['row'], units=units, channel_index=index,
                                channel_rail=channel[1],
                                immutable_row_sha256=hashlib.sha256(raw[:2] + raw[14:]).hexdigest(),
