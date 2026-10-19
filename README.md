@@ -13,6 +13,11 @@ connector power and current limits, VMIN, fixed REL/ALT voltages, clock offset r
 tested on a Turing card; see the
 [Turing tester guide](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/turing.md)).
 
+Loading an edited image with the Linux or Windows loader works with NVIDIA 615.x (R615) drivers on Linux and
+616.x and 617.x drivers on Windows. It may stop working in a future driver if NVIDIA decides to change or remove
+the override, so check that it still applies after every driver update (Linux: `nvbios system status` and an
+edited value in `nvidia-smi`; Windows: **Verify**).
+
 **Not affiliated with, endorsed by or sponsored by NVIDIA Corporation.** NVIDIA and
 GeForce are trademarks of NVIDIA Corporation.
 
@@ -133,10 +138,6 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
   saving an edited Turing copy saves `<name>-loader.bin` (load it first) and `<name>-loader-e0end.bin`
   (`--representation turing-e0-end-v1`, to try if the first does not apply the edit); both have loaded
   on an RTX 2080 Ti through the Windows loader.
-- **Driver versions.** The loaders have only been tested with NVIDIA 615.x (R615) drivers on Linux and
-  616.x and 617.x drivers on Windows. A newer driver can change or remove the override path, so check that
-  the override still applies after every driver update (Linux: `nvbios system status` and an edited value in
-  `nvidia-smi`; Windows: **Verify**).
 - **YOU ARE SOLELY RESPONSIBLE FOR WHAT YOU DO WITH THIS SOFTWARE.** Every modification
   you make, and any damage, malfunction, data loss or other harm to your hardware,
   your system or anything else that results from using this software or the images it
