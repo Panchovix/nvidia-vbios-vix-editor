@@ -170,6 +170,9 @@ class GtkSmokeTests(unittest.TestCase):
         gi.require_version('Gtk', '4.0')
         from gi.repository import Gio, GLib, Gtk
         from nvidia_vbios.gui.app import EditorWindow, texts
+        from nvidia_vbios.rom import from_bytes
+        from nvidia_vbios.rom.image import backend
+        from test_ada_fields import patched
         from test_turing import synthetic_turing
         app = Gtk.Application(application_id='org.nvidia_vbios.TuringSmoke', flags=Gio.ApplicationFlags.NON_UNIQUE)
         self.assertTrue(app.register(None))
@@ -212,6 +215,17 @@ class GtkSmokeTests(unittest.TestCase):
                         changes = window.controller.document.changes
                         self.assertEqual((changes['connector_2_current_threshold_rated_ma'],
                                           changes['connector_1_power_max_w']), ('25000', '200'))
+                        self.assertNotIn(window.text('section.unsupported'), texts(window.field_box))
+                        # An unsupported rail layout (REL = OV, ALT below OV) keeps the voltage heading with a note.
+                        refused = Path(tmp) / 'refused.rom'
+                        row = backend(from_bytes(path.read_bytes())).pointer('P', 0x68) + 5
+                        refused.write_bytes(patched(path.read_bytes(), row + 4, b'\x03\x01'))
+                        window.open_path(refused)
+                        until(lambda: not window.busy and 'nvvdd_vmin_mv' not in window.entries)
+                        shown = texts(window.field_box)
+                        self.assertEqual(shown.count(window.text('section.unsupported')), 1)
+                        self.assertIn(window.text('section.voltage'), shown)
+                        self.assertNotIn(window.text('section.voltage_note'), shown)
                     finally:
                         window.close()
 
@@ -554,10 +568,12 @@ class GtkSmokeTests(unittest.TestCase):
                 self.assertFalse(hasattr(window, 'details'))
                 self.assertFalse([t for t in texts(window) if 'Technical details' in t or 'Detalles técnicos' in t])
                 self.assertIn('Original: 100 W', field_text)
-                # Read-only fields are grouped after the editable sections.
-                self.assertIn('current_limit_a', window.readonly_rows)
-                self.assertIn('ocp_limit_a', window.readonly_rows)
-                self.assertNotIn('current_limit_a', window.entries)
+                # Read-only fields are grouped after the editable sections; the generic placeholders
+                # without a value (input current, OCP) are not shown.
+                self.assertIn('nvvdd_output_ocp_max_ma', window.readonly_rows)
+                for key in ('current_limit_a', 'ocp_limit_a'):
+                    self.assertNotIn(key, window.readonly_rows)
+                    self.assertNotIn(key, window.entries)
                 self.assertEqual(window.open_button.get_label(), 'Open ROM…' if language == 'en' else window.text('open'))
                 self.assertEqual(window.get_title(), window.text('window_title'))
                 self.assertIn(window.text('field.power_min_w'), field_text)

@@ -125,12 +125,39 @@ def summed_cap_notes(field, fields, language='en'):
     return notes
 
 
+# Resolvers whose fields all sit in one section. When one fails on an image (a layout
+# the editor does not support; report diagnostics), that section says some of its fields
+# are missing. Other diagnostics (an unpadded image, an unrecognized one) leave no note:
+# their fields stay listed read-only with a reason, or the window shows none. The voltage
+# resolver only adds hidden aliases of the REL equation ceilings, so its failure alone
+# (an Ada REL compare expression) hides nothing.
+RESOLVER_SECTIONS = {'equation_roles': 'voltage', 'evaluated_vmin': 'voltage',
+                     'fixed_voltage': 'voltage', 'rail_follow_ov': 'voltage',
+                     'power': 'power', 'slot_power': 'power', 'connector_power': 'power',
+                     'connector_sum_power': 'power', 'output_ocp': 'current', 'input_current': 'current',
+                     'memory': 'clocks', 'fans': 'fans', 'fan_zero_rpm': 'fans'}
+
+
+def unsupported_notes(report, language='en'):
+    """{section: note} for the sections a failed resolver left incomplete."""
+    text = Messages(language)
+    return {RESOLVER_SECTIONS[d['resolver']]: text('section.unsupported') for d in report.get('diagnostics', ())
+            if d.get('resolver') in RESOLVER_SECTIONS}
+
+
+# Read-only placeholders with no VBIOS row behind them: the generic input current and OCP
+# limits (every family) and the MSVDD ceiling of a single-rail layout. Read as missing
+# limits, they stay out of the window while their value is unknown; the JSON keeps them.
+PLACEHOLDER_KEYS = frozenset(('current_limit_a', 'ocp_limit_a', 'msvdd_rel_max_mv'))
+
+
 def technical_field_keys(report):
-    """Keep equivalent aliases and raw selector bookkeeping in details."""
+    """Keep equivalent aliases, raw selector bookkeeping and unknown placeholders in details."""
     fields = report.get('fields', [])
     keys = {f['key'] for f in fields}
     hidden = {f['key'] for f in fields if f.get('alias_of') in keys or
-              f.get('value_semantics') in ('selector-index', 'stored-boot-voltage', 'unknown')}
+              f.get('value_semantics') in ('selector-index', 'stored-boot-voltage', 'unknown') or
+              (f['key'] in PLACEHOLDER_KEYS and f.get('current') is None and not f.get('editable'))}
     if any(f['key'] == 'memory_offset_max_mhz' and f['editable'] for f in fields):
         hidden.add('dram_max_table_mhz')
     return hidden
@@ -174,6 +201,7 @@ SECTIONS = (
              tuple(f'fan_extra_{m}_curve_{k}_{unit}' for m in range(1, 8) for k in (1, 2, 3)
                    for unit in FAN_CURVE_UNITS) + ('fan_zero_rpm',)),
 )
+SECTION_NAMES = tuple(name for name, _ in SECTIONS) + ('other',)
 # Windows tools such as MSI Afterburner show the stored table value: half of
 # the NVML/Linux memory offset, the same value for the core (observed on hardware).
 WINDOWS_SCALE = {'memory_offset_max_mhz': Decimal('0.5'), 'memory_offset_min_mhz': Decimal('0.5')}
@@ -200,8 +228,7 @@ def field_section(field):
 def section_order(fields):
     """Fields in display order: SECTIONS order first, then descriptor order."""
     rank = {key: i for _, keys in SECTIONS for i, key in enumerate(keys)}
-    sections = [name for name, _ in SECTIONS] + ['other']
-    return sorted(fields, key=lambda f: (sections.index(field_section(f)), rank.get(f['key'], len(rank) + 1)))
+    return sorted(fields, key=lambda f: (SECTION_NAMES.index(field_section(f)), rank.get(f['key'], len(rank) + 1)))
 
 
 def row_title(field, language='en'):

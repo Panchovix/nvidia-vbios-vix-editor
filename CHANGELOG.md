@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.20
+
+- **Turing: board and connector power confirmed on one RTX 2080 Ti.** On an RTX 2080 Ti with the ROG Matrix BIOS,
+  an edit of 500 W board power plus 250 W per connector loaded through the Windows loader, and the card reached
+  about 458 W under load: the power limiter no longer triggered, the voltage limiters (Reliability Voltage, Max
+  Operating Voltage) did. The stop near 300 W reported in 0.1.19, with the per-connector rows at stock, went away
+  once they were raised. The field notes and the
+  [tester guide](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/turing.md) say so; the
+  voltage fields are still not tested on Turing hardware. Tested by @Cancretto.
+- **Turing: the Galax HOF XOC voltage layout is accepted.** That RTX 2080 Ti image points the NVVDD REL and ALT
+  selectors at the OV equation (REL = ALT = OV = 1125 mV). The editor refused the layout and showed no voltage
+  field at all; it now shows REL, ALT and OV read-only (the fixed REL and ALT fields too) and keeps the minimum
+  voltage (`nvvdd_vmin_mv`) editable, 400-1050 mV. On a stock image, setting `nvvdd_alt_fixed_mv` and
+  `nvvdd_rel_fixed_mv` to 1125 mV in one edit (advanced) gives the same evaluated values; not tested on Turing
+  hardware. The Turing checks now cover 24 images, the ROG Matrix and HOF XOC RTX 2080 Ti ones included; the HOF
+  XOC image leaves its third connector (`connector_3_power_*_w`) at 143/167 W.
+- **Fan zero RPM confirmed on one RTX 5090.** On an HP Omen RTX 5090, whose BIOS ships with the fan-stop bits clear
+  (fans at about 1100 RPM at idle), an image with `fan_zero_rpm` set to 1 loaded through the Windows loader: all
+  three fans stood still at idle, started under load and stopped again after cooling down. Other boards are not
+  tested. Tested by @dsemprich.
+- **GUI: a section says when some of its fields are not shown.** When part of an image uses a layout the editor
+  does not support yet, the section that lost fields, or all of them (Voltage, Power, Current and protection, Clock
+  offsets or Fans), now says so, in English or Spanish, and keeps its heading. Before, a section with no field left
+  just disappeared, as the Fans section did on a few images whose fan tables disagree.
+- **GUI: no more "Unknown" placeholder rows.** The read-only "Input current limit" and "Overcurrent protection
+  (OCP)" rows, and the MSVDD REL ceiling of single-rail images, have no VBIOS row behind them and read as missing
+  limits; the window no longer lists them while their value is unknown. `nvbios fields` and the JSON keep them.
+
 ## 0.1.19
 
 - **Turing: more fields (experimental).** Besides the board power limits, Turing images now get the PCIe slot and

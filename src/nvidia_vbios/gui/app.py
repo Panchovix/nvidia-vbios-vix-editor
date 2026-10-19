@@ -18,8 +18,9 @@ from .controller import (Controller, controls, loader_messages, open_document, r
                          save_document, stage_document)
 from .presentation import (classify_number, display_units, field_label, field_section, number, opt_in_field_keys,
                            parse_number,
-                           primary_preview, read_only_reason, row_title, section_order, shunt_real, shunt_scaled,
-                           summed_cap_notes, technical_field_keys, to_display, to_stored, value_text, windows_value)
+                           primary_preview, read_only_reason, row_title, SECTION_NAMES, section_order, shunt_real,
+                           shunt_scaled, summed_cap_notes, technical_field_keys, to_display, to_stored,
+                           unsupported_notes, value_text, windows_value)
 
 # Typing pauses this long before the copy is rebuilt and verified.
 LIVE_DELAY_MS = 350
@@ -711,14 +712,17 @@ class EditorWindow(Gtk.ApplicationWindow):
             self.integrity.add_css_class('vb-bad')
             self.integrity.add_css_class('error')
 
-    def _section(self, name):
+    def _section(self, name, rows, note=None):
         heading = label(self.text('section.' + name), css=('vb-section',), selectable=False)
         self.field_box.append(heading)
-        if name == 'voltage':
+        if name == 'voltage' and rows:
             self.field_box.append(label(self.text('section.voltage_note'), wrap=True, css=('vb-note',)))
+        if note:
+            self.field_box.append(label(note, wrap=True, css=('vb-note',)))
         card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         card.add_css_class('vb-card')
-        self.field_box.append(card)
+        if rows:
+            self.field_box.append(card)
         return card
 
     def _editable_row(self, field, text):
@@ -833,20 +837,22 @@ class EditorWindow(Gtk.ApplicationWindow):
             hidden |= opt_in_field_keys(report)
         pending, self.pending_text = self.pending_text, {}
         visible = [f for f in section_order(fields) if f['key'] not in hidden]
-        card, current = None, None
-        for field in visible:
-            if not field['editable']:
+        # A section is shown for its editable rows, or alone with its note when the
+        # image's layout left some of its fields out.
+        notes = unsupported_notes(report, self.language)
+        for section in SECTION_NAMES:
+            rows = [f for f in visible if f['editable'] and field_section(f) == section]
+            if not rows and section not in notes:
                 continue
-            section = field_section(field)
-            if section != current:
-                card, current = self._section(section), section
-            elif card.get_last_child() is not None:
-                separator = Gtk.Separator()
-                separator.add_css_class('vb-sep')
-                card.append(separator)
-            staged = doc.changes.get(field['key'], field['current'])
-            text = pending.get(field['key'], number(to_display(field, staged)))
-            card.append(self._editable_row(field, text))
+            card = self._section(section, rows, notes.get(section))
+            for field in rows:
+                if card.get_last_child() is not None:
+                    separator = Gtk.Separator()
+                    separator.add_css_class('vb-sep')
+                    card.append(separator)
+                staged = doc.changes.get(field['key'], field['current'])
+                text = pending.get(field['key'], number(to_display(field, staged)))
+                card.append(self._editable_row(field, text))
         readonly = [f for f in visible if not f['editable']]
         if readonly:
             expander = Gtk.Expander(label=self.text('section.readonly', count=len(readonly)))

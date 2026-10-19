@@ -49,7 +49,10 @@ funcionando sin las dependencias gráficas.
 2. Introduce valores en los campos admitidos. Cada control indica su unidad y el
    valor original. Los hashes, rangos de codificación, selectores y aliases están
    en el manifiesto JSON y en `nvbios fields`. Esos rangos no son límites
-   eléctricos seguros.
+   eléctricos seguros. Los marcadores genéricos de corriente de entrada y OCP
+   (`current_limit_a`, `ocp_limit_a`) y el techo MSVDD de las imágenes de un solo
+   riel tampoco se muestran mientras su valor es desconocido (ninguna fila de la
+   VBIOS los respalda); `nvbios fields` los lista.
    **Piso de potencia de la placa** (`power_min_w`) acepta desde 1 W hasta el
    valor TGP nominal por defecto, en pasos exactos de 0,001 W. El **Techo de
    potencia de la placa** mantiene como mínimo los valores nominales por defecto.
@@ -68,8 +71,8 @@ funcionando sin las dependencias gráficas.
    Blackwell y Ada, **REL y ALT de NVVDD siguen a OV** (un interruptor: activado
    da el límite de voltaje plano estilo XOC; guárdalo solo y conserva la imagen
    original para volver atrás) y, en Blackwell, **Parada de ventiladores en
-   reposo** (un interruptor para los bits que, por inferencia, permiten que los
-   ventiladores se detengan en reposo; experimental); los valores ya escritos se
+   reposo** (un interruptor para los bits que permiten que los ventiladores se
+   detengan en reposo, probado en hardware en una RTX 5090; experimental); los valores ya escritos se
    conservan al marcarla. Los campos 0/1 de solo lectura muestran Activado o
    Desactivado. **Multiplicador
    de shunt (x)** (1 = desactivado, hasta 10) es solo informativo: en las filas de
@@ -152,7 +155,10 @@ Atajos: `Ctrl+O` abre, `Ctrl+Enter` verifica al momento, `Ctrl+S` guarda una
 copia, `Ctrl+R` restablece y `Ctrl+Q` cierra. La ventana (760×920 por defecto) es
 de una sola columna: tarjeta del dispositivo, luego Potencia, Voltaje, Offsets de
 reloj, Corriente y protección, y Ventiladores, y al final los campos de solo lectura en una
-sección plegada. La barra de cambios queda siempre visible. Tab recorre los controles. Los errores muestran códigos
+sección plegada. Si una parte de la imagen usa una disposición que el editor aún no
+admite (por ejemplo, las tablas de ventiladores de algunas imágenes), la tarjeta
+correspondiente avisa que algunos de sus campos no se muestran; el título aparece aunque
+no quede ningún campo. La barra de cambios queda siempre visible. Tab recorre los controles. Los errores muestran códigos
 estables del backend; los hashes y mensajes se pueden seleccionar y copiar.
 
 Consulta la [API del editor](editor-api.md) y los [campos ampliados](extended-fields.md)

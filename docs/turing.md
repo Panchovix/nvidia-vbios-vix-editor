@@ -2,12 +2,13 @@
 
 English | [Español](turing_es.md)
 
-Turing GPUs (TU102, TU104, TU106, TU116 and TU117: GeForce RTX 20 and GTX 16 series, TITAN RTX, Quadro RTX
-and the T series) are recognized by the editor and by both loaders, **experimentally**. One RTX 2080 Ti has run
-an edited image through the Windows loader (driver 617.70): the override loaded and `nvidia-smi` reported the
-edited board power limit (500 W default and maximum), but the card still stopped near 300 W under load, and
-why is not known yet. Nothing else below is tested on hardware. If you own a Turing card, the tester guide at
-the end tells us what works.
+Turing GPUs (TU102, TU104, TU106, TU116 and TU117: GeForce RTX 20 and GTX 16 series, TITAN RTX, Quadro RTX and the
+T series) are recognized by the editor and by both loaders, **experimentally**. One RTX 2080 Ti (ROG Matrix BIOS)
+has run edited images through the Windows loader (driver 617.70). An edit of 500 W board power plus 250 W per
+connector loaded, and the card reached about 458 W under load: the power limiter no longer triggered, the voltage
+limiters (Reliability Voltage, Max Operating Voltage) did. With the board power alone it stopped near 300 W,
+because the per-connector rows were still at stock. Nothing else below is tested on hardware. If you own a Turing
+card, the tester guide at the end tells us what works.
 
 ## What the editor does
 
@@ -17,7 +18,8 @@ XOC-style fields**.
 - **Board power**: `power_max_w` (ceiling), `power_default_w` (boot default) and `power_min_w` (floor).
 - **Per-input power limits** (desktop and workstation images): `slot_power_max_w` / `slot_power_rated_w` for
   the PCIe slot, and `connector_N_power_max_w` / `connector_N_power_rated_w` for each external 12 V connector
-  sense channel (two on most RTX 20 boards, one on the GTX 1660, 1660 SUPER, 1660 Ti and 1650 SUPER).
+  sense channel (two on most RTX 20 boards, one on the GTX 1660, 1660 SUPER, 1660 Ti and 1650 SUPER, three on the
+  Galax HOF XOC RTX 2080 Ti image, which leaves the third at 143/167 W while the others are at 2000 W).
 - **Current thresholds** (advanced): `slot_current_threshold_*_ma` and `connector_N_current_threshold_*_ma`,
   the hardware overcurrent thresholds of the slot and of each connector channel.
 - **NVVDD output current limit** (advanced): `nvvdd_output_ocp_max_ma` / `nvvdd_output_ocp_rated_ma`. It guards
@@ -30,7 +32,9 @@ XOC-style fields**.
   Both also stay at or above the boot voltage and VMIN plus what its chained equations add. The edit keeps the
   stored value in the equation, so the copy can be set back exactly. Whether the card then runs at a higher
   voltage is not known: the VF curve and the other limits still apply, and more voltage means more heat, power
-  and wear.
+  and wear. The Galax HOF XOC image points REL and ALT at the OV equation (REL = ALT = OV = 1125 mV); the editor
+  shows those values read-only there, fixed fields included, and keeps VMIN editable. On a stock image, setting
+  ALT and REL fixed to 1125 mV in one edit gives the same evaluated values (not tested on Turing hardware).
 - **Clock offset ranges**: `gpc_offset_max_mhz` / `gpc_offset_min_mhz` (core) and `memory_offset_max_mhz` /
   `memory_offset_min_mhz`, the ranges an overclocking tool may use. They do not change the clocks by themselves.
 - **Fans**: `fan_pwm_frequency_hz`, the speed (RPM) and level (%, advanced) limits of each fan and the points of
@@ -42,12 +46,13 @@ XOC-style fields**.
   current thresholds and the NVVDD limit, so they have no field there; the Quadro RTX 8000 stores its clock
   ranges as 0..0 (read-only); one RTX 2080 image lacks the checksum padding of the image that holds the clock
   table, so its clock ranges are read-only; the GTX 1650 SUPER fan tables disagree and give no fan field.
-- The tables are decoded by structure, checked on the 22 Turing images examined (desktop, laptop, Max-Q, Quadro
-  and TITAN, TU102 to TU117). Edits are written to both banks of the image, and the checksum of each touched
-  image is repaired. Bounds keep the stored order (minimum <= rated <= maximum, a fan curve inside its limits);
-  they are not hardware-safe limits.
+- The tables are decoded by structure, checked on the 24 Turing images examined (desktop, laptop, Max-Q, Quadro,
+  TITAN and two XOC images, TU102 to TU117). Edits are written to both banks of the image, and the checksum of
+  each touched image is repaired. Bounds keep the stored order (minimum <= rated <= maximum, a fan curve inside
+  its limits); they are not hardware-safe limits.
 - Turing images carry a **signed list of digests that covers the edited tables**. The editor cannot update it.
-  On the RTX 2080 Ti above the driver used the edited board power anyway; for the other tables it is not known.
+  On the RTX 2080 Ti above the driver used the edited board and connector power anyway; for the other tables it
+  is not known.
 - Saving an edited Turing copy also saves two loader files next to it:
   - `<name>-loader.bin`: the first bank of the copy, unchanged. Load this one first.
   - `<name>-loader-e0end.bin`: the same bank, ending at its last data image. The small image after it, which
@@ -88,9 +93,9 @@ setup so the module is rebuilt with the Turing chips.
    `<name>-loader.bin` and reboot. Run `nvidia-smi -q -d POWER`: does Min (or Max, or Default) Power Limit
    show the new value?
 4. **If it does not change**, load `<name>-loader-e0end.bin` (same edit) instead, reboot and check again.
-5. **Raising the board power** above the stock limit probably takes more than the board power fields (inferred,
-   not tested): each input has its own limit, and with stock values their sum is close to the stock maximum
-   board power. One step at a time, testing under load after each:
+5. **Raising the board power** above the stock limit takes more than the board power fields: each input has its
+   own limit, and with stock values their sum is close to the stock maximum board power (on the RTX 2080 Ti above,
+   steps 1 and 2 took it from about 300 W to 458 W). One step at a time, testing under load after each:
    1. `power_max_w` and `power_default_w` to the target, and both `connector_N_power_rated_w` and
       `connector_N_power_max_w` to about the target divided by the number of connectors (for example 500 W and
       250 W on a two-connector RTX 2080 Ti).

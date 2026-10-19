@@ -854,8 +854,8 @@ covers the reviewed table size at every fan pointer: when the tables do not deco
 agree in the source, including a table with another header, no byte of them may
 change. All fan fields are
 reviewed resolvers: an extension binding cannot unlock them, relax the band or the
-curve bounds, redirect their bytes or substitute a layout. No fan edit has been
-booted on hardware.
+curve bounds, redirect their bytes or substitute a layout. Only the RTX 5080 limit
+test above and the zero RPM test below have booted a fan edit on hardware.
 
 ### Zero RPM (`fan_zero_rpm`, opt-in)
 
@@ -868,18 +868,25 @@ Byte `0x32`, the last byte of each 51-byte policy entry, is a flag byte.
   bytes 30..33 (1/32 °C) and byte 46 of the same entry. The contribution that proposed
   the field reports the same decode in the Windows driver (nvlddmkm.sys 617.42,
   booleans at structure offsets +0x80 and +0x81).
-- **Corpus.** Every GeForce GB20x image sets both bits on every enabled entry: 0x17 on
-  the channel entries and 0x07 on the extra curves, or 0x16/0x06 (bit 0 clear) on the
-  ASUS XOC and MSI Lightning images. Every RTX PRO image clears both: 0x11/0x01 on the
-  PRO 4000 SFF, 0x01 on the PRO 6000 Workstation and Max-Q. No image sets one bit
-  alone. Bytes 30..33 hold two rising temperatures (43/50, 50/55 or 50/60 °C on the
+- **Corpus.** In the corpus, every GeForce GB20x image sets both bits on every
+  enabled entry: 0x17 on the channel entries and 0x07 on the extra curves, or
+  0x16/0x06 (bit 0 clear) on the ASUS XOC and MSI Lightning images. Every RTX PRO
+  image clears both: 0x11/0x01 on the PRO 4000 SFF, 0x01 on the PRO 6000
+  Workstation and Max-Q. No image sets one bit alone. Bytes 30..33 hold two rising temperatures (43/50, 50/55 or 50/60 °C on the
   channel entries) and byte 46 holds 0, except on the RTX PRO 6000 Max-Q, which stores
   zeros and 0xff there.
 - **Owner reports.** The contribution came with owner reports for images outside the
   reviewed corpus: the fans stand still at idle on the Palit GameRock RTX 5090, the
   ASUS TUF RTX 5090 and the ASUS TUF RTX 5070 Ti (0x17/0x07), and keep turning at
   about 1100 RPM on the HP Omen RTX 5090 (0x11/0x01). "1 lets the fans stand still at
-  low temperature" is therefore an inferred meaning.
+  low temperature" was an inferred meaning until the hardware test below.
+- **Hardware test.** On that HP Omen RTX 5090 (three fan channels), a copy with
+  `fan_zero_rpm` set to 1 (0x17/0x07 on the five enabled entries, written by the
+  editor build that came with the contribution, which writes the same bytes) loaded
+  through the Windows loader: all three fans stood still at idle, started under load
+  and stopped again after cooling down. Its entries store the same fan-stop
+  temperatures as the RTX 5090 Founders Edition image (43/50 °C on the channel
+  entries).
 - **Field.** `fan_zero_rpm` is 1 when both bits are set on every enabled entry (the
   active channels' entries and the enabled curves past the cooler rows) and 0 when
   both are clear. A write sets or clears both bits on all of them at once, the only
@@ -897,8 +904,8 @@ Byte `0x32`, the last byte of each 51-byte policy entry, is a flag byte.
   at 0, so that change cannot be undone in the editor. The window shows the field,
   like the other 0/1 fields, as a switch behind the advanced toggle.
 
-The other policy entry bytes are preserved. No `fan_zero_rpm` edit has been booted on
-hardware.
+The other policy entry bytes are preserved. Setting 1 is hardware-tested on that one
+board; other boards and setting 0 are not.
 
 ## Ada fields
 
@@ -1117,12 +1124,14 @@ firmware whose limit is unknown; this check does not infer it.
 
 Turing TU102-TU117 images (BIOS 90.xx) are recognized for their board power, per-input
 power and current rows, voltage minimum, clock offset ranges and fans. The rules below
-were checked on the 22 images of the Turing corpus (desktop, laptop, Max-Q, Quadro and
-TITAN). One RTX 2080 Ti ran an edited image through the Windows loader (driver 617.70,
-GSP 615.78.08): `nvidia-smi` reported the edited TGP (500 W default and maximum), but
-the card still stopped near 300 W under load (cause unknown). No other Turing field has
-run on hardware, so **every Turing field is experimental**. The tester guide is in
-[turing.md](turing.md).
+were checked on the 24 images of the Turing corpus (desktop, laptop, Max-Q, Quadro,
+TITAN and two XOC images). One RTX 2080 Ti (ROG Matrix BIOS) ran edited images through
+the Windows loader (driver 617.70, GSP 615.78.08): `nvidia-smi` reported the edited TGP
+(500 W default and maximum), but the card stopped near 300 W under load until the
+connector power rows were raised too (250 W each); it then reached about 458 W, and the
+voltage limiters (Reliability Voltage, Max Operating Voltage) triggered, not the power
+limiter. No other Turing field has run on hardware, so **every Turing field is
+experimental**. The tester guide is in [turing.md](turing.md).
 
 **Image chains.** Each bank holds legacy + EFI + two E0 images (laptops without EFI:
 legacy marked last + two E0 images), and the second E0 image is not flagged last: a
@@ -1152,36 +1161,43 @@ connectors, as on Ampere; a connector threshold field needs index 1 or 2. The Am
 
 | Field | Row | Notes |
 | --- | --- | --- |
-| `slot_power_rated_w`, `_max_w` | 3: class 4 mW on the slot channel 3 (byte-identical to the Ada one) | 14 desktop and workstation images; 63-64 W rated, 63-76 W maximum |
-| `connector_N_power_rated_w`, `_max_w` | 4 and 5: class 4 mW on channels 4 and 5 (rails 0xfa, 0xfb, 0xfc) | Two on the TU10x boards, one on the GTX 1660, 1660 SUPER, 1660 Ti and 1650 SUPER; 70-147 W rated, 82-172 W maximum |
+| `slot_power_rated_w`, `_max_w` | 3: class 4 mW on the slot channel 3 (byte-identical to the Ada one) | 16 desktop and workstation images; 63-64 W rated, 63-76 W maximum on the stock images |
+| `connector_N_power_rated_w`, `_max_w` | 4 and 5: class 4 mW on channels 4 and 5 (rails 0xfa, 0xfb, 0xfc); a third, row 6 (rail 0xe4), on the Galax HOF XOC image | Two on the TU10x boards, one on the GTX 1660, 1660 SUPER, 1660 Ti and 1650 SUPER; 70-167 W rated, 82-172 W maximum on the stock images |
 | `slot_current_threshold_rated_ma`, `_max_ma` (opt-in) | 7: class 5 mA on the slot channel, threshold 0 | 10-11 A rated, 11-16.5 A maximum |
 | `connector_N_current_threshold_rated_ma`, `_max_ma` (opt-in) | 8 and 9: class 5 mA on the channel of connector N, thresholds 1 and 2 | 14.5-22.5 A rated, 14.5-33.75 A maximum; a field only where the channel carries one connector power row and one such row |
-| `nvvdd_output_ocp_rated_ma`, `_max_ma` (opt-in) | 13: class 10 mA on channel 19, whose 22 bytes equal the Ada NVVDD current sensor channel | 21 images, 40.25-350.94 A rated; class 10 is not described in nvgpu |
+| `nvvdd_output_ocp_rated_ma`, `_max_ma` (opt-in) | 13: class 10 mA on channel 19, whose 22 bytes equal the Ada NVVDD current sensor channel | 23 images, 40.25-350.94 A rated on the stock images; class 10 is not described in nvgpu |
 
-The relationship entries of the TGP policy name rows 3, 4, 5, 7, 8, 9 and 13 (meaning
-of the link unknown): with stock values the slot and connector rows sum to about the
-stock board power, so a TGP raised past that sum probably needs them raised too
-(inferred). The ASUS RTX 2080 Ti XOC image raises rows 3/4/5 (372.8/648/648 W) with its
-1000 W TGP and turns rows 7, 8, 9 and 13 into class 0; those rows then give no field,
-and the editor does not reproduce such a change. Five images (RTX 2060, GTX 1660,
-1660 SUPER, 1660 Ti, 1650 SUPER) also store a class-5 mA row 12 on another NVVDD
-channel (sensor 5, provider 2; 155.88 A, 276 A on the RTX 2060): it has no field and is
-named in the NVVDD reason and in `nvvdd_threshold_rows`. The Max-Q and laptop images
-read the slot rows through another rail (0xf1) and have no slot or connector field;
-the Ampere class-0 NVVDD rule is not used on Turing. Not decoded: the class-8 row 11
-on the sum of the inputs, the 5001 W and 1001 W rows on other sums, the relationship
-table entries, the TGP flag byte and the power sensor table (P+0x28).
+The relationship entries of the TGP policy name rows 3, 4, 5, 7, 8, 9 and 13 (meaning of
+the link unknown): with stock values the slot and connector rows sum to about the stock
+board power, so a TGP raised past that sum needs them raised too. On the RTX 2080 Ti
+above, a 500 W TGP alone stopped near 300 W; with both connector rows at 250 W the card
+reached about 458 W. The ASUS RTX 2080 Ti XOC image raises rows 3/4/5 (372.8/648/648 W)
+with its 1000 W TGP and turns rows 7, 8, 9 and 13 into class 0; those rows then give no
+field, and the editor does not reproduce such a change. The Galax HOF XOC image (three
+8-pin connectors) sets the TGP and rows 3/4/5 to 2000 W and rows 7, 8, 9 and 13 to 2000
+A, but leaves its third connector row 6 at 143/167 W. Five images (RTX 2060, GTX 1660,
+1660 SUPER, 1660 Ti, 1650 SUPER) also store a class-5 mA row 12 on another NVVDD channel
+(sensor 5, provider 2; 155.88 A, 276 A on the RTX 2060): it has no field and is named in
+the NVVDD reason and in `nvvdd_threshold_rows`. The Max-Q and laptop images read the
+slot rows through another rail (0xf1) and have no slot or connector field; the Ampere
+class-0 NVVDD rule is not used on Turing. Not decoded: the class-8 row 11 on the sum of
+the inputs, the 5001 W and 1001 W rows on other sums, the relationship table entries,
+the TGP flag byte and the power sensor table (P+0x28).
 
 **Voltage (P+0x68, P+0x20).** Rail table `10 05 0e 01 00`: one 14-byte nvgpu 1x row
 (`vbios_voltage_rail_table_1x_entry`) in the legacy image, with selectors REL +4, ALT +5,
 OV +6, power equation +7, boot voltage +8, VMIN limit +9 and voltage margin limit +10
-(u8, 0xff absent). Every image keeps REL < ALT (if present) < BOOT = OV - 1 and VMIN =
-OV + 1 with no margin limit equation; another order, or a margin limit, is refused.
+(u8, 0xff absent). Every image but one keeps REL < ALT (if present) < BOOT = OV - 1 and
+VMIN = OV + 1 with no margin limit equation; the Galax HOF XOC image points REL and ALT
+at the OV equation (REL = ALT = OV = 1125 mV, BOOT and VMIN as stock), which is also
+accepted. Another order, or a margin limit, is refused.
 VFE `30 09 19 14 18` (20 variables) with the Ampere 24-byte equations, u8 count and u8
-links. REL, ALT and OV are `constant` equations on all 22 images (REL 1068.75 mV,
+links. REL, ALT and OV are `constant` equations on all 24 images (REL 1068.75 mV,
 950 mV on three Max-Q and laptop images; ALT 1093.75 mV, 1118.25 mV on one partner RTX
 2080 image, absent on the Quadro RTX 8000 and six Max-Q and laptop images; OV 1125 mV),
 so the REL/ALT/OV ceiling fields, selectors and boot voltage are read-only, as on Ampere.
+On the HOF XOC image the fixed REL and ALT fields are read-only too (their equation is
+also OV's) and VMIN stays editable.
 An edit may not change the equation the boot voltage selector picks.
 `nvvdd_rel_fixed_mv` and `nvvdd_alt_fixed_mv` (opt-in) set the REL or ALT constant as
 on Ada (see [Fixed REL and ALT values](#fixed-rel-and-alt-values-nvvdd_rel_fixed_mv-nvvdd_alt_fixed_mv)): the
@@ -1204,10 +1220,10 @@ maximum written in both banks). How it relates to the driver VMIN on Turing is u
 Each row is gated by its usage (1 master: GPC, DRAM, DISP; 2 slave; 0 PWR), its ordering
 byte, byte 8 = 0 and `ff ff` at bytes 9..10. Master rows store the signed MHz offset
 minimum/maximum at bytes 3/5 (nvgpu parameter 1): GPC -1000..1000 and DRAM -1000..3000
-on every image but the Quadro RTX 8000 (0..0, read-only) and the ASUS XOC (GPC maximum
-8000, DRAM maximum 5000). The slave rows (XBAR, SYS, VID) store other parameters there
-and have no field. Units as on Ampere (GPC MHz = table, memory MHz = 2 x table, by
-analogy). An edit may not collapse a range to 0..0.
+on every image but the Quadro RTX 8000 (0..0, read-only) and the ASUS and Galax HOF XOC
+images (GPC maximum 8000, DRAM maximum 5000). The slave rows (XBAR, SYS, VID) store
+other parameters there and have no field. Units as on Ampere (GPC MHz = table, memory
+MHz = 2 x table, by analogy). An edit may not collapse a range to 0..0.
 
 **Fans.** The Ada cooler (P+0x58) and mapping (P+0x64) tables, and a policy table v0x10
 (P+0x5C, `10 06 36 02`) with its own channel list (header bytes 4..5) and two 54-byte
@@ -1219,13 +1235,13 @@ all three tables, policy byte 2 and mapping byte 1 equal to its index and policy
 9..16 = `23 2b 0a 01 00 02 80 00` (every active entry; Ada bytes 6..13, the same bytes
 on most Ada and Ampere images); an unlisted one is disabled in all three. PWM
 frequency (25 or 27 kHz), channel limits and curve points then follow the Ada rules
-(15 GPU-driven images). The disabled entries hold bytes unlike the active ones and
+(17 GPU-driven images). The disabled entries hold bytes unlike the active ones and
 there is no control or speed table, so `fan_channels` is read-only. The Max-Q and
 laptop images list no channel and enable none (no fan field); the GTX 1650 SUPER
 disables its fan 0 mapping entry while the other tables list it and keeps no fan field.
 
 **Checksum padding.** The checksum padding is checked on the images of the edited
-tables in the second E0 image (power, VFE, fans: padded on all 22 images). The clock
+tables in the second E0 image (power, VFE, fans: padded on all 24 images). The clock
 table sits in the legacy image, which lacks the padding on one RTX 2080 image: its
 clock fields alone stay read-only, with that reason. Writes go to both banks and
 repair the checksum of each touched image.
@@ -1235,8 +1251,8 @@ signed list of 16-byte digests (algorithm unknown). Its chunks cover the E0 imag
 the legacy image, except three small gaps just after the clock table, so every Turing
 write leaves it stale; the editor cannot update it. On Ampere and Ada the same kind of
 list sits before the legacy image and is not sent to GSP; on Turing it is inside the
-loaded bytes. The RTX 2080 Ti reading above shows that the driver used an edited TGP
-with a stale list; for the other tables it is not known.
+loaded bytes. The RTX 2080 Ti readings above show that the driver used an edited TGP
+and edited connector power rows with a stale list; for the other tables it is not known.
 
 **Load path.** TU10x/TU11x load `gsp_tu10x.bin`, whose override receiver matches the
 GA10x/AD10x one with the same 512 KiB capacity (static emulation of the 615.78.08

@@ -2,12 +2,13 @@
 
 [English](turing.md) | Español
 
-Las GPUs Turing (TU102, TU104, TU106, TU116 y TU117: GeForce RTX 20 y GTX 16, TITAN RTX, Quadro RTX y la serie
-T) las reconocen el editor y ambos cargadores, **de forma experimental**. Una RTX 2080 Ti ya corrió una imagen
-editada con el cargador de Windows (driver 617.70): el override se cargó y `nvidia-smi` mostró el límite de
-potencia editado (500 W por defecto y máximo), pero bajo carga la tarjeta siguió deteniéndose cerca de 300 W,
-y todavía no se sabe por qué. Nada más de lo que sigue está probado en hardware. Si tienes una tarjeta Turing,
-la guía del final nos dice qué funciona.
+Las GPUs Turing (TU102, TU104, TU106, TU116 y TU117: GeForce RTX 20 y GTX 16, TITAN RTX, Quadro RTX y la serie T)
+las reconocen el editor y ambos cargadores, **de forma experimental**. Una RTX 2080 Ti (BIOS ROG Matrix) ya corrió
+imágenes editadas con el cargador de Windows (driver 617.70). Una potencia de la tarjeta de 500 W más 250 W por
+conector se cargó y la tarjeta llegó a unos 458 W bajo carga: el limitador de potencia dejó de activarse y se
+activaron los de voltaje (Reliability Voltage, Max Operating Voltage). Con solo la potencia de la tarjeta se
+detenía cerca de 300 W, porque las filas de cada conector seguían en sus valores de fábrica. Nada más de lo que
+sigue está probado en hardware. Si tienes una tarjeta Turing, la guía del final nos dice qué funciona.
 
 ## Qué hace el editor
 
@@ -19,7 +20,8 @@ Todos los campos Turing están marcados como experimentales. Los marcados como *
 - **Límites de potencia por entrada** (imágenes de escritorio y workstation): `slot_power_max_w` /
   `slot_power_rated_w` para el slot PCIe, y `connector_N_power_max_w` / `connector_N_power_rated_w` para cada
   canal de medición de un conector externo de 12 V (dos en la mayoría de las RTX 20, uno en las GTX 1660,
-  1660 SUPER, 1660 Ti y 1650 SUPER).
+  1660 SUPER, 1660 Ti y 1650 SUPER, tres en la imagen Galax HOF XOC de la RTX 2080 Ti, que deja el tercero en
+  143/167 W mientras los demás están en 2000 W).
 - **Umbrales de corriente** (avanzados): `slot_current_threshold_*_ma` y `connector_N_current_threshold_*_ma`,
   los umbrales de sobrecorriente por hardware del slot y de cada canal de conector.
 - **Límite de corriente de salida NVVDD** (avanzado): `nvvdd_output_ocp_max_ma` / `nvvdd_output_ocp_rated_ma`.
@@ -32,7 +34,10 @@ Todos los campos Turing están marcados como experimentales. Los marcados como *
   sube primero ALT, o ambos a la vez. Ambos se mantienen además como mínimo en el voltaje de arranque y en VMIN
   más lo que suman sus ecuaciones encadenadas. La edición conserva el valor guardado en la ecuación, así que la
   copia puede volver exactamente al original. No se sabe si la tarjeta corre entonces a más voltaje: la curva VF
-  y los demás límites siguen aplicando, y más voltaje significa más calor, más potencia y más desgaste.
+  y los demás límites siguen aplicando, y más voltaje significa más calor, más potencia y más desgaste. La imagen
+  Galax HOF XOC apunta REL y ALT a la ecuación de OV (REL = ALT = OV = 1125 mV); ahí el editor muestra esos
+  valores como solo lectura, también los campos fijos, y deja VMIN editable. En una imagen de fábrica, poner ALT
+  y REL fijos en 1125 mV en una misma edición da los mismos valores evaluados (sin probar en hardware Turing).
 - **Rangos de offset de reloj**: `gpc_offset_max_mhz` / `gpc_offset_min_mhz` (núcleo) y `memory_offset_max_mhz` /
   `memory_offset_min_mhz`, los rangos que puede usar una herramienta de overclock. Por sí solos no cambian los
   relojes.
@@ -47,13 +52,14 @@ Todos los campos Turing están marcados como experimentales. Los marcados como *
   2080 no tiene el relleno de la suma de comprobación en la imagen que contiene la tabla de relojes, así que
   sus rangos de reloj son de solo lectura; las tablas de ventilador de la GTX 1650 SUPER no concuerdan y no
   dan campo de ventilador.
-- Las tablas se decodifican por su estructura, comprobada en las 22 imágenes Turing examinadas (escritorio,
-  portátil, Max-Q, Quadro y TITAN, de TU102 a TU117). El cambio se escribe en los dos bancos de la imagen y se
-  repara la suma de comprobación de cada imagen tocada. Los límites mantienen el orden guardado (mínimo <=
-  nominal <= máximo, una curva de ventilador dentro de sus límites); no son límites seguros para el hardware.
+- Las tablas se decodifican por su estructura, comprobada en las 24 imágenes Turing examinadas (escritorio,
+  portátil, Max-Q, Quadro, TITAN y dos imágenes XOC, de TU102 a TU117). El cambio se escribe en los dos bancos
+  de la imagen y se repara la suma de comprobación de cada imagen tocada. Los límites mantienen el orden guardado
+  (mínimo <= nominal <= máximo, una curva de ventilador dentro de sus límites); no son límites seguros para el
+  hardware.
 - Las imágenes Turing llevan una **lista firmada de resúmenes (digests) que cubre las tablas editadas**. El
-  editor no puede actualizarla. En la RTX 2080 Ti de arriba el driver usó igualmente la potencia editada; para
-  las demás tablas no se sabe.
+  editor no puede actualizarla. En la RTX 2080 Ti de arriba el driver usó igualmente la potencia de la tarjeta
+  y de los conectores editada; para las demás tablas no se sabe.
 - Al guardar una copia Turing editada también se guardan dos archivos para los cargadores a su lado:
   - `<nombre>-loader.bin`: el primer banco de la copia, sin cambios. Carga este primero.
   - `<nombre>-loader-e0end.bin`: el mismo banco, terminado en su última imagen de datos. Se quita la imagen
@@ -97,10 +103,10 @@ vuelve a ejecutar la configuración para que se recompile el módulo con los chi
    o Default) Power Limit muestra el valor nuevo?
 4. **Si no cambia**, carga en su lugar `<nombre>-loader-e0end.bin` (el mismo cambio), reinicia y vuelve a
    comprobar.
-5. **Subir la potencia** por encima del límite de fábrica probablemente requiere más que los campos de
-   potencia de la tarjeta (deducido, sin probar): cada entrada tiene su propio límite y, con los valores de
-   fábrica, su suma queda cerca de la potencia máxima de fábrica. Un paso cada vez, probando bajo carga después
-   de cada uno:
+5. **Subir la potencia** por encima del límite de fábrica requiere más que los campos de potencia de la
+   tarjeta: cada entrada tiene su propio límite y, con los valores de fábrica, su suma queda cerca de la
+   potencia máxima de fábrica (en la RTX 2080 Ti de arriba, los pasos 1 y 2 la llevaron de unos 300 W a 458 W).
+   Un paso cada vez, probando bajo carga después de cada uno:
    1. `power_max_w` y `power_default_w` al objetivo, y `connector_N_power_rated_w` y
       `connector_N_power_max_w` de cada conector a más o menos el objetivo dividido por la cantidad de
       conectores (por ejemplo 500 W y 250 W en una RTX 2080 Ti de dos conectores).

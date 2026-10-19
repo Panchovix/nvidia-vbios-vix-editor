@@ -561,13 +561,16 @@ class TableRom:
     def _selectors(self, row, count):
         b = self.blob
         if self.family == 'turing':
-            # nvgpu 1x row; every Turing image keeps REL < ALT (if present) < BOOT = OV - 1, VMIN = OV + 1
-            # and no margin limit equation, which could select one of them.
+            # nvgpu 1x row; Turing images keep REL < ALT (if present) < BOOT = OV - 1, VMIN = OV + 1
+            # and no margin limit equation, which could select one of them. The Galax HOF XOC image
+            # points REL and ALT at the OV equation instead (BOOT, VMIN and margin as stock).
             rel, alt, ov, boot, vmin = (b[row + k] for k in (4, 5, 6, TURING_BOOT_OFFSET, TURING_VMIN_OFFSET))
-            ordered = rel < boot == ov - 1 and vmin == ov + 1 and (alt == 0xFF or rel < alt < boot)
-            if 0xFF in (rel, ov, boot, vmin) or vmin >= count or not ordered or b[row + TURING_MARGIN_OFFSET] != 0xFF:
-                raise FormatError('unvalidated Turing rail selectors (expected REL < ALT < BOOT = OV - 1, '
-                                  'VMIN = OV + 1, no margin limit)')
+            ordered = rel < boot and (alt == 0xFF or rel < alt < boot)
+            followed = rel == ov and alt in (0xFF, ov)
+            if (0xFF in (rel, ov, boot, vmin) or vmin >= count or boot != ov - 1 or vmin != ov + 1 or
+                    not (ordered or followed) or b[row + TURING_MARGIN_OFFSET] != 0xFF):
+                raise FormatError('unvalidated Turing rail selectors (expected REL < ALT < BOOT or REL = ALT = OV, '
+                                  'BOOT = OV - 1, VMIN = OV + 1, no margin limit)')
             return {'REL': rel, 'ALT': alt, 'OV': ov}
         selectors = {role: b[row + offset] for role, offset in ADA_ROLE_OFFSETS}
         rel, alt, ov, vmin = (selectors[k] for k in ('REL', 'ALT', 'OV', 'VMIN'))
@@ -646,13 +649,15 @@ class TableRom:
             refs.update(link for link in links if link != (1 << 8 * width) - 1)
         return refs
 
-    def _ada_equation_kind(self, vfe, base, index, refs):
+    def _ada_equation_kind(self, vfe, base, index, refs, roles=()):
         """Classify one VFE output equation; only 'temperature-derated' takes a ceiling edit.
 
         That kind is a float quadratic in uV (type 1, unit 2) on a sensed
         temperature variable, with a nonzero slope, finite 0 <= min <= max, no
         next link and no reference from another equation, as the hardware-tested
-        REL of the reviewed board.
+        REL of the reviewed board. Such an equation picked by more than one
+        selector of its rail row (roles), as REL = OV, is 'shared' instead: a
+        ceiling edit would move every role that picks it.
         """
         b = self.blob
         size, width = self._equation_layout()
@@ -675,7 +680,7 @@ class TableRom:
         variable = b[at + 1]
         if variable >= b[vfe + 3] or b[vfe + b[vfe + 1] + variable * b[vfe + 2]] != 3:
             return 'non-temperature'
-        return 'temperature-derated'
+        return 'shared' if list(roles).count(index) > 1 else 'temperature-derated'
 
     def rail_limits(self):
         rails, vfe, base, count = self._rails()
@@ -705,7 +710,7 @@ class TableRom:
             constant = not coefficients[1] and not coefficients[2]
             if b[variable] != 3 and not constant:
                 raise FormatError('unvalidated REL input variable (expected temperature)')
-            kind = self._ada_equation_kind(vfe, base, index, refs)
+            kind = self._ada_equation_kind(vfe, base, index, refs, list(selectors.values()))
             sensed = (dict(index=var_index, offset=variable, type=3, meaning='sensed temperature',
                            thermal_channel=b[variable + 9], units_inferred='degrees Celsius') if b[variable] == 3 else
                       dict(index=var_index, offset=variable, type=b[variable], meaning='not read by a constant equation'))
@@ -741,7 +746,7 @@ class TableRom:
                             output_minimum_uv=None, output_maximum_uv=None, layout_recognized=False)
                 if not item['absent']:
                     at = base + selector * size
-                    kind = self._ada_equation_kind(vfe, base, selector, refs)
+                    kind = self._ada_equation_kind(vfe, base, selector, refs, list(selectors.values()))
                     item.update(equation_offset=at, maximum_offset=at + 7, equation_type=self.blob[at],
                                 output_unit_code=self.blob[at + 23] & 15, output_flags=self.blob[at + 23],
                                 equation_kind=kind)

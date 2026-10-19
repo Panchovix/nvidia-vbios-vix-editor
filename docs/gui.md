@@ -76,8 +76,8 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    fixed REL/ALT voltages and, on Blackwell and Ada, **NVVDD REL and ALT follow
    OV** (a switch: on gives the flat XOC-style voltage limit; save it on its own,
    and keep the original image to go back) and, on Blackwell, **Fan zero RPM** (a
-   switch for the flag bits that, by inference, let the fans stand still at idle;
-   experimental); values typed before ticking it are kept. Read-only 0/1 fields
+   switch for the flag bits that let the fans stand still at idle, hardware-tested
+   on one RTX 5090; experimental); values typed before ticking it are kept. Read-only 0/1 fields
    show On or Off. **Shunt multiplier (x)** (1 = off, up to 10) is display only:
    for board power, PCIe slot power/current, connector power/current and 12 V
    input current rows it adds a note with the real limit on a shunt-modded card, about
@@ -117,7 +117,10 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    and the curve levels appear with the advanced fields. Save a new channel count
    before changing channel limits, curves or zero RPM on the copy.
    Voltage compatibility aliases, selector indices and stored boot values are
-   not shown; `nvbios fields` lists them. Each equation ceiling, including ALT, is an
+   not shown; `nvbios fields` lists them. The same goes for the generic input
+   current and OCP placeholders (`current_limit_a`, `ocp_limit_a`) and the MSVDD
+   ceiling of single-rail images while their value is unknown: no VBIOS row backs them.
+   Each equation ceiling, including ALT, is an
    expression bound, not an evaluated VOP reading or runtime offset. **Minimum
    voltage (VMIN)** (experimental) is the stored value of the equation the driver
    evaluates as VMIN; on Ada the driver adds its chained terms (+90 mV on an RTX
@@ -165,7 +168,10 @@ Keyboard: `Ctrl+O` open, `Ctrl+Enter` verify now, `Ctrl+S` save copy, `Ctrl+R`
 reset, `Ctrl+Q` close. Tab navigates native controls. The default 760×920 window
 is a single column: a device card (product, PCI ID, BIOS version, integrity),
 then Power, Voltage, Clock offsets, Current and protection, and Fans cards, with
-read-only fields grouped in a collapsed section after them. The change bar stays
+read-only fields grouped in a collapsed section after them. When part of the image
+uses a layout the editor does not support yet (for example the fan tables of a few
+images), the matching card says that some of its fields are not shown; the
+heading appears even when no field is left. The change bar stays
 visible below the scrolling fields. Experimental fields carry a badge.
 Load/inspection, preview generation and save run outside the GTK main thread.
 Generation checks discard results from earlier opens/resets. Backend errors show

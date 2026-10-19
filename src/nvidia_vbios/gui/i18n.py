@@ -32,6 +32,8 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'section.voltage_note': ('REL and OV are equation ceilings; a fixed REL or ALT voltage sets the value of a constant '
                           'equation, and a fixed REL stays at or below ALT: to raise it further, raise ALT in the same '
                           'edit. VMIN edits a stored value; chained equations may change the effective minimum.'),
+ 'section.unsupported': 'Some fields in this section are not shown: this VBIOS uses a layout the editor does not '
+                        'support yet.',
  'badge.experimental': 'experimental',
  'changes_heading': 'Changes',
  'live_none': 'No changes yet. Edit a value and the preview updates here.',

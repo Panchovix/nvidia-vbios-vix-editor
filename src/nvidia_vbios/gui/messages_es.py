@@ -33,6 +33,8 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                           'constante, y un REL fijo queda igual o por debajo de ALT: para subirlo más, sube ALT en la '
                           'misma edición. VMIN cambia un valor guardado; las ecuaciones encadenadas pueden cambiar el '
                           'mínimo efectivo.'),
+ 'section.unsupported': 'Algunos campos de esta sección no se muestran: esta VBIOS usa una disposición que el editor '
+                        'aún no admite.',
  'badge.experimental': 'experimental',
  'changes_heading': 'Cambios',
  'live_none': 'Sin cambios. Edita un valor y la vista previa se actualiza aquí.',

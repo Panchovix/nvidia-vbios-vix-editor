@@ -1440,7 +1440,7 @@ class FanCoolerTests(unittest.TestCase):
         self.assertEqual((field['bounds']['minimum'], field['bounds']['maximum']), (0, 1))
         self.assertEqual([e['kind'] for e in field['evidence']],
                          ['static-firmware-analysis', 'structural-table', 'static-driver-analysis',
-                          'idle-fan-behavior-correlation'])
+                          'idle-fan-behavior-correlation', 'hardware-test'])
         # Not a curve point: curve selections and the fan_policy key stay with the curves.
         self.assertNotIn('fan_policy', field)
         offsets = self.zero_rpm_offsets(image.blob)

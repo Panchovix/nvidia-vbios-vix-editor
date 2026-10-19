@@ -9,8 +9,8 @@ and the XOC-style flat voltage limit (experimental).
 Ampere (GA10x) images get power limits, power connector channels, clock offset ranges, slot power, fans
 and, where it applies, VMIN (experimental). Turing (TU10x/TU11x) images get power limits, slot and
 connector power and current limits, VMIN, fixed REL/ALT voltages, clock offset ranges and fans
-(experimental; on one RTX 2080 Ti an edited board power limit was reported by `nvidia-smi`, nothing else is
-tested on a Turing card; see the
+(experimental; on one RTX 2080 Ti edited board and connector power limits loaded and the card reached about
+458 W under load, nothing else is tested on a Turing card; see the
 [Turing tester guide](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/turing.md)).
 
 Loading an edited image with the Linux or Windows loader works with NVIDIA 615.x (R615) drivers on Linux and

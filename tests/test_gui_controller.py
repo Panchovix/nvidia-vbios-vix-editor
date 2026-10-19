@@ -199,6 +199,28 @@ class ControllerTests(unittest.TestCase):
         self.assertIn('dram_max_table_mhz', technical_field_keys(ada.report))
         self.assertIn('nvvdd_rel_max_mv', technical_field_keys(ada.report))
 
+    def test_unknown_placeholders_stay_in_the_json_and_out_of_the_window(self):
+        from nvidia_vbios.gui.presentation import technical_field_keys
+        from test_extended_fields import single_rail_fixture
+        from nvidia_vbios.rom import from_bytes, inspect_image
+        for name, blob in (('Ada', synthetic_rom()), ('Ampere', synthetic_rom(family='ampere')),
+                           ('Blackwell', synthetic_blackwell()), ('single rail', single_rail_fixture())):
+            with self.subTest(image=name):
+                report = inspect_image(from_bytes(blob))
+                fields = {f['key']: f for f in report['fields']}
+                placeholders = {k for k in ('current_limit_a', 'ocp_limit_a', 'msvdd_rel_max_mv')
+                                if k in fields and fields[k]['current'] is None}
+                self.assertLessEqual({'current_limit_a', 'ocp_limit_a'}, placeholders)
+                self.assertFalse(any(fields[k]['editable'] for k in placeholders))
+                self.assertLessEqual(placeholders, technical_field_keys(report))
+        single = {f['key']: f for f in inspect_image(from_bytes(single_rail_fixture()))['fields']}
+        self.assertEqual(single['msvdd_rel_max_mv']['reason'], 'this recognized single-rail layout exposes only logic/NVVDD')
+        self.assertIn('msvdd_rel_max_mv', technical_field_keys({'fields': list(single.values())}))
+        # The same keys with a value stay shown.
+        for key in ('current_limit_a', 'ocp_limit_a', 'msvdd_rel_max_mv'):
+            with self.subTest(key=key):
+                self.assertEqual(technical_field_keys({'fields': [dict(single[key], current=5)]}), set())
+
     def test_spanish_known_labels_and_backend_specific_read_only_reasons(self):
         from nvidia_vbios.gui.presentation import field_label, read_only_reason
         fields = {f['key']: f for f in controls(self.controller.document.report)}
@@ -355,6 +377,30 @@ class PresentationNumberTests(unittest.TestCase):
         power = [f['key'] for f in section_order(fields.values()) if f['key'].startswith('connector_')]
         self.assertEqual(power[-2:], CONNECTOR_SUM)
         self.assertTrue(all(shunt_scaled(fields[k]) for k in CONNECTOR_SUM))
+
+    def test_a_failed_resolver_leaves_one_note_in_its_section(self):
+        from nvidia_vbios.gui.i18n import Messages
+        from nvidia_vbios.gui.presentation import unsupported_notes
+        # The Galax HOF XOC shape before its selector layout was accepted: four voltage resolvers failed.
+        message = 'unvalidated Turing rail selectors'
+        report = {'diagnostics': [{'code': 'UNSUPPORTED_FORMAT', 'message': message, 'resolver': resolver}
+                                  for resolver in ('voltage', 'equation_roles', 'evaluated_vmin', 'fixed_voltage')]}
+        self.assertEqual(unsupported_notes(report),
+                         {'voltage': 'Some fields in this section are not shown: this VBIOS uses a layout the editor '
+                                     'does not support yet.'})
+        self.assertEqual(unsupported_notes(report, 'es'), {'voltage': Messages('es')('section.unsupported')})
+        self.assertNotEqual(unsupported_notes(report, 'es'), unsupported_notes(report))
+        # No diagnostics, or none from a mapped resolver (an unpadded image, an unrecognized one, an Ada REL
+        # compare expression that drops only the hidden REL ceiling alias): no note.
+        for diagnostics in ([], [{'message': 'legacy image lacks a contiguous EFI image'}],
+                             [{'message': 'fields are read-only', 'resolver': 'checksum_layout'}],
+                             [{'message': 'REL equation is a compare expression on fused inputs; read-only',
+                               'resolver': 'voltage'}]):
+            with self.subTest(diagnostics=diagnostics):
+                self.assertEqual(unsupported_notes({'diagnostics': diagnostics}), {})
+        self.assertEqual(unsupported_notes({}), {})
+        fans = {'diagnostics': [{'message': 'fan channel enables disagree across the fan tables', 'resolver': 'fans'}]}
+        self.assertEqual(list(unsupported_notes(fans)), ['fans'])
 
     def test_connector_current_labels_sections_shunt_scaling_and_opt_in(self):
         from nvidia_vbios.gui.presentation import (field_label, field_section, opt_in_field_keys, section_order,

@@ -189,12 +189,13 @@ AMPERE_NOTEBOOK_REASON = ('experimental: stored notebook TGP; the platform (Dyna
 AMPERE_NOTEBOOK_DEFAULT_REASON = ('experimental: stored notebook rated TGP; taken as the default power limit by '
                                   'structural analogy with the GB20x notebook layout; no Ampere reading; the platform '
                                   'requests the running limit; not hardware-tested')
-# Turing (TU102-TU117): structural rules checked on the 22 images of the Turing corpus.
+# Turing (TU102-TU117): structural rules checked on the 24 images of the Turing corpus.
 # On one RTX 2080 Ti (Windows loader) the override loaded and nvidia-smi reported an
-# edited TGP despite the stale signed hash list; no other Turing field has run on hardware.
+# edited TGP despite the stale signed hash list; with the connector power rows raised too,
+# the card reached about 458 W under load. No other Turing field has run on hardware.
 TURING_STRUCTURAL_EVIDENCE = {
     'kind': 'structural-row-comparison',
-    'source': 'Turing VBIOS corpus, 22 TU102-TU117 images', 'set_tested': False, 'runtime_get': False}
+    'source': 'Turing VBIOS corpus, 24 TU102-TU117 images', 'set_tested': False, 'runtime_get': False}
 TURING_POWER_EVIDENCE = dict(
     TURING_STRUCTURAL_EVIDENCE,
     format='Turing 3x power 30/2c/42 or 30/27/42 (the first 0x27 header bytes of 30/2c/42); TGP row = header byte '
@@ -213,11 +214,15 @@ TURING_HASH_EVIDENCE = {
     'set_tested': False}
 TURING_NOTE = ('the table decodes like the Ampere one on the Turing images examined; on one RTX 2080 Ti (Windows '
                'loader) the override loaded and nvidia-smi reported an edited TGP although the signed hash list over '
-               'this table, which the editor cannot update, was left stale; that a raised limit raises the real board '
-               'power is not confirmed (that card still stopped near 300 W under load)')
+               'this table, which the editor cannot update, was left stale; under load that card stopped near 300 W '
+               'with the connector power rows at stock and reached about 458 W with them raised to 250 W each')
+# The connector power rows ran on that card with the board power (500 W TGP, 250 W per connector).
+TURING_CONNECTOR_TESTED = ('on one RTX 2080 Ti (Windows loader) a 500 W TGP with 250 W per connector channel loaded '
+                           'and the card reached about 458 W under load (near 300 W with these rows at stock); the '
+                           'signed hash list over this table is left stale')
 # Reason ending of the other Turing fields: none of them has run on hardware.
 TURING_UNTESTED = ('not hardware-tested on Turing; the signed hash list over this table is left stale, as for the '
-                   'board power, whose edit a driver used on one RTX 2080 Ti')
+                   'board and connector power, whose edits a driver used on one RTX 2080 Ti')
 TURING_CHANNEL_FORMAT = ('Turing power row class/unit flags (byte 0) and channel (byte 1); power channel table P+0x3c '
                          'v0x20, 20 entries of 22 bytes: class 5 single input at 12 V (bytes 2..7), rail byte 1, no '
                          'parameter but the current correction offset (bytes 10..13, nvgpu curr_corr_offset) and the '
@@ -232,20 +237,22 @@ TURING_SLOT_EVIDENCE = [
     dict(TURING_STRUCTURAL_EVIDENCE,
          format=TURING_CHANNEL_FORMAT + '; class 4 mW row on the PCIe slot channel (rail 0xff)',
          observation='the slot channel 3 is byte-identical (zero padded) to the Ada slot channel of the GET-reviewed '
-                     'RTX 2000 Ada policy 5 and to the Ampere one; one such row (row 3) on the 14 desktop and '
-                     'workstation images, rated 63-64 W, maximum 63-76 W; the Max-Q, laptop, GTX 1630 and GTX 1650 '
-                     'images store none; ' + TURING_TGP_LINKS),
+                     'RTX 2000 Ada policy 5 and to the Ampere one; one such row (row 3) on the 16 desktop and '
+                     'workstation images, rated 63-64 W, maximum 63-76 W on the stock ones (2000 W on the Galax HOF '
+                     'XOC image); the Max-Q, laptop, GTX 1630 and GTX 1650 images store none; ' + TURING_TGP_LINKS),
     dict(TURING_XOC_EVIDENCE, observation='the XOC image stores row 3 at 372.8 W rated and maximum (stock 63/74 W)')]
 TURING_CONNECTOR_EVIDENCE = [
     dict(TURING_STRUCTURAL_EVIDENCE,
-         format=TURING_CHANNEL_FORMAT + '; class 4 mW rows on the external 12 V connector channels, rails 0xfa, 0xfb '
-                                        'and 0xfc',
+         format=TURING_CHANNEL_FORMAT + '; class 4 mW rows on the external 12 V connector channels, rails 0xfa, '
+                                        '0xfb, 0xfc and 0xe4',
          observation='one row per connector sense channel (rows 4 and 5, channels 4 and 5), numbered in power-row '
-                     'order, on the 14 desktop and workstation images: two on the TU10x boards, one on the GTX 1660, '
-                     '1660 SUPER, 1660 Ti and 1650 SUPER; rated 70-147 W, maximum 82-172 W; the RTX 2070 channels hold '
-                     'a current correction offset (200 and 300) and are accepted on Turing only; rail names are '
-                     'inferred; with the slot row they likely cap the board power below a TGP raised past their sum '
-                     '(inferred, untested); ' + TURING_TGP_LINKS),
+                     'order, on the 16 desktop and workstation images: two on the TU10x boards, one on the GTX 1660, '
+                     '1660 SUPER, 1660 Ti and 1650 SUPER; rated 70-167 W, maximum 82-172 W on the stock images; the '
+                     'Galax HOF XOC image sets rows 4 and 5 to 2000 W and leaves a third (row 6, channel 6, rail 0xe4) '
+                     'at 143/167 W; the RTX 2070 channels hold a current correction offset (200 and 300) and are '
+                     'accepted on Turing only; rail names are inferred; with the slot row they cap the board power '
+                     'below a TGP raised past their sum: on one RTX 2080 Ti a 500 W TGP stopped near 300 W with them '
+                     'at stock and reached about 458 W with them at 250 W; ' + TURING_TGP_LINKS),
     dict(TURING_XOC_EVIDENCE, observation='the XOC image stores rows 4 and 5 at 648 W rated and maximum (stock '
                                           '143/167 W) with its 1000 W TGP')]
 TURING_SLOT_CURRENT_EVIDENCE = [
@@ -253,26 +260,28 @@ TURING_SLOT_CURRENT_EVIDENCE = [
          format=TURING_CHANNEL_FORMAT + '; class 5 (hardware threshold, nvgpu bios.h) mA row on the PCIe slot '
                                         'channel, threshold index 0 (parameter byte 0)',
          observation='the same class, unit and channel as the GET-reviewed RTX 2000 Ada policy 8 (CONTROL current = '
-                     'rated there); row 7 on 13 desktop and workstation images, rated 10-11 A, maximum 11-16.5 A; the '
-                     'Max-Q and laptop images read another rail (0xf1) there and give no field'),
+                     'rated there); row 7 on 15 desktop and workstation images, rated 10-11 A, maximum 11-16.5 A on the '
+                     'stock ones (2000 A on the Galax HOF XOC image); the Max-Q and laptop images read another rail '
+                     '(0xf1) there and give no field'),
     dict(TURING_XOC_EVIDENCE, observation='the XOC image changes rows 7, 8 and 9 to class 0 (no field), which the '
                                           'editor does not reproduce')]
 TURING_CONNECTOR_CURRENT_EVIDENCE = [
     dict(TURING_STRUCTURAL_EVIDENCE,
          format=TURING_CHANNEL_FORMAT + '; class 5 (hardware threshold) mA row on the channel of a connector power row',
-         observation='row 8 (channel 4, threshold index 1) on 13 images, rated 14.5-22.5 A, maximum 14.5-33.75 A; '
-                     'row 9 (channel 5, threshold index 2) on the 9 two-connector images, rated 17-22.5 A, maximum '
-                     '17-33.75 A; the threshold indices (parameter byte 0) run slot 0, connector 1, connector 2 as on '
-                     'Ampere'),
+         observation='row 8 (channel 4, threshold index 1) on 15 images, rated 14.5-22.5 A, maximum 14.5-33.75 A; '
+                     'row 9 (channel 5, threshold index 2) on the 11 two-connector images, rated 17-22.5 A, maximum '
+                     '17-33.75 A (2000 A on the Galax HOF XOC image, whose third-connector threshold row 10, 22.5/33.75 '
+                     'A, is class 0 and gives no field); the threshold indices (parameter byte 0) run slot 0, '
+                     'connector 1, connector 2 as on Ampere'),
     TURING_SLOT_CURRENT_EVIDENCE[1]]
 TURING_NVVDD_LIMIT_EVIDENCE = [
     dict(TURING_STRUCTURAL_EVIDENCE,
          format='Turing power row class 10 mA on the NVVDD output current channel (class 1, rail 1, sensor byte '
                 '14 = 6)',
-         observation='row 13 on 21 images reads channel 19, whose 22 bytes equal the first 22 bytes of the Ada NVVDD '
+         observation='row 13 on 23 images reads channel 19, whose 22 bytes equal the first 22 bytes of the Ada NVVDD '
                      'output current channel 19 (the GB20x NVVDD current sensor identified by saved GET); rated '
-                     '40.25-350.94 A; class 10 is not described in nvgpu, so whether the firmware enforces the row is '
-                     'unknown; ' + TURING_TGP_LINKS),
+                     '40.25-350.94 A (2000 A on the Galax HOF XOC image); class 10 is not described in nvgpu, so '
+                     'whether the firmware enforces the row is unknown; ' + TURING_TGP_LINKS),
     dict(TURING_XOC_EVIDENCE, observation='the XOC image changes row 13 to class 0 (no field)')]
 TURING_NOTEBOOK_REASON = ('experimental: stored notebook TGP; the platform (Dynamic Boost, nvidia-powerd) requests the '
                           'running limit and may keep it lower; ' + TURING_NOTE)
@@ -603,14 +612,15 @@ TURING_VOLTAGE_EVIDENCE = dict(
     format='Turing rail 10/05/0e/01/00, one 14-byte nvgpu 1x row (vbios_voltage_rail_table_1x_entry): selectors REL '
            '+4, ALT +5, OV +6, boot voltage +8, VMIN limit +9 (u8, ff absent); VFE 30/09/19/14/18 with 20 variables, '
            '24-byte equations, u8 count (header byte 5) and u8 links, as on Ampere',
-    observation='every image keeps REL < ALT (if present) < BOOT = OV - 1, VMIN = OV + 1; REL, ALT and OV are constant '
-                'equations on all 22 images (REL 1068.75 mV, 950 mV on three Max-Q and laptop images; ALT 1093.75 mV, '
-                '1118.25 mV on one partner RTX 2080 image, absent on the Quadro RTX 8000 and six Max-Q and laptop '
-                'images; OV 1125 mV); the boot voltage equation is fixed point')
+    observation='every image but one keeps REL < ALT (if present) < BOOT = OV - 1, VMIN = OV + 1; the Galax HOF XOC '
+                'image points REL and ALT at the OV equation (REL = ALT = OV = 1125 mV); REL, ALT and OV are '
+                'constant equations on all 24 images (REL 1068.75 mV, 950 mV on three Max-Q and laptop images; ALT '
+                '1093.75 mV, 1118.25 mV on one partner RTX 2080 image, absent on the Quadro RTX 8000 and six Max-Q '
+                'and laptop images; OV 1125 mV); the boot voltage equation is fixed point')
 TURING_VMIN_EVIDENCE = dict(
     TURING_STRUCTURAL_EVIDENCE, source=SOURCE,
     format='Turing rail row byte 9 (u8, nvgpu 1x vmin_limit_vfe_equ_idx) selects the VFE equation of the VMIN limit',
-    observation='on all 22 images a float voltage output whose clamp pins 668-703.75 mV, referenced by no other '
+    observation='on all 24 images a float voltage output whose clamp pins 668-703.75 mV, referenced by no other '
                 'equation or selector, with chained equations adding -112.5 to +75 mV: the shape of the Ada row byte '
                 '7 equation whose edit moved the driver VMIN (hardware test)')
 
@@ -1016,8 +1026,9 @@ TURING_FIXED_EVIDENCE = dict(
            'store it as the minimum), no slope, no link and no reference from another equation; clamp maximum '
            '(byte 7) and constant (byte 11) written in every chain, clamp minimum (byte 3) kept',
     observation='REL 1068.75 mV (950 mV on three Max-Q and laptop images), ALT 1093.75 mV (1118.25 mV on one partner '
-                'RTX 2080 image), OV 1125 mV on every image, the ASUS XOC image included; the values match the '
-                'commonly reported Turing voltage caps (not verified here)')
+                'RTX 2080 image), OV 1125 mV on every image, the ASUS XOC image included; the Galax HOF XOC image '
+                'selects the OV equation for REL and ALT instead; the values match the commonly reported Turing '
+                'voltage caps (not verified here)')
 
 
 @registry.register
@@ -1482,7 +1493,7 @@ def connector_power(image, parser):
     """
     if not (ampere(parser) or turing(parser)):
         return []
-    untested = TURING_UNTESTED if turing(parser) else 'not hardware-tested'
+    tested = TURING_CONNECTOR_TESTED if turing(parser) else 'not hardware-tested'
     result = []
     for number, item in enumerate(parser.ampere_policies('connector_power'), 1):
         result += ada_policy_fields(
@@ -1491,12 +1502,12 @@ def connector_power(image, parser):
             group=f'connector-{number}-power', connector=number, channel_rail=item['channel_rail'],
             evidence=TURING_CONNECTOR_EVIDENCE if turing(parser) else AMPERE_CONNECTOR_EVIDENCE,
             reasons=('experimental: ceiling of the power policy of one external 12 V connector channel (rail '
-                     f"{item['channel_rail']:#04x}); SET and enforcement untested; " +
-                     (TURING_UNTESTED + '; ' if turing(parser) else '') +
-                     'stored value, not a hardware-safe connector rating',
+                     f"{item['channel_rail']:#04x}); " +
+                     (TURING_CONNECTOR_TESTED if turing(parser) else 'SET and enforcement untested') +
+                     '; stored value, not a hardware-safe connector rating',
                      'experimental: rated power limit of one external 12 V connector channel (rail '
                      f"{item['channel_rail']:#04x}); with the slot limit it may cap the board power below a raised TGP; "
-                     f'{untested}; stored value, not a hardware-safe connector rating'))
+                     f'{tested}; stored value, not a hardware-safe connector rating'))
     return result
 
 
@@ -1836,7 +1847,7 @@ TURING_FAN_EVIDENCE = [
                 '2b 0a 01 00 02 80 00, Ada bytes 6..13): levels at entry bytes 17..19 and three (1/32 C, RPM) curve '
                 'points from byte 21; no control or speed table (the P token ends before their pointers)',
          observation='the cooler and policy lists agree and name exactly the enabled entries, with policy byte 2 and '
-                     'mapping byte 1 = channel, on the 15 GPU-driven images; active rows hold 25000 or 27000 at bytes '
+                     'mapping byte 1 = channel, on the 17 GPU-driven images; active rows hold 25000 or 27000 at bytes '
                      '11..13 and byte 13 is 0; Max-Q and laptop images list no channel and enable none; the GTX 1650 '
                      'SUPER disables its fan 0 mapping entry while the other tables list it and keeps no fan field; '
                      'the disabled entries hold bytes unlike the active ones, so the channel count stays read-only'),
@@ -2091,9 +2102,10 @@ FAN_ZERO_RPM_DRIVER_EVIDENCE = {
                    'not an enum value'}
 FAN_ZERO_RPM_CORPUS_EVIDENCE = {
     'kind': 'structural-table', 'source': 'GB20x VBIOS corpus',
-    'observation': 'every GeForce GB20x image sets both bits on every enabled policy entry (0x17 on the channel '
-                   'entries and 0x07 on the extra curves; 0x16/0x06 on the ASUS XOC and MSI Lightning images) and '
-                   'every RTX PRO image clears both (0x11/0x01 or 0x01); no image sets one alone; bytes 30..33 hold '
+    'observation': 'every GeForce GB20x image of the corpus sets both bits on every enabled policy entry (0x17 on '
+                   'the channel entries and 0x07 on the extra curves; 0x16/0x06 on the ASUS XOC and MSI Lightning '
+                   'images) and every RTX PRO image clears both (0x11/0x01 or 0x01); no image sets one alone; the '
+                   'HP Omen RTX 5090 image (outside the corpus) clears both; bytes 30..33 hold '
                    'two rising temperatures (43/50, 50/55 or 50/60 C on the channel entries) and byte 46 holds 0, '
                    'except on the RTX PRO 6000 Max-Q: zeros and 0xff'}
 FAN_ZERO_RPM_OWNER_EVIDENCE = {
@@ -2102,6 +2114,12 @@ FAN_ZERO_RPM_OWNER_EVIDENCE = {
     'observation': 'the fans stand still at idle on the Palit GameRock RTX 5090, the ASUS TUF RTX 5090 and the ASUS '
                    'TUF RTX 5070 Ti, whose images store 0x17/0x07, and keep turning at about 1100 RPM on the HP Omen '
                    'RTX 5090, whose image stores 0x11/0x01', 'set_tested': False}
+FAN_ZERO_RPM_HARDWARE = {
+    'kind': 'hardware-test', 'source': 'edited image loaded as an override (Windows loader)', 'set_tested': True,
+    'scope': 'one HP Omen RTX 5090, three fan channels; its image is outside the reviewed corpus',
+    'observed': 'the copy with the field set to 1 (0x11/0x01 -> 0x17/0x07 on the five enabled entries, written by '
+                'the editor build contributed with the field, which writes the same bytes) loaded; all three fans '
+                'stood still at idle, started under load and stopped again after cooling down'}
 
 
 def fan_stop_parameters(blob, at):
@@ -2117,14 +2135,14 @@ def fan_zero_rpm(image, parser):
     """GB20x: bits 1|2 of the flag byte (0x32) of every enabled fan policy entry, both set (1) or clear (0).
 
     The entries are the active channels' and the enabled curves past the cooler rows. GSP-RM decodes
-    the two bits as separate booleans; every GeForce GB20x image sets both, every RTX PRO image clears
-    both, and owner reports tie them to fans that stand still at idle (the meaning is inferred). An
+    the two bits as separate booleans; in the corpus every GeForce GB20x image sets both and every RTX
+    PRO image clears both, and owner reports tie them to fans that stand still at idle. An
     entry with one bit alone, or entries that disagree, leave the field read-only. A write also sets
     the bits on the stored channel entries a larger channel count may enable (fan_layouts), as the
     PWM frequency does, so the count and the flag change in either order; such an entry whose bits
     differ leaves the field read-only. The value 1 is offered only when every written entry stores
-    fan-stop parameters (fan_stop_parameters). Each entry keeps its other flag bits. Opt-in and not
-    hardware-tested.
+    fan-stop parameters (fan_stop_parameters). Each entry keeps its other flag bits. Opt-in; setting 1
+    is hardware-tested on one HP Omen RTX 5090 (FAN_ZERO_RPM_HARDWARE).
     """
     if not isinstance(parser, BlackwellRom):
         return []
@@ -2163,18 +2181,20 @@ def fan_zero_rpm(image, parser):
     return [field('fan_zero_rpm', 'Fan zero RPM (fans may stand still at low temperature)', 'flag', state,
                   0 if editable else None, 1 if editable else None, editable,
                   [dict(FAN_ZERO_RPM_FIRMWARE_EVIDENCE), dict(FAN_ZERO_RPM_CORPUS_EVIDENCE),
-                   dict(FAN_ZERO_RPM_DRIVER_EVIDENCE), dict(FAN_ZERO_RPM_OWNER_EVIDENCE)],
+                   dict(FAN_ZERO_RPM_DRIVER_EVIDENCE), dict(FAN_ZERO_RPM_OWNER_EVIDENCE),
+                   dict(FAN_ZERO_RPM_HARDWARE)],
                   offsets=[e['flag_offset'] for e in entries] if editable else (),
                   encoding='<B' if editable else '', scale=1, layout=layout if editable else (),
                   writable_status=None if editable else 'unsupported', experimental=True, opt_in=True,
                   value_semantics='stored-fan-zero-rpm', fan_entries=[e['index'] for e in entries],
                   reason=reason or 'experimental, opt-in: bits 1 and 2 of the flag byte (0x32) of every enabled fan '
                                    'policy entry (the channel entries and the enabled curves past them), both set '
-                                   '(1) or both clear (0); GSP-RM decodes them as two separate booleans; every '
-                                   'GeForce GB20x image sets both, every RTX PRO image clears both, and owner '
-                                   'reports tie 1 to fans that stand still at idle (inferred meaning); each entry '
-                                   'keeps its other flag bits, and the stored channel entries a larger channel '
-                                   'count enables take the same bits; not hardware-tested')]
+                                   '(1) or both clear (0); GSP-RM decodes them as two separate booleans; in the '
+                                   'corpus every GeForce GB20x image sets both and every RTX PRO image clears '
+                                   'both; each entry keeps its other flag bits, and the stored channel entries a '
+                                   'larger channel count enables take the same bits; hardware-tested on one HP '
+                                   'Omen RTX 5090: with 1 the fans stood still at idle and started under load; '
+                                   'other boards and setting 0 not hardware-tested')]
 
 
 @registry.register
@@ -2272,8 +2292,8 @@ TURING_CLOCK_EVIDENCE = [
          observation='row usage (1 master: GPC, DRAM, DISP; 2 slave; 0 PWR), ordering byte and fixed bytes match on '
                      'every image; master rows hold signed MHz offset minimum/maximum at bytes 3/5 (nvgpu parameter '
                      '1): GPC -1000..1000 and DRAM -1000..3000 on every image except the Quadro RTX 8000 (0..0) and '
-                     'the XOC image (below); the slave rows store other parameters there and give no field; every '
-                     'duplicate chain written'),
+                     'the ASUS (below) and Galax HOF XOC images (GPC maximum 8000, DRAM maximum 5000); the slave rows '
+                     'store other parameters there and give no field; every duplicate chain written'),
     dict(TURING_XOC_EVIDENCE, observation='the XOC image raises the GPC offset maximum 1000 -> 8000 and the DRAM '
                                           'maximum 3000 -> 5000 (table MHz)')]
 TURING_GPC_UNITS_EVIDENCE = dict(TURING_STRUCTURAL_EVIDENCE, kind='unit-analogy', relation='NVML MHz = table MHz',

@@ -339,7 +339,7 @@ class TuringPowerTests(unittest.TestCase):
             field = fields[key]
             self.assertTrue(field['experimental'], key)
             for text in ('decodes like the Ampere one', 'nvidia-smi reported an edited TGP', 'signed hash list',
-                         'not confirmed'):
+                         'about 458 W with them raised'):
                 self.assertIn(text, field['reason'], key)
             self.assertIn('Turing 30/2c/42', field['evidence'][0]['recognized_variants'])
             self.assertIn('integrity-observation', [e['kind'] for e in field['evidence']])
@@ -422,8 +422,11 @@ class TuringInputTests(unittest.TestCase):
                 self.assertEqual(field['current'], value)
                 self.assertTrue(field['experimental'] and turing_evidence(field))
                 self.assertEqual(field.get('opt_in', False), key in THRESHOLDS)
-                self.assertIn('not hardware-tested on Turing', field['reason'])
-                self.assertNotRegex(field['reason'], 'reading; not hardware|not hardware-tested; not hardware')
+                # The connector power rows ran on one RTX 2080 Ti with the board power; the others did not.
+                tested = key.startswith('connector_') and key.endswith('_w')
+                self.assertIn('reached about 458 W' if tested else 'not hardware-tested on Turing', field['reason'])
+                self.assertNotRegex(field['reason'], 'reading; not hardware|not hardware-tested; not hardware' +
+                                    ('|untested' if tested else ''))
         self.assertEqual([fields[f'connector_{n}_power_max_w']['channel_rail'] for n in (1, 2)], [0xFA, 0xFB])
         self.assertEqual([fields[f'connector_{n}_current_threshold_rated_ma']['threshold_index'] for n in (1, 2)],
                          [1, 2])
@@ -682,12 +685,57 @@ class TuringVoltageTests(unittest.TestCase):
                  ('BOOT = VMIN', self.row + 8, b'\x04', 'unvalidated Turing rail selectors'),
                  ('ALT after BOOT', self.row + 5, b'\x02', 'unvalidated Turing rail selectors'),
                  ('margin limit', self.row + 10, b'\x04', 'unvalidated Turing rail selectors'),
+                 # Near misses of the REL = ALT = OV layout (rel_and_alt_selecting_ov).
+                 ('REL = OV, ALT below OV', self.row + 4, b'\x03\x01', 'unvalidated Turing rail selectors'),
+                 ('ALT = OV alone', self.row + 5, b'\x03', 'unvalidated Turing rail selectors'),
+                 ('REL = ALT = OV, BOOT != OV - 1', self.row + 4, b'\x03\x03\x03\x00\x01',
+                  'unvalidated Turing rail selectors'),
                  ('V20 header', self.row - 5, b'\x20', 'unvalidated Turing rail layout'))
         for name, at, data, message in cases:
             with self.subTest(case=name):
                 image = from_bytes(patched(self.image.blob, at, data))
                 self.assertFalse(any(k.startswith('nvvdd_') for k in descriptors(image)))
                 self.assertIn(message, ' '.join(messages(image)))
+
+    def test_rel_and_alt_selecting_ov(self):
+        # The Galax HOF XOC layout: REL and ALT select the OV equation (REL = ALT = OV = 1125 mV).
+        image = from_bytes(patched(self.image.blob, self.row + 4, b'\x03\x03'))
+        fields = descriptors(image)
+        self.assertEqual(messages(image), ['requested table is absent'])  # the clock table only
+        for role in ('rel', 'alt', 'ov'):
+            with self.subTest(role=role):
+                field = fields[f'nvvdd_{role}_equation_max_mv']
+                self.assertEqual((field['current'], field['editable']), (1125, False))
+                self.assertEqual(fields[f'nvvdd_{role}_selector_index']['current'], 3)
+        self.assertFalse(fields['nvvdd_rel_max_mv']['editable'])
+        for key, others in (('nvvdd_rel_fixed_mv', 'ALT and OV'), ('nvvdd_alt_fixed_mv', 'REL and OV')):
+            with self.subTest(key=key):
+                self.assertEqual((fields[key]['current'], fields[key]['editable']), (1125, False))
+                self.assertIn(f'is also selected by {others}', fields[key]['reason'])
+        vmin = fields['nvvdd_vmin_mv']
+        self.assertEqual((vmin['current'], vmin['editable']), (692.5, True))
+        self.assertEqual((vmin['bounds']['minimum'], vmin['bounds']['maximum']), (400, 1050))  # REL - 75 mV
+        self.assertIsNone(fields['msvdd_rel_max_mv']['current'])
+        self.assertNotIn('nvvdd_rel_alt_follow_ov', fields)  # GB20x and Ada only
+        self.assertEqual(sorted(k for k, f in fields.items() if f['editable']), sorted(POWER + ['nvvdd_vmin_mv']))
+        self.assertEqual(backend(edit(image, {'nvvdd_vmin_mv': 700}).image).rail_vmin()[0]['value_uv'], 700000)
+        for key, value, code in (('nvvdd_vmin_mv', 1051, 'OUT_OF_BOUNDS'),
+                                 ('nvvdd_rel_fixed_mv', 1100, 'FIELD_READ_ONLY')):
+            with self.subTest(key=key), self.assertRaises(VbiosError) as exc:
+                edit(image, {key: value})
+            self.assertEqual(exc.exception.code, code)
+        # Without ALT, REL alone may select OV.
+        no_alt = descriptors(from_bytes(patched(self.image.blob, self.row + 4, b'\x03\xff')))
+        self.assertEqual(no_alt['nvvdd_rel_equation_max_mv']['current'], 1125)
+        self.assertNotIn('nvvdd_alt_fixed_mv', no_alt)
+        # A temperature-derated OV equation stays read-only through REL and ALT too: their edit would move OV.
+        ov = fields['nvvdd_ov_equation_max_mv']['equation_offset']
+        sloped = patched(patched(image.blob, ov + 1, b'\x0a'), ov + 15, struct.pack('<f', -100))
+        sloped = descriptors(from_bytes(sloped))
+        for key in ('nvvdd_rel_max_mv', 'nvvdd_rel_equation_max_mv', 'nvvdd_alt_equation_max_mv'):
+            with self.subTest(key=key):
+                self.assertFalse(sloped[key]['editable'])
+        self.assertEqual(sloped['nvvdd_rel_equation_max_mv']['equation_kind'], 'shared')
 
     def test_a_shared_vmin_equation_stays_read_only(self):
         # Equation 6 now continues into the VMIN equation 4.
