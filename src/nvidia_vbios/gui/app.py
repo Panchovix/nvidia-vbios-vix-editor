@@ -16,8 +16,8 @@ from .i18n import Messages
 from .file_pickers import show_builtin_picker, show_path_dialog
 from .controller import (Controller, controls, loader_messages, open_document, reset_document,
                          save_document, stage_document)
-from .presentation import (classify_number, display_units, field_label, field_section, number, opt_in_field_keys,
-                           parse_number,
+from .presentation import (classify_number, display_units, fan_curve_hint, field_label, field_section, number,
+                           opt_in_field_keys, parse_number,
                            primary_preview, read_only_reason, row_title, SECTION_NAMES, section_order, shunt_real,
                            shunt_scaled, summed_cap_notes, technical_field_keys, to_display, to_stored,
                            unsupported_notes, value_text, windows_value)
@@ -625,7 +625,8 @@ class EditorWindow(Gtk.ApplicationWindow):
             if group:
                 invalid |= {key for key in details.get('joint_fields') or ()
                             if key in self.rows and self.rows[key]['field'].get('ordering_group') == group}
-            self._mark_rows(invalid=invalid, owner=owner, bounds=details.get('bounds'))
+            self._mark_rows(invalid=invalid, owner=owner, bounds=details.get('bounds'),
+                            error_code=getattr(error, 'code', None))
             self._show_changes(self._typed_changes())
         else:
             self.controller.document = document
@@ -917,7 +918,10 @@ class EditorWindow(Gtk.ApplicationWindow):
                                 display_units(field)))
         return changes
 
-    def _mark_rows(self, invalid=(), owner=None, bounds=None):
+    def _mark_rows(self, invalid=(), owner=None, bounds=None, error_code=None):
+        curve_errors = bool(invalid) and error_code == 'OUT_OF_BOUNDS'
+        values = self._values() if curve_errors else {}
+        fields = self.controller.document.report.get('fields', []) if curve_errors else []
         for key, info in self.rows.items():
             field, row, delta = info['field'], info['row'], info['delta']
             amount, problem = classify_number(self.entries[key].get_text())
@@ -943,13 +947,17 @@ class EditorWindow(Gtk.ApplicationWindow):
                 row.add_css_class('invalid')
                 delta.add_css_class('vb-error')
                 # Bounds belong to the failing field only; partners get the order hint.
-                message = self.text('order_hint_voltage' if field.get('units') == 'mV' else 'order_hint')
+                hint_key = ('order_hint_voltage' if field.get('units') == 'mV' else
+                            'order_hint_fan' if (field.get('ordering_group') or '').startswith('fan-') else 'order_hint')
+                message = self.text(hint_key)
                 if key == owner and isinstance(bounds, dict):
                     minimum, maximum = to_display(field, bounds.get('minimum')), to_display(field, bounds.get('maximum'))
                     # Encoding limits (about 2^31) are not a useful maximum to show.
                     key_text = 'range_hint' if maximum is not None and abs(maximum) < 10 ** 6 else 'range_min'
                     message = self.text(key_text, minimum=number(minimum), maximum=number(maximum),
                                         units=display_units(field))
+                if curve_errors and (hint := fan_curve_hint(field, fields, values, self.language)):
+                    message = message + '\n' + hint if key == owner and isinstance(bounds, dict) else hint
             delta.set_text(message)
             delta.set_visible(bool(message))
         self._mark_shunt()

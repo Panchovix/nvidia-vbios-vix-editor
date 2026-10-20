@@ -1578,6 +1578,154 @@ class FanCoolerTests(unittest.TestCase):
             edit(image, {'fan_zero_rpm': 1, 'probe': 1}, field_registry=both)
         self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
 
+    TEMPS = ('fan_1', 'fan_2', 'fan_extra_1', 'fan_extra_2')
+
+    def test_zero_rpm_temperatures_cover_enabled_entries_and_round_trip(self):
+        image = from_bytes(synthetic_blackwell(fans=True))
+        t = self.table(image.blob)
+        fields = descriptors(image)
+        keys = [f'{p}_zero_rpm_{side}_temp_c' for p in self.TEMPS for side in ('low', 'high')]
+        # Channels 0/1 and the curves 4/5: not the stored third channel, nor the placeholder.
+        self.assertEqual(sorted(k for k in fields if '_zero_rpm_' in k), sorted(keys))
+        low, high = fields['fan_1_zero_rpm_low_temp_c'], fields['fan_1_zero_rpm_high_temp_c']
+        self.assertEqual((low['current'], low['bounds']['minimum'], low['bounds']['maximum'], low['units'],
+                          low['editable'], low['experimental'], low['opt_in'], low['fan_policy'], low['fan_channel']),
+                         (43.0, 0.03125, 49.96875, 'C', True, True, True, 0, 0))
+        self.assertEqual((high['current'], high['bounds']['minimum'], high['bounds']['maximum']),
+                         (50.0, 43.03125, 110.0))
+        self.assertEqual(low['ordering_group'], high['ordering_group'])
+        self.assertNotEqual(low['ordering_group'], fields['fan_2_zero_rpm_low_temp_c']['ordering_group'])
+        extra = fields['fan_extra_2_zero_rpm_low_temp_c']
+        self.assertEqual((extra['fan_policy'], extra['fan_rows']), (5, [0, 1]))
+        self.assertNotIn('fan_channel', extra)
+        self.assertEqual([e['kind'] for e in low['evidence']],
+                         ['static-firmware-analysis', 'structural-table', 'idle-fan-behavior-correlation'])
+        # One word per field, in 1/32 C; the other bytes of the entry (flags, byte 46, curves) stay.
+        pair = t['rows'][0]['policy_offset'] + 30
+        result = edit(image, {'fan_1_zero_rpm_high_temp_c': 60})
+        self.assertTrue(result.manifest['integrity']['valid'])
+        changed_bytes_within(self, image, result, [pair + 2], width=2)
+        self.assertEqual(struct.unpack_from('<HH', result.blob, pair), (43 * 32, 60 * 32))
+        self.assertEqual(descriptors(result.image)['fan_1_zero_rpm_low_temp_c']['bounds']['maximum'], 59.96875)
+        self.assertEqual(edit(result.image, {'fan_1_zero_rpm_high_temp_c': 50}).blob, image.blob)
+        exact = edit(image, {'fan_1_zero_rpm_low_temp_c': '43.03125'})
+        self.assertEqual(struct.unpack_from('<H', exact.blob, pair)[0], 43 * 32 + 1)
+        # Both words of the pair move together past the stored values; the curves 4/5 alone, too.
+        both = edit(image, {'fan_1_zero_rpm_low_temp_c': 55, 'fan_1_zero_rpm_high_temp_c': 60})
+        changed_bytes_within(self, image, both, [pair], width=4)
+        self.assertEqual(struct.unpack_from('<HH', both.blob, pair), (55 * 32, 60 * 32))
+        self.assertEqual(edit(both.image, {'fan_1_zero_rpm_low_temp_c': 43, 'fan_1_zero_rpm_high_temp_c': 50}).blob,
+                         image.blob)
+        curve = t['extra_curves'][1]['policy_offset'] + 30
+        extras = edit(image, {'fan_extra_2_zero_rpm_low_temp_c': 65, 'fan_extra_2_zero_rpm_high_temp_c': 75})
+        changed_bytes_within(self, image, extras, [curve], width=4)
+        for request, code in (({'fan_1_zero_rpm_low_temp_c': 0}, 'OUT_OF_BOUNDS'),
+                              ({'fan_1_zero_rpm_low_temp_c': 50}, 'OUT_OF_BOUNDS'),
+                              ({'fan_1_zero_rpm_low_temp_c': 55}, 'OUT_OF_BOUNDS'),
+                              ({'fan_1_zero_rpm_high_temp_c': 43}, 'OUT_OF_BOUNDS'),
+                              ({'fan_1_zero_rpm_high_temp_c': '110.03125'}, 'OUT_OF_BOUNDS'),
+                              ({'fan_1_zero_rpm_low_temp_c': 50, 'fan_1_zero_rpm_high_temp_c': 50}, 'OUT_OF_BOUNDS'),
+                              ({'fan_1_zero_rpm_low_temp_c': 60, 'fan_1_zero_rpm_high_temp_c': 55}, 'OUT_OF_BOUNDS'),
+                              ({'fan_1_zero_rpm_low_temp_c': 0, 'fan_1_zero_rpm_high_temp_c': 50}, 'OUT_OF_BOUNDS'),
+                              ({'fan_1_zero_rpm_low_temp_c': '43.01'}, 'UNREPRESENTABLE_VALUE')):
+            with self.subTest(request=request), self.assertRaises(VbiosError) as exc:
+                edit(image, request)
+            self.assertEqual(exc.exception.code, code)
+
+    def test_zero_rpm_temperatures_keep_the_flag_bits(self):
+        # Zero RPM off (RTX PRO bytes) keeps its pairs editable, and an edit leaves the flags as they are.
+        for flags in ((0x11, 0x01), (0x17, 0x07)):
+            with self.subTest(flags=flags):
+                image = self.zero_rpm_fixture(flags)
+                state = descriptors(image)['fan_zero_rpm']['current']
+                result = edit(image, {'fan_2_zero_rpm_high_temp_c': 60})
+                offsets = self.zero_rpm_offsets(image.blob)
+                self.assertEqual([result.blob[at] for at in offsets], [image.blob[at] for at in offsets])
+                self.assertEqual(descriptors(result.image)['fan_zero_rpm']['current'], state)
+        # Bits that disagree leave the flag read-only; the pairs stay editable and the bits are not normalized.
+        mixed = self.zero_rpm_fixture((0x07, 0x07), entries=(0,))
+        result = edit(mixed, {'fan_1_zero_rpm_high_temp_c': 60})
+        offsets = self.zero_rpm_offsets(mixed.blob)
+        self.assertEqual([result.blob[at] for at in offsets], [mixed.blob[at] for at in offsets])
+
+    def test_zero_rpm_temperatures_only_where_stored(self):
+        # The RTX PRO 6000 Max-Q stores 0/0 and 0xff at byte 46: nothing is synthesized.
+        maxq = self.zero_rpm_fixture((0x01, 0x01), stop=False)
+        self.assertFalse([k for k in descriptors(maxq) if k.endswith('_temp_c') and '_zero_rpm_' in k])
+        blob = synthetic_blackwell(fans=True)
+        t = self.table(blob)
+        extra = t['extra_curves'][0]['policy_offset']
+        for name, at, value in (('temperatures zero', extra + 30, bytes(4)),
+                                ('temperatures equal', extra + 30, struct.pack('<HH', 50 * 32, 50 * 32)),
+                                ('temperatures falling', extra + 30, struct.pack('<HH', 50 * 32, 43 * 32)),
+                                ('byte 46', extra + 46, b'\xff')):
+            with self.subTest(case=name):
+                image = from_bytes(repair_fixture(bytearray(blob[:at] + value + blob[at + len(value):])))
+                keys = {k for k in descriptors(image) if '_zero_rpm_' in k}
+                self.assertEqual(keys, {f'{p}_zero_rpm_{side}_temp_c' for p in ('fan_1', 'fan_2', 'fan_extra_2')
+                                        for side in ('low', 'high')})
+                with self.assertRaises(VbiosError) as exc:
+                    edit(image, {'fan_extra_1_zero_rpm_low_temp_c': 40})
+                self.assertEqual(exc.exception.code, 'UNKNOWN_FIELD')
+        # An upper temperature above 110 C keeps the pair visible but read-only.
+        at = t['rows'][0]['policy_offset'] + 32
+        hot = from_bytes(repair_fixture(bytearray(blob[:at] + struct.pack('<H', 111 * 32) + blob[at + 2:])))
+        fields = descriptors(hot)
+        self.assertEqual([(fields[f'fan_1_zero_rpm_{side}_temp_c']['current'],
+                           fields[f'fan_1_zero_rpm_{side}_temp_c']['editable']) for side in ('low', 'high')],
+                         [(43.0, False), (111.0, False)])
+        self.assertIn('above 110 C', fields['fan_1_zero_rpm_high_temp_c']['reason'])
+        with self.assertRaises(VbiosError) as exc:
+            edit(hot, {'fan_1_zero_rpm_high_temp_c': 100})
+        self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
+        # Ada images carry the same entry, but the field is GB20x only.
+        ada = descriptors(from_bytes(synthetic_rom(copies=2, fans=2)))
+        self.assertFalse([k for k in ada if '_zero_rpm_' in k])
+
+    def test_channel_count_and_zero_rpm_temperatures_are_separate_edits(self):
+        image = from_bytes(synthetic_blackwell(fans=True))
+        for key in ('fan_1_zero_rpm_high_temp_c', 'fan_extra_1_zero_rpm_high_temp_c'):
+            with self.subTest(key=key), self.assertRaises(VbiosError) as exc:
+                edit(image, {'fan_channels': 3, key: 60})
+            self.assertEqual((exc.exception.code, exc.exception.details['fields']),
+                             ('SEPARATE_EDIT_REQUIRED', ['fan_channels', key]))
+        # The stored third channel's pair shows once it is enabled, with its own stored bytes.
+        three = edit(image, {'fan_channels': 3})
+        fields = descriptors(three.image)
+        self.assertEqual((fields['fan_3_zero_rpm_low_temp_c']['current'],
+                          fields['fan_3_zero_rpm_high_temp_c']['current']), (43.0, 50.0))
+        edited = edit(three.image, {'fan_3_zero_rpm_high_temp_c': 60})
+        pair = self.table(three.blob)['rows'][2]['policy_offset'] + 30
+        changed_bytes_within(self, three.image, edited, [pair + 2], width=2)
+
+    def test_extensions_cannot_rewrite_the_zero_rpm_temperatures(self):
+        from nvidia_vbios.editor import FieldRegistry
+        from nvidia_vbios.editor.registry import fan_zero_rpm_temperatures
+        image = from_bytes(synthetic_blackwell(fans=True))
+        t = self.table(image.blob)
+        pair = t['rows'][0]['policy_offset'] + 30
+        probes = {'enabled entry lower': (pair,), 'inactive entry lower': (t['rows'][2]['policy_offset'] + 30,),
+                  'byte 46': (t['rows'][0]['policy_offset'] + 46,)}
+        for name, offsets in probes.items():
+            with self.subTest(probe=name), self.assertRaises(VbiosError) as exc:
+                edit(image, {'probe': 1}, field_registry=custom_registry('probe', offsets, encoding='<B', scale=1,
+                                                                         bounds={'minimum': 0, 'maximum': 255}))
+            self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+        # The reviewed key over another entry's bytes is not canonical, so its bytes are refused.
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_1_zero_rpm_high_temp_c': 60}, field_registry=custom_registry(
+                'fan_1_zero_rpm_high_temp_c', (t['rows'][1]['policy_offset'] + 32,), encoding='<H', scale=32,
+                bounds={'minimum': 0, 'maximum': 110}))
+        self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+        # A canonical pair request does not make byte 46 writable.
+        both = FieldRegistry()
+        both.register(fan_zero_rpm_temperatures)
+        both.register(custom_registry('probe', (t['rows'][0]['policy_offset'] + 46,), encoding='<B', scale=1,
+                                      bounds={'minimum': 0, 'maximum': 255})._resolvers[0])
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_1_zero_rpm_high_temp_c': 60, 'probe': 1}, field_registry=both)
+        self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+
     def test_channel_count_writes_all_three_tables_and_round_trips(self):
         image = from_bytes(synthetic_blackwell(fans=True))
         t = self.table(image.blob)
@@ -1900,7 +2048,9 @@ class FanCoolerTests(unittest.TestCase):
                         'minimum' if name.startswith('min') else 'maximum', 'speed' if speed else 'level'))
         self.assertTrue(all(fields[k]['reason'].startswith('experimental:') for k in ('fan_1_max_pct', 'fan_1_max_rpm')))
         # The driver percent maps linearly: 30 % runs at the row minimum, 100 % at the row maximum.
-        self.assertIn("the driver's 30 % setting runs at this speed", fields['fan_1_min_rpm']['reason'])
+        minimum_reason = fields['fan_1_min_rpm']['reason']
+        self.assertIn("the driver's 30 % setting matched the unchanged 1050 RPM minimum", minimum_reason)
+        self.assertIn('1050-1110 RPM; what held that floor is unknown', minimum_reason)
         self.assertIn('linearly down to 30 % at the minimum', fields['fan_1_max_rpm']['reason'])
         self.assertEqual(fields['fan_2_max_rpm']['bounds']['encoding_maximum'], 32767)
         self.assertEqual([e['kind'] for e in fields['fan_1_min_rpm']['evidence']][:2],

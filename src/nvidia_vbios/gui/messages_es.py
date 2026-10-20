@@ -28,6 +28,12 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.fan_extra_curve_temp_c': 'Curva adicional {curve}, punto {point}: temperatura (experimental)',
  'field.fan_extra_curve_rpm': 'Curva adicional {curve}, punto {point}: velocidad (experimental)',
  'field.fan_extra_curve_pct': 'Curva adicional {curve}, punto {point}: nivel (avanzado, experimental)',
+ 'field.fan_zero_rpm_low_temp_c': 'Ventilador {fan}, parada en reposo: umbral inferior (avanzado, experimental)',
+ 'field.fan_zero_rpm_high_temp_c': 'Ventilador {fan}, parada en reposo: umbral superior (avanzado, experimental)',
+ 'field.fan_extra_zero_rpm_low_temp_c': ('Curva adicional {curve}, parada en reposo: umbral inferior '
+                                         '(avanzado, experimental)'),
+ 'field.fan_extra_zero_rpm_high_temp_c': ('Curva adicional {curve}, parada en reposo: umbral superior '
+                                          '(avanzado, experimental)'),
  'section.readonly': 'Campos de solo lectura ({count})',
  'section.voltage_note': ('REL y OV son techos de ecuación; un voltaje fijo REL o ALT fija el valor de una ecuación '
                           'constante, y un REL fijo queda igual o por debajo de ALT: para subirlo más, sube ALT en la '
@@ -44,6 +50,14 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'not_a_number': 'Introduce un número',
  'order_hint': 'Rompe el orden mínimo ≤ nominal ≤ máximo de su grupo',
  'order_hint_voltage': 'Rompe el orden VMIN < REL ≤ ALT; cambia estos valores juntos',
+ 'order_hint_fan': ('Los límites y puntos de las curvas deben quedar dentro de sus rangos permitidos; '
+                     'cambia los valores relacionados juntos'),
+ 'fan_curve_min_hint': ('Las curvas tienen puntos por debajo de este mínimo (bajan hasta {value} {units}). '
+                        'Sube esos puntos en la misma edición: {points}.'),
+ 'fan_curve_max_hint': ('Las curvas tienen puntos por encima de este máximo (llegan hasta {value} {units}). '
+                        'Baja esos puntos en la misma edición: {points}.'),
+ 'fan_curve_readonly_hint': ('Algunos puntos que bloquean el cambio son de solo lectura en esta imagen: {points}. '
+                             'Mantén el límite del ventilador dentro de su rango.'),
  'out_of_range': 'Valor fuera de rango',
  'range_min': 'Mínimo: {minimum} {units}',
  'fix_fields': 'Corrige los campos marcados en rojo.',

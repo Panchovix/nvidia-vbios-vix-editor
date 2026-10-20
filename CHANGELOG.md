@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.22
+
+- **Fan minimum speed: lowering it did not lower the fans on one RTX 5080.** On a Zotac RTX 5080, an image with
+  both fan minimums and the first point of every curve lowered from 1050 to 900 RPM loaded through the Windows
+  loader (Verify matched byte for byte), but at the driver's 30 % the fans still ran at about 1050-1110 RPM. The
+  field descriptions now say so. Reported in [issue #12](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/12).
+
+- **GUI: explain fan-curve limits.** A rejected fan minimum or maximum now names the curve points that must
+  change in the same edit, including extra curves, in English and Spanish. The hint uses pending values and
+  appears on each blocked fan row. Backend limits and saved bytes are unchanged.
+- **Fan zero RPM temperatures (experimental, opt-in, GB20x).** New fields `fan_N_zero_rpm_low_temp_c` /
+  `fan_N_zero_rpm_high_temp_c` and `fan_extra_M_zero_rpm_*_temp_c`: the two temperatures stored with the zero RPM
+  bits in each fan policy entry (43/50 °C on most images). Idle fans may stop below the lower one and start above
+  the upper one; that meaning is inferred from the firmware decode and the stored values, not traced, and it is not
+  tested on hardware. Shown with the advanced fields, only where the entry stores a pair. Requested in
+  [issue #12](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/12).
+
 ## 0.1.21
 
 - **Ada laptop images: a clear refusal.** Saving a loader payload for an Ada laptop image (RTX 4050-4080 Laptop,

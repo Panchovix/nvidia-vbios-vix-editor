@@ -354,6 +354,109 @@ class GtkSmokeTests(unittest.TestCase):
                 while context.pending():
                     context.iteration(False)
 
+    def test_fan_curve_blockers_follow_both_pending_channels_in_both_languages(self):
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gio, GLib, Gtk
+        from nvidia_vbios.gui.app import EditorWindow
+        from nvidia_vbios.gui.presentation import row_title
+        from test_rom_formats import synthetic_rom
+        app = Gtk.Application(application_id='org.nvidia_vbios.FanHintSmoke',
+                              flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.assertTrue(app.register(None))
+        context = GLib.MainContext.default()
+
+        def until(condition):
+            deadline = time.monotonic() + 15
+            while not condition():
+                while context.pending():
+                    context.iteration(False)
+                if time.monotonic() >= deadline:
+                    self.fail('GTK operation did not complete')
+                time.sleep(.01)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'two-fan-copies.rom'
+            path.write_bytes(synthetic_rom(copies=2, fans=2))
+            for language in ('en', 'es'):
+                with self.subTest(language=language):
+                    window = EditorWindow(app, path, language)
+                    window.present()
+                    try:
+                        until(lambda: not window.busy and window.controller.document is not None)
+                        fields = {f['key']: f for f in window.controller.document.report['fields']}
+
+                        def title(key):
+                            return row_title(fields[key], language)[0]
+
+                        def delta(key):
+                            return window.rows[key]['delta'].get_text()
+
+                        minima = ('fan_1_min_rpm', 'fan_2_min_rpm')
+                        own = ('fan_1_curve_1_rpm', 'fan_2_curve_1_rpm')
+                        extras = ('fan_extra_1_curve_1_rpm', 'fan_extra_2_curve_1_rpm')
+                        for key in minima:
+                            window.entries[key].set_text('1200')
+                        until(lambda: not window.verifying)
+                        self.assertFalse(window.lookup_action('save').get_enabled())
+                        for n, key in enumerate(minima):
+                            self.assertIn('invalid', window.rows[key]['row'].get_css_classes())
+                            self.assertIn('1000 RPM', delta(key))
+                            for blocker in (own[n],) + extras:
+                                self.assertIn(title(blocker), delta(key))
+                            self.assertNotIn(title(own[1-n]), delta(key))
+                            self.assertNotEqual(delta(key), window.text('order_hint'))
+                        # The backend reports one owner; its range remains alongside the curve hint.
+                        owner = 'fan_1_min_rpm'
+                        self.assertIn(window.text('range_hint', minimum='0', maximum='1000', units='RPM'), delta(owner))
+                        for key in own:
+                            window.entries[key].set_text('1200')
+                        until(lambda: not window.verifying)
+                        self.assertFalse(window.lookup_action('save').get_enabled())
+                        for key in minima:
+                            for blocker in extras:
+                                self.assertIn(title(blocker), delta(key))
+                            for blocker in own:
+                                self.assertNotIn(title(blocker), delta(key))
+                        for key in extras:
+                            window.entries[key].set_text('1200')
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertTrue(window.lookup_action('save').get_enabled())
+                        self.assertEqual(window.controller.document.changes,
+                                         {key: '1200' for key in minima + own + extras})
+                        for key in minima:
+                            self.assertNotIn('invalid', window.rows[key]['row'].get_css_classes())
+                        # The last points explain a reduced maximum, with no first-point blame.
+                        window._reset()
+                        window.entries['fan_1_max_rpm'].set_text('3000')
+                        until(lambda: not window.verifying)
+                        hint = delta('fan_1_max_rpm')
+                        self.assertIn('3300 RPM', hint)
+                        for prefix in ('fan_1', 'fan_extra_1', 'fan_extra_2'):
+                            self.assertIn(title(prefix + '_curve_3_rpm'), hint)
+                        self.assertNotIn(title('fan_1_curve_1_rpm'), hint)
+                        self.assertFalse(window.lookup_action('save').get_enabled())
+                        # Encoding still rejects a fractional stored RPM even when all curves fit.
+                        window._reset()
+                        window.entries['fan_1_min_rpm'].set_text('900.5')
+                        until(lambda: not window.verifying)
+                        self.assertFalse(window.lookup_action('save').get_enabled())
+                        self.assertNotIn(title('fan_1_curve_1_rpm'), delta('fan_1_min_rpm'))
+                        self.assertNotIn(title('fan_extra_1_curve_1_rpm'), delta('fan_1_min_rpm'))
+                        # All curves fit 2200 RPM, but the preserved speed-table entry is 2295.
+                        window._reset()
+                        window.entries['fan_1_max_rpm'].set_text('2200')
+                        for prefix in ('fan_1', 'fan_extra_1', 'fan_extra_2'):
+                            window.entries[prefix + '_curve_3_rpm'].set_text('2200')
+                        until(lambda: not window.verifying)
+                        self.assertFalse(window.lookup_action('save').get_enabled())
+                        for prefix in ('fan_1', 'fan_extra_1', 'fan_extra_2'):
+                            self.assertNotIn(title(prefix + '_curve_3_rpm'), delta('fan_1_max_rpm'))
+                    finally:
+                        window.close()
+                        while context.pending():
+                            context.iteration(False)
+
     def test_flag_fields_are_switches_that_stage_and_unstage(self):
         import gi
         gi.require_version('Gtk', '4.0')

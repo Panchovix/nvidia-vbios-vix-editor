@@ -505,21 +505,138 @@ class PresentationNumberTests(unittest.TestCase):
                           'Curva adicional 2, punto 3: temperatura (experimental)',
                           'Curva adicional 2, punto 1: velocidad (experimental)',
                           'Curva adicional 1, punto 2: nivel (avanzado, experimental)'])
-        # Channels and PWM, then each channel's limits and curve points, then the extra curves, then zero RPM.
+        # Channels and PWM, then each channel's limits and curve points, then the extra curves, then zero RPM
+        # and its temperature pairs.
         limits = lambda n: [f'fan_{n}_{side}_{unit}' for unit in ('rpm', 'pct') for side in ('max', 'min')]
         points = lambda prefix: [f'{prefix}_curve_{k}_{unit}' for k in (1, 2, 3) for unit in ('temp_c', 'rpm', 'pct')]
+        pair = lambda prefix: [f'{prefix}_zero_rpm_{side}_temp_c' for side in ('low', 'high')]
+        temperatures = pair('fan_1') + pair('fan_2') + pair('fan_extra_1') + pair('fan_extra_2')
         expected = (['fan_channels', 'fan_pwm_frequency_hz'] + limits(1) + points('fan_1') + limits(2) + points('fan_2') +
-                    points('fan_extra_1') + points('fan_extra_2') + ['fan_zero_rpm'])
+                    points('fan_extra_1') + points('fan_extra_2') + ['fan_zero_rpm'] + temperatures)
         self.assertEqual([f['key'] for f in section_order(fields.values()) if f['key'].startswith('fan_')], expected)
         self.assertTrue(all(field_section(fields[k]) == 'fans' for k in expected))
         self.assertEqual(opt_in_field_keys({'fields': list(fields.values())}) & set(expected),
-                         {k for k in expected if k.endswith('_pct')} | {'fan_zero_rpm'})
+                         {k for k in expected if k.endswith('_pct')} | {'fan_zero_rpm'} | set(temperatures))
+        thresholds = ('fan_2_zero_rpm_low_temp_c', 'fan_extra_1_zero_rpm_high_temp_c')
+        self.assertEqual([field_label(fields[k]) for k in thresholds],
+                         ['Fan 2 zero RPM lower threshold (advanced, experimental)',
+                          'Extra fan curve 1 zero RPM upper threshold (advanced, experimental)'])
+        self.assertEqual([field_label(fields[k], 'es') for k in thresholds],
+                         ['Ventilador 2, parada en reposo: umbral inferior (avanzado, experimental)',
+                          'Curva adicional 1, parada en reposo: umbral superior (avanzado, experimental)'])
+        self.assertEqual(display_units(fields['fan_1_zero_rpm_high_temp_c']), '°C')
         # Temperatures show in °C, with decimals only when the stored 1/32 C needs them.
         self.assertEqual(display_units(fields['fan_1_curve_1_temp_c']), '°C')
         self.assertEqual([number(to_display(fields['fan_1_curve_1_temp_c'], v)) for v in (60.0, 51.90625, '60.5')],
                          ['60', '51.90625', '60.5'])
         self.assertEqual(to_display(fields['fan_1_curve_1_temp_c'], fields['fan_1_curve_1_temp_c']['current']),
                          Decimal(50))
+
+    def test_fan_curve_hints_name_only_actual_channel_blockers_in_both_languages(self):
+        from nvidia_vbios.gui.presentation import fan_curve_hint, row_title
+        from test_extended_fields import descriptors
+        from nvidia_vbios.rom import from_bytes
+        fields = descriptors(from_bytes(synthetic_rom(copies=2, fans=2)))
+        pending = {'fan_1_min_rpm': '1200', 'fan_2_min_rpm': '1200'}
+        for language in ('en', 'es'):
+            for channel in (1, 2):
+                with self.subTest(language=language, channel=channel):
+                    limit = fields[f'fan_{channel}_min_rpm']
+                    hint = fan_curve_hint(limit, list(fields.values()), pending, language)
+                    self.assertIn('1000 RPM', hint)
+                    blockers = (f'fan_{channel}_curve_1_rpm', 'fan_extra_1_curve_1_rpm',
+                                'fan_extra_2_curve_1_rpm')
+                    for key in blockers:
+                        self.assertIn(row_title(fields[key], language)[0], hint)
+                    self.assertNotIn(row_title(fields[f'fan_{3-channel}_curve_1_rpm'], language)[0], hint)
+                    self.assertNotIn(row_title(fields[f'fan_{channel}_curve_2_rpm'], language)[0], hint)
+                    fixed_own = dict(pending, **{f'fan_{channel}_curve_1_rpm': '1200'})
+                    extra_hint = fan_curve_hint(limit, list(fields.values()), fixed_own, language)
+                    self.assertNotIn(row_title(fields[blockers[0]], language)[0], extra_hint)
+                    for key in blockers[1:]:
+                        self.assertIn(row_title(fields[key], language)[0], extra_hint)
+                    fixed = dict(fixed_own, **{key: '1200' for key in blockers[1:]})
+                    self.assertEqual(fan_curve_hint(limit, list(fields.values()), fixed, language), '')
+        self.assertNotEqual(fan_curve_hint(fields['fan_1_min_rpm'], list(fields.values()), pending, 'en'),
+                            fan_curve_hint(fields['fan_1_min_rpm'], list(fields.values()), pending, 'es'))
+
+    def test_fan_curve_hints_use_pending_maximum_midpoints_and_hidden_percentages(self):
+        from nvidia_vbios.gui.presentation import fan_curve_hint, row_title
+        from test_extended_fields import descriptors
+        from nvidia_vbios.rom import from_bytes
+        fields = descriptors(from_bytes(synthetic_rom(copies=2, fans=2)))
+        for language in ('en', 'es'):
+            with self.subTest(language=language):
+                maximum = fields['fan_1_max_rpm']
+                pending = {'fan_1_max_rpm': '3000'}
+                hint = fan_curve_hint(maximum, list(fields.values()), pending, language)
+                self.assertIn('3300 RPM', hint)
+                for prefix in ('fan_1', 'fan_extra_1', 'fan_extra_2'):
+                    key = prefix + '_curve_3_rpm'
+                    self.assertIn(row_title(fields[key], language)[0], hint)
+                    pending[key] = '3000'
+                self.assertEqual(fan_curve_hint(maximum, list(fields.values()), pending, language), '')
+                # Pending values may belong to advanced rows that are currently hidden.
+                minimum = fields['fan_1_min_pct']
+                pending = {'fan_1_min_pct': '60', 'fan_1_curve_1_pct': '60',
+                           'fan_extra_1_curve_1_pct': '60', 'fan_extra_2_curve_1_pct': '60',
+                           'fan_1_curve_2_pct': '55'}
+                hint = fan_curve_hint(minimum, list(fields.values()), pending, language)
+                self.assertIn('50 %', hint)  # the unchanged extra midpoints bind first
+                for prefix in ('fan_1', 'fan_extra_1', 'fan_extra_2'):
+                    key = prefix + '_curve_2_pct'
+                    self.assertIn(row_title(fields[key], language)[0], hint)
+                    pending[key] = '60'
+                self.assertEqual(fan_curve_hint(minimum, list(fields.values()), pending, language), '')
+                upper_pct = fields['fan_1_max_pct']
+                self.assertIn('100 %', fan_curve_hint(upper_pct, list(fields.values()),
+                                                     {'fan_1_max_pct': '90'}, language))
+
+    def test_fan_curve_hints_require_numeric_pending_values_and_matching_metadata(self):
+        from nvidia_vbios.gui.presentation import fan_curve_hint, row_title
+        from test_extended_fields import descriptors
+        from nvidia_vbios.rom import from_bytes
+        fields = descriptors(from_bytes(synthetic_rom(fans=2)))
+        limit = fields['fan_1_min_rpm']
+        for value in (None, '', 'abc', 'nan', 'inf'):
+            with self.subTest(value=value):
+                self.assertEqual(fan_curve_hint(limit, list(fields.values()), {limit['key']: value}), '')
+        self.assertEqual(fan_curve_hint(limit, list(fields.values()), {}), '')
+        self.assertEqual(fan_curve_hint(fields['power_max_w'], list(fields.values()), {'power_max_w': '1200'}), '')
+        self.assertEqual(fan_curve_hint(fields['fan_1_curve_1_rpm'], list(fields.values()),
+                                        {'fan_1_curve_1_rpm': '1200'}), '')
+        # Metadata, rather than the displayed channel number, determines membership.
+        relevant = dict(fields['fan_extra_1_curve_2_rpm'], fan_rows=[0], current=900)
+        unrelated = dict(fields['fan_extra_2_curve_1_rpm'], fan_rows=[1], current=100)
+        nonnumeric = dict(fields['fan_1_curve_1_rpm'], current=None)
+        rows = [limit, relevant, unrelated, nonnumeric, fields['fan_1_curve_1_pct']]
+        hint = fan_curve_hint(limit, rows, {limit['key']: '1200'})
+        self.assertIn('900 RPM', hint)
+        self.assertIn(row_title(relevant)[0], hint)
+        self.assertNotIn(row_title(unrelated)[0], hint)
+        self.assertNotIn(row_title(nonnumeric)[0], hint)
+        self.assertNotIn(row_title(fields['fan_1_curve_1_pct'])[0], hint)
+        self.assertEqual(fan_curve_hint(limit, rows, {limit['key']: '1200', relevant['key']: 'abc'}), '')
+        # A refusal due to encoding or the speed table must not blame curves that already fit.
+        self.assertEqual(fan_curve_hint(limit, [], {limit['key']: '40000'}), '')
+        self.assertEqual(fan_curve_hint(fields['fan_1_max_rpm'], list(fields.values()),
+                                        {'fan_1_max_rpm': '3400'}), '')
+
+    def test_fan_curve_hint_does_not_offer_to_edit_read_only_blockers(self):
+        from nvidia_vbios.gui.presentation import fan_curve_hint, row_title
+        from test_extended_fields import descriptors
+        from nvidia_vbios.rom import from_bytes
+        fields = descriptors(from_bytes(synthetic_rom(fans=2)))
+        readonly = dict(fields['fan_extra_1_curve_1_rpm'], editable=False)
+        rows = [readonly if f['key'] == readonly['key'] else f for f in fields.values()]
+        for language, explanation, edit_instruction in (
+                ('en', 'read-only', 'Raise those points'),
+                ('es', 'solo lectura', 'Sube esos puntos')):
+            with self.subTest(language=language):
+                hint = fan_curve_hint(fields['fan_1_min_rpm'], rows, {'fan_1_min_rpm': '1200'}, language)
+                self.assertIn(explanation, hint)
+                self.assertIn(row_title(readonly, language)[0], hint)
+                self.assertNotIn(edit_instruction, hint)
 
     def test_flag_fields_read_on_and_off(self):
         from decimal import Decimal

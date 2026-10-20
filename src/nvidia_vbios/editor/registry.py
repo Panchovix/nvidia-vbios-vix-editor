@@ -1918,8 +1918,10 @@ FAN_LIMIT_HARDWARE = {'kind': 'hardware-test', 'source': 'edited image loaded as
 FAN_LIMIT_TESTED = {('max', 'rpm'): 'hardware-tested on an RTX 5080: the driver runs 100 % at this speed and maps '
                                     'the percent linearly down to 30 % at the minimum; other boards not '
                                     'hardware-tested',
-                    ('min', 'rpm'): "the driver's 30 % setting runs at this speed (observed); lowering it is not "
-                                    'hardware-tested',
+                    ('min', 'rpm'): "in the earlier RTX 5080 test, the driver's 30 % setting matched the unchanged "
+                                    '1050 RPM minimum; on another RTX 5080 a minimum lowered from 1050 to 900 RPM '
+                                    'loaded, but 30 % still ran at about 1050-1110 RPM; what held that floor is '
+                                    'unknown; other boards not hardware-tested',
                     ('min', 'pct'): 'on an RTX 5080 a lower value left the driver fan-speed range at 30-100 %; '
                                     'other boards not hardware-tested'}
 FAN_SHAPE_REASON = 'fan row or policy curves hold values outside the reviewed shape'
@@ -2217,6 +2219,87 @@ def fan_zero_rpm(image, parser):
                                    'larger channel count enables take the same bits; hardware-tested on one HP '
                                    'Omen RTX 5090: with 1 the fans stood still at idle and started under load; '
                                    'other boards and setting 0 not hardware-tested')]
+
+
+FAN_ZERO_RPM_TEMPS_FIRMWARE_EVIDENCE = {
+    'kind': 'static-firmware-analysis',
+    'source': 'GSP-RM firmware 615.78.08 (gsp_ga10x.bin), fan policy entry parser, policy constructor and '
+              'configuration export',
+    'observation': 'every enabled policy entry, a channel entry or a curve past the cooler rows, is decoded the same '
+                   'way: bytes 30..33 become two temperatures (1/32 C words, kept in 1/256 C) next to the two '
+                   'booleans of flag bits 1 and 2 and byte 46; the policy constructor copies all of them into the '
+                   'policy configuration and its export passes them on together; no comparison against a measured '
+                   'temperature was traced, so which value stops and which starts the fans is not established',
+    'set_tested': False}
+FAN_ZERO_RPM_TEMPS_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'GB20x VBIOS corpus',
+    'observation': 'every GPU-driven image but the RTX PRO 6000 Max-Q stores a rising nonzero pair and byte 46 = 0 '
+                   'on each enabled entry: 43/50, 50/55 or 50/60 C on the channel entries, 60-80/70-90 C on the '
+                   'curves past them, also on RTX PRO images with zero RPM off; the Max-Q stores 0/0 and byte 46 = '
+                   '0xff'}
+FAN_ZERO_RPM_TEMPS_OWNER_EVIDENCE = {
+    'kind': 'idle-fan-behavior-correlation', 'set_tested': False,
+    'source': 'owner report; this Zotac RTX 5080 image is not in the reviewed corpus',
+    'observation': 'idle fans start at about 52 C on a board whose channel entries store 43/50 C'}
+FAN_ZERO_RPM_TEMP_CEILING = 110 * 32  # an editor limit, as for the curve temperatures
+
+
+@registry.register
+def fan_zero_rpm_temperatures(image, parser):
+    """GB20x: the temperature pair at bytes 30..33 of each enabled fan policy entry, lower and upper, 1/32 C.
+
+    GSP-RM decodes the pair with the zero RPM flag bits (fan_zero_rpm) and byte 46, and passes
+    them on together; it may be where idle fans stop (lower) and start again (upper), which is
+    not established. Each active channel entry and each enabled curve past the cooler rows (the
+    extra curves, numbered as in fan_curves) gets its own pair of fields, offered only where it
+    stores parameters (fan_stop_parameters): none is synthesized for the RTX PRO 6000 Max-Q's
+    zeros. The pair stays rising, from 1/32 C up to 110 C (an editor limit); its two fields
+    form one ordering group, so they can cross the stored values together. Stored channels a
+    larger channel count enables keep their bytes. The fields do not depend on the flag bits.
+    Opt-in; not hardware-tested.
+    """
+    if not isinstance(parser, BlackwellRom):
+        return []
+    table = parser.fan_coolers()
+    if table is None:
+        return []
+    entries = [(f'fan_{r["index"] + 1}', 'Fan %d' % (r['index'] + 1), 'channel %d' % (r['index'] + 1), r,
+                dict(fan_channel=r['index'], fan_rows=[r['index']]))
+               for r in table['rows'] if r['active']]
+    entries += [(f'fan_extra_{m}', f'Extra fan curve {m}', f'extra curve {m}', c,
+                 dict(fan_rows=[r['index'] for r in table['rows'] if r['active']]))
+                for m, c in enumerate(table['extra_curves'], 1)]
+    writable = can_edit(image, parser)
+    result = []
+    for prefix, name, owner, entry, extra in entries:
+        at = entry['policy_offset'] + 30
+        if not fan_stop_parameters(parser.blob, entry['policy_offset']):
+            continue
+        low, high = struct.unpack_from('<HH', parser.blob, at)
+        inside = high <= FAN_ZERO_RPM_TEMP_CEILING
+        editable = inside and writable
+        for side, word, current, lo, hi, offset in (
+                ('low', 'lower', low, 1, high - 1, at), ('high', 'upper', high, low + 1, FAN_ZERO_RPM_TEMP_CEILING,
+                                                           at + 2)):
+            result.append(field(
+                f'{prefix}_zero_rpm_{side}_temp_c', f'{name} zero RPM {word} temperature', 'C', current / 32,
+                lo / 32, hi / 32, editable,
+                [dict(FAN_ZERO_RPM_TEMPS_FIRMWARE_EVIDENCE), dict(FAN_ZERO_RPM_TEMPS_CORPUS_EVIDENCE),
+                 dict(FAN_ZERO_RPM_TEMPS_OWNER_EVIDENCE)],
+                offsets=[offset] if editable else (), encoding='<H' if editable else '', scale=32,
+                stored_units='1/32 C', experimental=True, opt_in=True,
+                ordering_group=f'fan-zero-rpm-{prefix}' if editable else None,
+                encoding_bounds=(0, FAN_ZERO_RPM_TEMP_CEILING / 32) if editable else None,
+                writable_status=None if editable else 'unsupported',
+                value_semantics=f'stored-fan-zero-rpm-{word}-temperature', fan_policy=entry['index'], **extra,
+                reason=f'experimental, opt-in: the {word} of the two temperatures (bytes 30..33) of the {owner} fan '
+                       'policy entry, which GSP-RM reads with the zero RPM flag bits; idle fans may stop below the '
+                       'lower and start again above the upper one, but that meaning is inferred, and other fan '
+                       'policies and sensors may decide what the fans do; the lower stays above 0 C and below the '
+                       'upper, the upper at most 110 C (an editor limit); not hardware-tested' if inside else
+                       f'read-only: the upper temperature of the {owner} fan policy entry is above 110 C, outside '
+                       'the reviewed shape'))
+    return result
 
 
 @registry.register

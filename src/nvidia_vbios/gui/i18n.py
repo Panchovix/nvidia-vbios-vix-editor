@@ -28,6 +28,10 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'field.fan_extra_curve_temp_c': 'Extra fan curve {curve} point {point} temperature (experimental)',
  'field.fan_extra_curve_rpm': 'Extra fan curve {curve} point {point} speed (experimental)',
  'field.fan_extra_curve_pct': 'Extra fan curve {curve} point {point} level (advanced, experimental)',
+ 'field.fan_zero_rpm_low_temp_c': 'Fan {fan} zero RPM lower threshold (advanced, experimental)',
+ 'field.fan_zero_rpm_high_temp_c': 'Fan {fan} zero RPM upper threshold (advanced, experimental)',
+ 'field.fan_extra_zero_rpm_low_temp_c': 'Extra fan curve {curve} zero RPM lower threshold (advanced, experimental)',
+ 'field.fan_extra_zero_rpm_high_temp_c': 'Extra fan curve {curve} zero RPM upper threshold (advanced, experimental)',
  'section.readonly': 'Read-only fields ({count})',
  'section.voltage_note': ('REL and OV are equation ceilings; a fixed REL or ALT voltage sets the value of a constant '
                           'equation, and a fixed REL stays at or below ALT: to raise it further, raise ALT in the same '
@@ -43,6 +47,13 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'not_a_number': 'Enter a number',
  'order_hint': 'Breaks the floor ≤ rated ≤ ceiling order of its group',
  'order_hint_voltage': 'Breaks the VMIN < REL ≤ ALT order; change these values together',
+ 'order_hint_fan': 'Fan limits and curve points must stay within their allowed ranges; change related values together',
+ 'fan_curve_min_hint': ('Fan curves have points below this minimum (down to {value} {units}). '
+                        'Raise those points in the same edit: {points}.'),
+ 'fan_curve_max_hint': ('Fan curves have points above this maximum (up to {value} {units}). '
+                        'Lower those points in the same edit: {points}.'),
+ 'fan_curve_readonly_hint': ('Some blocking curve points are read-only in this image: {points}. '
+                             'Keep the fan limit within their range.'),
  'out_of_range': 'Value out of range',
  'range_min': 'Minimum: {minimum} {units}',
  'fix_fields': 'Fix the fields marked in red.',

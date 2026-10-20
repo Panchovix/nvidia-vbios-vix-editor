@@ -77,7 +77,10 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    OV** (a switch: on gives the flat XOC-style voltage limit; save it on its own,
    and keep the original image to go back) and, on Blackwell, **Fan zero RPM** (a
    switch for the flag bits that let the fans stand still at idle, hardware-tested
-   on one RTX 5090; experimental); values typed before ticking it are kept. Read-only 0/1 fields
+   on one RTX 5090; experimental) with the **zero RPM lower and upper thresholds**
+   of each fan and extra curve (the two temperatures stored with those bits; idle
+   fans may stop below the lower one and start above the upper one, an inferred
+   meaning; experimental, not hardware-tested); values typed before ticking it are kept. Read-only 0/1 fields
    show On or Off. **Shunt multiplier (x)** (1 = off, up to 10) is display only:
    for board power, PCIe slot power/current, connector power/current and 12 V
    input current rows it adds a note with the real limit on a shunt-modded card, about
@@ -113,7 +116,12 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    and show decimals only when they need them. A limit moves only as far as the
    stored curves: to lower a maximum below them, type the new maximum and the curve
    points above it, including those of the extra curves, and they are checked and
-   saved together as one copy. The minimum and maximum level (%) of each channel
+   saved together as one copy. To raise a minimum, also raise every curve point
+   below it. If a curve blocks a limit, the row names the points that still need
+   changing, including extra curves, using the values currently typed. For example,
+   two fans and two extra curves starting at 1000 RPM require six changes to raise
+   both minima to 1200 RPM: both minima and the first point of all four curves.
+   No values are adjusted automatically. The minimum and maximum level (%) of each channel
    and the curve levels appear with the advanced fields. Save a new channel count
    before changing channel limits, curves or zero RPM on the copy.
    Voltage compatibility aliases, selector indices and stored boot values are

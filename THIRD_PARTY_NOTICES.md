@@ -60,7 +60,7 @@ nvgpu `bios.h` structure definitions (MIT). No NVIDIA source file is included.
 | mingw-w64-ucrt-x86_64-libthai | 0.1.30-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-libthai/ | libthai-0.dll |
 | mingw-w64-ucrt-x86_64-libtiff | 4.7.2-2 | MIT | third_party/mingw-w64-ucrt-x86_64-libtiff/ | libtiff-6.dll |
 | mingw-w64-ucrt-x86_64-libwebp | 1.6.0-1 | BSD-3-Clause | third_party/mingw-w64-ucrt-x86_64-libwebp/ | libsharpyuv-0.dll libwebp-7.dll |
-| mingw-w64-ucrt-x86_64-libwinpthread | 14.0.0.r495.g63ebe6cdb-1 | MIT AND BSD-3-Clause | third_party/mingw-w64-ucrt-x86_64-libwinpthread/ | libwinpthread-1.dll |
+| mingw-w64-ucrt-x86_64-libwinpthread | 14.0.0.r495.g63ebe6cdb-2 | MIT AND BSD-3-Clause | third_party/mingw-w64-ucrt-x86_64-libwinpthread/ | libwinpthread-1.dll |
 | mingw-w64-ucrt-x86_64-lzo2 | 2.10-3 | GPL-2.0-or-later | third_party/mingw-w64-ucrt-x86_64-lzo2/ | liblzo2-2.dll |
 | mingw-w64-ucrt-x86_64-mpdecimal | 4.0.1-3 | BSD-2-Clause | third_party/mingw-w64-ucrt-x86_64-mpdecimal/ | libmpdec-4.dll |
 | mingw-w64-ucrt-x86_64-openssl | 3.6.5-1 | Apache-2.0 | third_party/mingw-w64-ucrt-x86_64-openssl/ | libcrypto-3-x64.dll libssl-3-x64.dll |
@@ -79,7 +79,7 @@ nvgpu `bios.h` structure definitions (MIT). No NVIDIA source file is included.
 
 nvbios.exe and nvbios-gui.exe are free software under the GNU General Public License
 v3.0 or later (`LICENSE`). Their source code is at
-https://github.com/Panchovix/nvidia-vbios-vix-editor: tag `v0.1.21` is this release,
+https://github.com/Panchovix/nvidia-vbios-vix-editor: tag `v0.1.22` is this release,
 including `tools/release/`, the scripts that build these programs.
 
 The MSYS2 packages above are unmodified UCRT64 builds, at the versions listed. MSYS2
@@ -134,7 +134,7 @@ corresponding source of these packages on request: open an issue in the reposito
 | mingw-w64-pygobject | 3.58.1-1 | https://repo.msys2.org/mingw/sources/mingw-w64-pygobject-3.58.1-1.src.tar.zst |
 | mingw-w64-python | 3.14.8-1 | https://repo.msys2.org/mingw/sources/mingw-w64-python-3.14.8-1.src.tar.zst |
 | mingw-w64-vulkan-loader | 1~1.4.363.0-1 | https://repo.msys2.org/mingw/sources/mingw-w64-vulkan-loader-1~1.4.363.0-1.src.tar.zst |
-| mingw-w64-winpthreads | 14.0.0.r495.g63ebe6cdb-1 | https://repo.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r495.g63ebe6cdb-1.src.tar.zst |
+| mingw-w64-winpthreads | 14.0.0.r495.g63ebe6cdb-2 | https://repo.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r495.g63ebe6cdb-2.src.tar.zst |
 | mingw-w64-xz | 5.8.4-1 | https://repo.msys2.org/mingw/sources/mingw-w64-xz-5.8.4-1.src.tar.zst |
 | mingw-w64-zlib | 1.3.2-2 | https://repo.msys2.org/mingw/sources/mingw-w64-zlib-1.3.2-2.src.tar.zst |
 | mingw-w64-zstd | 1.5.7-2 | https://repo.msys2.org/mingw/sources/mingw-w64-zstd-1.5.7-2.src.tar.zst |

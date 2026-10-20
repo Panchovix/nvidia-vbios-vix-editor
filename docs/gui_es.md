@@ -72,7 +72,11 @@ funcionando sin las dependencias gráficas.
    da el límite de voltaje plano estilo XOC; guárdalo solo y conserva la imagen
    original para volver atrás) y, en Blackwell, **Parada de ventiladores en
    reposo** (un interruptor para los bits que permiten que los ventiladores se
-   detengan en reposo, probado en hardware en una RTX 5090; experimental); los valores ya escritos se
+   detengan en reposo, probado en hardware en una RTX 5090; experimental) con los
+   **umbrales inferior y superior de la parada en reposo** de cada ventilador y
+   curva adicional (las dos temperaturas guardadas junto a esos bits; es posible
+   que los ventiladores se detengan bajo el inferior y arranquen sobre el superior,
+   un significado inferido; experimental, sin probar en hardware); los valores ya escritos se
    conservan al marcarla. Los campos 0/1 de solo lectura muestran Activado o
    Desactivado. **Multiplicador
    de shunt (x)** (1 = desactivado, hasta 10) es solo informativo: en las filas de
@@ -125,7 +129,13 @@ temperaturas avanzan de a 1/32 °C (`60.5` sirve, `60.01` no) y muestran decimal
 cuando hacen falta. Un límite solo llega hasta las curvas guardadas: para bajar un
 máximo por debajo de ellas, escribe el nuevo máximo y los puntos de curva que
 quedan por encima, también los de las curvas adicionales, y se comprueban y guardan
-juntos en una sola copia. El nivel mínimo y máximo (%) de cada canal y los niveles
+juntos en una sola copia. Para subir un mínimo, sube también todos los puntos que
+queden por debajo. Si una curva bloquea un límite, la fila nombra los puntos que
+faltan por cambiar, incluidas las curvas adicionales, usando los valores escritos.
+Por ejemplo, dos ventiladores y dos curvas adicionales que empiezan en 1000 RPM
+requieren seis cambios para subir ambos mínimos a 1200 RPM: los dos mínimos y el
+primer punto de las cuatro curvas. Ningún valor se ajusta automáticamente.
+El nivel mínimo y máximo (%) de cada canal y los niveles
 de las curvas aparecen con los campos avanzados. Guarda primero una nueva cantidad
 de canales y cambia los límites, las curvas o la parada en reposo en la copia. Ada y
 Ampere no heredan esa conversión. Los techos de

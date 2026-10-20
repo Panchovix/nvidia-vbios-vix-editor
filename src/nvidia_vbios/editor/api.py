@@ -14,12 +14,13 @@ from ..rom import BiosImage, VbiosError
 from ..rom.blackwell import BlackwellRom
 from ..rom.image import backend, inspect_image
 from .registry import (registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
-                       connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov, fixed_voltage,
-                       VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS)
+                       fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
+                       fixed_voltage, VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS)
 
 # Reviewed resolvers whose bindings are canonical for range and joint checks.
 REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
-                      connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov, fixed_voltage)
+                      fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
+                      fixed_voltage)
 # Fields that change otherwise preserved rail bytes, each only through its reviewed binding:
 # the evaluated VMIN equation, the XOC-style NVVDD REL/ALT selectors and the fixed Ada/Turing
 # REL/ALT values.
@@ -157,7 +158,7 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
             raise VbiosError('FIELD_READ_ONLY', f'{key} is read-only', details={'field': reviewed[key].descriptor})
     # A channel count adds or removes per-channel fan fields, changes the limits every extra
     # curve has to fit and the policy entries fan_zero_rpm covers: change it and the fan
-    # limits, curves or zero-RPM flag in separate edits.
+    # limits, curves or zero-RPM flag and temperatures in separate edits.
     per_channel = sorted(k for k in changes if k in reviewed and
                          ({'fan_channel', 'fan_policy'} & set(reviewed[k].descriptor) or k == 'fan_zero_rpm'))
     if 'fan_channels' in changes and per_channel:
@@ -562,8 +563,9 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     # The per-fan-channel tables change only through the reviewed fan fields,
     # and only at the bytes their bindings declare: the PWM frequency bytes,
     # the channel list/enable bytes, the row limits of the active channels,
-    # the points of the enabled curves and the policy entry flag bytes (0x32)
-    # fan_zero_rpm covers. They must still decode and agree afterwards. Tables
+    # the points of the enabled curves, the policy entry flag bytes (0x32)
+    # fan_zero_rpm covers and the zero RPM temperature pairs (bytes 30..33) of
+    # the enabled entries. They must still decode and agree afterwards. Tables
     # that do not decode or agree accept no change at all.
     regions = parser.fan_regions() if hasattr(parser, 'fan_regions') else []
     if regions:

@@ -25,6 +25,8 @@ CONNECTOR_CURRENT_KEY = re.compile(r'connector_(\d+)_current_threshold_(max|rate
 # channel or of an extra curve (numbered from 1 in policy entry order).
 FAN_KEY = re.compile(r'fan_(\d+)_(min|max)_(rpm|pct)')
 FAN_CURVE_KEY = re.compile(r'fan_(\d+|extra_(\d+))_curve_(\d)_(temp_c|rpm|pct)')
+# The zero RPM temperature pair of a channel's or an extra curve's policy entry.
+FAN_ZERO_RPM_TEMP_KEY = re.compile(r'fan_(\d+|extra_(\d+))_zero_rpm_(low|high)_temp_c')
 FAN_CURVE_UNITS = ('temp_c', 'rpm', 'pct')
 REASON_KEYS = {
     'generic OCP mapping unknown; reviewed per-rail output ceilings use *_output_ocp_max_ma': 'reason.generic_ocp',
@@ -87,6 +89,12 @@ def field_label(field, language='en'):
         if extra:
             return text(f'field.fan_extra_curve_{unit}', curve=extra, point=point)
         return text(f'field.fan_curve_{unit}', fan=owner, point=point)
+    match = FAN_ZERO_RPM_TEMP_KEY.fullmatch(key)
+    if match:
+        owner, extra, side = match.groups()
+        if extra:
+            return text(f'field.fan_extra_zero_rpm_{side}_temp_c', curve=extra)
+        return text(f'field.fan_zero_rpm_{side}_temp_c', fan=owner)
     for domain in ('xbar', 'sys', 'vid'):
         for side in ('max', 'min'):
             if key == f'{domain}_{side}_table_mhz':
@@ -125,6 +133,46 @@ def summed_cap_notes(field, fields, language='en'):
     return notes
 
 
+def fan_curve_hint(field, fields, values, language='en'):
+    """Explain curve points blocking a fan limit, using all pending stored values.
+
+    The report already associates each curve with its fan rows, including shared
+    extra curves. This is guidance only: the backend still validates the edit and
+    may also constrain it by the opposite limit, encoding or stored speed.
+    """
+    match = FAN_KEY.fullmatch(field.get('key', ''))
+    channel = field.get('fan_channel')
+    if match is None or channel is None:
+        return ''
+    amount = parse_number(values.get(field['key'], field.get('current')))
+    if amount is None:
+        return ''
+    bounds = field.get('bounds', {})
+    lower = parse_number(bounds.get('encoding_minimum'))
+    upper = parse_number(bounds.get('encoding_maximum'))
+    if lower is not None and amount < lower or upper is not None and amount > upper:
+        return ''  # Curve edits cannot fix an unencodable limit.
+    side, unit = match.group(2, 3)
+    blocked = []
+    for curve in fields:
+        point = FAN_CURVE_KEY.fullmatch(curve.get('key', ''))
+        if (point is None or point.group(4) != unit or
+                channel not in curve.get('fan_rows', ())):
+            continue
+        value = parse_number(values.get(curve['key'], curve.get('current')))
+        if value is not None and (value < amount if side == 'min' else value > amount):
+            blocked.append((curve, value))
+    if not blocked:
+        return ''
+    text = Messages(language)
+    readonly = [curve for curve, _ in blocked if not curve.get('editable')]
+    if readonly:
+        return text('fan_curve_readonly_hint', points='; '.join(row_title(c, language)[0] for c in readonly))
+    bound = (min if side == 'min' else max)(value for _, value in blocked)
+    return text('fan_curve_' + side + '_hint', value=number(to_display(field, bound)),
+                units=display_units(field), points='; '.join(row_title(c, language)[0] for c, _ in blocked))
+
+
 # Resolvers whose fields all sit in one section. When one fails on an image (a layout
 # the editor does not support; report diagnostics), that section says some of its fields
 # are missing. Other diagnostics (an unpadded image, an unrecognized one) leave no note:
@@ -135,7 +183,7 @@ RESOLVER_SECTIONS = {'equation_roles': 'voltage', 'evaluated_vmin': 'voltage',
                      'fixed_voltage': 'voltage', 'rail_follow_ov': 'voltage',
                      'power': 'power', 'slot_power': 'power', 'connector_power': 'power',
                      'connector_sum_power': 'power', 'output_ocp': 'current', 'input_current': 'current',
-                     'memory': 'clocks', 'fans': 'fans', 'fan_zero_rpm': 'fans'}
+                     'memory': 'clocks', 'fans': 'fans', 'fan_zero_rpm': 'fans', 'fan_zero_rpm_temperatures': 'fans'}
 
 
 def unsupported_notes(report, language='en'):
@@ -193,13 +241,16 @@ SECTIONS = (
                  'msvdd_output_ocp_rated_ma', 'msvdd_output_ocp_max_ma', 'slot_current_threshold_rated_ma',
                  'slot_current_threshold_max_ma') +
                 tuple(f'connector_{n}_current_threshold_{side}_ma' for n in range(1, 5) for side in ('rated', 'max'))),
-    # Each channel's limits, then its curve points; then the extra curves; then zero RPM.
+    # Each channel's limits, then its curve points; then the extra curves; then zero RPM and
+    # its temperature pairs.
     ('fans', ('fan_channels', 'fan_pwm_frequency_hz') +
              tuple(key for n in range(1, 5) for key in
                    tuple(f'fan_{n}_{side}_{unit}' for unit in ('rpm', 'pct') for side in ('max', 'min')) +
                    tuple(f'fan_{n}_curve_{k}_{unit}' for k in (1, 2, 3) for unit in FAN_CURVE_UNITS)) +
              tuple(f'fan_extra_{m}_curve_{k}_{unit}' for m in range(1, 8) for k in (1, 2, 3)
-                   for unit in FAN_CURVE_UNITS) + ('fan_zero_rpm',)),
+                   for unit in FAN_CURVE_UNITS) + ('fan_zero_rpm',) +
+             tuple(f'fan_{n}_zero_rpm_{side}_temp_c' for n in range(1, 5) for side in ('low', 'high')) +
+             tuple(f'fan_extra_{m}_zero_rpm_{side}_temp_c' for m in range(1, 8) for side in ('low', 'high'))),
 )
 SECTION_NAMES = tuple(name for name, _ in SECTIONS) + ('other',)
 # Windows tools such as MSI Afterburner show the stored table value: half of

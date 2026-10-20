@@ -76,6 +76,7 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `nvvdd_rel_alt_follow_ov` | 1 when the NVVDD REL and ALT selectors (REL alone without ALT) point at the OV equation (XOC-style) | Experimental, opt-in, GB20x and Ada; only 0 -> 1 |
 | `nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv` | Value of a constant NVVDD REL or ALT equation: its constant and clamp maximum | Experimental, Ada and Turing (opt-in); from the clamp minimum up to the OV value, REL <= ALT; on Turing also at least the boot voltage and the highest VMIN |
 | `fan_zero_rpm` | Bits 1\|2 of byte `0x32` of every enabled fan policy entry: 1 both set, 0 both clear (inferred meaning: the fans may stand still at low temperature) | Experimental, opt-in, GB20x; 1 only where the entries store fan-stop parameters; read-only when an entry sets one bit alone or the entries disagree |
+| `fan_N_zero_rpm_low_temp_c`, `fan_N_zero_rpm_high_temp_c`, `fan_extra_M_zero_rpm_*_temp_c` | The two temperatures at bytes 30..33 (1/32 °C) of a channel's or an extra curve's fan policy entry, read with the zero RPM bits (inferred meaning: idle fans stop below the lower and start above the upper) | Experimental, opt-in, GB20x; only where the entry stores a rising nonzero pair and byte 46 is not 0xff; lower > 0, lower < upper <= 110 °C |
 | `*_rel/alt/ov/vmin_selector_index` | Full stored selector index | Read-only |
 | `*_boot_voltage_uv` | Stored boot voltage | Read-only, preserved |
 | `*_output_ocp_max_ma` | Reviewed output-OCP policy maximum (client ceiling) | Reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images; Turing NVVDD row 13 (class 10, experimental, opt-in) |
@@ -776,9 +777,12 @@ and every active channel is stored. Fan fields are offered only when that holds.
   unconfirmed. Hardware test on that RTX 5080 (both channels, fans under manual
   control): with the speed maximum raised from 3500 to 4000 RPM, 72 % gave 2820 RPM
   and 30 % gave 1050 RPM, as the linear map predicts; with the level minimum lowered
-  from 20 to 10 %, the driver's fan range stayed 30-100 %. So the 30 % setting runs at
-  the row minimum speed, and lowering `fan_N_min_rpm` should lower the slowest manual
-  speed (observed mapping; an edited minimum is not hardware-tested). The other
+  from 20 to 10 %, the driver's fan range stayed 30-100 %. In that test, the 30 % setting
+  matched the unchanged 1050 RPM row minimum. A lowered minimum did not lower the fans on another
+  RTX 5080 (Zotac, both channels): a copy with both minimums and the first point of
+  every curve lowered from 1050 to 900 RPM loaded through the Windows loader (Verify
+  matched byte for byte), but at 30 % the fans still ran at 1053 and 1109 RPM. Whether
+  the driver, the fan controller or the fans hold that floor is not known. The other
   limits, the curve points and other boards are not hardware-tested.
   `fan_N_min_rpm`, `fan_N_max_rpm`, `fan_N_min_pct` and `fan_N_max_pct`
   (N = row index + 1, active channels only) edit these bytes:
@@ -838,11 +842,11 @@ and every active channel is stored. Fan fields are offered only when that holds.
     meaning is unconfirmed. Byte 3 is 100 on every active row, so `fan_N_max_pct`
     moves alone only where the curves top out lower (RTX 5060 Ti 81 %, RTX 5070
     92 %); elsewhere it lowers with the top level points.
-- `fan_channels` and a channel limit, curve point or `fan_zero_rpm` are refused
-  together (`SEPARATE_EDIT_REQUIRED`): the count adds or removes channel fields,
-  changes the limits the extra curves must fit and which policy entries the
-  zero-RPM flag reads, so save it first and edit the limits, curves and flag on the
-  copy.
+- `fan_channels` and a channel limit, curve point, `fan_zero_rpm` or zero RPM
+  temperature are refused together (`SEPARATE_EDIT_REQUIRED`): the count adds or
+  removes channel fields, changes the limits the extra curves must fit and which
+  policy entries the zero-RPM flag reads, so save it first and edit the limits,
+  curves, flag and temperatures on the copy.
   The PWM frequency combines with them.
 - **Preserved.** Speed values, the other policy entry bytes and the remaining bytes.
 
@@ -907,6 +911,42 @@ Byte `0x32`, the last byte of each 51-byte policy entry, is a flag byte.
 
 The other policy entry bytes are preserved. Setting 1 is hardware-tested on that one
 board; other boards and setting 0 are not.
+
+### Zero RPM temperatures (`fan_N_zero_rpm_low_temp_c`, `fan_N_zero_rpm_high_temp_c`, opt-in)
+
+Bytes 30..33 of a policy entry hold two `<H` temperatures in 1/32 °C, the lower first.
+
+- **Firmware (static analysis).** In GSP-RM 615.78.08 (`gsp_ga10x.bin`) the entry
+  parser above reads the two words (kept in 1/256 °C) together with the zero RPM
+  booleans and byte 46, for every enabled entry: the channel entries and the curves
+  past the cooler rows go through the same path. The policy constructor copies all
+  of them into the policy's configuration, and its configuration export passes them
+  on together. The analysis did not reach a comparison with a measured temperature,
+  so it does not show which value stops the fans and which starts them, which sensor
+  they apply to, or how the policies combine. Byte 46 is passed on unchanged; its
+  meaning is unknown.
+- **Corpus.** Every GPU-driven GB20x image except the RTX PRO 6000 Max-Q stores a
+  rising nonzero pair and byte 46 = 0 on each enabled entry: 43/50, 50/55 or 50/60 °C
+  on the channel entries and 60-80/70-90 °C on the extra curves, including the RTX
+  PRO images, whose zero RPM bits are clear. The Max-Q stores zeros and 0xff.
+- **Owner report.** On a Zotac RTX 5080 (43/50 °C on its channel entries) the owner
+  sees idle fans start at about 52 °C, which fits "stop below the lower, start above
+  the upper". This is a correlation, not a test of an edit.
+- **Fields.** Each active channel (`fan_N_...`) and each enabled extra curve
+  (`fan_extra_M_...`, numbered as in the curve fields) gets a lower and an upper
+  field, only where the entry stores a rising nonzero pair and byte 46 is not 0xff:
+  nothing is offered or synthesized for the Max-Q's zeros. Stored channels that a
+  larger `fan_channels` count enables keep their bytes and get their fields once
+  enabled. Values are exact in 1/32 °C. The lower stays above 0 °C and below the
+  upper; the upper at most 110 °C, an editor limit as for the curve temperatures, not
+  a tested firmware limit (a stored upper above it leaves the pair read-only). The
+  two fields of an entry form one ordering group, so both can move past the stored
+  values in one edit. No pair is copied to another channel or curve. The fields do
+  not depend on `fan_zero_rpm`: they stay editable with the bits clear or mixed, and
+  an edit leaves the flag byte, byte 46, the curves and every other byte as they are.
+- **Effect.** Setting a higher upper value does not promise that the fans start at
+  that temperature: other fan policies, the extra curves and sensors may still decide.
+  Not hardware-tested.
 
 ## Ada fields
 
