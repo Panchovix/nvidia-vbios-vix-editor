@@ -1599,7 +1599,7 @@ class FanCoolerTests(unittest.TestCase):
         self.assertEqual((extra['fan_policy'], extra['fan_rows']), (5, [0, 1]))
         self.assertNotIn('fan_channel', extra)
         self.assertEqual([e['kind'] for e in low['evidence']],
-                         ['static-firmware-analysis', 'structural-table', 'idle-fan-behavior-correlation'])
+                         ['static-firmware-analysis', 'structural-table', 'hardware-test'])
         # One word per field, in 1/32 C; the other bytes of the entry (flags, byte 46, curves) stay.
         pair = t['rows'][0]['policy_offset'] + 30
         result = edit(image, {'fan_1_zero_rpm_high_temp_c': 60})
@@ -1678,7 +1678,7 @@ class FanCoolerTests(unittest.TestCase):
         with self.assertRaises(VbiosError) as exc:
             edit(hot, {'fan_1_zero_rpm_high_temp_c': 100})
         self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
-        # Ada images carry the same entry, but the field is GB20x only.
+        # The synthetic Ada image stores no pair: nothing is synthesized there either.
         ada = descriptors(from_bytes(synthetic_rom(copies=2, fans=2)))
         self.assertFalse([k for k in ada if '_zero_rpm_' in k])
 

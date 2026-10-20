@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.23
+
+- **Fan zero RPM temperatures on Ada and Ampere (experimental, opt-in).** The lower and upper zero RPM
+  thresholds now also appear on Ada and Ampere images that store them, and they are editable where zero RPM is on
+  (every enabled fan entry sets both bits, as on the GeForce Ada images and most GeForce Ampere ones; written to
+  every image chain). Elsewhere they are read-only, for example on the RTX 3080, 3090, 3070 and 3050 images of the
+  corpus. Not tested on Ada or Ampere hardware. Turing images store no thresholds, so they get none.
+- **Fan zero RPM upper threshold tested on one RTX 5080.** With the upper threshold set to 60 °C (stock 50 °C), the
+  fans stayed at 0 RPM at 59 °C during video playback; before, they started at about 52 °C. Reported
+  in [issue #12](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/12).
+- **Turing: a raised power limit confirmed on an RTX 2070.** With the power limit raised from 200 to 225 W, loaded
+  through the Windows loader, the card reached 225 W. Reported in
+  [Windows loader issue #4](https://github.com/Panchovix/nvidia-windows-vbios-vix-loader/issues/4).
+
 ## 0.1.22
 
 - **Fan minimum speed: lowering it did not lower the fans on one RTX 5080.** On a Zotac RTX 5080, an image with

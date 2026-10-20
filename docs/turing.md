@@ -7,8 +7,9 @@ T series) are recognized by the editor and by both loaders, **experimentally**. 
 has run edited images through the Windows loader (driver 617.70). An edit of 500 W board power plus 250 W per
 connector loaded, and the card reached about 458 W under load: the power limiter no longer triggered, the voltage
 limiters (Reliability Voltage, Max Operating Voltage) did. With the board power alone it stopped near 300 W,
-because the per-connector rows were still at stock. Nothing else below is tested on hardware. If you own a Turing
-card, the tester guide at the end tells us what works.
+because the per-connector rows were still at stock. An RTX 2070 with its power limit raised from 200 to 225 W
+reached 225 W through the Windows loader. Nothing else below is tested on hardware. If you own a Turing card, the
+tester guide at the end tells us what works.
 
 ## What the editor does
 

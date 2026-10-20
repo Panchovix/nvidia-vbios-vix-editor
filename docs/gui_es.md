@@ -72,11 +72,14 @@ funcionando sin las dependencias gráficas.
    da el límite de voltaje plano estilo XOC; guárdalo solo y conserva la imagen
    original para volver atrás) y, en Blackwell, **Parada de ventiladores en
    reposo** (un interruptor para los bits que permiten que los ventiladores se
-   detengan en reposo, probado en hardware en una RTX 5090; experimental) con los
-   **umbrales inferior y superior de la parada en reposo** de cada ventilador y
-   curva adicional (las dos temperaturas guardadas junto a esos bits; es posible
-   que los ventiladores se detengan bajo el inferior y arranquen sobre el superior,
-   un significado inferido; experimental, sin probar en hardware); los valores ya escritos se
+   detengan en reposo, probado en hardware en una RTX 5090; experimental) y, en
+   Blackwell, Ada y Ampere, los **umbrales inferior y superior de la parada en
+   reposo** de cada ventilador y curva adicional (las dos temperaturas guardadas
+   junto a esos bits; lo más probable es que los ventiladores se detengan bajo el
+   inferior y arranquen sobre el superior; en una RTX 5080, subir el superior los
+   mantuvo detenidos por debajo; en Ada y Ampere solo se pueden editar donde la
+   parada en reposo está activa, y ahí no están probados en hardware;
+   experimental); los valores ya escritos se
    conservan al marcarla. Los campos 0/1 de solo lectura muestran Activado o
    Desactivado. **Multiplicador
    de shunt (x)** (1 = desactivado, hasta 10) es solo informativo: en las filas de

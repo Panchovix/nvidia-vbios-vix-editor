@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from decimal import Decimal
 import struct
-from ..rom.blackwell import BlackwellRom
+from ..rom.blackwell import BlackwellRom, FAN_POLICY_FLAG_OFFSET
 from ..rom.errors import VbiosError, FormatError
 from ..rom.image import metadata
 from ..rom.tables import SOURCE, TableRom
@@ -192,7 +192,8 @@ AMPERE_NOTEBOOK_DEFAULT_REASON = ('experimental: stored notebook rated TGP; take
 # Turing (TU102-TU117): structural rules checked on the 25 images of the Turing corpus.
 # On one RTX 2080 Ti (Windows loader) the override loaded and nvidia-smi reported an
 # edited TGP despite the stale signed hash list; with the connector power rows raised too,
-# the card reached about 458 W under load. No other Turing field has run on hardware.
+# the card reached about 458 W under load. On one RTX 2070 a 225 W power limit (stock 200 W)
+# loaded and the card reached 225 W. No other Turing field has run on hardware.
 TURING_STRUCTURAL_EVIDENCE = {
     'kind': 'structural-row-comparison',
     'source': 'Turing VBIOS corpus, 25 TU102-TU117 images', 'set_tested': False, 'runtime_get': False}
@@ -215,7 +216,8 @@ TURING_HASH_EVIDENCE = {
 TURING_NOTE = ('the table decodes like the Ampere one on the Turing images examined; on one RTX 2080 Ti (Windows '
                'loader) the override loaded and nvidia-smi reported an edited TGP although the signed hash list over '
                'this table, which the editor cannot update, was left stale; under load that card stopped near 300 W '
-               'with the connector power rows at stock and reached about 458 W with them raised to 250 W each')
+               'with the connector power rows at stock and reached about 458 W with them raised to 250 W each; on '
+               'one RTX 2070 a power limit raised from 200 to 225 W loaded (Windows loader) and the card reached 225 W')
 # The connector power rows ran on that card with the board power (500 W TGP, 250 W per connector).
 TURING_CONNECTOR_TESTED = ('on one RTX 2080 Ti (Windows loader) a 500 W TGP with 250 W per connector channel loaded '
                            'and the card reached about 458 W under load (near 300 W with these rows at stock); the '
@@ -2231,34 +2233,65 @@ FAN_ZERO_RPM_TEMPS_FIRMWARE_EVIDENCE = {
                    'policy configuration and its export passes them on together; no comparison against a measured '
                    'temperature was traced, so which value stops and which starts the fans is not established',
     'set_tested': False}
+FAN_ZERO_RPM_TEMPS_V2_EVIDENCE = {
+    'kind': 'static-firmware-analysis',
+    'source': 'GSP-RM firmware 615.78.08 (gsp_ga10x.bin, built for GA10x, AD10x and GB20x) and the Windows driver '
+              '617.42 (nvlddmkm.sys), fan policy table dispatch and entry parsers',
+    'observation': 'the version byte of the policy table selects the parser: version 0x20 tables with 51-byte '
+                   'entries, which every Ada and Ampere image stores as GB20x does, take the same entry parser, '
+                   'which decodes bytes 30..33 and 46 with flag bits 1 and 2 as on GB20x; the Windows driver '
+                   'decodes the same bytes; no chip check was found above the dispatch, so that Ada and Ampere '
+                   'boards run this parser is inferred from the shared table version', 'set_tested': False}
 FAN_ZERO_RPM_TEMPS_CORPUS_EVIDENCE = {
     'kind': 'structural-table', 'source': 'GB20x VBIOS corpus',
     'observation': 'every GPU-driven image but the RTX PRO 6000 Max-Q stores a rising nonzero pair and byte 46 = 0 '
                    'on each enabled entry: 43/50, 50/55 or 50/60 C on the channel entries, 60-80/70-90 C on the '
                    'curves past them, also on RTX PRO images with zero RPM off; the Max-Q stores 0/0 and byte 46 = '
                    '0xff'}
-FAN_ZERO_RPM_TEMPS_OWNER_EVIDENCE = {
-    'kind': 'idle-fan-behavior-correlation', 'set_tested': False,
-    'source': 'owner report; this Zotac RTX 5080 image is not in the reviewed corpus',
-    'observation': 'idle fans start at about 52 C on a board whose channel entries store 43/50 C'}
+ADA_FAN_ZERO_RPM_TEMPS_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'Ada VBIOS corpus',
+    'observation': 'every GeForce image stores a rising nonzero pair and byte 46 = 0 on each enabled entry, the '
+                   'same in both image chains, with flag bits 1 and 2 set (0x17/0x07): 40/50 to 60/70 C on the '
+                   'channel entries, 50-80/63-90 C on the extra curves; the RTX 4000, 4000 SFF, 4500 and 2000 Ada '
+                   'store pairs with both bits clear (0x11/0x01); the RTX 5000 and 6000 Ada store 0/0 and byte 46 = '
+                   '0xff'}
+AMPERE_FAN_ZERO_RPM_TEMPS_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'Ampere VBIOS corpus',
+    'observation': 'most GeForce images store a rising nonzero pair and byte 46 = 0 on each enabled entry, the same '
+                   'in every image chain, with flag bits 1 and 2 set (0x17/0x07): 38.875-55/55-60 C on the channel '
+                   'entries, 50-67/67-75 C on the extra curves; others store pairs with both bits clear (0x11/0x01: '
+                   'an RTX 3080, an RTX 3060 Ti, the RTX 3050 and RTX A2000) or bit 1 alone (0x13/0x03: an RTX 3090, '
+                   'an RTX 3070, the RTX 3060 8GB), and one RTX 3060 mixes 0x13 and 0x07; the RTX A1000, A4000, '
+                   'A4500, A5000, A5500 and A6000 store 0/0 and byte 46 = 0xff'}
+FAN_ZERO_RPM_TEMPS_HARDWARE = {
+    'kind': 'hardware-test', 'set_tested': True,
+    'source': 'owner report: an edited image loaded as an override (Windows loader)',
+    'scope': 'one Zotac RTX 5080; its image is outside the reviewed corpus',
+    'observed': 'with the stored 43/50 C the idle fans started at about 52 C; with the upper temperature set to '
+                '60 C the fans stayed at 0 RPM at 59 C during video playback; which entries were edited and whether '
+                'the lower temperature changed were not reported, and a start at 60 C was not observed'}
 FAN_ZERO_RPM_TEMP_CEILING = 110 * 32  # an editor limit, as for the curve temperatures
 
 
 @registry.register
 def fan_zero_rpm_temperatures(image, parser):
-    """GB20x: the temperature pair at bytes 30..33 of each enabled fan policy entry, lower and upper, 1/32 C.
+    """GB20x, Ada and Ampere: the temperature pair at bytes 30..33 of each enabled fan policy entry, 1/32 C.
 
-    GSP-RM decodes the pair with the zero RPM flag bits (fan_zero_rpm) and byte 46, and passes
-    them on together; it may be where idle fans stop (lower) and start again (upper), which is
-    not established. Each active channel entry and each enabled curve past the cooler rows (the
-    extra curves, numbered as in fan_curves) gets its own pair of fields, offered only where it
-    stores parameters (fan_stop_parameters): none is synthesized for the RTX PRO 6000 Max-Q's
-    zeros. The pair stays rising, from 1/32 C up to 110 C (an editor limit); its two fields
-    form one ordering group, so they can cross the stored values together. Stored channels a
-    larger channel count enables keep their bytes. The fields do not depend on the flag bits.
-    Opt-in; not hardware-tested.
+    The driver decodes the pair with the zero RPM flag bits (bits 1 and 2 of byte 0x32) and
+    byte 46 and passes them on together; idle fans most likely stop below the lower value and
+    start again above the upper one (on one RTX 5080 a raised upper value kept them stopped).
+    Each active channel entry and each enabled curve past the cooler rows (the extra curves,
+    numbered as in fan_curves) gets its own pair of fields, offered only where it stores
+    parameters (fan_stop_parameters): none is synthesized for zeros (RTX PRO 6000 Max-Q, RTX
+    5000/6000 Ada, most RTX A-series). The pair stays rising, from 1/32 C up to 110 C (an editor
+    limit); its two fields form one ordering group, so they can cross the stored values
+    together. On GB20x the fields do not depend on the flag bits. Ada and Ampere have no flag
+    field, so their pairs are editable only where every enabled entry sets both bits, as the
+    GeForce Ada images and most GeForce Ampere ones do; writes go to every duplicate image
+    chain. Turing images store no pair
+    (zeros and 0xff at the same place in their 54-byte entries) and get no field. Opt-in.
     """
-    if not isinstance(parser, BlackwellRom):
+    if not isinstance(parser, (BlackwellRom, TableRom)) or turing(parser):
         return []
     table = parser.fan_coolers()
     if table is None:
@@ -2269,6 +2302,19 @@ def fan_zero_rpm_temperatures(image, parser):
     entries += [(f'fan_extra_{m}', f'Extra fan curve {m}', f'extra curve {m}', c,
                  dict(fan_rows=[r['index'] for r in table['rows'] if r['active']]))
                 for m, c in enumerate(table['extra_curves'], 1)]
+    blackwell = isinstance(parser, BlackwellRom)
+    if blackwell:
+        evidence = [FAN_ZERO_RPM_TEMPS_FIRMWARE_EVIDENCE, FAN_ZERO_RPM_TEMPS_CORPUS_EVIDENCE,
+                    FAN_ZERO_RPM_TEMPS_HARDWARE]
+        tested = ('hardware-tested on one RTX 5080: with the upper raised to 60 C the fans stayed stopped at 59 C; '
+                  'the lower value and other boards not hardware-tested')
+        flagged = True
+    else:
+        evidence = [FAN_ZERO_RPM_TEMPS_V2_EVIDENCE, FAN_ZERO_RPM_TEMPS_FIRMWARE_EVIDENCE,
+                    ADA_FAN_ZERO_RPM_TEMPS_CORPUS_EVIDENCE if ada(parser) else AMPERE_FAN_ZERO_RPM_TEMPS_CORPUS_EVIDENCE]
+        tested = 'not hardware-tested on Ada or Ampere'
+        flags = [parser.blob[e['policy_offset'] + FAN_POLICY_FLAG_OFFSET] for *_, e, _ in entries]
+        flagged = all(f & FAN_ZERO_RPM_BITS == FAN_ZERO_RPM_BITS for f in flags)
     writable = can_edit(image, parser)
     result = []
     for prefix, name, owner, entry, extra in entries:
@@ -2276,27 +2322,29 @@ def fan_zero_rpm_temperatures(image, parser):
         if not fan_stop_parameters(parser.blob, entry['policy_offset']):
             continue
         low, high = struct.unpack_from('<HH', parser.blob, at)
-        inside = high <= FAN_ZERO_RPM_TEMP_CEILING
+        inside = high <= FAN_ZERO_RPM_TEMP_CEILING and flagged
         editable = inside and writable
         for side, word, current, lo, hi, offset in (
                 ('low', 'lower', low, 1, high - 1, at), ('high', 'upper', high, low + 1, FAN_ZERO_RPM_TEMP_CEILING,
                                                            at + 2)):
+            offsets, _ = chain_copies(parser, [offset], 2)
             result.append(field(
                 f'{prefix}_zero_rpm_{side}_temp_c', f'{name} zero RPM {word} temperature', 'C', current / 32,
-                lo / 32, hi / 32, editable,
-                [dict(FAN_ZERO_RPM_TEMPS_FIRMWARE_EVIDENCE), dict(FAN_ZERO_RPM_TEMPS_CORPUS_EVIDENCE),
-                 dict(FAN_ZERO_RPM_TEMPS_OWNER_EVIDENCE)],
-                offsets=[offset] if editable else (), encoding='<H' if editable else '', scale=32,
+                lo / 32, hi / 32, editable, [dict(e) for e in evidence],
+                offsets=offsets if editable else (), encoding='<H' if editable else '', scale=32,
                 stored_units='1/32 C', experimental=True, opt_in=True,
                 ordering_group=f'fan-zero-rpm-{prefix}' if editable else None,
                 encoding_bounds=(0, FAN_ZERO_RPM_TEMP_CEILING / 32) if editable else None,
                 writable_status=None if editable else 'unsupported',
                 value_semantics=f'stored-fan-zero-rpm-{word}-temperature', fan_policy=entry['index'], **extra,
                 reason=f'experimental, opt-in: the {word} of the two temperatures (bytes 30..33) of the {owner} fan '
-                       'policy entry, which GSP-RM reads with the zero RPM flag bits; idle fans may stop below the '
-                       'lower and start again above the upper one, but that meaning is inferred, and other fan '
-                       'policies and sensors may decide what the fans do; the lower stays above 0 C and below the '
-                       'upper, the upper at most 110 C (an editor limit); not hardware-tested' if inside else
+                       'policy entry, which the driver reads with the zero RPM flag bits; idle fans most likely stop '
+                       'below the lower and start again above the upper one, and other fan policies and sensors may '
+                       'still decide what the fans do; the lower stays above 0 C and below the upper, the upper at '
+                       f'most 110 C (an editor limit); {tested}' if inside else
+                       'read-only: the zero RPM flag bits (1 and 2 of byte 0x32) are not both set on every enabled '
+                       'fan policy entry of this image, so the pair may be unused; the editor does not change those '
+                       'bits on Ada and Ampere' if not flagged else
                        f'read-only: the upper temperature of the {owner} fan policy entry is above 110 C, outside '
                        'the reviewed shape'))
     return result

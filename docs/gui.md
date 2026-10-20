@@ -77,10 +77,12 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    OV** (a switch: on gives the flat XOC-style voltage limit; save it on its own,
    and keep the original image to go back) and, on Blackwell, **Fan zero RPM** (a
    switch for the flag bits that let the fans stand still at idle, hardware-tested
-   on one RTX 5090; experimental) with the **zero RPM lower and upper thresholds**
-   of each fan and extra curve (the two temperatures stored with those bits; idle
-   fans may stop below the lower one and start above the upper one, an inferred
-   meaning; experimental, not hardware-tested); values typed before ticking it are kept. Read-only 0/1 fields
+   on one RTX 5090; experimental) and, on Blackwell, Ada and Ampere, the **zero RPM
+   lower and upper thresholds** of each fan and extra curve (the two temperatures
+   stored with those bits; idle fans most likely stop below the lower one and start
+   above the upper one; on one RTX 5080 a raised upper threshold kept the fans
+   stopped below it; on Ada and Ampere editable only where zero RPM is on, and not
+   hardware-tested there; experimental); values typed before ticking it are kept. Read-only 0/1 fields
    show On or Off. **Shunt multiplier (x)** (1 = off, up to 10) is display only:
    for board power, PCIe slot power/current, connector power/current and 12 V
    input current rows it adds a note with the real limit on a shunt-modded card, about

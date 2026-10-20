@@ -7,8 +7,9 @@ las reconocen el editor y ambos cargadores, **de forma experimental**. Una RTX 2
 imágenes editadas con el cargador de Windows (driver 617.70). Una potencia de la tarjeta de 500 W más 250 W por
 conector se cargó y la tarjeta llegó a unos 458 W bajo carga: el limitador de potencia dejó de activarse y se
 activaron los de voltaje (Reliability Voltage, Max Operating Voltage). Con solo la potencia de la tarjeta se
-detenía cerca de 300 W, porque las filas de cada conector seguían en sus valores de fábrica. Nada más de lo que
-sigue está probado en hardware. Si tienes una tarjeta Turing, la guía del final nos dice qué funciona.
+detenía cerca de 300 W, porque las filas de cada conector seguían en sus valores de fábrica. Una RTX 2070 con el
+límite de potencia subido de 200 a 225 W llegó a 225 W con el cargador de Windows. Nada más de lo que sigue está
+probado en hardware. Si tienes una tarjeta Turing, la guía del final nos dice qué funciona.
 
 ## Qué hace el editor
 

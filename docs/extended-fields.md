@@ -76,7 +76,7 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `nvvdd_rel_alt_follow_ov` | 1 when the NVVDD REL and ALT selectors (REL alone without ALT) point at the OV equation (XOC-style) | Experimental, opt-in, GB20x and Ada; only 0 -> 1 |
 | `nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv` | Value of a constant NVVDD REL or ALT equation: its constant and clamp maximum | Experimental, Ada and Turing (opt-in); from the clamp minimum up to the OV value, REL <= ALT; on Turing also at least the boot voltage and the highest VMIN |
 | `fan_zero_rpm` | Bits 1\|2 of byte `0x32` of every enabled fan policy entry: 1 both set, 0 both clear (inferred meaning: the fans may stand still at low temperature) | Experimental, opt-in, GB20x; 1 only where the entries store fan-stop parameters; read-only when an entry sets one bit alone or the entries disagree |
-| `fan_N_zero_rpm_low_temp_c`, `fan_N_zero_rpm_high_temp_c`, `fan_extra_M_zero_rpm_*_temp_c` | The two temperatures at bytes 30..33 (1/32 °C) of a channel's or an extra curve's fan policy entry, read with the zero RPM bits (inferred meaning: idle fans stop below the lower and start above the upper) | Experimental, opt-in, GB20x; only where the entry stores a rising nonzero pair and byte 46 is not 0xff; lower > 0, lower < upper <= 110 °C |
+| `fan_N_zero_rpm_low_temp_c`, `fan_N_zero_rpm_high_temp_c`, `fan_extra_M_zero_rpm_*_temp_c` | The two temperatures at bytes 30..33 (1/32 °C) of a channel's or an extra curve's fan policy entry, read with the zero RPM bits (inferred meaning: idle fans stop below the lower and start above the upper) | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); only where the entry stores a rising nonzero pair and byte 46 is not 0xff; on Ada and Ampere editable only where every enabled entry sets both zero RPM bits; lower > 0, lower < upper <= 110 °C |
 | `*_rel/alt/ov/vmin_selector_index` | Full stored selector index | Read-only |
 | `*_boot_voltage_uv` | Stored boot voltage | Read-only, preserved |
 | `*_output_ocp_max_ma` | Reviewed output-OCP policy maximum (client ceiling) | Reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images; Turing NVVDD row 13 (class 10, experimental, opt-in) |
@@ -929,9 +929,13 @@ Bytes 30..33 of a policy entry hold two `<H` temperatures in 1/32 °C, the lower
   rising nonzero pair and byte 46 = 0 on each enabled entry: 43/50, 50/55 or 50/60 °C
   on the channel entries and 60-80/70-90 °C on the extra curves, including the RTX
   PRO images, whose zero RPM bits are clear. The Max-Q stores zeros and 0xff.
-- **Owner report.** On a Zotac RTX 5080 (43/50 °C on its channel entries) the owner
-  sees idle fans start at about 52 °C, which fits "stop below the lower, start above
-  the upper". This is a correlation, not a test of an edit.
+- **Hardware test.** On a Zotac RTX 5080 (43/50 °C on its channel entries, an image
+  outside the reviewed corpus) the idle fans started at about 52 °C. The owner loaded
+  a copy with the upper value set to 60 °C through the Windows loader, and at 59 °C
+  during video playback the fans stayed at 0 RPM. So raising the upper value kept idle
+  fans stopped past the stored 50 °C on that board. A start at 60 °C was not observed,
+  which entries were edited and whether the lower value changed were not reported, and
+  "stop below the lower" is still inferred.
 - **Fields.** Each active channel (`fan_N_...`) and each enabled extra curve
   (`fan_extra_M_...`, numbered as in the curve fields) gets a lower and an upper
   field, only where the entry stores a rising nonzero pair and byte 46 is not 0xff:
@@ -945,8 +949,27 @@ Bytes 30..33 of a policy entry hold two `<H` temperatures in 1/32 °C, the lower
   not depend on `fan_zero_rpm`: they stay editable with the bits clear or mixed, and
   an edit leaves the flag byte, byte 46, the curves and every other byte as they are.
 - **Effect.** Setting a higher upper value does not promise that the fans start at
-  that temperature: other fan policies, the extra curves and sensors may still decide.
-  Not hardware-tested.
+  exactly that temperature: other fan policies, the extra curves and sensors may
+  still decide. Hardware-tested on that one RTX 5080 only.
+- **Ada and Ampere.** Their policy tables have the same version (0x20) and 51-byte
+  entries as GB20x, and the version byte is what selects the entry parser, both in
+  GSP-RM (`gsp_ga10x.bin` is built for GA10x, AD10x and GB20x) and in the Windows
+  driver (617.42), which decode bytes 30..33 and 46 the same way. No chip check was
+  found above that dispatch, so that these boards run the parser is inferred. In the
+  corpus, every GeForce Ada image and most GeForce Ampere images store rising pairs
+  with both zero RPM bits set (0x17/0x07): 40/50 to 60/70 °C on the Ada channel
+  entries, 38.875-55/55-60 °C on the Ampere ones. The RTX 4000, 4000 SFF, 4500 and 2000
+  Ada, an RTX 3080, an RTX 3060 Ti, the RTX 3050 and the RTX A2000 store pairs with
+  both bits clear; an RTX 3090, an RTX 3070 and the RTX 3060 8GB set bit 1 alone, and
+  one RTX 3060 mixes 0x13 and 0x07. The RTX 5000/6000 Ada and the RTX A1000, A4000,
+  A4500, A5000, A5500 and A6000 store zeros and 0xff. The editor has no zero RPM flag field on these families, so a
+  pair is editable only where every enabled entry of the image sets both bits, and is
+  read-only otherwise. Writes go to every duplicate image chain. Not hardware-tested
+  on Ada or Ampere.
+- **Turing.** Its 54-byte entries hold the same block three bytes later (the pair at
+  entry bytes 33..36, byte 49 for byte 46, the flags in byte 1), but every Turing
+  image in the corpus stores zeros and 0xff there, so there is nothing to edit and
+  no field is offered.
 
 ## Ada fields
 

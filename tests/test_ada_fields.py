@@ -44,6 +44,12 @@ def fan_curves(channels, extras, skip=()):
             if (key := f'{owner}_curve_{k}_{unit}') not in skip]
 
 
+def zero_rpm_temps(channels, extras):
+    """Zero RPM lower/upper temperature keys of the channel entries and the extra curves."""
+    owners = [f'fan_{n}' for n in range(1, channels + 1)] + [f'fan_extra_{m}' for m in range(1, extras + 1)]
+    return [f'{owner}_zero_rpm_{side}_temp_c' for owner in owners for side in ('low', 'high')]
+
+
 class AdaPowerTests(unittest.TestCase):
     def test_every_power_variant_writes_the_tgp_row_in_both_chains(self):
         for variant in (0x53, 0x5B, 0x4B):
@@ -395,7 +401,73 @@ class AdaClockTests(unittest.TestCase):
                 self.assertTrue(any('GV HAL' in m or 'clock table variant' in m for m in messages(image)))
 
 
+def with_zero_rpm(blob, flags=(0x17, 0x07), pairs=((40, 50), (40, 50), (53, 63), (60, 70)), entries=None):
+    """A two-channel image with the zero RPM flag bytes (channel entries, extra curves) and temperature
+    pairs (C) on the enabled policy entries 0..3, in every chain, as the GeForce Ada images store them."""
+    t = backend(from_bytes(blob)).fan_coolers()
+    covered = [r for r in t['rows'] if r['active']] + t['extra_curves']
+    for k, e in enumerate(covered):
+        if entries is not None and e['index'] not in entries:
+            continue
+        low, high = pairs[k]
+        blob = patched(blob, e['policy_offset'] + 30, struct.pack('<HH', low * 32, high * 32))
+        blob = patched(blob, e['policy_offset'] + 0x32, bytes((flags[e['index'] >= len(t['rows'])],)))
+    return blob
+
+
 class AdaFanTests(unittest.TestCase):
+    def test_zero_rpm_temperatures_write_every_chain_where_the_bits_are_set(self):
+        for family in ('ada', 'ampere'):
+            with self.subTest(family=family):
+                image = from_bytes(with_zero_rpm(synthetic_rom(family=family, copies=2, fans=2)))
+                parser = backend(image)
+                fields = descriptors(image)
+                keys = ['fan_1', 'fan_2', 'fan_extra_1', 'fan_extra_2']
+                self.assertEqual(sorted(k for k in fields if '_zero_rpm_' in k),
+                                 sorted(f'{p}_zero_rpm_{s}_temp_c' for p in keys for s in ('low', 'high')))
+                high = fields['fan_1_zero_rpm_high_temp_c']
+                self.assertEqual((high['current'], high['editable'], high['opt_in'], high['bounds']['minimum'],
+                                  high['bounds']['maximum']), (50.0, True, True, 40.03125, 110.0))
+                self.assertEqual([e['kind'] for e in high['evidence']],
+                                 ['static-firmware-analysis', 'static-firmware-analysis', 'structural-table'])
+                self.assertEqual(high['evidence'][2]['source'], f'{family.capitalize()} VBIOS corpus')
+                self.assertIn('not hardware-tested on Ada or Ampere', high['reason'])
+                binding = {b.descriptor['key']: b for b in registry.bindings(image, parser)[0]}
+                pair = parser.fan_coolers()['rows'][0]['policy_offset'] + 30
+                offsets = binding['fan_1_zero_rpm_high_temp_c'].offsets
+                self.assertEqual(sorted(offsets), parser.copy_offsets(pair + 2, 2))
+                self.assertEqual(len(offsets), 2)
+                result = edit(image, {'fan_1_zero_rpm_high_temp_c': 60})
+                self.assertTrue(result.manifest['integrity']['valid'])
+                changed_bytes_within(self, image, result, offsets, width=2)
+                self.assertEqual({struct.unpack_from('<H', result.blob, at)[0] for at in offsets}, {60 * 32})
+                self.assertEqual(edit(result.image, {'fan_1_zero_rpm_high_temp_c': 50}).blob, image.blob)
+                both = edit(image, {'fan_extra_2_zero_rpm_low_temp_c': 75, 'fan_extra_2_zero_rpm_high_temp_c': 80})
+                extra = parser.fan_coolers()['extra_curves'][1]['policy_offset'] + 30
+                changed_bytes_within(self, image, both, parser.copy_offsets(extra, 4), width=4)
+                with self.assertRaises(VbiosError) as exc:
+                    edit(image, {'fan_1_zero_rpm_low_temp_c': 50})
+                self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+
+    def test_zero_rpm_temperatures_read_only_unless_every_entry_sets_both_bits(self):
+        blob = synthetic_rom(copies=2, fans=2)
+        # RTX PRO-style bytes (bits clear), bit 1 alone (some Ampere boards) and one entry that differs.
+        for name, image in (('bits clear', with_zero_rpm(blob, flags=(0x11, 0x01))),
+                            ('bit 1 alone', with_zero_rpm(blob, flags=(0x13, 0x03))),
+                            ('one entry clear', with_zero_rpm(with_zero_rpm(blob), flags=(0x11, 0x01), entries=(2,)))):
+            with self.subTest(case=name):
+                fields = descriptors(from_bytes(image))
+                temps = {k: f for k, f in fields.items() if '_zero_rpm_' in k}
+                self.assertEqual(len(temps), 8)
+                self.assertFalse(any(f['editable'] for f in temps.values()))
+                self.assertIn('not both set on every enabled fan policy entry',
+                              temps['fan_1_zero_rpm_low_temp_c']['reason'])
+                with self.assertRaises(VbiosError) as exc:
+                    edit(from_bytes(image), {'fan_1_zero_rpm_high_temp_c': 60})
+                self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
+        # Zeros (RTX 5000/6000 Ada, RTX A-series) give no field at all.
+        self.assertFalse([k for k in descriptors(from_bytes(blob)) if '_zero_rpm_' in k])
+
     def test_two_channels_round_trip_in_both_chains(self):
         image = from_bytes(synthetic_rom(copies=2, fans=2))
         fields = descriptors(image)
