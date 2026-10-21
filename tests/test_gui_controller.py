@@ -251,6 +251,177 @@ assert main([]) == 2
         subprocess.run([sys.executable, '-c', code], check=True)
 
 
+class MemoryViewTests(unittest.TestCase):
+    """The read-only memory view and its comparison never touch the open document."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.source = self.root / 'memory.rom'
+        self.source.write_bytes(synthetic_rom(memory=True))
+
+    def test_memory_view_and_comparison_leave_the_document_alone(self):
+        from nvidia_vbios.gui.controller import compare_memory, memory_view
+        controller = Controller()
+        controller.open(self.source)
+        staged = controller.stage({'power_max_w': 100})
+        report = memory_view(staged.original)
+        self.assertEqual(report['timings']['status'], 'recognized')
+        changed = bytearray(self.source.read_bytes())
+        changed[int(report['timings']['items'][1]['offset'], 16)] += 1
+        other = self.root / 'other.rom'
+        other.write_bytes(bytes(changed))
+        result = compare_memory(report, other)
+        self.assertEqual(result['sections']['timings']['keys'], [1])
+        self.assertEqual(result['b']['file'], str(other))
+        with self.assertRaises(VbiosError) as exc:
+            compare_memory(report, self.root / 'missing.rom')
+        self.assertEqual(exc.exception.code, 'IO_ERROR')
+        self.assertIs(controller.document, staged)
+        self.assertEqual((staged.changes, staged.last_saved), ({'power_max_w': '100'}, None))
+        self.assertIs(staged.proposal, controller.document.proposal)
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), ['memory.rom', 'other.rom'])
+
+    def test_memory_text_in_both_languages(self):
+        from nvidia_vbios.gui.controller import compare_memory, memory_view
+        from nvidia_vbios.gui.i18n import Messages
+        from nvidia_vbios.gui.presentation import (memory_columns, memory_comparison, memory_configuration,
+                                                   memory_raw_text)
+        from nvidia_vbios.rom import from_bytes
+        report = memory_view(from_bytes(self.source.read_bytes(), 'memory.rom'))
+        items = report['configurations']['items']
+        self.assertEqual([memory_configuration(item) for item in items[:3]],
+                         ['Strap 0 → column 0 · Samsung · type GDDR6',
+                          'Strap 1 → column 1 · SK hynix · type 0xa (probably GDDR6X)',
+                          'Strap 2 → column 1 · Micron · type 0xd (probably GDDR7)'])
+        self.assertEqual(memory_configuration(items[3], 'es'), 'Strap 5 → columna 3 · fabricante 0x2 · tipo 0x3')
+        self.assertIn('probablemente GDDR7', memory_configuration(items[2], 'es'))
+        # Without stock clocks every band is shown; a column without a timing entry has no rows.
+        columns = memory_columns(report)
+        self.assertEqual([heading for heading, _, _ in columns],
+                         ['Strap 0 → column 0 · Samsung', 'Strap 1, 2 → column 1 · SK hynix, Micron',
+                          'Strap 5 → column 3 · vendor 0x2'])
+        self.assertEqual(columns[0][1][2][:3], ('5001–16383', '', 'T01'))
+        self.assertEqual(columns[0][1][2][3]['tRC'], 79)
+        self.assertEqual((columns[0][2], columns[2][1:]), (None, ([], 'No timing entry in these bands.')))
+        self.assertEqual(memory_columns(report, 'es')[1][0], 'Strap 1, 2 → columna 1 · SK hynix, Micron')
+        # A column the clock table does not reach comes last, with its own note.
+        outside = dict(report, bands=dict(report['bands'], columns=[0, 1], outside_table=[3]))
+        self.assertEqual(memory_columns(outside, 'es')[-1], ('Strap 5 → columna 3 · fabricante 0x2', [],
+                                                             'Fuera de la tabla de clocks de memoria (columnas 0–3).'))
+        result = compare_memory(report, self.source)
+        spanish = Messages('es')
+        self.assertEqual(memory_comparison(result, 'es')[2],
+                         (spanish('memory.identical', section=spanish('memory.section.timings')), False))
+        self.assertEqual(len(memory_comparison(result)), 4)        # no board profile outside GB20x
+        differs = dict(result, sections=dict(
+            result['sections'], timings=dict(status='differs', count=1, keys=[1]),
+            tables=dict(status='differs', count=2, keys=['memory clock bands (0x0f)', 'timings (0x10)']),
+            board_profile=dict(status='differs', fields=0, meaning='unknown')))
+        self.assertEqual([line for line, _ in memory_comparison(differs)[2:]],
+                         ['Timing entries: differs (entries: 1)',
+                          'Memory tables (SHA-256): differs (memory clock bands (0x0f), timings (0x10))',
+                          'Board memory-training profile: differs, meaning unknown'])
+        self.assertEqual(memory_comparison(differs, 'es')[3][0],
+                         'Tablas de memoria (SHA-256): con diferencias (bandas de clock de memoria (0x0f), '
+                         'timings (0x10))')
+        raw = memory_raw_text(report)
+        self.assertIn('T01 @' + report['timings']['items'][1]['offset'] + ': 4f fd 6a 1a', raw)
+        self.assertIn('E0 0–540: 0:T00 1:T02 3:--\n    00 00 1c 02 00 00 00 00\n    0: 00 00', raw)
+        self.assertIn(report['tables'][2]['sha256'], raw)
+        self.assertIn(spanish('memory.section.bands'), memory_raw_text(report, 'es'))
+
+
+class ImportTests(unittest.TestCase):
+    """Values imported from another ROM are typed in as pending changes; nothing is staged or written."""
+
+    def test_import_proposes_values_and_leaves_the_document_alone(self):
+        from nvidia_vbios.editor import edit
+        from nvidia_vbios.gui.controller import import_from
+        from nvidia_vbios.gui.presentation import number
+        from nvidia_vbios.rom import from_bytes
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, other = root / 'board.rom', root / 'other.rom'
+            blob = synthetic_blackwell(fans=True)
+            source.write_bytes(blob)
+            other.write_bytes(edit(from_bytes(blob), {'fan_pwm_frequency_hz': 25000, 'power_max_w': 120}).blob)
+            controller = Controller()
+            controller.open(source)
+            document = controller.stage({'power_max_w': 110})
+            report = import_from(document, other, ['fans', 'power'])
+            self.assertEqual(report['changes'], {'power_max_w': 120, 'fan_pwm_frequency_hz': 25000})
+            self.assertIs(controller.document, document)
+            self.assertEqual(document.changes, {'power_max_w': '110'})
+            # The window types them in over the pending values and verifies the whole set.
+            typed = {key: number(value) for key, value in report['changes'].items()}
+            staged = stage_document(document, dict(document.changes, **typed))
+            self.assertEqual(staged.changes, {'power_max_w': '120', 'fan_pwm_frequency_hz': '25000'})
+            with self.assertRaises(VbiosError) as exc:
+                import_from(document, root / 'missing.rom', ['fans'])
+            self.assertEqual(exc.exception.code, 'IO_ERROR')
+            self.assertEqual(sorted(p.name for p in root.iterdir()), ['board.rom', 'other.rom'])
+            self.assertEqual(source.read_bytes(), blob)
+
+    def test_import_summary_in_both_languages(self):
+        from nvidia_vbios.gui.presentation import import_summary
+        report = dict(donor=dict(file='/roms/other.rom', pci_device='10de:2c02'),
+                      target=dict(pci_device='10de:2b85'), applied=[dict(field='power_max_w')],
+                      unchanged=['fan_1_min_rpm', 'fan_2_min_rpm', 'fan_pwm_frequency_hz'],
+                      warnings=[dict(code='DIFFERENT_DEVICE', message='another product')], skipped=[
+                          dict(field='input_current_rated_ma', label='12 V input current limit (rated)', units='mA',
+                               reason='out_of_bounds', bounds=dict(minimum=1000, maximum=30000)),
+                          dict(field='fan_1_max_rpm', label='Fan 1 maximum speed', units='RPM', reason='held_back',
+                               partners=['fan_1_max_pct', 'fan_1_min_pct', 'fan_2_max_pct']),
+                          dict(field='fan_1_min_rpm', label='Fan 1 minimum speed', units='RPM', reason='held_back',
+                               partners=['fan_1_max_pct', 'fan_1_min_pct', 'fan_2_max_pct']),
+                          dict(field='fan_2_min_rpm', label='Fan 2 minimum speed', units='RPM', reason='held_back',
+                               partners=['fan_2_max_pct']),
+                          *(dict(field=f'fan_{n}_{side}_pct', label='', units='%', reason='opt_in')
+                            for n, side in ((1, 'max'), (1, 'min'), (2, 'max'))),
+                          dict(field='fan_2_max_rpm', label='Fan 2 maximum speed', units='RPM', reason='refused',
+                               code='OUT_OF_BOUNDS', message='fan_2_max_rpm violates the ordering'),
+                          dict(field='fan_channels', label='Fan channels', units='count', reason='board_specific'),
+                          dict(field='fan_3_max_rpm', label='Fan 3 maximum speed', units='RPM',
+                               reason='absent_in_target'),
+                          dict(field='mystery', label='Mystery field', units='W', reason='refused', code='ODD',
+                               message='the backend says no')])
+        self.assertEqual(import_summary(report, {}), [
+            ('Imported from other.rom as pending changes: 1.', 'heading'),
+            ('The other ROM is for another product of this family (PCI 10de:2c02; this ROM: PCI 10de:2b85). Its '
+             'values were set for that product.', 'warning'),
+            ('Already equal in both ROMs: 3.', 'detail'),
+            ('Not imported: 11.', 'heading'),
+            ('Some fields go with advanced fields that differ; import again with the advanced fields to take them.',
+             'detail'),
+            ("12 V input current limit, rated: outside this ROM's range (1 to 30 A)", 'detail'),
+            ('Fan 1 maximum speed; Fan 1 minimum speed: go with related fields that are not imported: Fan 1 maximum '
+             'level (advanced); Fan 1 minimum level (advanced) and 1 more', 'detail'),
+            ('Fan 2 minimum speed: goes with related fields that are not imported: Fan 2 maximum level (advanced)',
+             'detail'),
+            ('Fan 1 maximum level (advanced): advanced field, not included', 'detail'),
+            ('Fan 1 minimum level (advanced): advanced field, not included', 'detail'),
+            ('Fan 2 maximum level (advanced): advanced field, not included', 'detail'),
+            ('Fan 2 maximum speed: refused by the editor: The value is outside the allowed range or breaks the '
+             'minimum/default/maximum order [OUT_OF_BOUNDS]', 'detail'),
+            ("Fan channels: this board's fan count; never copied", 'detail'),
+            ('Fan 3 maximum speed: not in this ROM', 'detail'),
+            ('Mystery field: refused by the editor: the backend says no [ODD]', 'detail')])
+        spanish = [line for line, _ in import_summary(dict(report, applied=[], warnings=[]), {}, 'es')]
+        self.assertEqual(spanish[:4], ['No se importó nada de other.rom.', 'Ya iguales en ambas ROM: 3.',
+                                       'No importados: 11.', 'Algunos campos van junto con campos avanzados que '
+                                       'difieren; importa de nuevo con los campos avanzados para traerlos.'])
+        self.assertEqual(spanish[5], 'Velocidad máxima del ventilador 1; Velocidad mínima del ventilador 1: van junto '
+                                     'con campos relacionados que no se importan: Nivel máximo del ventilador 1 '
+                                     '(avanzado); Nivel mínimo del ventilador 1 (avanzado) y 1 más')
+        self.assertEqual(spanish[10:13], [
+            'Velocidad máxima del ventilador 2: rechazado por el editor: El valor está fuera del rango permitido o '
+            'rompe el orden mínimo/por defecto/máximo [OUT_OF_BOUNDS]',
+            'Canales de ventilador: cantidad de ventiladores de esta placa; nunca se copia',
+            'Velocidad máxima del ventilador 3: no está en esta ROM'])
+
+
 class PresentationNumberTests(unittest.TestCase):
     """Typed text of any size is classified and formatted without raising."""
 

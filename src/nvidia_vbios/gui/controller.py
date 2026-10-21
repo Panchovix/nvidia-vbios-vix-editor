@@ -6,6 +6,7 @@ from typing import Any
 
 from nvidia_vbios import editor
 from nvidia_vbios.families import GA100_DEVICE_IDS, architecture
+from nvidia_vbios.rom.memory import compare, memory_report
 from nvidia_vbios.rom.structure import scan_images
 
 # Ampere and Ada full ROMs usually hold two banks or more than the 512 KiB their GSP firmware
@@ -91,6 +92,26 @@ def stage_document(document, changes):
 
 def reset_document(document):
     return replace(document, changes={}, proposal=None, last_saved=None)
+
+
+def memory_view(image):
+    """Read-only memory report of an image, raw bytes included; nothing is staged or written."""
+    return memory_report(image, raw=True)
+
+
+def compare_memory(report, path):
+    """Compare a memory report with the ROM at path; no document, change list or save is involved."""
+    return compare(report, memory_report(editor.load(path), raw=True))
+
+
+def import_from(document, path, sections, include_opt_in=False):
+    """What importing `sections` from the ROM at path gives the document's original (editor.import_fields);
+    the window types its `changes` in as pending values, so nothing is staged or written here."""
+    if document is None:
+        raise editor.VbiosError('INVALID_IMAGE', 'Open a ROM first.')
+    report, _ = editor.import_fields(document.original, editor.load(path), sections, include_opt_in=include_opt_in,
+                                     dry_run=True)
+    return report
 
 
 def loader_outputs(document):

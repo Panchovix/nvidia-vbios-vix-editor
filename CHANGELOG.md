@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.1.26
+
+- **Import from another ROM (Turing, Ampere, Ada and Blackwell).** **Import from ROM…** and `nvbios import ROM DONOR
+  [OUTPUT] --sections fans[,power,...] [--include-opt-in] [--dry-run]` copy the editable values of the chosen
+  sections (power, voltage, clock offsets, current, fans) from another ROM of the same family, for example the fan
+  settings of another board. The values go through the usual checks. Related fields (a minimum, rated value and
+  maximum; a fan curve with its limits, temperatures, speeds and levels) come whole from the other ROM or not at
+  all, values that mean another quantity there (a notebook TGP, REL and ALT that follow OV) are left out, the fan
+  channel count is never copied, and the summary says why values were left out. Advanced fields only when ticked
+  (`--include-opt-in`): fan levels, the fixed board power rating on Blackwell and the fixed REL/ALT voltages on
+  Turing are advanced, so when they differ the whole fan curve, the board power set or, on Turing, VMIN is left out
+  with them. Another family or format (such as a loader `.bin`) is refused; another product of the same family gets
+  a warning. In the editor window the values become pending changes, saved only with Save Copy. They are copied as
+  stored numbers, not adapted: fan speeds, power or current limits and voltage limits from another board can exceed
+  this board's hardware.
+- **Read-only memory view (Turing, Ampere, Ada and Blackwell).** A collapsed **Memory (read-only)** section and
+  `nvbios memory ROM [--compare ROM2] [--raw]` show the memory configurations (strap → column, vendor, type code),
+  the memory clock bands with the stock memory clocks they hold (not on Turing, or where the editor cannot read
+  them), and the timing entries in controller cycles: tRC, tRAS and tRP inferred from byte patterns, tRFC probable,
+  CL and tWR tentative, with the raw bytes. Which configuration a card uses is set by the board. On Blackwell an
+  undecoded board memory-training profile (object 0x89) is shown as a tag and a fingerprint; it only takes effect by
+  flashing the whole ROM. **Compare with another ROM…** says per section whether the tables are identical or differ,
+  never which ROM is better; a differing profile does not mean a faster BIOS. Nothing is edited.
+- **Windows driver 621.01 works on Blackwell, Ada and Ampere.** Overrides loaded with the Windows loader on an
+  RTX 4090 (Ada) and an RTX A2000 (Ampere) stayed in place through the driver update, and after restarting Windows
+  Verify reported both as `override-active`. On an RTX 5070 (Blackwell), Verify reported `override-active` for an
+  edited VBIOS loaded on 621.01 after a GPU restart. Turing is not tested on 621.01 yet. The editor and Windows
+  loader READMEs now list 621.x.
+- **Memory levels that follow the memory offset: hardware result.** On the one card tested, an RTX 3050 Laptop GPU
+  with the override verified, setting the field on its 5501 MHz level (with a lower memory offset floor) did not
+  stop the memory dropping to 810 MHz below a -500 MHz offset. The bit these fields set does not decide that drop
+  on that card, and what does is unknown; the fields stay, with this result in their notes.
+
 ## 0.1.25
 
 - **GPC curve offset (experimental, opt-in; Blackwell, Ada and Ampere).** A new field shifts the stock core VF curve

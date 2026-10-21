@@ -535,6 +535,169 @@ class GtkSmokeTests(unittest.TestCase):
                     while context.pending():
                         context.iteration(False)
 
+    def test_memory_section_reads_lazily_and_compares_without_touching_the_document(self):
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gio, GLib, Gtk
+        from nvidia_vbios.gui.app import EditorWindow, texts
+        from test_rom_formats import synthetic_rom
+        app = Gtk.Application(application_id='org.nvidia_vbios.MemorySmoke', flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.assertTrue(app.register(None))
+        context = GLib.MainContext.default()
+
+        def until(condition):
+            deadline = time.monotonic() + 15
+            while not condition():
+                while context.pending():
+                    context.iteration(False)
+                if time.monotonic() >= deadline:
+                    self.fail('GTK operation did not complete')
+                time.sleep(.01)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path, other = Path(tmp) / 'memory.rom', Path(tmp) / 'other.rom'
+            blob = synthetic_rom(memory=True)
+            path.write_bytes(blob)
+            changed = bytearray(blob)
+            changed[blob.index(bytes.fromhex('4f fd 6a 1a'))] += 1     # tRC of timing entry 1
+            other.write_bytes(bytes(changed))
+            for language in ('en', 'es'):
+                with self.subTest(language=language):
+                    window = EditorWindow(app, path, language)
+                    window.present()
+                    try:
+                        until(lambda: not window.busy and window.controller.document is not None)
+                        expander = window.memory_expander
+                        self.assertEqual(expander.get_label(), window.text('memory.title'))
+                        self.assertFalse(expander.get_expanded())
+                        self.assertIsNone(window.memory['report'])          # read only when expanded
+                        expander.set_expanded(True)
+                        until(lambda: window.memory['report'] is not None)
+                        shown = '\n'.join(texts(window.memory_box))
+                        self.assertIn(window.text('memory.note'), shown)
+                        self.assertIn(window.text('memory.confidence.inferred'), shown)
+                        self.assertIn('T01', shown)
+                        self.assertIn('253', shown)
+                        window.entries['power_max_w'].set_text('150')
+                        until(lambda: not window.verifying and not window.dirty)
+                        document, preview = window.controller.document, window.preview_text()
+                        window.compare_memory_path(other)
+                        until(lambda: not window.memory['comparing'])
+                        lines = texts(window.memory_compare_box)
+                        timings = window.text('memory.section.timings')
+                        self.assertIn(window.text('memory.differs_entries', section=timings, count=1), lines)
+                        self.assertIs(window.controller.document, document)
+                        self.assertEqual(document.changes, {'power_max_w': '150'})
+                        self.assertEqual(window.preview_text(), preview)
+                        self.assertTrue(window.lookup_action('save').get_enabled())
+                        # A re-render keeps the report, the open section and the comparison.
+                        report = window.memory['report']
+                        window.advanced_toggle.set_active(True)
+                        self.assertTrue(window.memory_expander.get_expanded())
+                        self.assertIs(window.memory['report'], report)
+                        self.assertIn(window.text('memory.differs_entries', section=timings, count=1),
+                                      texts(window.memory_compare_box))
+                        window.compare_memory_path(Path(tmp) / 'missing.rom')
+                        until(lambda: not window.memory['comparing'])
+                        self.assertIn('IO_ERROR', '\n'.join(texts(window.memory_compare_box)))
+                        self.assertIs(window.controller.document, document)
+                        window.open_path(other)
+                        until(lambda: not window.busy and window.controller.document.original.name == str(other))
+                        self.assertIsNone(window.memory['report'])
+                        self.assertFalse(window.memory_expander.get_expanded())
+                    finally:
+                        window.close()
+                        while context.pending():
+                            context.iteration(False)
+
+    def test_import_from_another_rom_types_in_pending_changes(self):
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gio, GLib, Gtk
+        from nvidia_vbios.editor import edit
+        from nvidia_vbios.gui.app import EditorWindow, texts
+        from nvidia_vbios.rom import from_bytes
+        from test_rom_formats import synthetic_blackwell, synthetic_rom
+        app = Gtk.Application(application_id='org.nvidia_vbios.ImportSmoke', flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.assertTrue(app.register(None))
+        context = GLib.MainContext.default()
+
+        def until(condition):
+            deadline = time.monotonic() + 15
+            while not condition():
+                while context.pending():
+                    context.iteration(False)
+                if time.monotonic() >= deadline:
+                    self.fail('GTK operation did not complete')
+                time.sleep(.01)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path, other, ada = Path(tmp) / 'board.rom', Path(tmp) / 'other.rom', Path(tmp) / 'ada.rom'
+            blob = synthetic_blackwell(fans=True)
+            path.write_bytes(blob)
+            other.write_bytes(edit(from_bytes(blob), {'fan_pwm_frequency_hz': 25000, 'fan_zero_rpm': 1,
+                                                      'power_max_w': 120}).blob)
+            ada.write_bytes(synthetic_rom())
+            for language in ('en', 'es'):
+                with self.subTest(language=language):
+                    window = EditorWindow(app, path, language)
+                    window.present()
+                    try:
+                        until(lambda: not window.busy and window.controller.document is not None)
+                        self.assertTrue(window.lookup_action('import').get_enabled())
+                        window.entries['power_max_w'].set_text('110')    # another section's pending value stays
+                        # A pending value where both ROMs agree gets their value back.
+                        window.entries['fan_1_curve_1_temp_c'].set_text('45')
+                        until(lambda: not window.verifying and not window.dirty)
+                        dialog = window.show_import_dialog(other)
+                        self.assertFalse(dialog.accept_button.get_sensitive())
+                        dialog.checks['fans'].set_active(True)
+                        self.assertTrue(dialog.accept_button.get_sensitive())
+                        dialog.accept_button.emit('clicked')
+                        until(lambda: window.importing is None and not window.verifying and not window.dirty)
+                        self.assertEqual(window.controller.document.changes,
+                                         {'power_max_w': '110', 'fan_pwm_frequency_hz': '25000'})
+                        self.assertEqual(window.entries['fan_pwm_frequency_hz'].get_text(), '25')
+                        self.assertEqual(window.entries['fan_1_curve_1_temp_c'].get_text(), '50')
+                        self.assertIn('changed', window.rows['fan_pwm_frequency_hz']['row'].get_css_classes())
+                        shown = texts(dialog.summary)
+                        self.assertIn(window.text('import.applied', count=1, file='other.rom'), shown)
+                        self.assertIn(window.text('import.reason.opt_in'), '\n'.join(shown))
+                        self.assertEqual(dialog.cancel_button.get_label(), window.text('import.close'))
+                        self.assertFalse(window.advanced_toggle.get_active())
+                        dialog.cancel_button.emit('clicked')
+                        # Opt-in values open the advanced rows; the earlier values stay pending.
+                        self.assertIsNotNone(window.import_path(other, ['fans'], include_opt_in=True))
+                        self.assertFalse(window.lookup_action('import').get_enabled())
+                        until(lambda: window.importing is None and not window.verifying and not window.dirty)
+                        self.assertTrue(window.advanced_toggle.get_active())
+                        self.assertTrue(window.entries['fan_zero_rpm'].get_active())
+                        self.assertEqual(window.controller.document.changes,
+                                         {'power_max_w': '110', 'fan_pwm_frequency_hz': '25000', 'fan_zero_rpm': '1'})
+                        self.assertTrue(window.lookup_action('save').get_enabled())
+                        # Another family is refused in the summary and changes nothing.
+                        document = window.controller.document
+                        window.import_path(ada, ['fans'])
+                        until(lambda: window.importing is None)
+                        self.assertIn('FAMILY_MISMATCH', window.import_lines[0][0])
+                        self.assertIs(window.controller.document, document)
+                        # Closing the dialog before the import ends drops its result.
+                        dialog = window.show_import_dialog(other)
+                        dialog.checks['power'].set_active(True)
+                        dialog.accept_button.emit('clicked')
+                        self.assertIsNotNone(window.importing)
+                        dialog.close()
+                        self.assertIsNone(window.importing)
+                        for _ in range(50):
+                            while context.pending():
+                                context.iteration(False)
+                            time.sleep(.01)
+                        self.assertEqual(window.entries['power_max_w'].get_text(), '110')
+                    finally:
+                        window.close()
+                        while context.pending():
+                            context.iteration(False)
+
     def test_shunt_multiplier_is_display_only(self):
         import gi
         gi.require_version('Gtk', '4.0')

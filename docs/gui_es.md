@@ -125,9 +125,9 @@ hardware; de -500 a +500 MHz) debería desplazar la curva VF de fábrica del nú
 cantidad de MHz en todos los voltajes, en cada arranque y debajo del offset de
 cualquier herramienta; 0 devuelve los bytes de fábrica. **El
 clock de memoria de N MHz sigue el offset de memoria** (Blackwell, Ada y Ampere;
-experimental, sin probar en hardware) debería hacer que un offset de memoria negativo
-también mueva un nivel de memoria intermedio, en vez de que la memoria caiga a un clock
-de reposo bajo él (el significado del bit que activa es inferido); baja también el piso del offset de memoria. La representación de tabla
+experimental) buscaba que un offset de memoria negativo también moviera un nivel de
+memoria intermedio, en vez de que la memoria cayera a un clock de reposo bajo él; en la
+única tarjeta probada (una RTX 3050 Laptop GPU) no lo logró. La representación de tabla
 queda en `nvbios fields`. Las corrientes guardadas en mA (entrada de 12 V y OCP de
 salida) se muestran y escriben en A, con hasta tres decimales; la GUI las convierte
 de forma exacta y el backend, la CLI y el manifiesto siguen en mA. La frecuencia
@@ -173,7 +173,8 @@ implícitamente. Los formatos desconocidos o no editables permiten sólo inspecc
 Las firmas criptográficas no se verifican ni regeneran.
 
 Atajos: `Ctrl+O` abre, `Ctrl+Enter` verifica al momento, `Ctrl+S` guarda una
-copia, `Ctrl+R` restablece y `Ctrl+Q` cierra. La ventana (760×920 por defecto) es
+copia, `Ctrl+R` restablece, `Ctrl+I` importa desde otra ROM y `Ctrl+Q` cierra. La
+ventana (760×920 por defecto) es
 de una sola columna: tarjeta del dispositivo, luego Potencia, Voltaje, Offsets de
 reloj, Corriente y protección, y Ventiladores, y al final los campos de solo lectura en una
 sección plegada. Si una parte de la imagen usa una disposición que el editor aún no
@@ -181,6 +182,64 @@ admite (por ejemplo, las tablas de ventiladores de algunas imágenes), la tarjet
 correspondiente avisa que algunos de sus campos no se muestran; el título aparece aunque
 no quede ningún campo. La barra de cambios queda siempre visible. Tab recorre los controles. Los errores muestran códigos
 estables del backend; los hashes y mensajes se pueden seleccionar y copiar.
+
+**Memoria (solo lectura)**, una sección plegada después de los campos de solo lectura,
+muestra las tablas de memoria de las imágenes Turing, Ampere, Ada y Blackwell (`nvbios
+memory` entrega el mismo informe en JSON, ver la [API del editor](editor-api.md)). Se lee
+en segundo plano la primera vez que se abre. Lista las configuraciones de memoria (strap →
+columna, fabricante, código de tipo; solo el tipo 9 tiene nombre, GDDR6) y, por columna,
+la entrada de timings de cada banda que contiene un clock de memoria de fábrica (todas
+las bandas sobre 0 MHz cuando el editor no lee los clocks de fábrica de la ROM, como en Turing) con
+sus valores decodificados en ciclos del controlador: tRC, tRAS y tRP van marcados como "inferidos"
+(sus nombres salen de patrones de bytes, no de documentación de NVIDIA), tRFC como
+"probable", CL y tWR como "tentativos". Las columnas con las mismas entradas comparten
+un título; una columna que la tabla de clocks de memoria no tiene se lista con una nota.
+La configuración que usa una tarjeta la fija la placa, no la ROM. En
+Blackwell también muestra el perfil de entrenamiento de memoria de la placa del objeto
+0x89 como una etiqueta y una huella: datos de arranque por placa sin decodificar,
+probablemente entrenamiento de la interfaz de memoria. Una diferencia ahí no significa
+que una BIOS sea más rápida, y solo tiene efecto al flashear la ROM completa; el
+override no puede aplicarlo. **Bytes en bruto** lista todas las bandas con sus bytes,
+las entradas de timings que seleccionan las bandas, el hash de cada tabla y los bytes del
+perfil. **Comparar con otra ROM…** lee una segunda ROM en segundo plano e indica, por
+sección, si hay diferencias (el número de entradas o campos del perfil distintos, cuyo
+significado se desconoce), nunca cuál es mejor. Las líneas de configuraciones, bandas y
+timings comparan las entradas en uso; la línea de tablas compara cada byte de cada tabla
+y nombra las tablas con diferencias. Nada en esta sección edita, prepara ni guarda
+cambios, y la comparación no toca la ROM abierta, la lista de cambios ni el guardado.
+
+**Importar desde ROM…** (en la barra de cambios) copia valores de otra ROM de la misma familia
+a la ROM abierta, por ejemplo los ajustes de ventiladores de otra placa: elige la ROM, marca las
+secciones (Potencia, Voltaje, Offsets de reloj, Corriente y protección, Ventiladores) y, si
+quieres, los campos avanzados estilo XOC (desmarcados por defecto). La otra ROM se lee en
+segundo plano. Cada valor distinto que esta ROM puede tomar se escribe en su fila como si lo
+hubieras escrito tú: aparece en la lista de cambios, se verifica como cualquier otro valor, y
+escribir de nuevo el valor original o **Restablecer cambios** lo deshace. Un valor que habías
+escrito en una sección elegida donde ambas ROM coinciden vuelve al valor que ambas tienen. No se escribe nada
+hasta **Guardar copia…**, y los valores pendientes de otras secciones se mantienen.
+
+Los campos relacionados vienen completos de la otra ROM o no vienen: un mínimo, un valor nominal
+y un máximo; una curva de ventilador (los límites de los ventiladores y la temperatura, la
+velocidad y el nivel de cada punto); el límite de entrada de 12 V y su copia en la política 7.
+Si uno de ellos difiere pero queda fuera, por ejemplo un nivel de curva que es un campo avanzado
+que no incluiste, los demás también se retienen. Un valor que el editor rechaza queda fuera
+junto con los valores de los que depende (esos campos relacionados, o todos los voltajes). Luego
+el diálogo indica cuántos valores se importaron y lista los campos que quedaron fuera con su
+motivo: no está en una de las ROM, es de solo lectura, en la otra ROM es otra magnitud (otras
+unidades, otro nivel de memoria, otro esquema de potencia de notebook o de placa, u otra
+ecuación de voltaje, como REL y ALT que siguen a OV), está fuera del rango de esta ROM, es un
+campo avanzado no incluido, se retiene junto con campos relacionados, o el editor lo rechazó.
+Los campos de solo lectura en ambas ROM solo se listan cuando retienen campos relacionados. La
+cantidad de canales de ventilador describe los ventiladores de la placa y nunca se copia. Una
+ROM de otra familia de GPU o de otro formato (por ejemplo un `.bin` del loader) se rechaza; otro producto de la misma familia (otro ID de dispositivo
+PCI) se permite con un aviso. `nvbios import` hace lo mismo desde la línea de comandos (ver la
+[API del editor](editor-api.md)).
+
+**Los valores se copian como números almacenados, sin adaptarlos a esta placa.** Los límites de
+velocidad de los ventiladores, los de potencia o corriente y los de voltaje de otra placa pueden
+superar lo que soporta el hardware de esta placa, por ejemplo ventiladores para una velocidad
+menor o un solo conector 12V-2x6 donde la otra placa tiene más conectores de alimentación o etapas
+de potencia más robustas. Revisa cada valor importado en la lista de cambios antes de guardar.
 
 Consulta la [API del editor](editor-api.md) y los [campos ampliados](extended-fields.md)
 para los formatos admitidos y sus límites de evidencia. Las pruebas y la

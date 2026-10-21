@@ -12,6 +12,12 @@ connector power and current limits, VMIN, fixed REL/ALT voltages, clock offset r
 (experimental; on one RTX 2080 Ti edited board and connector power limits loaded and the card reached about
 458 W under load, nothing else is tested on a Turing card; see the
 [Turing tester guide](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/turing.md)).
+A read-only **Memory** section (all four families) shows the memory configurations, the memory clock bands and
+their timing entries with decoded values and, on Blackwell, an undecoded board memory-training profile, and tells
+whether another ROM's tables are identical or differ. **Import from ROM…** copies the values of chosen sections
+(for example the fan settings; fan curves, Blackwell board power and Turing VMIN often need the advanced fields
+too) from another ROM of the same family as pending changes; they are copied as stored numbers, so check that this
+board's hardware can take them.
 
 Loading an edited image with the Linux or Windows loader works with NVIDIA 615.x (R615) drivers on Linux and
 616.x, 617.x and 621.x drivers on Windows (621.01 is tested on Blackwell, Ada and Ampere, not yet on Turing). It
@@ -74,7 +80,9 @@ cd nvidia-vbios-vix-editor-<version>
 ./nvbios-gui                     # editor window (English)
 ./nvbios-gui --lang es card.rom  # Spanish, with a ROM
 ./nvbios fields card.rom         # JSON list of the fields
+./nvbios memory card.rom         # read-only memory tables (JSON)
 ./nvbios edit card.rom out.rom --set power_max_w=700
+./nvbios import card.rom other.rom out.rom --sections fans
 ```
 
 Windows: double-click `nvbios-gui.exe`. The first start unpacks its GTK runtime to

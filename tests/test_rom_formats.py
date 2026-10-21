@@ -42,7 +42,7 @@ AMPERE_CHANNELS = {4: '05 ff 00 1b b7 00 00 10', 5: '05 fa 00 1b b7 00 00 10 00 
 
 def synthetic_rom(*, family='ada', copies=1, prefix=512, tail=b'ARCHIVE-IDENTITY', unknown=False, version=None,
                   power_variant=0x5B, notebook=False, policies=False, alt=False, rel='derated', fans=0,
-                  device=None, rails=2, efi_image=True, fan_speed=True):
+                  device=None, rails=2, efi_image=True, fan_speed=True, memory=False):
     """Small complete PCI/NPDS chains with schema-shaped tables and bank padding.
 
     Ada options: power_variant 0x53 (header 0x32), 0x5B (header 0x34) or 0x4B (header 0x2C); notebook
@@ -60,6 +60,8 @@ def synthetic_rom(*, family='ada', copies=1, prefix=512, tail=b'ARCHIVE-IDENTITY
     and NVVDD current rows; fans as for Ada, fan_speed=False leaves the speed table
     disabled; efi_image=False drops the EFI image (legacy marked last); device sets the
     legacy PCI ID while the data images keep the GA10x stamp 0x2200.
+
+    memory adds the BIT M token and the memory tables of memory_tables() (both families).
     """
     ampere = family == 'ampere'
     device, default = (device or 0x2204, b'94.02.42.00.11') if ampere else (0x28B0, b'95.07.47.00.19')
@@ -83,7 +85,7 @@ def synthetic_rom(*, family='ada', copies=1, prefix=512, tail=b'ARCHIVE-IDENTITY
         b[start + size - 16:start + size] = b'\xff' * 16
     bit = 128
     b[bit:bit + 6] = b'\xff\xb8BIT\x00'
-    b[bit + 8:bit + 11] = bytes((12, 6, 2))
+    b[bit + 8:bit + 11] = bytes((12, 6, 3 if memory else 2))
     b[bit + 11] = -sum(b[bit:bit + 12]) & 255
     struct.pack_into('<BBHH', b, bit + 12, ord('P'), 2, 252 if family == 'ada' else 0xE8, 256)
     struct.pack_into('<BBHH', b, bit + 18, ord('C'), 2, 12, 600)
@@ -93,6 +95,8 @@ def synthetic_rom(*, family='ada', copies=1, prefix=512, tail=b'ARCHIVE-IDENTITY
         return at if at < 2048 else at - 512
     for off, at in ((0x2C, power), (0x68, rail), (0x20, vfe)):
         struct.pack_into('<I', b, 256 + off, pointer(at))
+    if memory:
+        memory_tables(b, bit, pointer)
     if family == 'ada':
         struct.pack_into('<I', b, 256 + 0xF4, pointer(profiles))
         # Power channel table (P+0x3c): channel 0 is the total-board sum (class 2, rail 0xf5).
@@ -212,6 +216,42 @@ def synthetic_rom(*, family='ada', copies=1, prefix=512, tail=b'ARCHIVE-IDENTITY
         at = i * bank_size + prefix
         output[at:at + chain_size] = b
     return bytes(output)
+
+
+# Memory timing entry words 0..2 of the reference RTX 5090 top band (tRC 79, tRFC 253, tRAS 53, tRP 26,
+# CL 35 in word 1 [5:0], tWR 42 in word 2 [22:16]).
+MEMORY_TIMING = bytes.fromhex('4f fd 6a 1a a3 05 68 79 00 0f 2a cc')
+
+
+def memory_tables(b, bit, pointer):
+    """BIT M (legacy +1200), its memory configuration table (+1300) and the memory clock bands (P+0x04,
+    +8600) and timing table (P+0x08, +8700) in the data image.
+
+    Configurations: strap 0 GDDR6 Samsung column 0; strap 1 type 0xa SK hynix column 1; strap 2 type
+    0xd Micron column 1; strap 5 type 3, vendor 2, column 3 (no timing entry). Bands 0-540, 541-5000
+    and 5001-16383 MHz; timing entry 1 holds MEMORY_TIMING.
+    """
+    struct.pack_into('<BBHH', b, bit + 24, ord('M'), 2, 5, 1200)
+    b[1200], b[1203:1205] = 4, struct.pack('<H', 1300)
+    b[1300:1307] = bytes.fromhex('10 07 06 10 00 00 00')
+    for i in range(16):
+        b[1307 + 6 * i] = 0x0F
+    for i, (strap_type, vendor_column) in enumerate(((0x09, 0x10), (0x1A, 0x61), (0x2D, 0xF1), (0x53, 0x23))):
+        b[1307 + 6 * i:1309 + 6 * i] = bytes((strap_type, vendor_column))
+    struct.pack_into('<I', b, 256 + 0x04, pointer(8600))
+    b[8600:8606] = bytes.fromhex('11 06 08 02 04 03')
+    for i, (low, high, columns) in enumerate(((0, 540, (0, 2, 3, 0xFF)), (541, 5000, (2, 3, 3, 0xFF)),
+                                              (5001, 16383, (1, 4, 4, 0xFF)))):
+        e = 8606 + 16 * i
+        struct.pack_into('<HH', b, e, low, high)
+        for c, index in enumerate(columns):
+            b[e + 8 + 2 * c] = index
+    struct.pack_into('<I', b, 256 + 0x08, pointer(8700))
+    b[8700:8706] = bytes.fromhex('20 06 10 0c 00 05')
+    for i in range(5):
+        struct.pack_into('<III', b, 8706 + 16 * i, 6 + 10 * i | (20 + i) << 8 | (4 + 5 * i) << 17 | (2 + 5 * i) << 24,
+                         9 + i, (4 + i) << 16)
+    b[8706 + 16:8706 + 28] = MEMORY_TIMING
 
 
 def ada_fan_tables(b, fans, pointer, speed=True):

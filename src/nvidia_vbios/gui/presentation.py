@@ -1,7 +1,12 @@
 """GTK-free localized presentation of public field descriptors."""
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 import re
 
+# Sections and visibility are shared with the import from another ROM; the GUI imports them from here too.
+from ..editor.sections import (SECTION_NAMES, SECTIONS, field_section, opt_in_field_keys,  # noqa: F401
+                               technical_field_keys)
+from ..rom.memory import PROFILE_COLUMNS, TIMING_FIELDS
 from .i18n import Messages
 
 FIELD_KEYS = frozenset(('power_min_w', 'power_max_w', 'nvvdd_rel_max_mv', 'msvdd_rel_max_mv',
@@ -27,7 +32,6 @@ FAN_KEY = re.compile(r'fan_(\d+)_(min|max)_(rpm|pct)')
 FAN_CURVE_KEY = re.compile(r'fan_(\d+|extra_(\d+))_curve_(\d)_(temp_c|rpm|pct)')
 # The zero RPM temperature pair of a channel's or an extra curve's policy entry.
 FAN_ZERO_RPM_TEMP_KEY = re.compile(r'fan_(\d+|extra_(\d+))_zero_rpm_(low|high)_temp_c')
-FAN_CURVE_UNITS = ('temp_c', 'rpm', 'pct')
 # Whether a memory offset moves a stored intermediate memory level (numbered from the lowest).
 MEMORY_POINT_KEY = re.compile(r'memory_point_(\d+)_follows_offset')
 REASON_KEYS = {
@@ -198,89 +202,15 @@ def unsupported_notes(report, language='en'):
             if d.get('resolver') in RESOLVER_SECTIONS}
 
 
-# Read-only placeholders with no VBIOS row behind them: the generic input current and OCP
-# limits (every family) and the MSVDD ceiling of a single-rail layout. Read as missing
-# limits, they stay out of the window while their value is unknown; the JSON keeps them.
-PLACEHOLDER_KEYS = frozenset(('current_limit_a', 'ocp_limit_a', 'msvdd_rel_max_mv'))
-
-
-def technical_field_keys(report):
-    """Keep equivalent aliases, raw selector bookkeeping and unknown placeholders in details."""
-    fields = report.get('fields', [])
-    keys = {f['key'] for f in fields}
-    hidden = {f['key'] for f in fields if f.get('alias_of') in keys or
-              f.get('value_semantics') in ('selector-index', 'stored-boot-voltage', 'unknown') or
-              (f['key'] in PLACEHOLDER_KEYS and f.get('current') is None and not f.get('editable'))}
-    if any(f['key'] == 'memory_offset_max_mhz' and f['editable'] for f in fields):
-        hidden.add('dram_max_table_mhz')
-    return hidden
-
-
-def opt_in_field_keys(report):
-    """Fields shown only after the user opts in (XOC-style advanced fields)."""
-    return {f['key'] for f in report.get('fields', []) if f.get('opt_in')}
-
-
 def primary_preview(document):
     hidden = technical_field_keys(document.report)
     return [(before, after) for before, after in document.preview if before['key'] not in hidden]
 
 
-# Vertical layout: section order, and field order inside each section.
-SECTIONS = (
-    ('power', ('power_max_w', 'power_default_w', 'power_min_w', 'board_fixed_rated_w',
-               'slot_power_max_w', 'slot_power_rated_w') +
-              tuple(f'connector_{n}_power_{side}_w' for n in range(1, 5) for side in ('max', 'rated')) +
-              ('connector_sum_power_max_w', 'connector_sum_power_rated_w',
-               'nvvdd_power_threshold_max_w', 'nvvdd_power_threshold_rated_w')),
-    ('voltage', ('nvvdd_rel_equation_max_mv', 'nvvdd_rel_max_mv', 'nvvdd_rel_fixed_mv', 'nvvdd_alt_fixed_mv',
-                 'nvvdd_ov_equation_max_mv', 'nvvdd_vmin_mv', 'nvvdd_vmin_equation_max_mv', 'nvvdd_alt_equation_max_mv',
-                 'nvvdd_rel_alt_follow_ov',
-                 'msvdd_rel_equation_max_mv', 'msvdd_rel_max_mv', 'msvdd_ov_equation_max_mv', 'msvdd_vmin_mv',
-                 'msvdd_vmin_equation_max_mv', 'msvdd_alt_equation_max_mv')),
-    ('clocks', ('gpc_curve_offset_mhz', 'gpc_offset_max_mhz', 'gpc_offset_min_mhz', 'memory_offset_max_mhz',
-                'memory_offset_min_mhz',
-                'xbar_max_table_mhz', 'xbar_min_table_mhz', 'sys_max_table_mhz', 'sys_min_table_mhz',
-                'vid_max_table_mhz', 'vid_min_table_mhz') +
-               tuple(f'memory_point_{k}_follows_offset' for k in range(1, 8))),
-    ('current', ('input_current_rated_ma', 'input_current_max_ma', 'input_current_policy7_limit_ma',
-                 'nvvdd_output_ocp_rated_ma', 'nvvdd_output_ocp_max_ma',
-                 'msvdd_output_ocp_rated_ma', 'msvdd_output_ocp_max_ma', 'slot_current_threshold_rated_ma',
-                 'slot_current_threshold_max_ma') +
-                tuple(f'connector_{n}_current_threshold_{side}_ma' for n in range(1, 5) for side in ('rated', 'max'))),
-    # Each channel's limits, then its curve points; then the extra curves; then zero RPM and
-    # its temperature pairs.
-    ('fans', ('fan_channels', 'fan_pwm_frequency_hz') +
-             tuple(key for n in range(1, 5) for key in
-                   tuple(f'fan_{n}_{side}_{unit}' for unit in ('rpm', 'pct') for side in ('max', 'min')) +
-                   tuple(f'fan_{n}_curve_{k}_{unit}' for k in (1, 2, 3) for unit in FAN_CURVE_UNITS)) +
-             tuple(f'fan_extra_{m}_curve_{k}_{unit}' for m in range(1, 8) for k in (1, 2, 3)
-                   for unit in FAN_CURVE_UNITS) + ('fan_zero_rpm',) +
-             tuple(f'fan_{n}_zero_rpm_{side}_temp_c' for n in range(1, 5) for side in ('low', 'high')) +
-             tuple(f'fan_extra_{m}_zero_rpm_{side}_temp_c' for m in range(1, 8) for side in ('low', 'high'))),
-)
-SECTION_NAMES = tuple(name for name, _ in SECTIONS) + ('other',)
 # Windows tools such as MSI Afterburner show the stored table value: half of
 # the NVML/Linux memory offset, the same value for the core (observed on hardware).
 WINDOWS_SCALE = {'memory_offset_max_mhz': Decimal('0.5'), 'memory_offset_min_mhz': Decimal('0.5')}
 _EXPERIMENTAL = re.compile(r'(?:\s*\(experimental\)|,\s*experimental(?=\)))')
-
-
-def field_section(field):
-    """Section id for a field; unknown keys fall back by unit."""
-    key = field['key']
-    for section, keys in SECTIONS:
-        if key in keys:
-            return section
-    if key.endswith('_mv'):
-        return 'voltage'
-    if key.endswith('_mhz'):
-        return 'clocks'
-    if key.endswith('_w'):
-        return 'power'
-    if key.endswith('_ma') or key.endswith('_a'):
-        return 'current'
-    return 'other'
 
 
 def section_order(fields):
@@ -406,3 +336,197 @@ def shunt_real(field, value, multiplier):
     if not shunt_scaled(field) or amount is None or multiplier <= 1:
         return None
     return number(round(amount * multiplier, 1))
+
+
+def import_summary(report, fields, language='en'):
+    """(line, kind) of an import from another ROM (an editor.import_fields report): how many values became
+    pending changes, the warnings, how many were already equal and each skipped field with its reason; kind is
+    'heading', 'warning' or 'detail'. fields maps the open ROM's keys to descriptors; a field it lacks is
+    named by the other ROM's label."""
+    text = Messages(language)
+    name, count = Path(report['donor']['file']).name, len(report['applied'])
+    skipped = {entry['field']: entry for entry in report['skipped']}
+
+    def field_of(key):
+        entry = skipped[key]
+        return fields.get(key) or dict(key=key, label=entry['label'], units=entry['units'])
+
+    def listed(keys):
+        names = [row_title(field_of(key), language)[0] for key in keys]
+        shown = '; '.join(names[:2])
+        return text('import.more', fields=shown, count=len(names) - 2) if names[2:] else shown
+    held = {}
+    for entry in report['skipped']:
+        if entry['reason'] == 'held_back':
+            held.setdefault(tuple(entry['partners']), []).append(entry['field'])
+    lines = [(text('import.applied', count=count, file=name) if count else text('import.nothing', file=name),
+              'heading')]
+    if any(w['code'] == 'DIFFERENT_DEVICE' for w in report['warnings']):
+        lines.append((text('import.different_device', donor=report['donor']['pci_device'],
+                           target=report['target']['pci_device']), 'warning'))
+    if report['unchanged']:
+        lines.append((text('import.unchanged', count=len(report['unchanged'])), 'detail'))
+    if report['skipped']:
+        lines.append((text('import.skipped', count=len(report['skipped'])), 'heading'))
+    if any(skipped[key]['reason'] == 'opt_in' for entry in report['skipped'] for key in entry.get('partners', ())):
+        lines.append((text('import.opt_in_hint'), 'detail'))
+    for entry in report['skipped']:
+        field = field_of(entry['field'])
+        title = row_title(field, language)[0]
+        if entry['reason'] == 'out_of_bounds':
+            low, high = (number(to_display(field, entry['bounds'][side])) or '—' for side in ('minimum', 'maximum'))
+            reason = text('import.reason.out_of_bounds', minimum=low, maximum=high, units=display_units(field))
+        elif entry['reason'] == 'refused':
+            code = entry['code']
+            message = text('error.' + code) if 'error.' + code in text.catalog else entry['message']
+            reason = text('import.reason.refused', message=message, code=code)
+        elif entry['reason'] == 'held_back':
+            # One line per set held back by the same fields, at its first field.
+            subjects = held.pop(tuple(entry['partners']), None)
+            if subjects is None:
+                continue
+            title = listed(subjects)
+            reason = text('import.reason.held_back' if len(subjects) == 1 else 'import.reason.held_back_many',
+                          fields=listed(entry['partners']))
+        else:
+            reason = text('import.reason.' + entry['reason'])
+        lines.append((f'{title}: {reason}', 'detail'))
+    return lines
+
+
+# Read-only memory view: text from a nvidia_vbios.rom.memory report or comparison.
+MEMORY_SECTIONS = ('configurations', 'bands', 'timings', 'tables', 'board_profile')
+MEMORY_TIMINGS = tuple(field[0] for field in TIMING_FIELDS)
+
+
+def memory_vendor(item, language='en'):
+    return item['vendor'] or Messages(language)('memory.vendor_code', code=item['vendor_code'])
+
+
+def memory_configuration(item, language='en'):
+    """'Strap 0 → column 0 · Samsung · type 0xd (probably GDDR7)': only type 9 has a name."""
+    text = Messages(language)
+    kind = item['type'] or (text('memory.type_guess', code=item['type_code'], name=item['type_guess'])
+                            if item['type_guess'] else item['type_code'])
+    return text('memory.configuration', strap=item['strap'], column=item['column'],
+                vendor=memory_vendor(item, language), type=kind)
+
+
+def memory_columns(report, language='en'):
+    """(heading, rows, note) per group of configuration columns with the same rows; a row is (band, stock
+    clocks, entry, decoded timing or None), and note says why a group has no rows.
+
+    The rows are the bands that hold a stock DRAM clock when the report has those clocks, else every
+    band with a maximum above 0 MHz; columns without a timing entry in them have no rows, and columns
+    the memory clock table does not reach come last.
+    """
+    text = Messages(language)
+    configurations = report['configurations'].get('items', [])
+    bands_section = report['bands']
+    stock = bool(bands_section.get('stock_points'))
+    bands = [b for b in bands_section['items'] if (b['stock_points'] if stock else b['max_mhz'])]
+    timings = {t['index']: t['decoded'] for t in report['timings'].get('items', ())}
+    groups = {}
+    for column in bands_section['columns']:
+        rows = []
+        for band in bands:
+            index = band['timing_index'].get(str(column))
+            points = (text('memory.stock', points=', '.join(map(str, band['stock_points'])))
+                      if band['stock_points'] else '')
+            rows.append((f"{band['min_mhz']}–{band['max_mhz']}", points, '—' if index is None else f'T{index:02x}',
+                         timings.get(index)))
+        rows = rows if any(row[2] != '—' for row in rows) else []
+        note = None if rows else text('memory.no_entries')
+        groups.setdefault(repr(rows), (rows, note, []))[2].append(column)
+    if bands_section.get('outside_table'):
+        groups['outside'] = ([], text('memory.outside_table', last=bands_section['column_count'] - 1),
+                             bands_section['outside_table'])
+    columns = []
+    for rows, note, numbers in groups.values():
+        users = [c for c in configurations if c['column'] in numbers]
+        vendors = ', '.join(dict.fromkeys(memory_vendor(c, language) for c in users)) or text('unknown')
+        columns.append((text('memory.column', column=', '.join(map(str, numbers)), vendor=vendors,
+                             straps=', '.join(str(c['strap']) for c in users) or '—'), rows, note))
+    return columns
+
+
+def memory_table(key, language='en'):
+    """A compared table ('memory clock bands (0x0f)') with its name translated."""
+    text = Messages(language)
+    name, _, owner = key.partition(' (')
+    message = 'memory.table.' + name.replace(' ', '_')
+    title = text(message) if message in text.catalog else name
+    return f'{title} ({owner}' if owner else title
+
+
+def memory_comparison(result, language='en'):
+    """(line, differs) per section of a memory comparison; identical or different, never better or worse."""
+    text = Messages(language)
+    lines = []
+    for name in MEMORY_SECTIONS:
+        section = result['sections'][name]
+        title, status = text('memory.section.' + name), section['status']
+        if status == 'not-applicable':
+            continue
+        if status in ('identical', 'unavailable'):
+            line = text('memory.' + status, section=title)
+        elif name == 'board_profile':
+            line = (text('memory.differs_fields', section=title, count=section['fields']) if section.get('fields')
+                    else text('memory.differs_unknown', section=title))
+        elif name == 'tables':
+            line = text('memory.differs_tables', section=title,
+                        tables=', '.join(memory_table(key, language) for key in section['keys']))
+        elif 'count' in section:
+            line = text('memory.differs_entries', section=title, count=section['count'])
+        else:
+            line = text('memory.differs', section=title)
+        lines.append((line, status == 'differs'))
+    return lines
+
+
+def memory_raw_text(report, language='en'):
+    """Monospace dump: each table's offset, every configuration and band with its raw bytes (a band's
+    sub-entries for the configurations' columns), the timing entries the bands select, the table hashes and
+    the board profile bytes."""
+    text, lines = Messages(language), []
+
+    def spaced(raw):
+        return ' '.join(raw[i:i + 2] for i in range(0, len(raw), 2))
+
+    def heading(name):
+        section = report[name]
+        title = text('memory.section.' + name)
+        lines.append(f"{title} @{section['offset']}" if section['status'] == 'recognized'
+                     else f"{title}: {section.get('reason', section['status'])}")
+        return section['status'] == 'recognized'
+    if heading('configurations'):
+        lines += [f"  {i['strap']} → {i['column']}: {spaced(i['raw'])}" for i in report['configurations']['items']]
+    if heading('bands'):
+        for b in report['bands']['items']:
+            lines.append(f"  E{b['entry']} {b['min_mhz']}–{b['max_mhz']}: " +
+                         ' '.join(f"{c}:{'--' if i is None else f'T{i:02x}'}" for c, i in b['timing_index'].items()))
+            lines.append(f"    {spaced(b['raw'])}")
+            lines += [f'    {c}: {spaced(raw)}' for c, raw in b['sub_entries'].items()]
+        if report['bands'].get('outside_table'):
+            lines.append(f"  {', '.join(map(str, report['bands']['outside_table']))}: " +
+                         text('memory.outside_table', last=report['bands']['column_count'] - 1))
+    if heading('timings'):
+        lines += [f"  T{t['index']:02x} @{t['offset']}: {spaced(t['raw'])}" for t in report['timings']['items']]
+    lines.append(text('memory.section.tables'))
+    for t in report['tables']:
+        owner = f" {t['object']}" if t['object'] else ''
+        lines.append(f"  {t['table']}{owner} @{t['offset']} +{t['size']}: {t['sha256']}")
+    profile = report['board_profile']
+    if profile['status'] == 'recognized' and 'fields' in profile:
+        lines.append(f"{text('memory.section.board_profile')} @{profile['offset']}: {spaced(profile['header'])}")
+        lines.append('  ' + ', '.join(f'{name} @{at}' for name, at in profile['records'].items()))
+        lines += [f"  +{f['offset']} {f['size']}: " + '  '.join(f'{name} {f[name]}' for name in PROFILE_COLUMNS)
+                  for f in profile['fields']]
+        lines += [f'  {name}: {spaced(raw)}' for name, raw in profile['index_lists'].items()]
+        for part in ('arrays', 'flags'):
+            value = profile[part]
+            lines.append(f"  {part} @{value['offset']}: {value['values']}" if value['status'] == 'recognized'
+                         else f"  {part}: {value['reason']}")
+    elif profile['status'] == 'unrecognized':
+        lines.append(f"{text('memory.section.board_profile')}: {profile['reason']}")
+    return '\n'.join(lines)

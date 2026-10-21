@@ -470,6 +470,8 @@ def power(image, parser):
     untested = TURING_NOTE + '; ' if turing(parser) else 'not hardware-tested on this board; ' if flags else ''
     top_extra = {} if top is None else dict(bound_profile=top['index'], base_values={
         'power_max_w': rows[8]['maximum_raw'] / 1000, 'power_default_w': rows[8]['default_raw'] / 1000})
+    # A notebook TGP is another quantity than a board TGP: the platform requests the running limit.
+    layout = {'notebook_tgp': True} if notebook else {}
     return [field('power_max_w', 'Board power ceiling', 'W', tgp['maximum_raw'] / 1000,
                   minimum / 1000, maximum_upper / 1000, can_edit(image, parser), evidence,
                   offsets=offsets, encoding='<I', scale=1000, stored_units='mW',
@@ -482,7 +484,7 @@ def power(image, parser):
                   'experimental: ' + top_profile_note(top, '%g W' % (rows[8]['maximum_raw'] / 1000)) +
                   'firmware/current/hardware restrictions remain' if top else
                   'encoding ceiling only; firmware/current/hardware restrictions remain',
-                  **(dict(flags, experimental=True, **top_extra) if top else flags)),
+                  **layout, **(dict(flags, experimental=True, **top_extra) if top else flags)),
             field('power_default_w', 'Boot default board power', 'W', tgp['default_raw'] / 1000,
                   (tgp['minimum_raw'] if default_lower is None else default_lower) / 1000,
                   (tgp['maximum_raw'] if default_upper is None else default_upper) / 1000,
@@ -500,7 +502,7 @@ def power(image, parser):
                   'rated TGP limit used at boot without a client cap' if top else
                   'experimental: rated TGP limit used at boot without a client cap; ' + TURING_NOTE if turing(parser) else
                   'experimental: rated TGP limit used at boot without a client cap; not hardware-tested',
-                  **top_extra),
+                  **layout, **top_extra),
             field('power_min_w', 'Board power floor', 'W', tgp['minimum_raw'] / 1000,
                   1, minimum_upper / 1000, can_edit(image, parser), minimum_evidence or evidence,
                   offsets=minimum_offsets, encoding='<I', scale=1000, stored_units='mW',
@@ -510,7 +512,7 @@ def power(image, parser):
                   reason='experimental: encoded floor only; ' + untested + 'firmware acceptance and runtime minimum '
                          'remain unknown' if untested else
                   'encoded floor only; firmware acceptance and runtime minimum remain unknown',
-                  **flags)] + fixed_policy_rated(image, parser, rows, matching, top)
+                  **layout, **flags)] + fixed_policy_rated(image, parser, rows, matching, top)
 
 
 def fixed_policy_rated(image, parser, rows, matching, top=None):
@@ -2371,6 +2373,13 @@ DRAM_POINT_OWNER_EVIDENCE = {
     'observation': 'down to a -500 MHz offset the memory ran between 6001 and 5501 MHz; below that it left the '
                    '6001 MHz level for the 810 MHz one instead of running lower, and larger offsets crashed; '
                    '5501 MHz is the only level between them, stored without bit 4'}
+DRAM_POINT_HARDWARE = {
+    'kind': 'hardware-test', 'set_tested': True,
+    'source': 'owner report: an edited image loaded as an override (Windows loader, verified byte for byte)',
+    'scope': 'one RTX 3050 Laptop GPU (memory levels 405, 810, 5501 and 6001 MHz)',
+    'observed': 'with bit 4 set on the 5501 MHz level and the memory offset floor lowered to -2000 MHz (table scale; '
+                'MSI Afterburner reached it), the memory still left the 6001 MHz level for the 810 MHz one below a '
+                '-500 MHz offset: on that card the bit did not make the level follow the offset'}
 
 
 DRAM_POINT_SEMANTICS = 'stored-dram-point-offset'
@@ -2384,10 +2393,11 @@ def dram_offset_points(image, parser):
     programming table (parser.dram_points). Stock images set it on the top memory levels
     only, and an offset that takes the memory below the highest level without it drops the
     memory to a lower stored level (inferred from the corpus and an owner report). One flag
-    per level between the 810 MHz idle level and the top level: setting it lets the offset
-    move that level too. The levels with the bit stay the top ones (one ordering group), the
+    per level between the 810 MHz idle level and the top level: setting it was expected to
+    let the offset move that level too. The levels with the bit stay the top ones (one ordering group), the
     idle levels and the top level are not offered, and each write keeps the other flag bits,
-    in every image chain. Opt-in; not hardware-tested.
+    in every image chain. Opt-in. On the one card tested (an RTX 3050 Laptop GPU) setting it
+    did not stop the drop, so what decides it is unknown.
     """
     if not isinstance(parser, (BlackwellRom, TableRom)) or (isinstance(parser, TableRom) and turing(parser)):
         return []
@@ -2408,19 +2418,19 @@ def dram_offset_points(image, parser):
         result.append(field(
             f'memory_point_{k + 1}_follows_offset', f"Memory clock {point['mhz']} MHz follows the memory offset",
             'flag', 1 if moved[k] else 0, lo if writable else None, hi if writable else None, writable,
-            [dict(DRAM_POINT_FIRMWARE_EVIDENCE), dict(DRAM_POINT_CORPUS_EVIDENCE), dict(DRAM_POINT_OWNER_EVIDENCE)],
+            [dict(DRAM_POINT_FIRMWARE_EVIDENCE), dict(DRAM_POINT_CORPUS_EVIDENCE), dict(DRAM_POINT_OWNER_EVIDENCE),
+             dict(DRAM_POINT_HARDWARE)],
             offsets=offsets if writable else (), encoding='<B' if writable else '', scale=1,
             layout=layout if writable else (), ordering_group='dram-points' if writable else None,
             encoding_bounds=(0, 1) if writable else None,
             writable_status=None if writable else 'unsupported', experimental=True, opt_in=True,
             value_semantics=DRAM_POINT_SEMANTICS, memory_mhz=point['mhz'],
             reason=f"experimental, opt-in: bit 4 of the flag byte of the {point['mhz']} MHz memory level in the clock "
-                   'programming table; stock images set it on the top memory levels, and a memory offset is '
-                   'expected to move only the levels with it (inferred): with it clear, an offset that takes the '
-                   'memory below this level drops it to the next lower level instead (on one RTX 3050 Laptop GPU to '
-                   '810 MHz); setting it should let the offset move this level too, so lower the memory offset '
-                   'floor as well to run the memory between this level and the next lower one; the levels with '
-                   'it stay the top ones; not hardware-tested'))
+                   'programming table; stock images set it on the top memory levels, and a memory offset that takes '
+                   'the memory below the highest level without it drops it to a lower level instead (on one RTX 3050 '
+                   'Laptop GPU to 810 MHz); setting it was expected to let the offset move this level too '
+                   '(inferred), but on that card, tested on its 5501 MHz level with a lower memory offset floor, the '
+                   'memory still dropped to 810 MHz; the levels with it stay the top ones'))
     return result
 
 

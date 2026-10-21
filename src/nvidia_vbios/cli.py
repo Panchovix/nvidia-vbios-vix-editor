@@ -62,13 +62,31 @@ def parser():
         p = commands.add_parser(name, help=help_text)
         p.add_argument('input', type=Path)
         p.add_argument('--json', action='store_true')
+    p = commands.add_parser('memory', help='read-only memory configurations, clock bands, timings and board profile')
+    p.add_argument('input', type=Path)
+    p.add_argument('--compare', type=Path, metavar='ROM', help='report per section whether ROM is identical or differs')
+    p.add_argument('--raw', action='store_true', help='add the undecoded board profile bytes (with --compare: '
+                                                      'both reports)')
+    p.add_argument('--json', action='store_true')
     p = commands.add_parser('edit', help='stage changes and save a new archival ROM')
+    root.intermixed = {'edit': p}
     p.add_argument('input', type=Path)
     p.add_argument('output', type=Path, nargs='?')
     p.add_argument('--set', dest='set_values', action='append', default=[], metavar='FIELD=VALUE')
     p.add_argument('--changes', type=Path, help='JSON object containing field values')
     p.add_argument('--expect-sha256', help='require this source SHA-256')
     p.add_argument('--dry-run', action='store_true', help='validate and show the manifest without writing')
+    p.add_argument('--json', action='store_true')
+    p = root.intermixed['import'] = commands.add_parser('import', help='copy the editable values of chosen sections '
+                                                                       'from another ROM of the same family and save '
+                                                                       'a new archival ROM')
+    p.add_argument('input', type=Path, help='ROM to change')
+    p.add_argument('donor', type=Path, help='ROM to copy the values from')
+    p.add_argument('output', type=Path, nargs='?', help='new ROM to write (not needed with --dry-run)')
+    p.add_argument('--sections', required=True, metavar='LIST',
+                   help='comma-separated: power, voltage, clocks, current, fans')
+    p.add_argument('--include-opt-in', action='store_true', help='also import opt-in (advanced) fields')
+    p.add_argument('--dry-run', action='store_true', help='report what would be imported without writing')
     p.add_argument('--json', action='store_true')
     p = commands.add_parser('normalize', help='export a validated single-chain driver payload')
     p.add_argument('input', type=Path)
@@ -85,7 +103,7 @@ def parser():
 
 
 def execute(args):
-    from .editor import VbiosError, inspect, load, edit, save, normalize, normalize_manifest
+    from .editor import VbiosError, inspect, load, edit, import_fields, save, normalize, normalize_manifest
     if args.command in ('inspect', 'fields', 'verify'):
         report = inspect(args.input)
         if args.command == 'fields':
@@ -94,9 +112,28 @@ def execute(args):
             raise VbiosError('INTEGRITY_NOT_VERIFIED', 'full known-format integrity could not be verified', details=report)
         return report
     source = load(args.input)
+    if args.command == 'memory':
+        from .rom.memory import compare, memory_report
+        report = memory_report(source, raw=args.raw or args.compare is not None)
+        if args.compare is None:
+            return report
+        other = memory_report(load(args.compare), raw=True)
+        return dict(compare(report, other), reports=[report, other]) if args.raw else compare(report, other)
     if args.command == 'normalize':
         result = normalize(source, representation=args.representation)
         return save(result, args.output, manifest=normalize_manifest(source, result, args.representation, args.input))
+    if args.command == 'import':
+        if not args.dry_run and args.output is None:
+            raise UsageError('provide an output path or --dry-run')
+        report, result = import_fields(source, load(args.donor), [s.strip() for s in args.sections.split(',')],
+                                       include_opt_in=args.include_opt_in, dry_run=args.dry_run)
+        report['manifest'] = None if result is None else result.to_dict()
+        if not args.dry_run:
+            if result is None:
+                raise VbiosError('NOTHING_TO_IMPORT', 'no value of these sections can be imported from the donor',
+                                 details=report)
+            report['publication'] = save(result, args.output)
+        return report
     if args.expect_sha256 and source.sha256 != args.expect_sha256.lower():
         raise VbiosError('SOURCE_HASH_MISMATCH', 'source SHA-256 differs from --expect-sha256')
     if not args.dry_run and args.output is None:
@@ -116,7 +153,18 @@ def main(argv=None):
         return gui_main(argv[1:])
     operation = None
     try:
-        args = parser().parse_args(argv)
+        root = parser()
+        lead = 0
+        while argv[lead:lead + 1] == ['--json']:
+            lead += 1
+        if argv[lead:lead + 1] and argv[lead] in root.intermixed and '--' not in argv[lead + 1:]:
+            # OUTPUT may follow the options. Older argparse (Python 3.11, and 3.12.3 in the Linux build image)
+            # leaves it unrecognized there, so edit and import parse their own arguments intermixed; that
+            # parser drops a '--' separator, so arguments with one keep the plain parse.
+            args = root.intermixed[argv[lead]].parse_intermixed_args(argv[lead + 1:])
+            args.command = argv[lead]
+        else:
+            args = root.parse_args(argv)
         operation = args.command
         result = execute(args)
         emit(dict(schema_version=1, ok=True, operation=operation, result=result))

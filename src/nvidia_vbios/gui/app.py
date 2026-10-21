@@ -11,13 +11,15 @@ gi.require_version('Gdk', '4.0')
 from gi.repository import Gdk, Gio, GLib, Gtk
 
 from .. import __version__
+from ..editor import IMPORT_SECTIONS
 from .arguments import parse_arguments, resolve_file_dialog, resolve_theme
 from .i18n import Messages
 from .file_pickers import show_builtin_picker, show_path_dialog
-from .controller import (Controller, controls, loader_messages, open_document, reset_document,
-                         save_document, stage_document)
-from .presentation import (classify_number, display_units, fan_curve_hint, field_label, field_section, number,
-                           opt_in_field_keys, parse_number,
+from .controller import (Controller, compare_memory, controls, import_from, loader_messages, memory_view,
+                         open_document, reset_document, save_document, stage_document)
+from .presentation import (classify_number, display_units, fan_curve_hint, field_label, field_section, import_summary,
+                           number, memory_columns, memory_comparison, memory_configuration, memory_raw_text,
+                           MEMORY_TIMINGS, opt_in_field_keys, parse_number,
                            primary_preview, read_only_reason, row_title, SECTION_NAMES, section_order, shunt_real,
                            shunt_scaled, summed_cap_notes, technical_field_keys, to_display, to_stored,
                            unsupported_notes, value_text, windows_value)
@@ -158,6 +160,12 @@ class EditorWindow(Gtk.ApplicationWindow):
         self.shunt_notes = {}
         self.pending_text = {}
         self.hidden_text = {}
+        # Read-only memory view of the open ROM: report and comparison, kept apart from the document.
+        self.memory = None
+        self.memory_expander = self.memory_box = self.memory_compare_box = None
+        # Import from another ROM: the running import's token and the last summary.
+        self.importing = None
+        self.import_lines = []
         self.connect('close-request', self._close)
 
         header = Gtk.HeaderBar()
@@ -282,9 +290,12 @@ class EditorWindow(Gtk.ApplicationWindow):
         bar.append(changes_scroll)
         buttons = Gtk.Box(spacing=10)
         self.reset_button = self._button(self.text('reset'), 'reset')
-        self.reset_button.set_hexpand(True)
-        self.reset_button.set_halign(Gtk.Align.START)
         buttons.append(self.reset_button)
+        # Imported values become pending changes, so the import sits with the change actions.
+        self.import_button = self._button(self.text('import'), 'import')
+        self.import_button.set_hexpand(True)
+        self.import_button.set_halign(Gtk.Align.START)
+        buttons.append(self.import_button)
         self.save_button = self._button(self.text('save'), 'save')
         self.save_button.add_css_class('suggested-action')
         buttons.append(self.save_button)
@@ -304,6 +315,7 @@ class EditorWindow(Gtk.ApplicationWindow):
         for name, callback, keys in (
             ('open', self._choose_open, ['<Primary>o']),
             ('save', self._choose_save, ['<Primary>s']),
+            ('import', self._choose_import, ['<Primary>i']),
             ('open-builtin', lambda *_: self._choose_builtin(False), []),
             ('save-builtin', lambda *_: self._choose_builtin(True), []),
             ('open-path', lambda *_: self._choose_path(False), ['<Primary><Shift>o']),
@@ -339,6 +351,7 @@ class EditorWindow(Gtk.ApplicationWindow):
             ('save-builtin', self._can_save()),
             ('save-path', self._can_save()),
             ('stage', bool(not self.busy and editable)),
+            ('import', bool(not self.busy and editable and self.importing is None)),
             ('reset', bool(doc and not self.saving)),
         ):
             action = self.lookup_action(name)
@@ -869,8 +882,353 @@ class EditorWindow(Gtk.ApplicationWindow):
                 box.append(self._readonly_row(field))
             expander.set_child(box)
             self.field_box.append(expander)
+        self.field_box.append(self._memory_expander(doc))
         self.hidden_text = {key: value for key, value in pending.items() if key not in self.entries}
         self._refresh()
+
+    # Memory view (read-only) ---------------------------------------------
+
+    def _memory_expander(self, doc):
+        """The collapsed Memory section. Its report is read on a worker when it is first expanded; the view
+        and its comparison never touch the document, the change list or saving."""
+        if self.memory is None or self.memory['original'] is not doc.original:
+            self.memory = dict(original=doc.original, report=None, expanded=False, reading=False,
+                               comparison=None, comparing=False, compare_error=None)
+        expander = Gtk.Expander(label=self.text('memory.title'))
+        expander.set_margin_top(6)
+        self.memory_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.memory_box.add_css_class('vb-card')
+        self.memory_box.add_css_class('vb-device')
+        self.memory_box.set_margin_top(6)
+        expander.set_child(self.memory_box)
+        expander.set_expanded(self.memory['expanded'])
+        expander.connect('notify::expanded', self._memory_toggled)
+        self.memory_expander = expander
+        self._show_memory()
+        return expander
+
+    def _memory_toggled(self, expander, *_):
+        self.memory['expanded'] = expander.get_expanded()
+        self._show_memory()
+
+    def _memory_job(self, work, done):
+        """work() on a worker, then done(state, result, error) here while that memory state is current."""
+        if self.closed:
+            return
+        state = self.memory
+
+        def finished(job):
+            try:
+                result, error = job.result(), None
+            except Exception as exc:
+                result, error = None, exc
+            GLib.idle_add(self._memory_done, state, done, result, error)
+        self.executor.submit(work).add_done_callback(finished)
+
+    def _memory_done(self, state, done, result, error):
+        if not self.closed and state is self.memory:
+            done(state, result, error)
+        return GLib.SOURCE_REMOVE
+
+    def _memory_read(self, state, report, error):
+        state.update(reading=False, report=report if error is None else dict(status='unrecognized', reason=str(error)))
+        self._show_memory()
+
+    def _show_memory(self):
+        state, box = self.memory, self.memory_box
+        clear(box)
+        self.memory_compare_box = None
+        report = state['report']
+        if report is None:
+            if state['expanded'] and not state['reading']:
+                state['reading'] = True
+                original = state['original']
+                self._memory_job(lambda: memory_view(original), self._memory_read)
+            box.append(label(self.text('memory.loading'), css=('vb-note',), selectable=False))
+            return
+        box.append(label(self.text('memory.note'), wrap=True, css=('vb-note',)))
+        if report['status'] != 'recognized':
+            box.append(label(self.text('memory.unrecognized', reason=report['reason']), wrap=True))
+            return
+
+        def unrecognized(name):
+            box.append(label(self.text('memory.section_unrecognized', section=self.text('memory.section.' + name),
+                                       reason=report[name]['reason']), wrap=True, css=('vb-note',)))
+        box.append(label(self.text('memory.configurations'), css=('vb-title',), selectable=False))
+        if report['configurations']['status'] == 'recognized':
+            for item in report['configurations']['items']:
+                box.append(label(memory_configuration(item, self.language), wrap=True))
+        else:
+            unrecognized('configurations')
+        box.append(label(self.text('memory.timings'), css=('vb-title',), selectable=False))
+        if report['bands']['status'] == 'recognized':
+            box.append(label(self.text('memory.stock_bands' if report['bands'].get('stock_points') else
+                                       'memory.all_bands'), wrap=True, css=('vb-note',)))
+            box.append(self._memory_grid(report))
+        for name in ('bands', 'timings'):
+            if report[name]['status'] != 'recognized':
+                unrecognized(name)
+        profile = report['board_profile']
+        if profile['status'] == 'recognized':
+            box.append(label(self.text('memory.profile', tag=' '.join(profile['tag']),
+                                       fingerprint=profile['fingerprint']), wrap=True))
+            box.append(label(self.text('memory.profile_note'), wrap=True, css=('vb-note',)))
+        elif profile['status'] == 'unrecognized':
+            box.append(label(self.text('memory.profile_unrecognized', reason=profile['reason']), wrap=True,
+                             css=('vb-note',)))
+        raw = Gtk.Expander(label=self.text('memory.raw'))
+        view = Gtk.TextView(editable=False, cursor_visible=False, monospace=True, wrap_mode=Gtk.WrapMode.CHAR)
+        view.get_buffer().set_text(memory_raw_text(report, self.language))
+        raw.set_child(view)
+        box.append(raw)
+        button = Gtk.Button(label=self.text('memory.compare'))
+        button.set_halign(Gtk.Align.START)
+        button.connect('clicked', self._choose_memory_compare)
+        box.append(button)
+        self.memory_compare_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        box.append(self.memory_compare_box)
+        self._show_memory_comparison()
+
+    def _memory_grid(self, report):
+        """Band -> timing entry per configuration column, the decoded values with their confidence."""
+        grid = Gtk.Grid(column_spacing=14, row_spacing=4)
+        confidence = report['timings'].get('confidence', {})
+        for col, title in enumerate((self.text('memory.band'), self.text('memory.entry')) + MEMORY_TIMINGS):
+            grid.attach(label(title, css=('vb-title',), selectable=False), col, 0, 1, 1)
+            name = MEMORY_TIMINGS[col - 2] if col >= 2 else None
+            if name in confidence:
+                chip = label(self.text('memory.confidence.' + confidence[name]), css=('vb-chip',), selectable=False)
+                chip.set_halign(Gtk.Align.START)
+                grid.attach(chip, col, 1, 1, 1)
+        row = 2
+        for heading, rows, note in memory_columns(report, self.language):
+            title = label(heading, wrap=True, css=('vb-section',), selectable=False)
+            grid.attach(title, 0, row, 2 + len(MEMORY_TIMINGS), 1)
+            row += 1
+            if note:
+                grid.attach(label(note, css=('vb-note',), selectable=False), 0, row, 2 + len(MEMORY_TIMINGS), 1)
+                row += 1
+            for band, stock, entry, decoded in rows:
+                cell = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+                cell.append(label(band, selectable=False))
+                if stock:
+                    cell.append(label(stock, css=('vb-note',), selectable=False))
+                grid.attach(cell, 0, row, 1, 1)
+                grid.attach(label(entry, selectable=False), 1, row, 1, 1)
+                for col, name in enumerate(MEMORY_TIMINGS, 2):
+                    grid.attach(label('' if decoded is None else str(decoded[name]), selectable=False), col, row, 1, 1)
+                row += 1
+        return grid
+
+    def _choose_rom(self, title, on_selected):
+        """Another local ROM to read (compare, import): the built-in picker or the system dialog."""
+        if not self._picker_ready(False):
+            return
+        if self.file_dialog == 'builtin':
+            self.file_picker = show_builtin_picker(self, save=False, title=title,
+                accept_label=self.text('open_accept'), cancel_label=self.text('cancel'),
+                all_files_label=self.text('all_files'), initial_path=self._initial_picker_path(False),
+                on_selected=on_selected)
+            return
+        dialog = self._dialog(title)
+        dialog.set_accept_label(self.text('open_accept'))
+        dialog.open(self, None, lambda chooser, result: self._rom_chosen(chooser, result, on_selected))
+
+    def _rom_chosen(self, dialog, result, on_selected):
+        try:
+            file = dialog.open_finish(result)
+        except GLib.Error as exc:
+            self._dialog_error(exc)
+            return
+        if file.get_path():
+            on_selected(file.get_path())
+        else:
+            self.status.set_text(self.text('local_file'))
+
+    def _choose_memory_compare(self, *_):
+        if self.memory is not None and self.memory['report'] is not None:
+            self._choose_rom(self.text('memory.compare_dialog'), self.compare_memory_path)
+
+    def compare_memory_path(self, path):
+        """Compare the open ROM's memory tables with the ROM at path, on a worker."""
+        state = self.memory
+        if (self.closed or state is None or state['comparing'] or state['report'] is None
+                or state['report']['status'] != 'recognized'):
+            return
+        state.update(comparing=True, comparison=None, compare_error=None)
+        self._show_memory_comparison()
+        report = state['report']
+        self._memory_job(lambda: compare_memory(report, path), self._memory_compared)
+
+    def _memory_compared(self, state, result, error):
+        state.update(comparing=False, comparison=result,
+                     compare_error=None if error is None else self._error_text(error)[1])
+        self._show_memory_comparison()
+
+    def _show_memory_comparison(self):
+        box, state = self.memory_compare_box, self.memory
+        if box is None:
+            return
+        clear(box)
+        if state['comparing']:
+            box.append(label(self.text('memory.comparing'), css=('vb-note',), selectable=False))
+        elif state['compare_error']:
+            box.append(label(self.text('memory.compare_failed', message=state['compare_error']), wrap=True,
+                             css=('vb-bad',)))
+        elif state['comparison']:
+            box.append(label(self.text('memory.compared', file=Path(state['comparison']['b']['file']).name),
+                             wrap=True, css=('vb-note',)))
+            for line, differs in memory_comparison(state['comparison'], self.language):
+                row = label(line, wrap=True, css=('vb-row',))
+                if differs:
+                    row.add_css_class('changed')
+                box.append(row)
+
+    # Import from another ROM --------------------------------------------
+
+    def _choose_import(self, *_):
+        if self.controller.document is not None and self.importing is None:
+            self._choose_rom(self.text('import.dialog'), self.show_import_dialog)
+
+    def show_import_dialog(self, path):
+        """Sections to import from the ROM at path. The imported values become pending changes and the dialog
+        then shows the summary; closing it before the import ends drops the result."""
+        if self.closed or self.controller.document is None:
+            return None
+        window = Gtk.Window(title=self.text('import.title'), transient_for=self, modal=True, destroy_with_parent=True)
+        window.set_default_size(560, -1)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        for edge in ('top', 'bottom', 'start', 'end'):
+            getattr(box, f'set_margin_{edge}')(16)
+        window.set_child(box)
+        box.append(label(self.text('import.from', file=Path(path).name), wrap=True, selectable=False))
+        window.checks = {name: Gtk.CheckButton(label=self.text('section.' + name)) for name in IMPORT_SECTIONS}
+        window.opt_in = Gtk.CheckButton(label=self.text('import.opt_in'))
+        for check in (*window.checks.values(), window.opt_in):
+            box.append(check)
+        box.append(label(self.text('import.note'), wrap=True, css=('vb-note',), selectable=False))
+        window.summary = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_propagate_natural_height(True)
+        scroll.set_max_content_height(280)
+        scroll.set_child(window.summary)
+        box.append(scroll)
+        buttons = Gtk.Box(spacing=8, halign=Gtk.Align.END)
+        window.cancel_button = Gtk.Button(label=self.text('cancel'))
+        window.accept_button = Gtk.Button(label=self.text('import.accept'))
+        window.accept_button.add_css_class('suggested-action')
+        window.accept_button.set_sensitive(False)
+        buttons.append(window.cancel_button)
+        buttons.append(window.accept_button)
+        box.append(buttons)
+        window.job = None
+
+        def show(lines, done=True):
+            clear(window.summary)
+            for line, kind in lines:
+                window.summary.append(label(line, wrap=True, css={'warning': ('vb-bad',), 'detail': ('vb-note',)}
+                                            .get(kind, ())))
+            if done:
+                window.accept_button.set_visible(False)
+                window.cancel_button.set_label(self.text('import.close'))
+
+        def accept(*_):
+            sections = [name for name, check in window.checks.items() if check.get_active()]
+            window.job = self.import_path(path, sections, window.opt_in.get_active(), on_done=show)
+            if window.job is not None:
+                for widget in (*window.checks.values(), window.opt_in, window.accept_button):
+                    widget.set_sensitive(False)
+                show([(self.text('import.reading'), 'detail')], done=False)
+
+        def forget(*_):
+            if window.job is not None and window.job is self.importing:
+                self.importing = None
+                self._sensitivity()
+
+        def close(*_):
+            forget()
+            window.destroy()
+            return True
+
+        def key_pressed(_controller, keyval, _keycode, _state):
+            return keyval == Gdk.KEY_Escape and close()
+        for check in window.checks.values():
+            check.connect('toggled', lambda *_: window.accept_button.set_sensitive(
+                any(c.get_active() for c in window.checks.values())))
+        window.accept_button.connect('clicked', accept)
+        window.cancel_button.connect('clicked', close)
+        window.connect('close-request', close)
+        window.connect('unrealize', forget)              # also when the main window closes it
+        keys = Gtk.EventControllerKey()
+        keys.connect('key-pressed', key_pressed)
+        window.add_controller(keys)
+        window.present()
+        return window
+
+    def import_path(self, path, sections, include_opt_in=False, on_done=None):
+        """Import `sections` of the ROM at path on a worker; its values become pending changes of the open ROM.
+
+        Returns the import's token, or None when none can start (no ROM, busy, another import running).
+        on_done(lines) receives the summary (import_summary), which import_lines also keeps.
+        """
+        document = self.controller.document
+        if self.closed or document is None or self.busy or self.importing is not None:
+            return None
+        token = self.importing = object()
+        self._sensitivity()
+
+        def finished(job):
+            try:
+                result, error = job.result(), None
+            except Exception as exc:
+                result, error = None, exc
+            GLib.idle_add(self._imported, token, document, result, error, on_done)
+        self.executor.submit(import_from, document, path, sections, include_opt_in).add_done_callback(finished)
+        return token
+
+    def _imported(self, token, document, report, error, on_done):
+        if self.closed or token is not self.importing:
+            return GLib.SOURCE_REMOVE
+        self.importing = None
+        current = self.controller.document
+        if error is not None:
+            self.import_lines = [(self.text('import.failed', message=self._error_text(error)[1]), 'warning')]
+        elif current is None or current.original is not document.original or self.busy:
+            self.import_lines = [(self.text('import.stale'), 'warning')]
+        else:
+            self._apply_import(report)
+            self.import_lines = import_summary(report, {f['key']: f for f in controls(current.report)}, self.language)
+        self._sensitivity()
+        if on_done is not None:
+            on_done(self.import_lines)
+        return GLib.SOURCE_REMOVE
+
+    def _apply_import(self, report):
+        """Type imported values (stored units) into their rows, as the user would, and verify them. An edited row
+        whose original value is already the other ROM's gets that value back."""
+        doc = self.controller.document
+        fields = {f['key']: f for f in controls(doc.report)}
+        changes = dict(report['changes'])
+        for key in report['unchanged']:
+            field, entry = fields.get(key), self.entries.get(key)
+            if field is None or field['current'] is None:
+                continue
+            edited = (parse_number(entry.get_text()) != to_display(field, field['current']) if entry is not None else
+                      key in doc.changes or key in self.hidden_text)
+            if edited:
+                changes[key] = field['current']
+        if not changes:
+            return
+        if not self.advanced_toggle.get_active() and any(fields[key].get('opt_in') for key in changes):
+            self.advanced_toggle.set_active(True)        # opt-in values were asked for: show their rows
+        for key, value in changes.items():
+            text = number(to_display(fields[key], value))
+            if key in self.entries:
+                self.entries[key].set_text(text)
+            else:
+                self.hidden_text[key] = text
+        self._input_changed()
 
     def _refresh(self, announce=True):
         """Rows, change list and details for the current document; entries keep their text."""

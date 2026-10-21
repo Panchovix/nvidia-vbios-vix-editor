@@ -80,6 +80,96 @@ format, field capabilities and integrity. `integrity.valid=null` means the full
 format is unknown; raw image sums do not establish full integrity. A corrupt
 recognized image reports failed integrity and cannot be edited or normalized.
 
+## Memory view (read-only)
+
+`nvidia_vbios.rom.memory.memory_report(image, *, raw=False)` decodes the memory tables of a
+Turing, Ampere, Ada or GB20x image (a `BiosImage` or a parsed ROM) and writes nothing;
+`nvbios memory ROM [--raw]` prints it. It is separate from `inspect` and `fields`, whose
+output does not change.
+
+- `configurations`: the memory configuration table (BIT M+0x03, nouveau M0203). Per used
+  entry: the hardware `strap`, the `column` of the per-configuration tables (the entry's
+  group, which need not equal the strap), the `vendor` (`1` Samsung, `6` SK hynix, `0xf`
+  Micron; always `vendor_code`), `type_code` and the `raw` entry bytes. Only type 9 is named
+  (`type`: GDDR6); 0xa and 0xd carry `type_guess` GDDR6X and GDDR7. The board's strap pins
+  select the entry; the ROM cannot tell which one a card uses (`strap_note`).
+- `bands`: the memory clock table (BIT P+0x04): per band `min_mhz`, `max_mhz`, the
+  `timing_index` of each used column (`null` when the band has no entry), the band's `raw`
+  bytes, the `sub_entries` bytes of the used columns and the stock DRAM clocks it holds
+  (`stock_points`; Blackwell, Ada and Ampere, when the ROM's clock points are read).
+  `column_count` is the table's number of columns; used columns at or beyond it are listed
+  in `outside_table`. A 0–0 MHz band is a placeholder that no clock selects.
+- `timings`: the timing entries the bands above 0 MHz select (BIT P+0x08) with their
+  `raw` bytes and `decoded` values in controller cycles (`unit`). `confidence` names how each was
+  identified: `tRC`, `tRAS` and `tRP` (word 0) are inferred from byte patterns, `tRFC` is
+  probable, `CL` (word 1 bits 5..0) and `tWR` (word 2 bits 22..16) are tentative. No time
+  in ns is derived: the cycle length depends on the memory type.
+- `tables`: offset, size and SHA-256 of each decoded table and, on GB20x, of the other
+  memory objects BIT M points to, with the owning object.
+- `board_profile`: on GB20x, object 0x89, undecoded per-board boot data, probably
+  memory-interface training. It is recognized only when its two signatures are 0x8b0
+  apart at a reviewed position, and reports a `tag` (two big-endian header words; that
+  they are an ID and a revision is unconfirmed), a `fingerprint` (SHA-256 prefix of the
+  group B header and record B1 column 0) and a `sha256` of every byte the view reports
+  (the header, both records and, when recognized, the arrays and flags). `raw` adds every
+  paired field of records B1 and B2 in both columns, their index lists, two u16[4] arrays
+  and a flag pair. Only flashing the whole ROM applies this data; the override cannot.
+
+A section that fails a check reads `{"status": "unrecognized", "reason": ...}`; when no
+parser accepts the image, the whole report does. `compare(a, b)` (`nvbios memory ROM
+--compare OTHER`; with `--raw` it also returns both reports) gives each section's
+`status`: `identical`, `differs` with the count and keys of the differing entries or
+tables, `unavailable` when either report lacks the section, or, for the board profile only,
+`not-applicable` when either ROM is not Blackwell. `configurations`, `bands`
+and `timings` compare the bytes of the entries in use (the configurations, the bands above
+0 MHz with their used sub-entries, and the timing entries those bands select); `tables`
+compares every byte of each table and names the tables that differ, so it can differ
+while the other sections are identical. The board profile status follows its `sha256`;
+with `raw=True` reports it also counts differing fields per column and says which other
+parts differ. Its `meaning` is `unknown`. It never says which ROM is better.
+
+## Import from another ROM
+
+`import_fields(target, donor, sections, *, include_opt_in=False, dry_run=False)` copies the
+editable values of the chosen sections from `donor` into `target`, two `BiosImage`s of the same
+family and format. The sections are the GUI's (`IMPORT_SECTIONS`: `power`, `voltage`, `clocks`,
+`current`, `fans`). Another family or format is refused with `FAMILY_MISMATCH`; another device of
+the family (another PCI device ID) is allowed with a `DIFFERENT_DEVICE` warning. `nvbios import ROM
+DONOR [OUTPUT] --sections fans[,power,...] [--include-opt-in] [--dry-run]` prints the report with
+the `manifest` of the edit; without `--dry-run` it saves OUTPUT and `OUTPUT.json` through the same
+path as `edit`, and with nothing to import it refuses with `NOTHING_TO_IMPORT`.
+
+A field is proposed when its donor value differs and it is editable in both ROMs, means the same
+quantity in both and the value is inside the target's bounds, checked as `edit` checks them (an
+ordering group's encoding bounds when its partners are proposed with it). The same quantity means
+the same `units`, memory level (`memory_mhz`), power layout (`notebook_tgp`, which marks the three
+board power fields of a notebook TGP layout) and `equation_type`, and a voltage field on an
+equation shared by the same fields (REL and ALT that follow OV share its equation, so their values
+are not those of a ROM where each has its own). Aliases and placeholders the GUI hides are left
+out, opt-in fields unless `include_opt_in`, and the fan channel count, which describes the board's
+fans. A dependent set comes whole from the donor: an ordering group (a minimum, rated value and
+maximum), the fan curve (`fan_N_min/max_rpm/pct` and every curve point's temperature, speed and
+level) and the 12 V input limit with `input_current_policy7_limit_ma`. When a field of a set
+differs but is left out (opt-in, read-only in either ROM, another quantity, out of bounds), the
+rest of the set is held back. The proposal is one `edit` request, so the cross-field checks see
+the final set. A unit the editor refuses is dropped whole and the rest tried again: every voltage
+field (each bounds the others), a set or one field; nothing is applied in part.
+
+It returns `(report, result)`. `result` is the verified `EditResult` of the applied values, or
+`None` when none is applied. `report` holds `changes` (key → value, as `edit` takes them), the
+`applied` and `skipped` fields (`field`, `section`, `label`, `units` and the `target` and `donor`
+values), `unchanged` (the keys editable in the target whose value already equals the donor's),
+`warnings` and a `note`. A skipped field's `reason` is `absent_in_donor`, `absent_in_target`,
+`read_only_in_donor`, `read_only_in_target`, `read_only` (in both ROMs; listed only when it holds
+a set back), `opt_in`, `board_specific` (the fan channel count), `different_meaning`,
+`out_of_bounds` (with the `bounds`), `held_back` (with the `partners` that held its set back) or
+`refused` (with the editor's `code` and `message`). An opt-in field is listed only when both ROMs
+hold it with different values.
+
+Values are copied as stored numbers, not adapted to the board: fan speeds, power or current
+limits and voltage limits from another board can exceed this board's hardware (fans rated for a
+lower speed, a single 12V-2x6 connector).
+
 ## Structural and preservation checks
 
 PCI and NPDS image lengths bound every read and table. BIT header sums, token
@@ -171,7 +261,8 @@ Codes include `INVALID_IMAGE`, `INVALID_CHANGES`, `INVALID_PATH`, `INVALID_VALUE
 `UNSUPPORTED_FORMAT`, `INTEGRITY_FAILED`, `INVALID_FIELD_EVIDENCE`,
 `REGISTRY_CONFLICT`, `UNSUPPORTED_CHECKSUM_LAYOUT`, `IDENTITY_CHANGED`,
 `FACTORY_DEFAULT_CHANGED`, `PRESERVED_FIELD_CHANGED`, `POSTCONDITION_FAILED`, `UNDECLARED_CHANGE`,
-`SOURCE_OVERWRITE`, `SOURCE_CHANGED`, `OUTPUT_EXISTS`, and `IO_ERROR`.
+`SOURCE_OVERWRITE`, `SOURCE_CHANGED`, `OUTPUT_EXISTS`, `IO_ERROR`, and for imports `INVALID_SECTIONS`,
+`FAMILY_MISMATCH` and `NOTHING_TO_IMPORT`.
 
 Version-1 manifests contain source/original/output SHA256, requested values,
 before/after field descriptors, every explicit edit, byte diff ranges, integrity

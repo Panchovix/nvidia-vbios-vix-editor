@@ -110,11 +110,10 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    (Blackwell, Ada and Ampere; experimental, not hardware-tested; -500..+500 MHz)
    is expected to shift the stock core VF curve by that many MHz at every voltage, on
    every boot, under any tool's offset; 0 puts the stock bytes back. **Memory clock N MHz
-   follows the memory offset** (Blackwell, Ada and Ampere; experimental, not
-   hardware-tested) should let a negative memory offset move an intermediate memory
-   level too, instead of the memory dropping to a low idle clock below it (an inferred
-   meaning of the bit it sets); lower the memory
-   offset floor as well. The overlapping table representation is not
+   follows the memory offset** (Blackwell, Ada and Ampere; experimental) was meant to
+   let a negative memory offset move an intermediate memory level too, instead of the
+   memory dropping to a low idle clock below it; on the one card tested (an RTX 3050
+   Laptop GPU) it did not. The overlapping table representation is not
    shown (it stays in `nvbios fields`). Current fields stored in mA (12 V input
    current, output OCP) are shown and typed in A with up to three decimals; the
    GUI converts them exactly, and the backend, CLI and manifest stay in mA. The
@@ -183,7 +182,8 @@ gates come entirely from the backend; model strings and filenames do not select
 an editor. See [the editor API](editor-api.md) for format support and limitations.
 
 Keyboard: `Ctrl+O` open, `Ctrl+Enter` verify now, `Ctrl+S` save copy, `Ctrl+R`
-reset, `Ctrl+Q` close. Tab navigates native controls. The default 760×920 window
+reset, `Ctrl+I` import from another ROM, `Ctrl+Q` close. Tab navigates native
+controls. The default 760×920 window
 is a single column: a device card (product, PCI ID, BIOS version, integrity),
 then Power, Voltage, Clock offsets, Current and protection, and Fans cards, with
 read-only fields grouped in a collapsed section after them. When part of the image
@@ -194,6 +194,59 @@ visible below the scrolling fields. Experimental fields carry a badge.
 Load/inspection, preview generation and save run outside the GTK main thread.
 Generation checks discard results from earlier opens/resets. Backend errors show
 stable error codes and messages in the status area.
+
+**Memory (read-only)**, a collapsed section after the read-only fields, shows the
+memory tables of Turing, Ampere, Ada and Blackwell images (`nvbios memory` prints the
+same report as JSON, see [the editor API](editor-api.md)). It is read on a worker the
+first time it is opened. It lists the memory configurations (strap → column, vendor,
+type code; only type 9 is named, GDDR6) and, per column, the timing entry of each band
+that holds a stock memory clock (every band above 0 MHz when the editor does not read the
+ROM's stock clocks, as on Turing) with its decoded values in controller cycles: tRC, tRAS and
+tRP are marked "inferred" (their names come from byte patterns, not NVIDIA documentation),
+tRFC "probable", CL and tWR "tentative". Columns with the same entries share one
+heading; a column the memory clock table does not have is listed with a note. Which
+configuration a card uses is set by the board, not by the ROM. On
+Blackwell it also shows the board memory-training profile of object 0x89 as a tag and
+a fingerprint: undecoded per-board boot data, probably memory-interface training. A
+difference there does not mean one BIOS is faster, and it only takes effect by
+flashing the whole ROM; the override cannot apply it. **Raw bytes** lists every band
+with its bytes, the timing entries the bands select, each table hash and the profile
+bytes. **Compare with another ROM…** reads a second ROM on a worker and says, per
+section, whether it is identical or differs (the number of differing entries or profile
+fields, whose meaning is unknown), never which one is better. The configuration, band
+and timing lines compare the entries in use; the table line compares every byte of each
+table and names the tables that differ. Nothing in this section edits, stages or saves
+anything, and the comparison leaves the open ROM, the change list and saving untouched.
+
+**Import from ROM…** (in the change bar) copies values from another ROM of the same family
+into the open one, for example the fan settings of another board: choose the ROM, tick the
+sections (Power, Voltage, Clock offsets, Current and protection, Fans) and, if wanted, the
+advanced XOC-style fields (off by default). The other ROM is read on a worker. Each value that
+differs and that this ROM can take is typed into its row as if you had entered it: it shows in the
+change list, is verified like any other value, and retyping the original value or **Reset
+changes** undoes it. A value you had typed in a chosen section where both ROMs agree goes back to
+the value both ROMs hold. Nothing is written until **Save Copy…**, and pending values of other sections stay.
+
+Related fields come whole from the other ROM or not at all: a minimum, rated value and maximum;
+a fan curve (the fan limits and each point's temperature, speed and level); the 12 V input limit
+and its policy 7 copy. When one of them differs but is left out, for example a curve level that
+is an advanced field you did not include, the others are held back too. A value the editor
+refuses is dropped with the values it depends on (those related fields, or all voltage fields).
+The dialog then says how many values were imported and lists the fields left out with their
+reason: not in one of the ROMs, read-only, another quantity in the other ROM (other units,
+memory level, notebook or board power layout, or voltage equation, such as REL and ALT that
+follow OV), outside this ROM's range, an advanced field not included, held back with related
+fields, or refused by the editor. Fields read-only in both ROMs are listed only when they hold
+related fields back. The fan channel count describes the board's fans and is never copied.
+Another GPU family or format (for example a loader `.bin`) is refused; another product of the same family (another PCI device ID) is
+allowed with a warning. `nvbios import` does the same from the command line (see [the editor
+API](editor-api.md)).
+
+**Values are copied as stored numbers, not adapted to this board.** Fan speed limits, power or
+current limits and voltage limits from another board can exceed what this board's hardware is
+rated for, for example fans rated for a lower speed or a single 12V-2x6 connector where the other
+board has more power connectors or stronger power stages. Check every imported value in the
+change list before saving.
 
 ## Tests and headless render
 

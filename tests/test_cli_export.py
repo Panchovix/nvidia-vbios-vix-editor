@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT / 'src'))
 from nvidia_vbios import cli
 from test_rom_formats import synthetic_blackwell, synthetic_rom
 
-EDITOR_COMMANDS = {'inspect', 'fields', 'verify', 'edit', 'normalize', 'gui'}
+EDITOR_COMMANDS = {'inspect', 'fields', 'verify', 'memory', 'edit', 'import', 'normalize', 'gui'}
 
 
 class ExportCliTests(unittest.TestCase):
