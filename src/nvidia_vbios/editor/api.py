@@ -15,20 +15,20 @@ from ..rom.blackwell import BlackwellRom
 from ..rom.image import backend, inspect_image
 from .registry import (registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
                        fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
-                       fixed_voltage, dram_offset_points, VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS,
-                       DRAM_POINT_SEMANTICS)
+                       fixed_voltage, dram_offset_points, gpc_curve_offset, VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS,
+                       FIXED_SEMANTICS, DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS)
 
 # Reviewed resolvers whose bindings are canonical for range and joint checks.
 REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
                       fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
-                      fixed_voltage, dram_offset_points)
+                      fixed_voltage, dram_offset_points, gpc_curve_offset)
 # Fields that change otherwise preserved rail bytes, each only through its reviewed binding:
 # the evaluated VMIN equation, the XOC-style NVVDD REL/ALT selectors and the fixed Ada/Turing
 # REL/ALT values.
 RAIL_EXCEPTIONS = (VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS)
 # Layout fields whose bytes no other check rereads through the canonical parser: only the
 # reviewed complete binding (offsets, encoding, scale and layout) may write them.
-COMPLETE_BINDING_SEMANTICS = RAIL_EXCEPTIONS + (DRAM_POINT_SEMANTICS,)
+COMPLETE_BINDING_SEMANTICS = RAIL_EXCEPTIONS + (DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS)
 # The only requests that may change otherwise preserved power-row values:
 # canonical key -> preserved row attribute it may change. 'linked_limit' is
 # the opaque policy7 copy of the 12 V input limit, limited to its own bytes.
@@ -567,6 +567,20 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                     image.blob[i] != output.blob[i] and i not in vmin_bytes for i in range(at, at + left['equation_size'])):
                 raise VbiosError('PRESERVED_FIELD_CHANGED', 'the evaluated VMIN selector and equation bytes must be '
                                  'preserved', details={'rail': left['logical_rail_id']})
+    # The GPC curve root equation and the VFE slot of its offset (linked or first unused) change only
+    # at the bytes the canonical gpc_curve_offset_mhz binding declares, in every chain.
+    try:
+        source_curve = parser.gpc_curve() if hasattr(parser, 'gpc_curve') else None
+    except FormatError:
+        source_curve = None
+    if source_curve is not None:
+        curve_bytes = {at for binding in canonical.values() if binding.descriptor['value_semantics'] == GPC_CURVE_SEMANTICS
+                       for start in binding.offsets for at in range(start, start + struct.calcsize(binding.encoding))}
+        size, starts = source_curve['size'], (source_curve['root_offset'], source_curve['slot_offset'])
+        if not isinstance(parser, BlackwellRom):
+            starts = [copy for at in starts for copy in parser.copy_offsets(at, size)]
+        if any(image.blob[i] != output.blob[i] and i not in curve_bytes for start in starts for i in range(start, start + size)):
+            raise VbiosError('PRESERVED_FIELD_CHANGED', 'the GPC curve root and offset slot bytes must be preserved')
     # The per-fan-channel tables change only through the reviewed fan fields,
     # and only at the bytes their bindings declare: the PWM frequency bytes,
     # the channel list/enable bytes, the row limits of the active channels,

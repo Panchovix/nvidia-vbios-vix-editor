@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.25
+
+- **GPC curve offset (experimental, opt-in; Blackwell, Ada and Ampere).** A new field shifts the stock core VF curve
+  by a default number of MHz (-500 to +500), stored in the BIOS: a constant equation linked to the curve's root
+  equation. No stock BIOS does this; NVIDIA shifts the curve inside its equations instead. That the driver adds
+  it to every point of the curve is inferred, and it is not tested on hardware; large values can make the card
+  unstable. A tuning tool's offset still applies on top; 0 restores the stock bytes.
+
 ## 0.1.24
 
 - **Memory levels that follow the memory offset (experimental, opt-in; Blackwell, Ada and Ampere).** A memory offset

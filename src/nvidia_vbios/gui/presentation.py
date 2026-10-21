@@ -15,7 +15,7 @@ FIELD_KEYS = frozenset(('power_min_w', 'power_max_w', 'nvvdd_rel_max_mv', 'msvdd
                         'fan_zero_rpm',
                         'slot_current_threshold_rated_ma', 'slot_current_threshold_max_ma',
                         'nvvdd_power_threshold_rated_w', 'nvvdd_power_threshold_max_w',
-                        'connector_sum_power_max_w', 'connector_sum_power_rated_w'))
+                        'connector_sum_power_max_w', 'connector_sum_power_rated_w', 'gpc_curve_offset_mhz'))
 # Ampere/Turing external 12 V connector-channel power policies, numbered in power-row order
 # (a sense channel, not a physical connector: one connector may span several), and the
 # current hardware threshold on the same channel.
@@ -188,7 +188,7 @@ RESOLVER_SECTIONS = {'equation_roles': 'voltage', 'evaluated_vmin': 'voltage',
                      'power': 'power', 'slot_power': 'power', 'connector_power': 'power',
                      'connector_sum_power': 'power', 'output_ocp': 'current', 'input_current': 'current',
                      'memory': 'clocks', 'fans': 'fans', 'fan_zero_rpm': 'fans', 'fan_zero_rpm_temperatures': 'fans',
-                     'dram_offset_points': 'clocks'}
+                     'dram_offset_points': 'clocks', 'gpc_curve_offset': 'clocks'}
 
 
 def unsupported_notes(report, language='en'):
@@ -238,7 +238,8 @@ SECTIONS = (
                  'nvvdd_rel_alt_follow_ov',
                  'msvdd_rel_equation_max_mv', 'msvdd_rel_max_mv', 'msvdd_ov_equation_max_mv', 'msvdd_vmin_mv',
                  'msvdd_vmin_equation_max_mv', 'msvdd_alt_equation_max_mv')),
-    ('clocks', ('gpc_offset_max_mhz', 'gpc_offset_min_mhz', 'memory_offset_max_mhz', 'memory_offset_min_mhz',
+    ('clocks', ('gpc_curve_offset_mhz', 'gpc_offset_max_mhz', 'gpc_offset_min_mhz', 'memory_offset_max_mhz',
+                'memory_offset_min_mhz',
                 'xbar_max_table_mhz', 'xbar_min_table_mhz', 'sys_max_table_mhz', 'sys_min_table_mhz',
                 'vid_max_table_mhz', 'vid_min_table_mhz') +
                tuple(f'memory_point_{k}_follows_offset' for k in range(1, 8))),

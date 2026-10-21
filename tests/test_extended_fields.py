@@ -1419,6 +1419,61 @@ class DramPointTests(unittest.TestCase):
             self.assertFalse([d for d in report['diagnostics'] if d.get('resolver') == 'dram_offset_points'])
 
 
+class GpcCurveSlotTests(unittest.TestCase):
+    """Where a default GPC curve offset lives in a VFE table (structure.gpc_curve_slot)."""
+
+    @staticmethod
+    def vfe(size, *, link=None, extra=None, dirty=False, referenced=False):
+        # 0: a voltage constant; 1: the GPC root (compare, MHz output); 2: a child; 3: free (or extra).
+        from nvidia_vbios.rom.structure import vfe_constant_mhz, vfe_free_slot
+        width = 2 if size == 25 else 1
+        none = (1 << 8 * width) - 1
+
+        def entry(kind, var, nxt, unit, children=(none, none)):
+            e = bytearray(size)
+            e[0], e[1], e[2], e[23] = kind, var, nxt & 0xFF, unit
+            if kind == 3:
+                e[15], e[16] = children[0] & 0xFF, children[1] & 0xFF
+                if width == 2:
+                    e[19], e[20] = children[0] >> 8, children[1] >> 8
+            if width == 2:
+                e[24] = nxt >> 8
+            return bytes(e)
+        rows = [entry(1, 2, 1 if referenced else none, 2), entry(3, 5, none if link is None else link, 1, (2, 2)),
+                entry(1, 5, none, 1)]
+        rows.append(extra if extra is not None else vfe_free_slot(size))
+        if dirty:
+            rows[3] = bytes((0,)) + rows[3][1:3] + b'\x01' + rows[3][4:]
+        return b''.join(rows), width
+
+    def test_free_slot_linked_constant_and_refusals(self):
+        from nvidia_vbios.rom.errors import FormatError
+        from nvidia_vbios.rom.structure import gpc_curve_slot, vfe_constant_mhz
+        for size in (24, 25):
+            with self.subTest(size=size):
+                blob, width = self.vfe(size)
+                curve = gpc_curve_slot(blob, 0, size, width, 4, 1)
+                self.assertEqual((curve['current'], curve['slot'], curve['slot_offset'], curve['var']),
+                                 (0, 3, 3 * size, 5))
+                self.assertEqual(curve['link_offsets'], [size + 2] + ([size + 24] if size == 25 else []))
+                linked, _ = self.vfe(size, link=3, extra=vfe_constant_mhz(size, 5, -45.0))
+                self.assertEqual(gpc_curve_slot(linked, 0, size, width, 4, 1)['current'], -45)
+                bad = {'root referenced': self.vfe(size, referenced=True)[0],
+                       'dirty free slot': self.vfe(size, dirty=True)[0],
+                       'link to a non-constant': self.vfe(size, link=2)[0],
+                       'constant on another variable': self.vfe(size, link=3,
+                                                                extra=vfe_constant_mhz(size, 6, -45.0))[0],
+                       'offset out of range': self.vfe(size, link=3, extra=vfe_constant_mhz(size, 5, -501.0))[0],
+                       'fractional offset': self.vfe(size, link=3, extra=vfe_constant_mhz(size, 5, -4.5))[0],
+                       'infinite offset': self.vfe(size, link=3, extra=vfe_constant_mhz(size, 5, float('inf')))[0],
+                       'NaN offset': self.vfe(size, link=3, extra=vfe_constant_mhz(size, 5, float('nan')))[0]}
+                for name, data in bad.items():
+                    with self.subTest(case=name), self.assertRaises(FormatError):
+                        gpc_curve_slot(data, 0, size, width, 4, 1)
+                with self.assertRaises(FormatError):
+                    gpc_curve_slot(blob, 0, size, width, 4, 0)  # a voltage constant is not a GPC root
+
+
 class FanCoolerTests(unittest.TestCase):
     """Fan channels across the cooler, policy and mapping tables, and the PWM frequency."""
 

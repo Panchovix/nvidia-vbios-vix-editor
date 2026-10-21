@@ -106,7 +106,10 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    Recognized Blackwell memory offsets are edited in **MHz** on the NVML/Linux
    scale, which is twice the stored table value. Each memory row also shows the
    value Windows tools such as MSI Afterburner display (half the MHz value); the
-   core offset is the same on both. With the advanced fields, **Memory clock N MHz
+   core offset is the same on both. With the advanced fields, **GPC curve offset**
+   (Blackwell, Ada and Ampere; experimental, not hardware-tested; -500..+500 MHz)
+   is expected to shift the stock core VF curve by that many MHz at every voltage, on
+   every boot, under any tool's offset; 0 puts the stock bytes back. **Memory clock N MHz
    follows the memory offset** (Blackwell, Ada and Ampere; experimental, not
    hardware-tested) should let a negative memory offset move an intermediate memory
    level too, instead of the memory dropping to a low idle clock below it (an inferred

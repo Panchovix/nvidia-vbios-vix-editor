@@ -10,7 +10,7 @@ import math
 import re
 import struct
 from .errors import FormatError
-from .structure import dram_points, fan_curve, scan_images, parse_bit, vfe_range
+from .structure import dram_points, fan_curve, gpc_curve_slot, scan_images, parse_bit, vfe_range
 
 def unpack(blob, fmt, at):
     size = struct.calcsize(fmt)
@@ -309,6 +309,39 @@ class BlackwellRom:
         result = dram_points(self.blob, at, self.blob[row + 1], self.blob[row + 2], 0x50)
         self.object_for(at, result["size"])
         return result
+
+    def gpc_curve(self):
+        """Where a default GPC curve offset lives (structure.gpc_curve_slot).
+
+        The clocks table GPC row names one clock programming entry (C+0x0c, version
+        0x50, object 4); its u16 at byte 3 is the root of the GPC VF curve in the VFE
+        table (P+0x20, object 0x14). No other VFE-driven programming entry (flag low
+        nibble 1) may name the same root.
+        """
+        rows = [r for r in self.clock_ranges() if r["domain"] == "GPC"]
+        if len(rows) != 1:
+            raise FormatError("no single GPC clock row")
+        row = rows[0]["minimum_offset"] - 3
+        first, last = self.blob[row + 1], self.blob[row + 2]
+        b, at = self.blob, self.pointer("C", 0x0C)
+        if self.object_for(at)["id"] != 4:
+            raise FormatError("clock programming pointer does not address object 4")
+        hs, size, count, c1, s1, c2, s2 = b[at + 1:at + 8]
+        stride = size + c1 * s1 + c2 * s2
+        if b[at] != 0x50 or hs != 8 or size < 5 or first != last or first >= count:
+            raise FormatError("unreviewed GPC clock programming entry")
+        self.object_for(at, hs + stride * count)
+        root = unpack(b, "<H", at + hs + stride * first + 3)[0]
+        if any(unpack(b, "<H", at + hs + stride * i + 3)[0] == root for i in range(count)
+               if i != first and b[at + hs + stride * i] & 0x0F == 1):
+            raise FormatError("another clock programming entry names the GPC root")
+        vfe = self.pointer("P", 0x20)
+        if b[vfe:vfe + 5] != bytes((0x30, 14, 29, 255, 25)) or self.object_for(vfe)["id"] != 0x14:
+            raise FormatError("unvalidated Blackwell VFE output layout")
+        base = vfe + b[vfe + 1] + b[vfe + 2] * b[vfe + 3]
+        vcount = b[vfe + 5] | b[vfe + 10] << 8
+        self.object_for(vfe, base + 25 * vcount - vfe)
+        return gpc_curve_slot(b, base, 25, 2, vcount, root)
 
     def power_rows(self):
         at = self.pointer("P", 11 * 4)

@@ -3,7 +3,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 import struct
 from ..rom.blackwell import BlackwellRom, FAN_POLICY_FLAG_OFFSET
-from ..rom.structure import DRAM_POINT_OFFSET_BIT
+from ..rom.structure import (DRAM_POINT_OFFSET_BIT, GPC_CURVE_OFFSET_LIMIT, vfe_constant_mhz,
+                             vfe_free_slot)
 from ..rom.errors import VbiosError, FormatError
 from ..rom.image import metadata
 from ..rom.tables import SOURCE, TableRom
@@ -2421,6 +2422,76 @@ def dram_offset_points(image, parser):
                    'floor as well to run the memory between this level and the next lower one; the levels with '
                    'it stay the top ones; not hardware-tested'))
     return result
+
+
+GPC_CURVE_SEMANTICS = 'stored-gpc-curve-offset'
+GPC_CURVE_FIRMWARE_EVIDENCE = {
+    'kind': 'static-firmware-analysis',
+    'source': 'GSP-RM firmware 615.78.08 (gsp_ga10x.bin), clocks and clock programming table parsers',
+    'observation': 'the clocks table GPC row names one clock programming entry whose equation index is the root '
+                   'of the GPC VF curve in the VFE table; the stored GPC frequency deltas of the clocks table are '
+                   'ignored by default and could only raise the curve; a VFE equation adds its next equation to '
+                   'its clamped value (as the voltage equations show), so a constant linked from the root should '
+                   'move every point of the curve (inferred; the curve evaluation was not traced)',
+    'set_tested': False}
+GPC_CURVE_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'Ada, Ampere and GB20x VBIOS corpus',
+    'observation': 'the GPC root is a compare equation with MHz output that no other equation references and that '
+                   'links no next equation; the first unused VFE slot is clean; compare equations with a next link '
+                   'and MHz output are common, and a newer RTX 4090 BIOS fills the older one\'s first unused slot '
+                   'with a constant equation (a 15 mV voltage constant no equation references); no image links a '
+                   'constant to the GPC root: two SKUs of one chip (RTX 2080 Ti and TITAN RTX) differ by +45 MHz in '
+                   'the constant term of one polynomial inside the curve\'s floor and cap, and vendor factory-OC '
+                   'images keep the reference curve'}
+
+
+@registry.register
+def gpc_curve_offset(image, parser):
+    """GB20x, Ada and Ampere: a default offset of the GPC VF curve, in MHz.
+
+    parser.gpc_curve finds the GPC root equation and the first unused VFE slot. A value
+    other than 0 writes a constant MHz equation (vfe_constant_mhz) into that slot and
+    links it as the root's next equation; 0 restores the unused slot and the empty link,
+    byte for byte. Every point of the stock curve is expected to move by the value
+    (inferred, not hardware-tested); a tuning tool's offset still applies on top.
+    -500..+500 MHz, at the user's discretion. The bytes go through a layout per value,
+    written in 2-byte chunks (the root's link bytes with their neighbours, and slot
+    bytes 0..23), in every image chain; only this reviewed binding may write them.
+    """
+    if not isinstance(parser, (BlackwellRom, TableRom)) or (isinstance(parser, TableRom) and turing(parser)):
+        return []
+    try:
+        curve = parser.gpc_curve()
+    except FormatError:
+        return []
+    size, width, slot, var = curve['size'], curve['width'], curve['slot'], curve['var']
+    root_at = curve['root_offset']
+    root_bytes = parser.blob[root_at:root_at + size]
+    root_parts = [1] + ([23] if width == 2 else [])
+    slot_parts = list(range(0, 24, 2))  # bytes 0..23; byte 24 of a 25-byte slot is 0xff either way
+    offsets = [root_at + k for k in root_parts] + [curve['slot_offset'] + k for k in slot_parts]
+
+    def chunks(value):
+        linked = bytearray(root_bytes)
+        linked[2] = slot & 0xFF if value else 0xFF
+        if width == 2:
+            linked[24] = slot >> 8 if value else 0xFF
+        body = vfe_constant_mhz(size, var, value) if value else vfe_free_slot(size)
+        return tuple(bytes(linked[k:k + 2]) for k in root_parts) + tuple(body[k:k + 2] for k in slot_parts)
+    layout = tuple((value, chunks(value)) for value in range(-GPC_CURVE_OFFSET_LIMIT, GPC_CURVE_OFFSET_LIMIT + 1))
+    offsets, layout = chain_copies(parser, offsets, 2, layout)
+    writable = can_edit(image, parser)
+    return [field('gpc_curve_offset_mhz', 'GPC curve offset', 'MHz', curve['current'],
+                  -GPC_CURVE_OFFSET_LIMIT if writable else None, GPC_CURVE_OFFSET_LIMIT if writable else None, writable,
+                  [dict(GPC_CURVE_FIRMWARE_EVIDENCE), dict(GPC_CURVE_CORPUS_EVIDENCE)],
+                  offsets=offsets if writable else (), encoding='<h' if writable else '', scale=1,
+                  layout=layout if writable else (), writable_status=None if writable else 'unsupported',
+                  experimental=True, opt_in=True, value_semantics=GPC_CURVE_SEMANTICS,
+                  reason='experimental, opt-in: a constant MHz equation linked as the next equation of the GPC VF '
+                         'curve root in the VFE table (first unused slot); it is expected to move every point of the '
+                         'stock curve by this many MHz (inferred); a tuning tool\'s offset still applies on top, and '
+                         'nvidia-smi max clocks and the rated boost do not change; values far from 0 can make the card '
+                         'unstable; 0 restores the stock bytes; not hardware-tested')]
 
 
 @registry.register

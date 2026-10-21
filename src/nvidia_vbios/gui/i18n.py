@@ -33,6 +33,7 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'field.fan_extra_zero_rpm_low_temp_c': 'Extra fan curve {curve} zero RPM lower threshold (advanced, experimental)',
  'field.fan_extra_zero_rpm_high_temp_c': 'Extra fan curve {curve} zero RPM upper threshold (advanced, experimental)',
  'field.memory_point_follows_offset': 'Memory clock {mhz} MHz follows the memory offset (advanced, experimental)',
+ 'field.gpc_curve_offset_mhz': 'GPC curve offset (advanced, experimental)',
  'section.readonly': 'Read-only fields ({count})',
  'section.voltage_note': ('REL and OV are equation ceilings; a fixed REL or ALT voltage sets the value of a constant '
                           'equation, and a fixed REL stays at or below ALT: to raise it further, raise ALT in the same '

@@ -94,6 +94,7 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `fan_N_curve_K_temp_c/rpm/pct`, `fan_extra_M_curve_K_temp_c/rpm/pct` | Point K (1..3) of channel N's stored fan curve or of extra curve M: temperature (°C, 1/32 °C steps), speed (RPM), level (%) | Experimental, Blackwell, Ada, Ampere and Turing; points stay in order and inside the limits; levels opt-in |
 | `power_default_w` | Rated TGP value used at boot | Experimental; Blackwell, Ada, Ampere, Turing |
 | `gpc_offset_min/max_mhz`, `memory_offset_min_mhz` | Clock offset range in MHz (NVML scale) | Experimental, reviewed Blackwell and Ada; Ampere and Turing by analogy |
+| `gpc_curve_offset_mhz` | Default offset of the GPC VF curve: a constant MHz equation linked as the next equation of the GPC root in the VFE table | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); -500..+500 MHz; 0 restores the stock bytes |
 | `memory_point_K_follows_offset` | Bit 4 of the flag byte of the K-th intermediate memory level (from the lowest) in the clock programming table: 1 when a memory offset is expected to move that level | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); the levels with the bit stay the top ones; idle and top levels not offered |
 | `xbar/sys/vid_min/max_table_mhz`, `dram_min_table_mhz` | Clock offset range in table MHz | Experimental, reviewed Blackwell and Ada; Ampere; Turing `dram_min_table_mhz` only (its XBAR/SYS/VID rows store no range) |
 
@@ -560,6 +561,43 @@ minimum is at most 0 and a maximum at least 0. The existing
 `memory_offset_max_mhz`/`dram_max_table_mhz` ceiling keeps its hardware-validated
 status. Ada and Ampere rows are named by their GV HAL position (see [Ada fields](#ada-fields)
 and [Ampere fields](#ampere-fields)).
+
+### GPC curve offset (`gpc_curve_offset_mhz`, opt-in)
+
+The VBIOS stores no list of GPC VF points. The clocks table GPC row (C+0x08) names one
+clock programming entry (C+0x0c), and that entry names the root of a VFE equation tree
+(P+0x20) that gives the GPC clock (MHz) from the voltage, the chip's fuses and the
+temperature. The root is a compare equation with MHz output that no other equation
+references and that links no next equation, on every Ada, Ampere and GB20x image of the
+corpus. The GPC frequency delta stored in the clocks table row does not help: GSP-RM
+615.78.08 ignores it by default and, when a client enables it, takes the larger of it
+and 0, so it cannot lower the curve.
+
+- **Edit.** A value other than 0 writes a constant MHz equation (type 1, the root's
+  variable, minimum = maximum = constant = value, zero slopes, no next link) into the
+  first unused VFE slot and links it as the root's next equation; 0 restores the
+  unused slot and the empty link, byte for byte. The editor's voltage fields rely on
+  the driver adding an equation's next equation to its clamped value; applied to the
+  GPC root, every point of the curve should move by the value (inferred: the curve
+  evaluation was not traced). The constant is added after the root's own clamp, so the
+  root's floor and cap (Ampere 210..2100 MHz, Ada 210..3450, GB20x 180..3450) move with
+  it. No stock image links a constant to the GPC root. NVIDIA shifts a curve between
+  SKUs of one chip inside it instead: the RTX 2080 Ti and TITAN RTX curves differ by
+  +45 MHz in the constant term of one polynomial, under the curve's floor and cap, so
+  up to about 550 mV they match. Vendor factory-OC images in the corpus keep the
+  reference curve.
+- **Range and interactions.** -500..+500 MHz in whole MHz, at the user's discretion:
+  values far from 0 can make the card unstable, and below about 450-500 mV the curve's
+  floor (180-210 MHz) plus a large negative value is not meaningful. A tuning tool's
+  GPC offset still applies on top. `nvidia-smi` max clocks and the rated base and
+  boost clocks come from other tables and do not change.
+- **Gates.** The GPC row names a single programming entry, no other VFE-driven entry
+  names the same root, every VFE equation kind is one the editor reads (0-4 and 7),
+  and the first unused slot is clean and unreferenced (below 0xff on Ampere's u8
+  links). Writes go to every image chain; on GB20x they stay in object 0x14, whose
+  hash is repaired. After every edit, the root equation and that slot of every chain
+  may differ only at the bytes of the reviewed binding, whatever the field registry.
+  Turing is not covered. Not hardware-tested.
 
 ### Memory levels that follow the offset (`memory_point_K_follows_offset`, opt-in)
 

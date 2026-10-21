@@ -52,6 +52,84 @@ def dram_points(blob, at, first, last, version):
     return dict(offset=at, size=hs + stride * count, points=points)
 
 
+# Default GPC VF curve offset: a constant MHz equation linked from the GPC root (MHz).
+GPC_CURVE_OFFSET_LIMIT = 500
+
+
+def vfe_free_slot(size):
+    """Bytes of an unused VFE equation slot: type 0, no links, zero floats (u16-link layouts end in 0xff)."""
+    return bytes((0, 0xFF, 0xFF)) + bytes(20) + (bytes((0, 0xFF)) if size == 25 else bytes(1))
+
+
+def vfe_constant_mhz(size, var, value):
+    """A constant MHz equation: type 1 on var, no next link, minimum = maximum = constant = value, zero slopes."""
+    return (bytes((1, var, 0xFF)) + struct.pack('<5f', value, value, value, 0.0, 0.0) + bytes((1,)) +
+            (bytes((0xFF,)) if size == 25 else b''))
+
+
+def vfe_reference_counts(blob, base, size, width, count):
+    """How many times each equation index is referenced (next links and min/max and compare children).
+
+    Kinds 1, 4 and 7 link only their next equation; min/max (2) and compare (3) also link
+    two children (bytes 11/12 and 15/16, u16 high bytes 4 further on).
+    """
+    none, counts = (1 << 8 * width) - 1, {}
+    high = (lambda e, k: e[k + 4] << 8) if width == 2 else (lambda e, k: 0)
+    for i in range(count):
+        e = blob[base + size * i:base + size * i + size]
+        if e[0] not in (0, 1, 2, 3, 4, 7):
+            raise FormatError("unreviewed VFE equation kind")
+        if not e[0]:
+            continue
+        links = [e[2] | ((e[24] << 8) if width == 2 else 0)]
+        if e[0] == 2:
+            links += [e[11] | high(e, 11), e[12] | high(e, 12)]
+        elif e[0] == 3:
+            links += [e[15] | high(e, 15), e[16] | high(e, 16)]
+        for x in links:
+            if x != none:
+                counts[x] = counts.get(x, 0) + 1
+    return counts
+
+
+def gpc_curve_slot(blob, base, size, width, count, root):
+    """Where a default GPC curve offset lives in the VFE table, or FormatError.
+
+    The GPC root (a compare node with MHz output that no equation references) gets a
+    next link to a constant MHz equation in the first unused slot; the driver adds a
+    next equation to the clamped value (as the voltage equations show), so every
+    point of the curve moves by that constant (inferred). Returns the root and slot
+    offsets, the link byte offsets and the current offset (0 without a link, else the
+    linked constant, which only the root may reference).
+    """
+    none = (1 << 8 * width) - 1
+    if not 0 <= root < count:
+        raise FormatError("GPC root outside the VFE table")
+    at = base + size * root
+    e = blob[at:at + size]
+    refs = vfe_reference_counts(blob, base, size, width, count)
+    if e[0] != 3 or e[23] & 15 != 1 or refs.get(root):
+        raise FormatError("unreviewed GPC root equation")
+    links = [at + 2] + ([at + 24] if width == 2 else [])
+    nxt = e[2] | ((e[24] << 8) if width == 2 else 0)
+    if nxt == none:
+        slot = next((i for i in range(count) if not blob[base + size * i]), None)
+        if (slot is None or slot >= none or refs.get(slot) or
+                blob[base + size * slot:base + size * slot + size] != vfe_free_slot(size)):
+            raise FormatError("no clean free VFE slot for a GPC curve offset")
+        current = 0
+    else:
+        slot = nxt
+        s = blob[base + size * slot:base + size * slot + size] if slot < count else b''
+        value = struct.unpack_from('<f', s, 11)[0] if len(s) == size else None
+        if (value is None or s != vfe_constant_mhz(size, e[1], value) or refs.get(slot) != 1 or
+                not math.isfinite(value) or value != int(value) or abs(value) > GPC_CURVE_OFFSET_LIMIT or not value):
+            raise FormatError("the GPC root links an equation outside the reviewed offset shape")
+        current = int(value)
+    return dict(root=root, root_offset=at, var=e[1], link_offsets=links, slot=slot,
+                slot_offset=base + size * slot, size=size, width=width, current=current)
+
+
 def fan_curve(blob, at):
     """Stored curve of the fan policy entry at `at`: bytes 14..16 hold three level (%)
     points and bytes 18..29 three (temperature in 1/32 C, RPM) points, '<H' each."""

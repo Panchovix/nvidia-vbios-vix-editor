@@ -14,7 +14,7 @@ No board serial, complete-file size, table-address, or source-hash pins.
 import copy
 import hashlib
 import math
-from .structure import dram_points, fan_curve, scan_images, image_chains, parse_bit, read, vfe_range
+from .structure import dram_points, fan_curve, gpc_curve_slot, scan_images, image_chains, parse_bit, read, vfe_range
 from .errors import FormatError
 
 SOURCE = 'https://github.com/OE4T/linux-nvgpu/blob/patches-rel-36/drivers/gpu/nvgpu/include/nvgpu/bios.h'
@@ -506,6 +506,44 @@ class TableRom:
         result = dram_points(self.blob, at, self.blob[row + 1], self.blob[row + 2], 0x40)
         self.owner(at, result['size'])
         return result
+
+    def gpc_curve(self):
+        """Ada and Ampere: where a default GPC curve offset lives (structure.gpc_curve_slot).
+
+        The clocks table GPC row names one clock programming entry (C+0x0c, version 0x40);
+        its byte 3 (| byte 13 << 8 on the 15-byte Ada entries) is the root of the GPC VF
+        curve in the VFE table (P+0x20). No other VFE-driven programming entry (flag low
+        nibble 1) may name the same root. Turing is not covered.
+        """
+        if self.family not in ('ada', 'ampere'):
+            raise FormatError('the GPC curve offset is reviewed on Ada and Ampere only')
+        rows = [r for r in self.clock_ranges() if r['domain'] == 'GPC']
+        if len(rows) != 1:
+            raise FormatError('no single GPC clock row')
+        row = rows[0]['minimum_offset'] - 3
+        first, last = self.blob[row + 1], self.blob[row + 2]
+        b, at = self.blob, self.pointer('C', 0x0C)
+        hs, size, count, c1, s1, c2, s2 = b[at + 1:at + 8]
+        stride = size + c1 * s1 + c2 * s2
+        if b[at] != 0x40 or hs != 8 or size not in (13, 15) or first != last or first >= count:
+            raise FormatError('unreviewed GPC clock programming entry')
+        self.owner(at, hs + stride * count)
+
+        def root_of(i):
+            e = at + hs + stride * i
+            return b[e + 3] | (b[e + 13] << 8 if size == 15 else 0)
+        root = root_of(first)
+        if any(root_of(i) == root for i in range(count) if i != first and b[at + hs + stride * i] & 0x0F == 1):
+            raise FormatError('another clock programming entry names the GPC root')
+        vfe = self.pointer('P', 0x20)
+        if b[vfe:vfe + 5] not in (ADA_VFE_PREFIX, AMPERE_VFE_PREFIX):
+            raise FormatError('unvalidated VFE dimensions')
+        esize = b[vfe + 4]
+        width = 2 if esize == 25 else 1
+        vcount = b[vfe + 5] | (b[vfe + 10] << 8 if width == 2 else 0)
+        base = vfe + b[vfe + 1] + b[vfe + 2] * b[vfe + 3]
+        self.owner(vfe, base - vfe + esize * vcount)
+        return gpc_curve_slot(b, base, esize, width, vcount, root)
 
     def _turing_clock_ranges(self, at):
         """Rows of the Turing clocks table v0x35, gated by usage, ordering byte and fixed bytes.

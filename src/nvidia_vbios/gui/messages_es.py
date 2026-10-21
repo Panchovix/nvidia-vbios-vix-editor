@@ -36,6 +36,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                                           '(avanzado, experimental)'),
  'field.memory_point_follows_offset': ('El clock de memoria de {mhz} MHz sigue el offset de memoria '
                                        '(avanzado, experimental)'),
+ 'field.gpc_curve_offset_mhz': 'Offset de la curva GPC (avanzado, experimental)',
  'section.readonly': 'Campos de solo lectura ({count})',
  'section.voltage_note': ('REL y OV son techos de ecuación; un voltaje fijo REL o ALT fija el valor de una ecuación '
                           'constante, y un REL fijo queda igual o por debajo de ALT: para subirlo más, sube ALT en la '

@@ -119,7 +119,11 @@ funcionando sin las dependencias gráficas.
 Los offsets de memoria Blackwell reconocidos se editan en **MHz** en la escala
 NVML/Linux, que es el doble del valor guardado en la tabla. Cada fila de memoria
 muestra también el valor que ven las herramientas de Windows como MSI Afterburner
-(la mitad); el offset del núcleo es igual en ambas. Con los campos avanzados, **El
+(la mitad); el offset del núcleo es igual en ambas. Con los campos avanzados, el
+**Offset de la curva GPC** (Blackwell, Ada y Ampere; experimental, sin probar en
+hardware; de -500 a +500 MHz) debería desplazar la curva VF de fábrica del núcleo esa
+cantidad de MHz en todos los voltajes, en cada arranque y debajo del offset de
+cualquier herramienta; 0 devuelve los bytes de fábrica. **El
 clock de memoria de N MHz sigue el offset de memoria** (Blackwell, Ada y Ampere;
 experimental, sin probar en hardware) debería hacer que un offset de memoria negativo
 también mueva un nivel de memoria intermedio, en vez de que la memoria caiga a un clock
