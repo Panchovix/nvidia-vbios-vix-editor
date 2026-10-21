@@ -14,9 +14,10 @@ connector power and current limits, VMIN, fixed REL/ALT voltages, clock offset r
 [Turing tester guide](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/turing.md)).
 
 Loading an edited image with the Linux or Windows loader works with NVIDIA 615.x (R615) drivers on Linux and
-616.x, 617.x and 621.x drivers on Windows (on 621.01 only Ada and Ampere are tested so far). It may stop working
-in a future driver if NVIDIA decides to change or remove the override, so check that it still applies after every
-driver update (Linux: `nvbios system status` and an edited value in `nvidia-smi`; Windows: **Verify**).
+616.x, 617.x and 621.x drivers on Windows (621.01 is tested on Blackwell, Ada and Ampere, not yet on Turing). It
+may stop working in a future driver if NVIDIA decides to change or remove the override, so check that it still
+applies after every driver update (Linux: `nvbios system status` and an edited value in `nvidia-smi`; Windows:
+**Verify**).
 
 **Not affiliated with, endorsed by or sponsored by NVIDIA Corporation.** NVIDIA and
 GeForce are trademarks of NVIDIA Corporation.
