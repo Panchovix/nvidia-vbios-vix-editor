@@ -10,7 +10,7 @@ import math
 import re
 import struct
 from .errors import FormatError
-from .structure import fan_curve, scan_images, parse_bit, vfe_range
+from .structure import dram_points, fan_curve, scan_images, parse_bit, vfe_range
 
 def unpack(blob, fmt, at):
     size = struct.calcsize(fmt)
@@ -293,6 +293,22 @@ class BlackwellRom:
             rows.append(dict(row=i, domain=names[i] if i < len(names) else f"{first:#x}..{last:#x}",
                              minimum_mhz=lo, maximum_mhz=hi, minimum_offset=row + 3, maximum_offset=row + 5))
         return rows
+
+    def dram_points(self):
+        """The DRAM entries of the clock programming table (C+0x0c, version 0x50, object 4).
+
+        See structure.dram_points; the clocks table DRAM row names them.
+        """
+        rows = [r for r in self.clock_ranges() if r["domain"] == "DRAM"]
+        if len(rows) != 1:
+            raise FormatError("no single DRAM clock row")
+        row = rows[0]["minimum_offset"] - 3
+        at = self.pointer("C", 0x0C)
+        if self.object_for(at)["id"] != 4:
+            raise FormatError("clock programming pointer does not address object 4")
+        result = dram_points(self.blob, at, self.blob[row + 1], self.blob[row + 2], 0x50)
+        self.object_for(at, result["size"])
+        return result
 
     def power_rows(self):
         at = self.pointer("P", 11 * 4)

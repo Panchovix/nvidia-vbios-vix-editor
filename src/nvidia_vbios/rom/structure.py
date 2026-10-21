@@ -14,6 +14,44 @@ def read(blob, fmt, at, *, end=None):
     return struct.unpack_from(fmt, blob, at)
 
 
+# Bit 4 of a clock programming entry's flag byte: set on the stored clocks a clock offset
+# moves (GPC/XBAR entries and the top DRAM entries on the stock images; inferred meaning).
+DRAM_POINT_OFFSET_BIT = 0x10
+DRAM_POINT_FLAGS = (0x03, 0x13)
+
+
+def dram_points(blob, at, first, last, version):
+    """DRAM entries first..last of the clock programming table at `at` (version 0x40 or 0x50).
+
+    The table has an 8-byte header (version, header size, entry size, entry count, then two
+    sub-entry counts and sizes); each entry starts with a flag byte and the u16 clock in MHz.
+    The DRAM row of the clocks table names the DRAM entries. Reviewed shape, as on every Ada,
+    Ampere and GB20x image examined: flag byte 0x03 or 0x13, clocks strictly rising, the two
+    lowest (the idle levels) without the offset bit, and the entries with it forming a
+    nonempty top run.
+    """
+    if at + 8 > len(blob):
+        raise FormatError("clock programming table header exceeds the image")
+    hs, size, count, c1, s1, c2, s2 = blob[at + 1:at + 8]
+    if blob[at] != version or hs != 8 or size < 3:
+        raise FormatError("unsupported clock programming table")
+    stride = size + c1 * s1 + c2 * s2
+    if at + hs + stride * count > len(blob):
+        raise FormatError("clock programming table exceeds the image")
+    if not first <= last < count or last - first < 2:
+        raise FormatError("unsupported DRAM clock programming entries")
+    points = []
+    for i in range(first, last + 1):
+        e = at + hs + stride * i
+        points.append(dict(index=i, offset=e, flags=blob[e], mhz=read(blob, "<H", e + 1)[0]))
+    moved = [p["flags"] & DRAM_POINT_OFFSET_BIT == DRAM_POINT_OFFSET_BIT for p in points]
+    if (any(p["flags"] not in DRAM_POINT_FLAGS for p in points) or
+            any(a["mhz"] >= b["mhz"] for a, b in zip(points, points[1:])) or
+            any(moved[:2]) or not moved[-1] or moved != sorted(moved)):
+        raise FormatError("DRAM clock programming entries outside the reviewed shape")
+    return dict(offset=at, size=hs + stride * count, points=points)
+
+
 def fan_curve(blob, at):
     """Stored curve of the fan policy entry at `at`: bytes 14..16 hold three level (%)
     points and bytes 18..29 three (temperature in 1/32 C, RPM) points, '<H' each."""

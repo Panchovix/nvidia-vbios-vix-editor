@@ -15,16 +15,20 @@ from ..rom.blackwell import BlackwellRom
 from ..rom.image import backend, inspect_image
 from .registry import (registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
                        fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
-                       fixed_voltage, VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS)
+                       fixed_voltage, dram_offset_points, VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS,
+                       DRAM_POINT_SEMANTICS)
 
 # Reviewed resolvers whose bindings are canonical for range and joint checks.
 REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
                       fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
-                      fixed_voltage)
+                      fixed_voltage, dram_offset_points)
 # Fields that change otherwise preserved rail bytes, each only through its reviewed binding:
 # the evaluated VMIN equation, the XOC-style NVVDD REL/ALT selectors and the fixed Ada/Turing
 # REL/ALT values.
 RAIL_EXCEPTIONS = (VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS)
+# Layout fields whose bytes no other check rereads through the canonical parser: only the
+# reviewed complete binding (offsets, encoding, scale and layout) may write them.
+COMPLETE_BINDING_SEMANTICS = RAIL_EXCEPTIONS + (DRAM_POINT_SEMANTICS,)
 # The only requests that may change otherwise preserved power-row values:
 # canonical key -> preserved row attribute it may change. 'linked_limit' is
 # the opaque policy7 copy of the 12 V input limit, limited to its own bytes.
@@ -41,6 +45,9 @@ PRESERVATION_EXCEPTIONS = {'power_min_w': 'minimum_raw', 'power_default_w': 'def
                            'connector_sum_power_rated_w': 'default_raw',
                            **{f'connector_{n}_current_threshold_rated_ma': 'default_raw' for n in range(1, 5)}}
 # Fields bound to a top-level override profile -> its (policy, field) entries.
+# The tail of the first Ada/Ampere data image (the clock programming table's image) on most
+# corpus images: x86 filler (cs: mov eax, eax) and then the checksum byte; others use 0xff padding.
+X86_FILLER_TAIL = bytes.fromhex('2e8bc0') * 6 + b'\x8b'
 TOP_PROFILE_ENTRIES = {'power_max_w': {(2, 'maximum'), (7, 'maximum'), (8, 'maximum')},
                        'power_default_w': {(8, 'default')}, 'board_fixed_rated_w': {(2, 'default'), (7, 'default')},
                        'input_current_max_ma': {(9, 'maximum')}, 'input_current_rated_ma': {(9, 'default')}}
@@ -170,8 +177,8 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
         raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change nvvdd_rel_alt_follow_ov and the voltage fields in separate '
                          'edits', details={'fields': ['nvvdd_rel_alt_follow_ov'] + voltages})
     for key in changes:
-        if (key in available and key in reviewed and reviewed[key].descriptor['value_semantics'] in RAIL_EXCEPTIONS
-                and key not in canonical):
+        if (key in available and key in reviewed and
+                reviewed[key].descriptor['value_semantics'] in COMPLETE_BINDING_SEMANTICS and key not in canonical):
             raise VbiosError('INVALID_FIELD_EVIDENCE', f'{key} must use the reviewed complete binding')
     exceptions = {}
     for key, attribute in PRESERVATION_EXCEPTIONS.items():
@@ -271,7 +278,7 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
             if isinstance(parser, BlackwellRom):
                 if any(o['data'] <= end - 1 < o['data'] + o['size'] for o in parser.objects + parser.legacy_objects):
                     raise VbiosError('UNSUPPORTED_CHECKSUM_LAYOUT', 'checksum overlaps a hashed object')
-            elif target[end - 16:end - 1] != b'\xff' * 15:
+            elif target[end - 16:end - 1] != b'\xff' * 15 and target[end - 20:end - 1] != X86_FILLER_TAIL:
                 raise VbiosError('UNSUPPORTED_CHECKSUM_LAYOUT', 'data image lacks reviewed checksum padding')
             if end - 1 in allowed:
                 raise VbiosError('CONFLICTING_FIELDS', 'explicit field overlaps the checksum byte')

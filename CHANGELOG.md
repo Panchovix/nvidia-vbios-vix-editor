@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.24
+
+- **Memory levels that follow the memory offset (experimental, opt-in; Blackwell, Ada and Ampere).** A memory offset
+  only seems to move the top stored memory levels: past the next lower level the memory drops to a low idle clock
+  instead (on one RTX 3050 Laptop GPU, below a -500 MHz offset it fell from 6001 to 810 MHz). New fields, one per
+  intermediate level ("Memory clock N MHz follows the memory offset"), set the bit the stock BIOS sets on the levels
+  the offset moves. That this bit is what makes a level move is inferred, so it may or may not let a degraded memory
+  run between the stored levels; lower the memory offset floor too. Not tested on hardware.
+
 ## 0.1.23
 
 - **Fan zero RPM temperatures on Ada and Ampere (experimental, opt-in).** The lower and upper zero RPM

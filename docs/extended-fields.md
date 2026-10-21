@@ -94,6 +94,7 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `fan_N_curve_K_temp_c/rpm/pct`, `fan_extra_M_curve_K_temp_c/rpm/pct` | Point K (1..3) of channel N's stored fan curve or of extra curve M: temperature (°C, 1/32 °C steps), speed (RPM), level (%) | Experimental, Blackwell, Ada, Ampere and Turing; points stay in order and inside the limits; levels opt-in |
 | `power_default_w` | Rated TGP value used at boot | Experimental; Blackwell, Ada, Ampere, Turing |
 | `gpc_offset_min/max_mhz`, `memory_offset_min_mhz` | Clock offset range in MHz (NVML scale) | Experimental, reviewed Blackwell and Ada; Ampere and Turing by analogy |
+| `memory_point_K_follows_offset` | Bit 4 of the flag byte of the K-th intermediate memory level (from the lowest) in the clock programming table: 1 when a memory offset is expected to move that level | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); the levels with the bit stay the top ones; idle and top levels not offered |
 | `xbar/sys/vid_min/max_table_mhz`, `dram_min_table_mhz` | Clock offset range in table MHz | Experimental, reviewed Blackwell and Ada; Ampere; Turing `dram_min_table_mhz` only (its XBAR/SYS/VID rows store no range) |
 
 Each selector field uses one complete role name, for example
@@ -559,6 +560,42 @@ minimum is at most 0 and a maximum at least 0. The existing
 `memory_offset_max_mhz`/`dram_max_table_mhz` ceiling keeps its hardware-validated
 status. Ada and Ampere rows are named by their GV HAL position (see [Ada fields](#ada-fields)
 and [Ampere fields](#ampere-fields)).
+
+### Memory levels that follow the offset (`memory_point_K_follows_offset`, opt-in)
+
+The DRAM row of the clocks table (C+0x08) names a run of entries in the clock
+programming table (C+0x0c; version 0x40 on Ada and Ampere, 0x50 on GB20x, an 8-byte
+header): one per memory clock the performance states use, rising, each starting with
+a flag byte (0x03 or 0x13) and the clock in MHz (u16). Bit 4 of the flag byte is set
+on the top memory levels of every image whose entries take this shape (all but the
+passive RTX A40; it is also set on the GPC and XBAR entries) and never on the 405 and
+810 MHz idle levels. GSP-RM 615.78.08 decodes it as a per-entry
+boolean; the code that applies an offset was not traced.
+
+- **What a memory offset does (inferred).** The offset seems to move only the levels
+  with the bit. An offset that takes the memory below the highest level without it
+  drops the memory to a lower stored level instead of running in between. On an RTX
+  3050 Laptop GPU (levels 405, 810, 5501 and 6001 MHz, only 6001 with the bit) the
+  memory ran down to 5501 MHz with a -500 MHz offset (table scale) and left for the
+  810 MHz level below that; larger offsets crashed. An RTX 5090 (levels 7001, 13801
+  and 14001 MHz, the top two with the bit) ran continuously down to 10801 MHz with a
+  -3000 MHz offset (table scale); its next lower level is 6800 MHz further down.
+  Some laptop images (RTX 3060, 3070 and 3080 Laptop GPU) ship their intermediate
+  level with the bit set.
+- **Fields.** One 0/1 field per level between the 810 MHz idle level and the top
+  level, numbered from the lowest; its label names the clock. Setting it should let
+  the offset move that level too, so the memory can run between it and the next lower
+  level; lower the memory offset floor (`memory_offset_min_mhz`) as well for larger
+  offsets. The levels with the bit stay the top ones, so a level can take the bit only
+  when the one above has it and lose it only when the one below does not (one ordering
+  group: change several together). Each write keeps the other flag bits, goes to every
+  image chain and repairs the checksums (GB20x: object 4's hash). The first Ada and
+  Ampere data image, which holds this table, ends with x86 filler (`2e 8b c0`) and its
+  checksum byte on most corpus images (the others use the 0xff padding); that tail is
+  accepted as a checksum slot.
+- **Not covered.** Turing (version 0x35, another flag bit, signed digest list), images
+  whose table holds another shape (the passive RTX A40) and the idle and top levels.
+  Changing the memory clocks themselves is not offered. Not hardware-tested.
 
 ### Joint validation
 

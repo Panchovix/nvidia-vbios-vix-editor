@@ -1372,6 +1372,53 @@ class NotebookLayoutTests(unittest.TestCase):
         self.assertIn('unrecognized fan channel list', [d['message'] for d in report['diagnostics']])
 
 
+class DramPointTests(unittest.TestCase):
+    """The DRAM entries of a clock programming table (structure.dram_points)."""
+
+    @staticmethod
+    def table(points, version=0x40):
+        # 8-byte header (version, header size, entry size 3, count), then flag byte + u16 MHz per entry.
+        blob = bytearray((version, 8, 3, len(points) + 1, 0, 0, 0, 0))
+        blob += bytes(3)  # an unrelated entry 0
+        for flags, mhz in points:
+            blob += bytes((flags,)) + struct.pack('<H', mhz)
+        return bytes(blob)
+
+    def test_reviewed_shape_and_refusals(self):
+        from nvidia_vbios.rom.errors import FormatError
+        from nvidia_vbios.rom.structure import dram_points
+        stock = [(0x03, 405), (0x03, 810), (0x03, 5501), (0x13, 6001)]
+        result = dram_points(self.table(stock), 0, 1, 4, 0x40)
+        self.assertEqual([(p['index'], p['flags'], p['mhz']) for p in result['points']],
+                         [(1, 0x03, 405), (2, 0x03, 810), (3, 0x03, 5501), (4, 0x13, 6001)])
+        self.assertEqual((result['points'][0]['offset'], result['size']), (11, 8 + 3 * 5))
+        self.assertEqual(len(dram_points(self.table(stock, 0x50), 0, 1, 4, 0x50)['points']), 4)
+        bad = {'version': (self.table(stock), 0x50),
+               'other flag byte': (self.table([(0x03, 405), (0x03, 810), (0x01, 5501), (0x13, 6001)]), 0x40),
+               'not rising': (self.table([(0x03, 405), (0x03, 810), (0x03, 6001), (0x13, 5501)]), 0x40),
+               'idle level with the bit': (self.table([(0x03, 405), (0x13, 810), (0x13, 5501), (0x13, 6001)]), 0x40),
+               'bit not on a top run': (self.table([(0x03, 405), (0x03, 810), (0x13, 5501), (0x03, 6001)]), 0x40),
+               'no level with the bit': (self.table([(0x03, 405), (0x03, 810), (0x03, 5501), (0x03, 6001)]), 0x40)}
+        for name, (blob, version) in bad.items():
+            with self.subTest(case=name), self.assertRaises(FormatError):
+                dram_points(blob, 0, 1, 4, version)
+        # A table that claims more entries (or a header) than the image holds is refused, not read past.
+        long = bytearray(self.table(stock))
+        long[3] = 12
+        for name, (blob, at) in {'entries past the end': (bytes(long), 0),
+                                 'header past the end': (bytes(4), 0)}.items():
+            with self.subTest(case=name), self.assertRaises(FormatError):
+                dram_points(blob, at, 1, 4, 0x40)
+
+    def test_synthetic_images_offer_no_memory_level_field(self):
+        # The synthetic images store no clock programming table: no field and no diagnostic.
+        for image in (from_bytes(synthetic_blackwell(fans=True)), from_bytes(synthetic_rom(copies=2, fans=2)),
+                      from_bytes(synthetic_rom(family='ampere', fans=2))):
+            report = inspect_image(image)
+            self.assertFalse([f['key'] for f in report['fields'] if f['key'].startswith('memory_point_')])
+            self.assertFalse([d for d in report['diagnostics'] if d.get('resolver') == 'dram_offset_points'])
+
+
 class FanCoolerTests(unittest.TestCase):
     """Fan channels across the cooler, policy and mapping tables, and the PWM frequency."""
 

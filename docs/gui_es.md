@@ -119,7 +119,11 @@ funcionando sin las dependencias gráficas.
 Los offsets de memoria Blackwell reconocidos se editan en **MHz** en la escala
 NVML/Linux, que es el doble del valor guardado en la tabla. Cada fila de memoria
 muestra también el valor que ven las herramientas de Windows como MSI Afterburner
-(la mitad); el offset del núcleo es igual en ambas. La representación de tabla
+(la mitad); el offset del núcleo es igual en ambas. Con los campos avanzados, **El
+clock de memoria de N MHz sigue el offset de memoria** (Blackwell, Ada y Ampere;
+experimental, sin probar en hardware) debería hacer que un offset de memoria negativo
+también mueva un nivel de memoria intermedio, en vez de que la memoria caiga a un clock
+de reposo bajo él (el significado del bit que activa es inferido); baja también el piso del offset de memoria. La representación de tabla
 queda en `nvbios fields`. Las corrientes guardadas en mA (entrada de 12 V y OCP de
 salida) se muestran y escriben en A, con hasta tres decimales; la GUI las convierte
 de forma exacta y el backend, la CLI y el manifiesto siguen en mA. La frecuencia

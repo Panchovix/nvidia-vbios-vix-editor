@@ -14,7 +14,7 @@ No board serial, complete-file size, table-address, or source-hash pins.
 import copy
 import hashlib
 import math
-from .structure import fan_curve, scan_images, image_chains, parse_bit, read, vfe_range
+from .structure import dram_points, fan_curve, scan_images, image_chains, parse_bit, read, vfe_range
 from .errors import FormatError
 
 SOURCE = 'https://github.com/OE4T/linux-nvgpu/blob/patches-rel-36/drivers/gpu/nvgpu/include/nvgpu/bios.h'
@@ -489,6 +489,23 @@ class TableRom:
             rows.append(dict(row=i, domain=domain, minimum_mhz=lo, maximum_mhz=hi,
                              minimum_offset=row + 3, maximum_offset=row + 5))
         return rows
+
+    def dram_points(self):
+        """Ada and Ampere: the DRAM entries of the clock programming table (C+0x0c, version 0x40).
+
+        See structure.dram_points; the clocks table DRAM row names them. Turing (version
+        0x35, another flag bit, signed digest list) is not covered.
+        """
+        if self.family not in ('ada', 'ampere'):
+            raise FormatError('DRAM clock points are reviewed on Ada and Ampere only')
+        rows = [r for r in self.clock_ranges() if r['domain'] == 'DRAM']
+        if len(rows) != 1:
+            raise FormatError('no single DRAM clock row')
+        row = rows[0]['minimum_offset'] - 3
+        at = self.pointer('C', 0x0C)
+        result = dram_points(self.blob, at, self.blob[row + 1], self.blob[row + 2], 0x40)
+        self.owner(at, result['size'])
+        return result
 
     def _turing_clock_ranges(self, at):
         """Rows of the Turing clocks table v0x35, gated by usage, ordering byte and fixed bytes.

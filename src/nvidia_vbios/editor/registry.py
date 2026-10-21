@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 import struct
 from ..rom.blackwell import BlackwellRom, FAN_POLICY_FLAG_OFFSET
+from ..rom.structure import DRAM_POINT_OFFSET_BIT
 from ..rom.errors import VbiosError, FormatError
 from ..rom.image import metadata
 from ..rom.tables import SOURCE, TableRom
@@ -2347,6 +2348,78 @@ def fan_zero_rpm_temperatures(image, parser):
                        'bits on Ada and Ampere' if not flagged else
                        f'read-only: the upper temperature of the {owner} fan policy entry is above 110 C, outside '
                        'the reviewed shape'))
+    return result
+
+
+DRAM_POINT_FIRMWARE_EVIDENCE = {
+    'kind': 'static-firmware-analysis',
+    'source': 'GSP-RM firmware 615.78.08 (gsp_ga10x.bin), clock programming table parsers (versions 0x40 and 0x50)',
+    'observation': 'the flag byte of each clock programming entry is decoded bit by bit and bit 4 becomes a '
+                   'per-entry boolean; the code that applies a clock offset to the entries was not traced, so '
+                   'that bit 4 marks the entries an offset moves is inferred', 'set_tested': False}
+DRAM_POINT_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'Ada, Ampere and GB20x VBIOS corpus',
+    'observation': 'the clocks table DRAM row names the DRAM entries of the clock programming table: one per memory '
+                   'clock the performance states use, rising, flag byte 0x03 or 0x13; bit 4 is set on the top '
+                   'memory levels of every image whose entries take this shape (all but the passive RTX A40) and '
+                   'never on the 405 and 810 MHz idle levels; four GA104/GA106 laptop images (RTX 3060, 3070 and '
+                   '3080 Laptop GPU) also set it on their intermediate level, which the other images leave clear'}
+DRAM_POINT_OWNER_EVIDENCE = {
+    'kind': 'owner-report', 'set_tested': False,
+    'source': 'RTX 3050 Laptop GPU owner (Windows), memory offset under load',
+    'observation': 'down to a -500 MHz offset the memory ran between 6001 and 5501 MHz; below that it left the '
+                   '6001 MHz level for the 810 MHz one instead of running lower, and larger offsets crashed; '
+                   '5501 MHz is the only level between them, stored without bit 4'}
+
+
+DRAM_POINT_SEMANTICS = 'stored-dram-point-offset'
+
+
+@registry.register
+def dram_offset_points(image, parser):
+    """Ada, Ampere and GB20x: whether a memory offset moves each intermediate memory level.
+
+    Bit 4 (DRAM_POINT_OFFSET_BIT) of the flag byte of each DRAM entry of the clock
+    programming table (parser.dram_points). Stock images set it on the top memory levels
+    only, and an offset that takes the memory below the highest level without it drops the
+    memory to a lower stored level (inferred from the corpus and an owner report). One flag
+    per level between the 810 MHz idle level and the top level: setting it lets the offset
+    move that level too. The levels with the bit stay the top ones (one ordering group), the
+    idle levels and the top level are not offered, and each write keeps the other flag bits,
+    in every image chain. Opt-in; not hardware-tested.
+    """
+    if not isinstance(parser, (BlackwellRom, TableRom)) or (isinstance(parser, TableRom) and turing(parser)):
+        return []
+    try:
+        table = parser.dram_points()
+    except FormatError:
+        return []  # no reviewed clock programming table: nothing to offer
+    points = table['points'][2:-1]
+    moved = [bool(p['flags'] & DRAM_POINT_OFFSET_BIT) for p in table['points'][2:]]
+    writable = can_edit(image, parser)
+    result = []
+    for k, point in enumerate(points):
+        lo = 1 if k and moved[k - 1] else 0
+        hi = 1 if moved[k + 1] else 0
+        offsets, layout = chain_copies(parser, [point['offset']], 1, (
+            (0, (bytes([point['flags'] & ~DRAM_POINT_OFFSET_BIT]),)),
+            (1, (bytes([point['flags'] | DRAM_POINT_OFFSET_BIT]),))))
+        result.append(field(
+            f'memory_point_{k + 1}_follows_offset', f"Memory clock {point['mhz']} MHz follows the memory offset",
+            'flag', 1 if moved[k] else 0, lo if writable else None, hi if writable else None, writable,
+            [dict(DRAM_POINT_FIRMWARE_EVIDENCE), dict(DRAM_POINT_CORPUS_EVIDENCE), dict(DRAM_POINT_OWNER_EVIDENCE)],
+            offsets=offsets if writable else (), encoding='<B' if writable else '', scale=1,
+            layout=layout if writable else (), ordering_group='dram-points' if writable else None,
+            encoding_bounds=(0, 1) if writable else None,
+            writable_status=None if writable else 'unsupported', experimental=True, opt_in=True,
+            value_semantics=DRAM_POINT_SEMANTICS, memory_mhz=point['mhz'],
+            reason=f"experimental, opt-in: bit 4 of the flag byte of the {point['mhz']} MHz memory level in the clock "
+                   'programming table; stock images set it on the top memory levels, and a memory offset is '
+                   'expected to move only the levels with it (inferred): with it clear, an offset that takes the '
+                   'memory below this level drops it to the next lower level instead (on one RTX 3050 Laptop GPU to '
+                   '810 MHz); setting it should let the offset move this level too, so lower the memory offset '
+                   'floor as well to run the memory between this level and the next lower one; the levels with '
+                   'it stay the top ones; not hardware-tested'))
     return result
 
 

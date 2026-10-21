@@ -44,6 +44,11 @@ def fan_curves(channels, extras, skip=()):
             if (key := f'{owner}_curve_{k}_{unit}') not in skip]
 
 
+def dram_points(count):
+    """Keys of the intermediate memory levels whose offset bit is offered (lowest first)."""
+    return [f'memory_point_{k}_follows_offset' for k in range(1, count + 1)]
+
+
 def zero_rpm_temps(channels, extras):
     """Zero RPM lower/upper temperature keys of the channel entries and the extra curves."""
     owners = [f'fan_{n}' for n in range(1, channels + 1)] + [f'fan_extra_{m}' for m in range(1, extras + 1)]

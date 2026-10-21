@@ -106,7 +106,12 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    Recognized Blackwell memory offsets are edited in **MHz** on the NVML/Linux
    scale, which is twice the stored table value. Each memory row also shows the
    value Windows tools such as MSI Afterburner display (half the MHz value); the
-   core offset is the same on both. The overlapping table representation is not
+   core offset is the same on both. With the advanced fields, **Memory clock N MHz
+   follows the memory offset** (Blackwell, Ada and Ampere; experimental, not
+   hardware-tested) should let a negative memory offset move an intermediate memory
+   level too, instead of the memory dropping to a low idle clock below it (an inferred
+   meaning of the bit it sets); lower the memory
+   offset floor as well. The overlapping table representation is not
    shown (it stays in `nvbios fields`). Current fields stored in mA (12 V input
    current, output OCP) are shown and typed in A with up to three decimals; the
    GUI converts them exactly, and the backend, CLI and manifest stay in mA. The

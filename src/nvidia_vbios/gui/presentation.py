@@ -28,6 +28,8 @@ FAN_CURVE_KEY = re.compile(r'fan_(\d+|extra_(\d+))_curve_(\d)_(temp_c|rpm|pct)')
 # The zero RPM temperature pair of a channel's or an extra curve's policy entry.
 FAN_ZERO_RPM_TEMP_KEY = re.compile(r'fan_(\d+|extra_(\d+))_zero_rpm_(low|high)_temp_c')
 FAN_CURVE_UNITS = ('temp_c', 'rpm', 'pct')
+# Whether a memory offset moves a stored intermediate memory level (numbered from the lowest).
+MEMORY_POINT_KEY = re.compile(r'memory_point_(\d+)_follows_offset')
 REASON_KEYS = {
     'generic OCP mapping unknown; reviewed per-rail output ceilings use *_output_ocp_max_ma': 'reason.generic_ocp',
     'generic current mapping unknown; the reviewed 12 V input policy uses input_current_*_ma': 'reason.generic_input',
@@ -95,6 +97,8 @@ def field_label(field, language='en'):
         if extra:
             return text(f'field.fan_extra_zero_rpm_{side}_temp_c', curve=extra)
         return text(f'field.fan_zero_rpm_{side}_temp_c', fan=owner)
+    if MEMORY_POINT_KEY.fullmatch(key) and field.get('memory_mhz') is not None:
+        return text('field.memory_point_follows_offset', mhz=field['memory_mhz'])
     for domain in ('xbar', 'sys', 'vid'):
         for side in ('max', 'min'):
             if key == f'{domain}_{side}_table_mhz':
@@ -183,7 +187,8 @@ RESOLVER_SECTIONS = {'equation_roles': 'voltage', 'evaluated_vmin': 'voltage',
                      'fixed_voltage': 'voltage', 'rail_follow_ov': 'voltage',
                      'power': 'power', 'slot_power': 'power', 'connector_power': 'power',
                      'connector_sum_power': 'power', 'output_ocp': 'current', 'input_current': 'current',
-                     'memory': 'clocks', 'fans': 'fans', 'fan_zero_rpm': 'fans', 'fan_zero_rpm_temperatures': 'fans'}
+                     'memory': 'clocks', 'fans': 'fans', 'fan_zero_rpm': 'fans', 'fan_zero_rpm_temperatures': 'fans',
+                     'dram_offset_points': 'clocks'}
 
 
 def unsupported_notes(report, language='en'):
@@ -235,7 +240,8 @@ SECTIONS = (
                  'msvdd_vmin_equation_max_mv', 'msvdd_alt_equation_max_mv')),
     ('clocks', ('gpc_offset_max_mhz', 'gpc_offset_min_mhz', 'memory_offset_max_mhz', 'memory_offset_min_mhz',
                 'xbar_max_table_mhz', 'xbar_min_table_mhz', 'sys_max_table_mhz', 'sys_min_table_mhz',
-                'vid_max_table_mhz', 'vid_min_table_mhz')),
+                'vid_max_table_mhz', 'vid_min_table_mhz') +
+               tuple(f'memory_point_{k}_follows_offset' for k in range(1, 8))),
     ('current', ('input_current_rated_ma', 'input_current_max_ma', 'input_current_policy7_limit_ma',
                  'nvvdd_output_ocp_rated_ma', 'nvvdd_output_ocp_max_ma',
                  'msvdd_output_ocp_rated_ma', 'msvdd_output_ocp_max_ma', 'slot_current_threshold_rated_ma',
