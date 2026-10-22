@@ -11,24 +11,33 @@ import struct
 import tempfile
 import time
 from ..rom import BiosImage, VbiosError
-from ..rom.blackwell import BlackwellRom
+from ..rom.blackwell import BlackwellRom, LPWR_TABLES, PERF_CF_CONTROLLERS as PERF_CF_TABLE, PERF_CF_POLICIES
 from ..rom.image import backend, inspect_image
+from ..rom.tables import checksum_tail
 from .registry import (registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
                        fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
-                       fixed_voltage, dram_offset_points, gpc_curve_offset, VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS,
-                       FIXED_SEMANTICS, DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS)
+                       fixed_voltage, dram_offset_points, gpc_curve_offset, max_operating_temperature,
+                       factory_clocks, perf_cf_controllers, lpwr_features, VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS,
+                       FIXED_SEMANTICS, DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS, MAX_TEMP_SEMANTICS,
+                       FACTORY_OFFSET_SEMANTICS, ADVANCED_SEMANTICS, PERF_CF_CONTROLLERS, fxp_percent)
 
 # Reviewed resolvers whose bindings are canonical for range and joint checks.
 REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
                       fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
-                      fixed_voltage, dram_offset_points, gpc_curve_offset)
+                      fixed_voltage, dram_offset_points, gpc_curve_offset, max_operating_temperature, factory_clocks,
+                      perf_cf_controllers, lpwr_features)
 # Fields that change otherwise preserved rail bytes, each only through its reviewed binding:
 # the evaluated VMIN equation, the XOC-style NVVDD REL/ALT selectors and the fixed Ada/Turing
 # REL/ALT values.
 RAIL_EXCEPTIONS = (VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS)
 # Layout fields whose bytes no other check rereads through the canonical parser: only the
 # reviewed complete binding (offsets, encoding, scale and layout) may write them.
-COMPLETE_BINDING_SEMANTICS = RAIL_EXCEPTIONS + (DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS)
+COMPLETE_BINDING_SEMANTICS = RAIL_EXCEPTIONS + (DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS, MAX_TEMP_SEMANTICS,
+                                                 FACTORY_OFFSET_SEMANTICS) + ADVANCED_SEMANTICS
+# GB20x Advanced section: the objects of its tables (BIT P offset -> object), which change only at
+# the bytes the canonical Advanced bindings declare.
+ADVANCED_OBJECTS = {0xA8: PERF_CF_TABLE[-1], 0xAC: PERF_CF_POLICIES[-1],
+                    **{pointer: owner for pointer, owner, *_ in LPWR_TABLES.values()}}
 # The only requests that may change otherwise preserved power-row values:
 # canonical key -> preserved row attribute it may change. 'linked_limit' is
 # the opaque policy7 copy of the 12 V input limit, limited to its own bytes.
@@ -46,7 +55,8 @@ PRESERVATION_EXCEPTIONS = {'power_min_w': 'minimum_raw', 'power_default_w': 'def
                            **{f'connector_{n}_current_threshold_rated_ma': 'default_raw' for n in range(1, 5)}}
 # Fields bound to a top-level override profile -> its (policy, field) entries.
 # The tail of the first Ada/Ampere data image (the clock programming table's image) on most
-# corpus images: x86 filler (cs: mov eax, eax) and then the checksum byte; others use 0xff padding.
+# corpus images: x86 filler (cs: mov eax, eax) and then the checksum byte; others end with a
+# tail checksum_tail accepts.
 X86_FILLER_TAIL = bytes.fromhex('2e8bc0') * 6 + b'\x8b'
 TOP_PROFILE_ENTRIES = {'power_max_w': {(2, 'maximum'), (7, 'maximum'), (8, 'maximum')},
                        'power_default_w': {(8, 'default')}, 'board_fixed_rated_w': {(2, 'default'), (7, 'default')},
@@ -163,6 +173,20 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     for key in changes:
         if key in available and key in reviewed and not reviewed[key].descriptor['editable']:
             raise VbiosError('FIELD_READ_ONLY', f'{key} is read-only', details={'field': reviewed[key].descriptor})
+    # A field that depends on a switch (depends_on, the Advanced section) changes only while the
+    # switch has the required value, stored or requested in the same edit; its stored value may
+    # always be requested again.
+    for key in changes:
+        dependency = reviewed[key].descriptor.get('depends_on') if key in available and key in reviewed else None
+        if not dependency or _amount(changes[key], key) == Decimal(str(reviewed[key].descriptor['current'])):
+            continue
+        switch = dependency['field']
+        stored = reviewed[switch].descriptor['current'] if switch in reviewed else None
+        value = changes.get(switch, stored)
+        if value is None or _amount(value, switch) != Decimal(str(dependency['value'])):
+            raise VbiosError('DEPENDENT_FIELD_DISABLED', f"{key} changes only while {switch} is "
+                             f"{dependency['value']}; set {switch} to {dependency['value']} in the same edit",
+                             details={'field': key, 'bounds': None, 'depends_on': dict(dependency)})
     # A channel count adds or removes per-channel fan fields, changes the limits every extra
     # curve has to fit and the policy entries fan_zero_rpm covers: change it and the fan
     # limits, curves or zero-RPM flag and temperatures in separate edits.
@@ -278,8 +302,15 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
             if isinstance(parser, BlackwellRom):
                 if any(o['data'] <= end - 1 < o['data'] + o['size'] for o in parser.objects + parser.legacy_objects):
                     raise VbiosError('UNSUPPORTED_CHECKSUM_LAYOUT', 'checksum overlaps a hashed object')
-            elif target[end - 16:end - 1] != b'\xff' * 15 and target[end - 20:end - 1] != X86_FILLER_TAIL:
-                raise VbiosError('UNSUPPORTED_CHECKSUM_LAYOUT', 'data image lacks reviewed checksum padding')
+            else:
+                # The tail is read from the source; a field may write neither it nor the checksum byte.
+                tail = checksum_tail(parser.blob, end, parser.family)
+                if tail is None and parser.blob[end - 20:end - 1] == X86_FILLER_TAIL:
+                    tail = len(X86_FILLER_TAIL)
+                if tail is None:
+                    raise VbiosError('UNSUPPORTED_CHECKSUM_LAYOUT', 'data image lacks reviewed checksum padding')
+                if any(at in allowed for at in range(end - 1 - tail, end - 1)):
+                    raise VbiosError('CONFLICTING_FIELDS', 'explicit field overlaps the checksum padding')
             if end - 1 in allowed:
                 raise VbiosError('CONFLICTING_FIELDS', 'explicit field overlaps the checksum byte')
             target[end - 1] = (target[end - 1] - sum(target[start:end])) & 255
@@ -611,6 +642,52 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
         if any(image.blob[at] != output.blob[at] and at not in fan_allowed
                for start, size in regions for at in range(start, start + size)):
             raise VbiosError('PRESERVED_FIELD_CHANGED', 'fan table bytes must be preserved')
+    # GB20x: the object holding the thermal policy table (0x1b) and the one holding the factory
+    # clock record (0x26) change only at the bytes the canonical max_operating_temp_c and
+    # factory_gpc_offset_mhz bindings declare, whatever the field registry, decoded or not.
+    if isinstance(parser, BlackwellRom):
+        for semantics, pointer, owner, noun in ((MAX_TEMP_SEMANTICS, 0x50, 0x1B, 'thermal policy table'),
+                                                (FACTORY_OFFSET_SEMANTICS, 0x98, 0x26, 'factory clock record')):
+            try:
+                obj = parser.object_for(parser.pointer('P', pointer))
+            except FormatError:
+                continue
+            if obj['id'] != owner:
+                continue
+            declared = {at for binding in canonical.values() if binding.descriptor['value_semantics'] == semantics
+                        for start in binding.offsets for at in range(start, start + struct.calcsize(binding.encoding))}
+            if any(image.blob[at] != output.blob[at] and at not in declared
+                   for at in range(obj['data'], obj['data'] + obj['size'])):
+                raise VbiosError('PRESERVED_FIELD_CHANGED', f'{noun} bytes must be preserved')
+        # The objects of the PERF_CF and LPWR tables change only at the bytes the canonical Advanced
+        # bindings declare (on the RTX PRO 4000 SFF object 0x60 also covers the policy table header).
+        declared = {at for binding in canonical.values() if binding.descriptor['value_semantics'] in ADVANCED_SEMANTICS
+                    for start in binding.offsets for at in range(start, start + struct.calcsize(binding.encoding))}
+        for pointer, owner in ADVANCED_OBJECTS.items():
+            try:
+                at = parser.pointer('P', pointer)
+            except FormatError:
+                continue
+            for obj in parser.objects:
+                if obj['id'] == owner and obj['data'] <= at < obj['data'] + obj['size'] and any(
+                        image.blob[i] != output.blob[i] and i not in declared
+                        for i in range(obj['data'], obj['data'] + obj['size'])):
+                    raise VbiosError('PRESERVED_FIELD_CHANGED', f'object {owner:#x} bytes (PERF_CF or LPWR table) '
+                                     'must be preserved')
+        # PERF_CF: a reviewed utilization controller whose target was below its jump threshold keeps it so.
+        try:
+            source_cf, target_cf = parser.perf_cf(), rebuilt.perf_cf()
+        except FormatError:
+            source_cf = target_cf = None
+        if source_cf is not None and target_cf is not None:
+            for index, part, *_ in PERF_CF_CONTROLLERS:
+                left, right = (t['controllers']['entries'][index] for t in (source_cf, target_cf))
+                if (fxp_percent(left['target_raw']) < fxp_percent(left['jump_raw']) and
+                        not fxp_percent(right['target_raw']) < fxp_percent(right['jump_raw'])):
+                    keys = [k for k in (f'perf_cf_{part}_target_pct', f'perf_cf_{part}_jump_pct') if k in changes]
+                    raise VbiosError('OUT_OF_BOUNDS', f'the {part} utilization target must stay below its jump '
+                                     'threshold', details={'field': keys[0] if keys else None, 'bounds': None,
+                                                           'joint_fields': sorted(keys)})
     before, after = inspect_image(image), inspect_image(output)
     if before['versions'] != after['versions']:
         raise VbiosError('IDENTITY_CHANGED', 'editing BIOS identity is unsupported')

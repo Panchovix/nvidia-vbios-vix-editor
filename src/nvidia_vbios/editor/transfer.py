@@ -4,19 +4,24 @@ from decimal import Decimal
 
 from ..rom import VbiosError
 from .api import edit
-from .sections import SECTION_NAMES, field_section, technical_field_keys
+from .sections import IMPORT_SECTION_NAMES, field_section, technical_field_keys
 
-# The sections one ROM can give another; 'other' holds no editable field.
-IMPORT_SECTIONS = SECTION_NAMES[:-1]
+# The sections one ROM can give another: 'other' holds no editable field, and the Advanced section
+# (PERF_CF and LPWR tuning) is never copied between ROMs.
+IMPORT_SECTIONS = IMPORT_SECTION_NAMES
 NOTE = ('Values are copied as stored numbers, not adapted to this board: fan speeds, power and current limits and '
         "voltage limits from another board can exceed this board's hardware (fans rated for a lower speed, fewer "
-        'power connectors, another power stage or GPU).')
+        'power connectors, another power stage or GPU), and a clock offset from another board may not be stable '
+        'on this one.')
 # Descriptor attributes that must agree for a key to mean the same quantity in both ROMs: a memory point is
 # numbered among its own ROM's memory levels, a notebook board power is the TGP the platform requests, and a
 # voltage value is read from an equation of its type (and of its sharing, _equations).
 IDENTITY = ('units', 'memory_mhz', 'notebook_tgp', 'equation_type')
 # The fan channel count describes this board's fans: never copied.
 BOARD_KEYS = frozenset(('fan_channels',))
+# The GB20x maximum operating temperature: each product has its own. Never copied, and never listed as
+# unchanged, so a value typed here stays.
+PRODUCT_KEYS = frozenset(('max_operating_temp_c',))
 # One fan curve: the fan limits and each point's temperature, speed and level (three ordering groups in the editor).
 FAN_CURVE = re.compile(r'fan_(\d+_(min|max)_(rpm|pct)|(\d+|extra_\d+)_curve_\d+_(temp_c|rpm|pct))')
 # Copies of one limit that the editor keeps as separate fields.
@@ -82,16 +87,16 @@ def import_fields(target, donor, sections, *, include_opt_in=False, dry_run=Fals
 
     Both images must be of the same family and format; another device of the family only adds a
     warning. Fields hidden as aliases or placeholders are not considered, nor opt-in fields unless
-    include_opt_in, nor the fan channel count. A field is proposed when it is editable in both
-    images, means the same quantity in both and its donor value is inside the target's bounds,
-    checked as edit() checks them: the encoding bounds when partners of its ordering group are
-    proposed with it, else its own. A dependent set (_set) comes whole from the donor: when one of
-    its fields differs but is left out, the others are held back. The proposal goes through edit()
-    as one request, so the cross-field checks see the final set; a unit the editor refuses (_unit)
-    is dropped whole and reported, never applied in part. result is the verified EditResult of the
-    applied values, or None when none is applied; report lists them (`changes`, `applied`), every
-    `skipped` field with its reason, the `unchanged` keys (editable here, equal in both) and
-    `warnings`.
+    include_opt_in, nor the fan channel count or the maximum operating temperature (BOARD_KEYS,
+    PRODUCT_KEYS). A field is proposed when it is editable in both images, means the same quantity
+    in both and its donor value is inside the target's bounds, checked as edit() checks them: the
+    encoding bounds when partners of its ordering group are proposed with it, else its own. A
+    dependent set (_set) comes whole from the donor: when one of its fields differs but is left
+    out, the others are held back. The proposal goes through edit() as one request, so the
+    cross-field checks see the final set; a unit the editor refuses (_unit) is dropped whole and
+    reported, never applied in part. result is the verified EditResult of the applied values, or
+    None when none is applied; report lists them (`changes`, `applied`), every `skipped` field with
+    its reason, the `unchanged` keys (editable here, equal in both) and `warnings`.
     """
     sections = [sections] if isinstance(sections, str) else list(dict.fromkeys(sections))
     unknown = [name for name in sections if name not in IMPORT_SECTIONS]
@@ -126,7 +131,7 @@ def import_fields(target, donor, sections, *, include_opt_in=False, dry_run=Fals
         same = both and (all(mine.get(name) == other.get(name) for name in IDENTITY) and
                          equations[0].get(key) == equations[1].get(key))
         if both and _amount(mine) == _amount(other):
-            if same and editable[0] and not opted_out:
+            if same and editable[0] and not opted_out and key not in PRODUCT_KEYS:
                 unchanged.append(key)
             continue
         if (opted_out or not any(editable)) and not both:
@@ -143,6 +148,8 @@ def import_fields(target, donor, sections, *, include_opt_in=False, dry_run=Fals
             reason = 'absent_in_target'
         elif key in BOARD_KEYS:
             reason = 'board_specific'
+        elif key in PRODUCT_KEYS:
+            reason = 'product_specific'
         elif not editable[1] or other['current'] is None:
             reason = 'read_only_in_donor'
         elif not editable[0]:

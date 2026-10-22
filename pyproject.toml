@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nvidia-vbios-editor"
-version = "0.1.26"
+version = "0.1.28"
 description = "Offline NVIDIA VBIOS inspection/editing library, JSON CLI and GTK editor"
 readme = "README.md"
 license = "GPL-3.0-or-later"

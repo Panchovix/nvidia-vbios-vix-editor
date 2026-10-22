@@ -68,7 +68,15 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    such as a new default and ceiling together, because the order
    minimum <= default <= maximum is checked on the combined result. The 12 V input
    current values are stored policy values, not hardware-safe ratings; connector,
-   slot and cable limits still apply. **Show advanced XOC-style fields** (off by
+   slot and cable limits still apply. **Max operating temperature** (Blackwell, in the
+   Power card; experimental, not hardware-tested) is the temperature limit the driver
+   reports as the GPU's maximum operating temperature (in `nvidia-smi`, the current
+   temperature plus T.Limit): it goes down to 40 °C and up to 3 °C above the product's
+   stock value (90 °C on an RTX 5090, 88 °C on an RTX 5080), in steps of 1/32 °C, and it
+   is read-only on XOC-style ROMs, where that limit is disabled. A lower value is expected
+   to make the driver slow the GPU sooner, and a higher one leaves less thermal margin. The
+   RTX 5080 Laptop GPU ROM also stores a second limit of the same kind (87 °C) whose role
+   was not traced, so raising the value there may have no effect. **Show advanced XOC-style fields** (off by
    default) reveals opt-in fields such as the rated power of the fixed board
    policies 2/7, the hardware thresholds (slot current; on Ampere and Turing
    the connector current; on Ada the NVVDD output power and the 12 V input
@@ -106,10 +114,18 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    Recognized Blackwell memory offsets are edited in **MHz** on the NVML/Linux
    scale, which is twice the stored table value. Each memory row also shows the
    value Windows tools such as MSI Afterburner display (half the MHz value); the
-   core offset is the same on both. With the advanced fields, **GPC curve offset**
-   (Blackwell, Ada and Ampere; experimental, not hardware-tested; -500..+500 MHz)
-   is expected to shift the stock core VF curve by that many MHz at every voltage, on
-   every boot, under any tool's offset; 0 puts the stock bytes back. **Memory clock N MHz
+   core offset is the same on both. **Factory GPC offset (vendor overclock)** (Blackwell;
+   experimental, not hardware-tested; shown without the advanced fields) is the factory
+   overclock a board vendor stores in the ROM (+30 to +195 MHz on the factory-OC ROMs
+   reviewed); it takes -500 to +500 MHz in whole MHz, only on ROMs that store one, and is
+   read-only on the others (Founders Edition, reference, laptop and RTX PRO ROMs). A
+   negative value lowers the clock, values far from the stock one can make the card
+   unstable, and whether a tuning tool's GPC offset adds to it or replaces it was not
+   traced. The **Factory rated boost clock** in the read-only list stays as stored. With
+   the advanced fields, **GPC curve offset** (Blackwell, Ada and Ampere; experimental, not
+   hardware-tested; -500..+500 MHz) is expected to shift the stock core VF curve by that
+   many MHz at every voltage, on every boot, under any tool's offset; 0 puts the stock
+   bytes back. It is not the factory GPC offset: on a factory-OC ROM both apply. **Memory clock N MHz
    follows the memory offset** (Blackwell, Ada and Ampere; experimental) was meant to
    let a negative memory offset move an intermediate memory level too, instead of the
    memory dropping to a low idle clock below it; on the one card tested (an RTX 3050
@@ -185,8 +201,9 @@ Keyboard: `Ctrl+O` open, `Ctrl+Enter` verify now, `Ctrl+S` save copy, `Ctrl+R`
 reset, `Ctrl+I` import from another ROM, `Ctrl+Q` close. Tab navigates native
 controls. The default 760×920 window
 is a single column: a device card (product, PCI ID, BIOS version, integrity),
-then Power, Voltage, Clock offsets, Current and protection, and Fans cards, with
-read-only fields grouped in a collapsed section after them. When part of the image
+then Power, Voltage, Clock offsets, Current and protection, and Fans cards, on
+Blackwell the collapsed **Advanced** section, and the read-only fields grouped in a
+collapsed section after them. When part of the image
 uses a layout the editor does not support yet (for example the fan tables of a few
 images), the matching card says that some of its fields are not shown; the
 heading appears even when no field is left. The change bar stays
@@ -194,6 +211,29 @@ visible below the scrolling fields. Experimental fields carry a badge.
 Load/inspection, preview generation and save run outside the GTK main thread.
 Generation checks discard results from earlier opens/resets. Backend errors show
 stable error codes and messages in the status area.
+
+**Advanced: performance controllers and idle power** (Blackwell; collapsed, after the Fans
+card and before the read-only fields; every field experimental and not hardware-tested)
+holds two groups, each in its own card. Under **Clock controllers**, the **Utilization clock
+policy** switch and, for the GPC, DRAM and VID clocks, the **utilization target** and **jump
+threshold** (whole percent; 10 % up to 1 % below the jump threshold, and the target + 1 % up
+to 100 %; to move the target to or above the stored jump threshold, raise the jump threshold
+in the same edit) and the **clock-down** and **clock-up hysteresis** (samples; 0.5x to 4x
+stock down, 1 to 4 up). These tune how the driver raises and lowers clocks with load: a
+lower target raises the clock sooner at partial load, with more power and heat. That the
+driver uses this table on Blackwell is not proven. Under **Idle power saving**, the idle
+power switches, **GR power gating**, **Memory system clock gating, MSCG**,
+**NVDEC/NVENC/OFA/NVJPG power gating**, **DIFR idle display power saving** and, on the RTX
+PRO 4000 SFF and the RTX 5080 Laptop GPU, **GR rail gating**, each **Stock** (as shipped) or
+**Off**, and the **DIFR** and **GR rail gating idle times** (ms or µs, GR rail gating in 10
+µs steps, 0.5x to 4x stock). They are expected to act only at idle or light load (inferred).
+Off costs a little idle power and may avoid idle stutter or flicker; very short idle times
+can cause stutter or, rarely, a black screen at idle. A value that depends on a switch (the
+controller values on the utilization policy, an idle time on its feature) is greyed out,
+with the reason, while that switch is off, including when you turn it off before saving; a
+value typed there goes back to the stored one, and turning the switch back on makes it
+editable again. This section is not behind **Show advanced XOC-style fields**, and **Import
+from ROM…** never copies it.
 
 **Memory (read-only)**, a collapsed section after the read-only fields, shows the
 memory tables of Turing, Ampere, Ada and Blackwell images (`nvbios memory` prints the
@@ -220,8 +260,8 @@ anything, and the comparison leaves the open ROM, the change list and saving unt
 
 **Import from ROM…** (in the change bar) copies values from another ROM of the same family
 into the open one, for example the fan settings of another board: choose the ROM, tick the
-sections (Power, Voltage, Clock offsets, Current and protection, Fans) and, if wanted, the
-advanced XOC-style fields (off by default). The other ROM is read on a worker. Each value that
+sections (Power, Voltage, Clock offsets, Current and protection, Fans; never the Blackwell
+Advanced section) and, if wanted, the advanced XOC-style fields (off by default). The other ROM is read on a worker. Each value that
 differs and that this ROM can take is typed into its row as if you had entered it: it shows in the
 change list, is verified like any other value, and retyping the original value or **Reset
 changes** undoes it. A value you had typed in a chosen section where both ROMs agree goes back to
@@ -237,7 +277,11 @@ reason: not in one of the ROMs, read-only, another quantity in the other ROM (ot
 memory level, notebook or board power layout, or voltage equation, such as REL and ALT that
 follow OV), outside this ROM's range, an advanced field not included, held back with related
 fields, or refused by the editor. Fields read-only in both ROMs are listed only when they hold
-related fields back. The fan channel count describes the board's fans and is never copied.
+related fields back. The fan channel count describes the board's fans and is never copied,
+and neither is the Blackwell **Max operating temperature** (each product has its own); a value
+you typed in it stays. The Blackwell **Factory GPC offset** comes with the Clock offsets when
+both ROMs store one. If the other ROM stores none (a Founders Edition, for example), this ROM
+keeps its own, and a ROM that stores none never gets one.
 Another GPU family or format (for example a loader `.bin`) is refused; another product of the same family (another PCI device ID) is
 allowed with a warning. `nvbios import` does the same from the command line (see [the editor
 API](editor-api.md)).
@@ -245,8 +289,8 @@ API](editor-api.md)).
 **Values are copied as stored numbers, not adapted to this board.** Fan speed limits, power or
 current limits and voltage limits from another board can exceed what this board's hardware is
 rated for, for example fans rated for a lower speed or a single 12V-2x6 connector where the other
-board has more power connectors or stronger power stages. Check every imported value in the
-change list before saving.
+board has more power connectors or stronger power stages. A factory GPC offset from another board
+may not be stable on this one. Check every imported value in the change list before saving.
 
 ## Tests and headless render
 

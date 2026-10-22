@@ -34,6 +34,38 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'field.fan_extra_zero_rpm_high_temp_c': 'Extra fan curve {curve} zero RPM upper threshold (advanced, experimental)',
  'field.memory_point_follows_offset': 'Memory clock {mhz} MHz follows the memory offset (advanced, experimental)',
  'field.gpc_curve_offset_mhz': 'GPC curve offset (advanced, experimental)',
+ 'field.factory_gpc_offset_mhz': 'Factory GPC offset (vendor overclock, experimental)',
+ 'field.factory_rated_boost_mhz': 'Factory rated boost clock',
+ 'field.max_operating_temp_c': 'Max operating temperature (experimental)',
+ 'section.advanced': 'Advanced: performance controllers and idle power',
+ 'section.advanced_note': ('Blackwell only. Experimental and not tested on hardware. The utilization policy and its '
+                           'controllers decide how the driver raises and lowers the GPC, memory (DRAM) and video (VID) '
+                           'clocks with load. It is not proven that the driver uses this table on Blackwell. A lower '
+                           'target raises the clocks sooner, with more power and heat. The idle power switches leave '
+                           'a power-saving feature as shipped (Stock) or turn it off (Off), and they are expected to '
+                           'act only at idle or light load. Off uses a little more power at idle, and very short idle '
+                           'times can cause stutter or, rarely, a black screen at idle. A value that depends on a '
+                           'switch is greyed out while that switch is off. This section is shown with or without '
+                           'Show advanced XOC-style fields, and Import from ROM… never copies it.'),
+ 'section.advanced_perf': 'Clock controllers',
+ 'section.advanced_lpwr': 'Idle power saving',
+ 'field.perf_cf_util_policy': 'Utilization clock policy (experimental)',
+ 'field.perf_cf_target_pct': '{domain} utilization target (experimental)',
+ 'field.perf_cf_jump_pct': '{domain} jump threshold (experimental)',
+ 'field.perf_cf_hysteresis_down': '{domain} clock-down hysteresis (samples, experimental)',
+ 'field.perf_cf_hysteresis_up': '{domain} clock-up hysteresis (samples, experimental)',
+ 'field.lpwr_gr_power_gating': 'GR power gating (experimental)',
+ 'field.lpwr_mscg': 'Memory system clock gating, MSCG (experimental)',
+ 'field.lpwr_nvdec_gating': 'NVDEC power gating (experimental)',
+ 'field.lpwr_nvenc_gating': 'NVENC power gating (experimental)',
+ 'field.lpwr_ofa_gating': 'OFA power gating (experimental)',
+ 'field.lpwr_nvjpg_gating': 'NVJPG power gating (experimental)',
+ 'field.lpwr_difr': 'DIFR idle display power saving (experimental)',
+ 'field.lpwr_difr_dfpr_idle_ms': 'DIFR DFPR idle time (experimental)',
+ 'field.lpwr_difr_sw_asr_idle_us': 'DIFR SW-ASR idle time (experimental)',
+ 'field.lpwr_difr_cg_idle_us': 'DIFR clock gating idle time (experimental)',
+ 'field.lpwr_gr_rail_gating': 'GR rail gating (experimental)',
+ 'field.lpwr_gr_rail_gating_idle_us': 'GR rail gating idle time (10 µs steps, experimental)',
  'section.readonly': 'Read-only fields ({count})',
  'section.voltage_note': ('REL and OV are equation ceilings; a fixed REL or ALT voltage sets the value of a constant '
                           'equation, and a fixed REL stays at or below ALT: to raise it further, raise ALT in the same '
@@ -99,8 +131,8 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'import.opt_in': 'Also import the advanced XOC-style fields',
  'import.note': ('Values are copied as stored numbers, not adapted to this board: fan speeds, power and current '
                  "limits and voltage limits from another board can exceed what this board's fans, power connectors, "
-                 'power stages or GPU are rated for. They become pending changes: check them in the change list '
-                 'before saving.'),
+                 'power stages or GPU are rated for, and a clock offset from another board may not be stable on '
+                 'this one. They become pending changes: check them in the change list before saving.'),
  'import.accept': 'Import',
  'import.close': 'Close',
  'import.reading': 'Reading the other ROM…',
@@ -121,6 +153,7 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'import.reason.read_only': 'read-only in both ROMs',
  'import.reason.opt_in': 'advanced field, not included',
  'import.reason.board_specific': "this board's fan count; never copied",
+ 'import.reason.product_specific': "this product's own temperature limit; never copied",
  'import.reason.different_meaning': ('another quantity in the other ROM (other units, memory level, power layout or '
                                      'voltage equation)'),
  'import.reason.held_back': 'goes with related fields that are not imported: {fields}',
@@ -204,6 +237,7 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'unknown': 'Unknown',
  'flag_on': 'On',
  'flag_off': 'Off',
+ 'flag_stock': 'Stock',
  'unknown_version': 'unknown',
  'unrecognized': 'unrecognized',
  'format': 'Format: {format}',
@@ -298,6 +332,28 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'reason.single_rail': 'This single-rail format exposes only NVVDD.',
  'reason.rail': 'Rail identity and its editing variant are unvalidated.',
  'reason.clock': 'The clock domain and its MHz conversion are unvalidated.',
+ 'reason.max_temp_disabled': ('The thermal policy holding this limit is disabled in this ROM (as on XOC-style '
+                               'ROMs), so the value is not applied. The editor does not enable it.'),
+ 'reason.max_temp_unequal': ('The three stored temperatures of this limit differ in this ROM; the editor only writes '
+                             'them together.'),
+ 'reason.max_temp_unrecognized': 'This thermal policy entry does not have the layout of the reviewed ROMs.',
+ 'reason.factory_offset_disabled': ('This ROM stores no factory GPC offset, like Founders Edition, reference, laptop '
+                                    'and RTX PRO ROMs. The editor does not add one.'),
+ 'reason.factory_offset_fraction': ('The stored factory GPC offset is not a whole number of MHz, unlike every reviewed '
+                                    'ROM. The driver uses it truncated to whole MHz; the editor keeps it as stored.'),
+ 'reason.factory_boost': ('Rated boost clock of the factory overclock. The driver writes it into a performance state '
+                          'at boot; the editor keeps it as stored.'),
+ 'reason.depends_on': 'Turn on "{switch}" to change this value. While it is off, the stored value is kept.',
+ 'reason.depends_on_stock': 'Set "{switch}" to Stock to change this value. While it is Off, the stored value is kept.',
+ 'reason.perf_cf_policy': ('The utilization policy entry of this ROM does not have the layout of the reviewed ROMs, '
+                           'so neither it nor its controllers are editable.'),
+ 'reason.perf_cf_controller': 'This controller does not have the layout of the reviewed ROMs.',
+ 'reason.lpwr_mixed': ('Some entries of this feature are enabled and others are not in this ROM, unlike the reviewed '
+                       'ROMs.'),
+ 'reason.lpwr_gr_rg_unreviewed': ('GR rail gating is enabled in this ROM, but which entries this product enables as '
+                                  'shipped is not reviewed.'),
+ 'reason.lpwr_gr_rg_unrecognized': 'A GR rail gating entry of this ROM does not store the reviewed value.',
+ 'reason.lpwr_time_switch': 'The switch of this idle time is read-only in this ROM.',
  'reason.generic': 'Editing unavailable for this field.',
  'error.INVALID_IMAGE': 'Open a ROM first',
  'error.INVALID_CHANGES': 'Stage a verified preview before saving',
@@ -318,6 +374,7 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'error.UNSUPPORTED_ARCHITECTURE': 'This architecture supports inspection only',
  'error.UNSUPPORTED_FORMAT': 'This format supports inspection only',
  'error.FAMILY_MISMATCH': 'The other ROM is of another GPU family or format; import needs one of the same family',
+ 'error.DEPENDENT_FIELD_DISABLED': 'This value depends on a switch that is off; turn the switch on to change it',
  'error.SEPARATE_EDIT_REQUIRED': ('Save the fan channel count or the REL/ALT follow OV setting first, then open '
                                   'the copy to change the fan limits, curves, zero RPM or voltages'),
  'cli_usage': 'usage: ',

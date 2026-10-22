@@ -73,8 +73,17 @@ ADA_FAN_TABLES = {
     'speed': (0xE0, bytes((0x10, 4, 6, 2)), 4, 6, 2),
 }
 ADA_FAN_CHANNELS = 2
-# Tables the Ada and Ampere fields write; their data images must keep the reviewed checksum padding.
+# Tables the Ada and Ampere fields write; their data images must end with a reviewed checksum tail (checksum_tail).
 ADA_EDITED_TABLES = (('P', 0x2C), ('P', 0x20), ('C', 8)) + tuple(('P', t[0]) for t in ADA_FAN_TABLES.values())
+# Reviewed tails before the checksum byte that ends an image (the PCI image length counts
+# 512-byte blocks, so the bytes after the last table are 0xff fill up to that byte).
+# 15 0xff bytes: the padding of every family. On every Ampere and Ada corpus image the power
+# table's image ends with the table BIT token i+0x6a names, an 8-byte header with no
+# entries; the fill after it runs from 0 to 498 bytes across the corpus. Fewer than 15
+# fill bytes after that exact header (RTX 3060 Laptop 94.06.22, RTX 3050 6GB 94.07.91 and
+# RTX 4070 Laptop 95.06.15: 0, 2 and 3) are the second tail; 15 or more are the first.
+CHECKSUM_PADDING = b'\xff' * 15
+EMPTY_TABLE_TAIL = bytes.fromhex('10 08 00 00 00 00 00 00')
 # Ampere GA10x variants. Power: 30/2c/47, its 0x43-byte rows (the same bytes
 # 0..0x42; 0x47 only adds four zero bytes) and the 30/32/47 header with six more
 # bytes. Rails: one (NVVDD) or two (NVVDD, MSVDD) 17-byte rows, the first 17
@@ -138,6 +147,27 @@ TURING_POLICY_BYTES = bytes.fromhex('23 2b 0a 01 00 02 80 00')
 TURING_EDITED_TABLES = (('P', 0x2C), ('P', 0x20), ('P', 0x58), ('P', 0x5C), ('P', 0x64))
 
 
+def checksum_tail(blob, end, family):
+    """Number of reviewed tail bytes before the checksum byte blob[end - 1] of an image, or None.
+
+    The editor repairs an image's additive checksum by rewriting only that byte, and only
+    after one of these tails: 15 0xff bytes, or on Ampere and Ada the empty closing table
+    (EMPTY_TABLE_TAIL) and 0..14 0xff bytes. Callers also require the image to sum to 0
+    (integrity valid) and refuse fields that write tail bytes.
+    """
+    if blob[end - 16:end - 1] == CHECKSUM_PADDING:
+        return len(CHECKSUM_PADDING)
+    if family not in ('ampere', 'ada'):
+        return None
+    fill = 0
+    while fill < len(CHECKSUM_PADDING) and blob[end - 2 - fill] == 0xFF:
+        fill += 1
+    header = end - 1 - fill - len(EMPTY_TABLE_TAIL)
+    if fill < len(CHECKSUM_PADDING) and blob[header:end - 1 - fill] == EMPTY_TABLE_TAIL:
+        return len(EMPTY_TABLE_TAIL) + fill
+    return None
+
+
 class TableRom:
     def __init__(self, blob, name='<memory>', *, family='ada'):
         self.family = family
@@ -198,10 +228,11 @@ class TableRom:
         return copy.deepcopy(self._integrity)
 
     def checksum_padding_reviewed(self):
-        """True when every data image holding an edited table ends with 15 0xff bytes and its checksum.
+        """True when every data image holding an edited table ends with a reviewed tail and its checksum.
 
-        The editor repairs the additive checksum only in that reviewed layout. The
-        RTX 4070 Laptop image, for example, lacks the padding in its last data image.
+        The editor repairs the additive checksum only after the tails checksum_tail accepts:
+        15 0xff bytes or, on Ampere and Ada, the empty closing table and fewer 0xff bytes
+        (the last data image of the RTX 4070 Laptop and RTX 3060 Laptop images, for example).
         """
         if self._padding is None:
             self._padding = self._checksum_padding()
@@ -221,9 +252,9 @@ class TableRom:
         return True
 
     def padded(self, at):
-        """True when the data image holding at ends with 15 0xff bytes and its checksum in every chain."""
+        """True when the data image holding at ends with a reviewed tail (checksum_tail) in every chain."""
         image = self.owner(at, 1)
-        return all(self.blob[copy + image['size'] - 16:copy + image['size'] - 1] == b'\xff' * 15
+        return all(checksum_tail(self.blob, copy + image['size'], self.family) is not None
                    for copy in self.copy_offsets(image['start'], image['size']))
 
     def power_rows(self):

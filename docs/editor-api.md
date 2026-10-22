@@ -69,6 +69,22 @@ editable.
 | `memory_offset_max_mhz` | MHz | signed int16 table MHz | GB20x; MHz (NVML/Linux scale) = 2 × table MHz, validated relationship supplied by user (Ada: NVML reading; Ampere and Turing: by analogy, experimental); Windows tools such as MSI Afterburner show the table value |
 | `current_limit_a`, `ocp_limit_a` | A | unknown | Read-only pending independent field evidence |
 
+### Advanced section and dependent fields
+
+GB20x images also list the fields of the Advanced section: the PERF_CF utilization policy
+switch and its controllers (`perf_cf_*`) and the LPWR idle power switches and idle times
+(`lpwr_*`), all experimental (see `extended-fields.md`). Their descriptors carry
+`section: "advanced"`, which `nvbios fields` shows; the GUI lists them in a collapsed
+section of their own, and `import_fields` never copies them. A switch is a 0/1 flag; an
+LPWR switch also carries `switch: "stock-off"` (1 is Stock, 0 is Off). A field that only
+matters while a switch is on carries `depends_on: {"field": <switch key>, "value": 1}`:
+`edit` changes it only while that switch has that value, stored in the image or requested
+in the same edit, and otherwise refuses with `DEPENDENT_FIELD_DISABLED` (`details.field`
+is the refused key, `details.depends_on` the dependency). Requesting the stored value
+again is accepted and changes nothing, and turning a switch off leaves its dependent
+values as stored. A dependent field keeps `editable: true` while its switch is off;
+callers decide from `depends_on` and the switch's value whether to offer it.
+
 The two GB20x memory keys edit the same field. Supply one representation per
 request; an overlapping request produces `CONFLICTING_FIELDS`. When an Ada, Ampere or Turing
 clock table is not recognized, a read-only `memory_offset_max_mhz` with unknown current value remains, so callers
@@ -133,11 +149,17 @@ parts differ. Its `meaning` is `unknown`. It never says which ROM is better.
 `import_fields(target, donor, sections, *, include_opt_in=False, dry_run=False)` copies the
 editable values of the chosen sections from `donor` into `target`, two `BiosImage`s of the same
 family and format. The sections are the GUI's (`IMPORT_SECTIONS`: `power`, `voltage`, `clocks`,
-`current`, `fans`). Another family or format is refused with `FAMILY_MISMATCH`; another device of
-the family (another PCI device ID) is allowed with a `DIFFERENT_DEVICE` warning. `nvbios import ROM
-DONOR [OUTPUT] --sections fans[,power,...] [--include-opt-in] [--dry-run]` prints the report with
-the `manifest` of the edit; without `--dry-run` it saves OUTPUT and `OUTPUT.json` through the same
-path as `edit`, and with nothing to import it refuses with `NOTHING_TO_IMPORT`.
+`current`, `fans`); the GB20x Advanced section (`advanced`, PERF_CF and LPWR tuning) is never
+imported, and asking for it is refused with `INVALID_SECTIONS`. The GB20x maximum operating
+temperature (Power) is never copied either. The GB20x factory GPC offset (`factory_gpc_offset_mhz`,
+Clock offsets) is copied like the other clock offsets when both ROMs store one. A donor that stores
+none leaves it out as `read_only_in_donor`, and a target that stores none as
+`read_only_in_target`, since the editor never adds one. Another family
+or format is refused with `FAMILY_MISMATCH`; another device of the family (another PCI device ID)
+is allowed with a `DIFFERENT_DEVICE` warning. `nvbios import ROM DONOR [OUTPUT] --sections
+fans[,power,...] [--include-opt-in] [--dry-run]` prints the report with the `manifest` of the edit;
+without `--dry-run` it saves OUTPUT and `OUTPUT.json` through the same path as `edit`, and with
+nothing to import it refuses with `NOTHING_TO_IMPORT`.
 
 A field is proposed when its donor value differs and it is editable in both ROMs, means the same
 quantity in both and the value is inside the target's bounds, checked as `edit` checks them (an
@@ -158,17 +180,19 @@ field (each bounds the others), a set or one field; nothing is applied in part.
 It returns `(report, result)`. `result` is the verified `EditResult` of the applied values, or
 `None` when none is applied. `report` holds `changes` (key → value, as `edit` takes them), the
 `applied` and `skipped` fields (`field`, `section`, `label`, `units` and the `target` and `donor`
-values), `unchanged` (the keys editable in the target whose value already equals the donor's),
-`warnings` and a `note`. A skipped field's `reason` is `absent_in_donor`, `absent_in_target`,
-`read_only_in_donor`, `read_only_in_target`, `read_only` (in both ROMs; listed only when it holds
-a set back), `opt_in`, `board_specific` (the fan channel count), `different_meaning`,
-`out_of_bounds` (with the `bounds`), `held_back` (with the `partners` that held its set back) or
-`refused` (with the editor's `code` and `message`). An opt-in field is listed only when both ROMs
-hold it with different values.
+values), `unchanged` (the keys editable in the target whose value already equals the donor's,
+except the `product_specific` field), `warnings` and a `note`. A skipped field's `reason` is
+`absent_in_donor`, `absent_in_target`, `read_only_in_donor`, `read_only_in_target`, `read_only` (in
+both ROMs; listed only when it holds a set back), `opt_in`, `board_specific` (the fan channel
+count), `product_specific` (the GB20x `max_operating_temp_c`, set for each product),
+`different_meaning`, `out_of_bounds` (with the `bounds`), `held_back` (with the `partners` that
+held its set back) or `refused` (with the editor's `code` and `message`). An opt-in field is listed
+only when both ROMs hold it with different values.
 
 Values are copied as stored numbers, not adapted to the board: fan speeds, power or current
 limits and voltage limits from another board can exceed this board's hardware (fans rated for a
-lower speed, a single 12V-2x6 connector).
+lower speed, a single 12V-2x6 connector), and a factory GPC offset from another board may not be
+stable on this one.
 
 ## Structural and preservation checks
 
@@ -205,6 +229,18 @@ The examined portable Blackwell EFI GOP explicitly allows identity `0000:0000`;
 NVIDIA/chip identities remain checked on legacy, metadata and NPDS images.
 Unknown directory/envelope versions do not become editable merely because they
 have a plausible marker.
+
+On Turing, Ampere and Ada the writer repairs an image's additive checksum by
+rewriting only the image's last byte, and only after a reviewed tail: 15 0xff
+bytes or, on Ampere and Ada, the 8 bytes `10 08 00 00 00 00 00 00` and 0 to 14
+0xff bytes. The check reads these bytes only. On the Ampere and Ada images
+examined they are an empty table, the one BIT `i`+0x6a names, which closes the
+power table's image. Some builds, such as the RTX 3060 Laptop 94.06.22, RTX 3050
+6GB 94.07.91 and RTX 4070 Laptop 95.06.15, end that image the second way (0, 2
+and 3 0xff bytes). The first Ampere/Ada data image may also end with x86
+filler. An image that holds edited tables, sums to zero but has no such tail
+keeps every field read-only, and a field that would write the tail or the
+checksum byte is refused (`CONFLICTING_FIELDS`).
 
 The writer repairs only declared fields, affected hashes and bounded checksum
 padding. It reparses and verifies the output, checks structural identity and
@@ -257,7 +293,8 @@ Catch `VbiosError`; `.code` is stable and `.to_dict()` returns:
 
 Codes include `INVALID_IMAGE`, `INVALID_CHANGES`, `INVALID_PATH`, `INVALID_VALUE`,
 `UNKNOWN_FIELD`, `FIELD_READ_ONLY`, `OUT_OF_BOUNDS`, `UNREPRESENTABLE_VALUE`,
-`CONFLICTING_FIELDS`, `SEPARATE_EDIT_REQUIRED`, `UNSUPPORTED_ARCHITECTURE`, `ARCHITECTURE_MISMATCH`,
+`CONFLICTING_FIELDS`, `SEPARATE_EDIT_REQUIRED`, `DEPENDENT_FIELD_DISABLED`, `UNSUPPORTED_ARCHITECTURE`,
+`ARCHITECTURE_MISMATCH`,
 `UNSUPPORTED_FORMAT`, `INTEGRITY_FAILED`, `INVALID_FIELD_EVIDENCE`,
 `REGISTRY_CONFLICT`, `UNSUPPORTED_CHECKSUM_LAYOUT`, `IDENTITY_CHANGED`,
 `FACTORY_DEFAULT_CHANGED`, `PRESERVED_FIELD_CHANGED`, `POSTCONDITION_FAILED`, `UNDECLARED_CHANGE`,

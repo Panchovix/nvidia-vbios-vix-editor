@@ -17,7 +17,8 @@ from .i18n import Messages
 from .file_pickers import show_builtin_picker, show_path_dialog
 from .controller import (Controller, compare_memory, controls, import_from, loader_messages, memory_view,
                          open_document, reset_document, save_document, stage_document)
-from .presentation import (classify_number, display_units, fan_curve_hint, field_label, field_section, import_summary,
+from .presentation import (ADVANCED_SECTION, advanced_group, classify_number, dependency_reason, display_units,
+                           fan_curve_hint, field_label, field_section, import_summary,
                            number, memory_columns, memory_comparison, memory_configuration, memory_raw_text,
                            MEMORY_TIMINGS, opt_in_field_keys, parse_number,
                            primary_preview, read_only_reason, row_title, SECTION_NAMES, section_order, shunt_real,
@@ -37,6 +38,7 @@ CSS = """
 .vb-ok { color: #26a269; font-weight: 700; }
 .vb-bad { color: #e5484d; font-weight: 700; }
 .vb-section { font-weight: 800; font-size: 0.95em; margin: 10px 4px 2px 4px; }
+.vb-section.vb-expander-title { margin: 0 4px; }
 .vb-note { font-size: 0.88em; opacity: 0.65; }
 .vb-row { padding: 10px 16px; border-left: 3px solid transparent; }
 .vb-row.changed { border-left-color: #3584e4; background-color: alpha(#3584e4, 0.07); }
@@ -160,6 +162,11 @@ class EditorWindow(Gtk.ApplicationWindow):
         self.shunt_notes = {}
         self.pending_text = {}
         self.hidden_text = {}
+        # A row put back to its stored value because its switch is off does not count as typing.
+        self.syncing = False
+        # The collapsed Advanced section keeps its state while the same ROM stays open.
+        self.advanced_expanded = False
+        self.advanced_expander = self.advanced_box = None
         # Read-only memory view of the open ROM: report and comparison, kept apart from the document.
         self.memory = None
         self.memory_expander = self.memory_box = self.memory_compare_box = None
@@ -357,9 +364,11 @@ class EditorWindow(Gtk.ApplicationWindow):
             action = self.lookup_action(name)
             if action:
                 action.set_enabled(enabled)
-        # Live verification never locks the inputs; opening and saving do.
-        for entry in self.entries.values():
-            entry.set_sensitive(not self.busy)
+        # Live verification never locks the inputs; opening and saving do. A row whose switch is
+        # off (depends_on) stays greyed out.
+        blocked = self._blocked()
+        for key, entry in self.entries.items():
+            entry.set_sensitive(not self.busy and key not in blocked)
 
     def _run(self, operation, work, *, saving=False):
         self._cancel_verify()
@@ -414,6 +423,7 @@ class EditorWindow(Gtk.ApplicationWindow):
             if opened:
                 self.pending_text = {}
                 self.hidden_text = {}
+                self.advanced_expanded = False
                 self._render()
             else:
                 self._refresh()
@@ -562,6 +572,8 @@ class EditorWindow(Gtk.ApplicationWindow):
         return values
 
     def _input_changed(self, *_):
+        if self.syncing:
+            return
         self.dirty = True
         self.input_revision += 1
         if self.controller.document is not None:
@@ -727,6 +739,8 @@ class EditorWindow(Gtk.ApplicationWindow):
             self.integrity.add_css_class('error')
 
     def _section(self, name, rows, note=None):
+        if name == ADVANCED_SECTION:
+            return self._advanced_section(rows, note)
         heading = label(self.text('section.' + name), css=('vb-section',), selectable=False)
         self.field_box.append(heading)
         if name == 'voltage' and rows:
@@ -737,6 +751,35 @@ class EditorWindow(Gtk.ApplicationWindow):
         card.add_css_class('vb-card')
         if rows:
             self.field_box.append(card)
+        return card
+
+    def _advanced_section(self, rows, note=None):
+        """The Advanced section: collapsed, after the Fans card and before the read-only fields, with its note.
+        Its rows go in one card per group (_advanced_card); returns None."""
+        expander = Gtk.Expander()
+        # The heading keeps the section style without its outer margins, which would lift it off the arrow.
+        expander.set_margin_top(10)
+        expander.set_label_widget(label(self.text('section.' + ADVANCED_SECTION),
+                                        css=('vb-section', 'vb-expander-title'), selectable=False))
+        expander.set_expanded(self.advanced_expanded)
+        expander.connect('notify::expanded', lambda widget, *_: setattr(self, 'advanced_expanded',
+                                                                        widget.get_expanded()))
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(6)
+        box.append(label(self.text('section.advanced_note'), wrap=True, css=('vb-note',)))
+        if note:
+            box.append(label(note, wrap=True, css=('vb-note',)))
+        expander.set_child(box)
+        self.field_box.append(expander)
+        self.advanced_expander, self.advanced_box = expander, box
+        return None
+
+    def _advanced_card(self, group):
+        """A card of the Advanced section under its group heading (clock controllers, idle power saving)."""
+        self.advanced_box.append(label(self.text('section.' + group), css=('vb-section',), selectable=False))
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        card.add_css_class('vb-card')
+        self.advanced_box.append(card)
         return card
 
     def _editable_row(self, field, text):
@@ -793,6 +836,12 @@ class EditorWindow(Gtk.ApplicationWindow):
         self._shunt_note(row, field)
         self.entries[field['key']] = entry
         self.rows[field['key']] = dict(row=row, delta=delta, field=field)
+        if field.get('depends_on'):
+            # Shown while the switch this value depends on is off.
+            dependency = label('', wrap=True, css=('vb-note',))
+            dependency.set_visible(False)
+            row.append(dependency)
+            self.rows[field['key']]['dependency'] = dependency
         return row
 
     def _readonly_row(self, field):
@@ -843,6 +892,7 @@ class EditorWindow(Gtk.ApplicationWindow):
         self.rows.clear()
         self.readonly_rows.clear()
         self.shunt_notes.clear()
+        self.advanced_expander = self.advanced_box = None
         fields = controls(report)
         if not fields:
             self.field_box.append(label(self.text('no_fields'), wrap=True))
@@ -858,8 +908,11 @@ class EditorWindow(Gtk.ApplicationWindow):
             rows = [f for f in visible if f['editable'] and field_section(f) == section]
             if not rows and section not in notes:
                 continue
-            card = self._section(section, rows, notes.get(section))
+            card, group = self._section(section, rows, notes.get(section)), None
             for field in rows:
+                if section == ADVANCED_SECTION and advanced_group(field) != group:
+                    group = advanced_group(field)
+                    card = self._advanced_card(group)
                 if card.get_last_child() is not None:
                     separator = Gtk.Separator()
                     separator.add_css_class('vb-sep')
@@ -1276,7 +1329,51 @@ class EditorWindow(Gtk.ApplicationWindow):
                                 display_units(field)))
         return changes
 
+    def _switch_value(self, key, fields):
+        """A switch's value as typed, staged or stored; None when unknown."""
+        if key in self.entries:
+            return parse_number(self.entries[key].get_text())
+        if key in self.hidden_text:
+            return parse_number(self.hidden_text[key])
+        field = fields.get(key)
+        value = self.controller.document.changes.get(key, field['current'] if field else None)
+        return None if value is None else parse_number(str(value))
+
+    def _blocked(self):
+        """{key: reason} for the editable rows whose switch (depends_on) is off, as typed, staged or stored."""
+        doc = self.controller.document
+        if doc is None or not any(info['field'].get('depends_on') for info in self.rows.values()):
+            return {}
+        fields = {f['key']: f for f in controls(doc.report)}
+        blocked = {}
+        for key, info in self.rows.items():
+            dependency = info['field'].get('depends_on')
+            if dependency and self._switch_value(dependency['field'], fields) != Decimal(str(dependency['value'])):
+                blocked[key] = dependency_reason(info['field'], fields, self.language)
+        return blocked
+
+    def _sync_dependencies(self):
+        """Grey out the rows whose switch is off and say why; such a row goes back to its stored value."""
+        blocked = self._blocked()
+        for key, info in self.rows.items():
+            note = info.get('dependency')
+            if note is None:
+                continue
+            entry, field = self.entries[key], info['field']
+            off = key in blocked
+            stored = to_display(field, field['current'])
+            if off and stored is not None and parse_number(entry.get_text()) != stored:
+                self.syncing = True
+                try:
+                    entry.set_text(number(stored))
+                finally:
+                    self.syncing = False
+            entry.set_sensitive(not self.busy and not off)
+            note.set_text(blocked.get(key, ''))
+            note.set_visible(off)
+
     def _mark_rows(self, invalid=(), owner=None, bounds=None, error_code=None):
+        self._sync_dependencies()
         curve_errors = bool(invalid) and error_code == 'OUT_OF_BOUNDS'
         values = self._values() if curve_errors else {}
         fields = self.controller.document.report.get('fields', []) if curve_errors else []

@@ -409,12 +409,24 @@ class StructureTests(unittest.TestCase):
 
 
 
-def synthetic_blackwell(*, shared_objects=False, rails=2, clock_subsize=2, power_topology=False, fans=False):
+def synthetic_blackwell(*, shared_objects=False, rails=2, clock_subsize=2, power_topology=False, fans=False,
+                        thermal=False, factory_clocks=False, perf_cf=False, lpwr=False):
     """Object directory with BIT-referenced tables and computed SHA384 hashes.
 
     rails=1 and clock_subsize=1 give the single-rail Workstation layout.
     power_topology adds empty power channel (P+0x3c) and device (P+0x28) tables;
     fans adds a fan cooler table (P+0x58) with two active 27 kHz channels.
+    thermal adds a thermal policy table (P+0x50, object 0x1b) with a 12-byte header (22
+    with thermal=22) and 15 48-byte entries: entry 0 class 1 at 90 C, entries 1 and 4 at
+    105 C, as on an RTX 5090. factory_clocks adds a factory clock record (P+0x98, object
+    0x26) with A0 = 120000 kHz and B1 = 2655000 kHz, both with flag 1, as on a factory-OC card.
+    perf_cf adds the PERF_CF controller (P+0xa8, object 0x60; 6-byte header, 14 with perf_cf=14,
+    where object 0x60 also covers the policy table header as on the RTX PRO 4000 SFF) and policy
+    (P+0xac, object 0x61) tables: 20 controllers, 0..2 the GPC/DRAM/video utilization controllers
+    at their stock 40/75, 52/64 and 65/85 % with hysteresis 1/9, 1/4 and 1/9, 3 a GPC one at
+    60/80 %; 9 policies, policy 0 active with controllers 0, 1, 2 and 13. lpwr adds the LPWR
+    tables of an RTX 5090 (GR power gating on entries 0-1, MSCG 0-2, every video entry, DIFR
+    entry 0, GR rail gating off) and widens the BIT P token to 0x138 bytes.
     """
     import hashlib
     legacy, efi, meta, extended = 512, 2560, 3072, 11264
@@ -436,7 +448,7 @@ def synthetic_blackwell(*, shared_objects=False, rails=2, clock_subsize=2, power
     b[bit:bit + 6] = b'\xff\xb8BIT\x00'
     b[bit + 8:bit + 11] = bytes((12, 6, 2))
     b[bit + 11] = -sum(b[bit:bit + 12]) & 255
-    struct.pack_into('<BBHH', b, bit + 12, ord('P'), 2, 252, 256)
+    struct.pack_into('<BBHH', b, bit + 12, ord('P'), 2, 0x138 if lpwr else 252, 256)
     struct.pack_into('<BBHH', b, bit + 18, ord('C'), 2, 12, 600)
     version = b'98.02.18.00.01'
     b[legacy + 700:legacy + 700 + len(version)] = version
@@ -531,6 +543,63 @@ def synthetic_blackwell(*, shared_objects=False, rails=2, clock_subsize=2, power
                 (enable, 0, i if stored else 0xFF, 0xC8, 0, 0x30 | 1 << i if stored else 0))
             b[speed + 4 + 6 * i:speed + 10 + 6 * i] = bytes((enable, i, 0xFC, 8, 0x24, 0) if stored else (0, 0xFF, 0, 0, 0, 0))
         objects += [(0x80, control, 4 + 0x0D * 4), (0x83, speed, 4 + 6 * 4)]
+    if thermal:
+        # In the signed data image, past the object directory and before its PCIR.
+        policies, header = 6144, 22 if thermal == 22 else 12
+        struct.pack_into('<I', b, legacy + 256 + 0x50, pointer(policies))
+        b[policies:policies + 5] = bytes((0x20, header, 48, 15, 3))
+        for i in range(15):
+            entry = policies + header + 48 * i
+            kind, channel, celsius = {0: (1, 1, 90), 1: (1, 0, 105), 4: (1, 2, 105)}.get(i, (0, 0xFF, 0))
+            b[entry:entry + 2] = bytes((kind, channel))
+            struct.pack_into('<3h', b, entry + 2, *(celsius * 32,) * 3)
+        objects.append((0x1B, policies, header + 48 * 15))
+    if factory_clocks:
+        record = 7168
+        struct.pack_into('<I', b, legacy + 256 + 0x98, pointer(record))
+        b[record:record + 7] = bytes((0x10, 7, 5, 2, 5, 2, 0))
+        struct.pack_into('<BI', b, record + 7, 1, 120000)
+        struct.pack_into('<BI', b, record + 22, 1, 2655000)
+        objects.append((0x26, record, 27))
+    if perf_cf:
+        controllers, header = 7200, 14 if perf_cf == 14 else 6
+        policies = controllers + header + 57 * 20
+        struct.pack_into('<I', b, legacy + 256 + 0xA8, pointer(controllers))
+        struct.pack_into('<I', b, legacy + 256 + 0xAC, pointer(policies))
+        b[controllers:controllers + 6] = bytes((0x10, header, 57, 20, 200, 0))
+        if header == 14:
+            b[controllers + 6:controllers + 14] = bytes((4, 0, 9, 0, 5, 0, 6, 0))
+        stock = ((1, 0, 1638, 3072, 0, 9, 3276), (3, 1, 2129, 2621, 2, 4, 3870), (1, 2, 2662, 3482, 4, 9, 3276),
+                 (1, 0, 2457, 3276, 0, 9, 3276))
+        for i, (sampling, source, target, jump, domain, down, gain) in enumerate(stock):
+            entry = controllers + header + 57 * i
+            b[entry:entry + 3] = bytes((1, sampling, source))
+            struct.pack_into('<IIII', b, entry + 3, target, jump, 4096, gain)
+            b[entry + 19:entry + 25] = bytes((domain, 1, down, 9 + domain // 2, 0xFF, 2))
+        b[policies:policies + 5] = bytes((0x10, 5, 10, 9, 0))
+        for i, (flags, conflicts, members) in enumerate(((0x81, 0, 0x2007), (0x01, 1, 0x201C), (0x81, 0, 0x20))):
+            struct.pack_into('<BBII', b, policies + 5 + 10 * i, flags, i, conflicts, members)
+        objects += [(0x60, controllers, header + 57 * 20 + (5 if header == 14 else 0)), (0x61, policies, 95)]
+    if lpwr:
+        # (P offset, object, header, entry size, enable words): an RTX 5090's enable bits.
+        tables = ((0x80, 0x39, bytes.fromhex('100a050500581b010000'), 5, '<I',
+                   (0xFFFFFE6B, 0xFFFFFE6B, 0xFFFFFE00, 0xFFFFFE00, 0xFFFFFE00)),
+                  (0x84, 0x3A, bytes.fromhex('10071005000f00'), 16, '<I',
+                   (0xFFFFF77D, 0xFFFFF73D, 0xFFFFF401, 0xFFFFF000, 0xFFFFF000)),
+                  (0xD4, 0x7E, bytes.fromhex('100c01050032008813010101'), 1, '<B', (0xFE, 0xFC, 0xFC, 0xFC, 0xFC)),
+                  (0xE8, 0x8E, bytes.fromhex('100b120500e8030f000f00'), 18, '<I',
+                   (0xFFFFFBBF,) + (0xFFFFF800,) * 4),
+                  *((pointer_offset, owner, bytes.fromhex('100a020500010202581b'), 2, '<H', (word,) * 5)
+                    for pointer_offset, owner, word in ((0x11C, 0xB4, 0xFFEB), (0x120, 0xB5, 0xFFEB),
+                                                        (0x124, 0xB6, 0xFFEB), (0x128, 0xB7, 0xFFF7))))
+        at = 8464
+        for pointer_offset, owner, header, size, fmt, words in tables:
+            struct.pack_into('<I', b, legacy + 256 + pointer_offset, pointer(at))
+            b[at:at + len(header)] = header
+            for i, word in enumerate(words):
+                struct.pack_into(fmt, b, at + len(header) + size * i, word)
+            objects.append((owner, at, len(header) + size * len(words)))
+            at += (len(header) + size * len(words) + 7) // 8 * 8
     count = len(objects) + (1 if shared_objects else 0)
     base = directory + 16 + count * 60
     objects[0] = (0xFB, base, 32)

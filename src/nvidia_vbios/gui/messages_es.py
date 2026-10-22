@@ -37,6 +37,39 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.memory_point_follows_offset': ('El clock de memoria de {mhz} MHz sigue el offset de memoria '
                                        '(avanzado, experimental)'),
  'field.gpc_curve_offset_mhz': 'Offset de la curva GPC (avanzado, experimental)',
+ 'field.factory_gpc_offset_mhz': 'Offset GPC de fábrica (overclock del fabricante, experimental)',
+ 'field.factory_rated_boost_mhz': 'Clock boost nominal de fábrica',
+ 'field.max_operating_temp_c': 'Temperatura máxima de funcionamiento (experimental)',
+ 'section.advanced': 'Avanzado: controladores de rendimiento y ahorro en reposo',
+ 'section.advanced_note': ('Solo Blackwell. Experimental y sin probar en hardware. La política de utilización y sus '
+                           'controladores deciden cómo el driver sube y baja los clocks GPC, de memoria (DRAM) y de '
+                           'video (VID) según la carga. No está probado que el driver use esta tabla en Blackwell. Un '
+                           'objetivo más bajo sube los clocks antes, con más consumo y calor. Los interruptores de '
+                           'ahorro en reposo dejan cada función como viene (De fábrica) o la apagan (Desactivado), y '
+                           'deberían actuar solo en reposo o con carga ligera. Desactivado gasta un poco más en '
+                           'reposo, y tiempos de reposo muy cortos pueden causar tirones o, rara vez, pantalla negra '
+                           'en reposo. Un valor que depende de un interruptor queda en gris mientras ese interruptor '
+                           'está apagado. Esta sección se muestra con o sin Mostrar campos avanzados (estilo XOC), e '
+                           'Importar desde ROM… nunca la copia.'),
+ 'section.advanced_perf': 'Controladores de clocks',
+ 'section.advanced_lpwr': 'Ahorro en reposo',
+ 'field.perf_cf_util_policy': 'Política de clocks por utilización (experimental)',
+ 'field.perf_cf_target_pct': 'Objetivo de utilización {domain} (experimental)',
+ 'field.perf_cf_jump_pct': 'Umbral de salto {domain} (experimental)',
+ 'field.perf_cf_hysteresis_down': 'Histéresis de bajada {domain} (muestras, experimental)',
+ 'field.perf_cf_hysteresis_up': 'Histéresis de subida {domain} (muestras, experimental)',
+ 'field.lpwr_gr_power_gating': 'Power gating de GR (experimental)',
+ 'field.lpwr_mscg': 'Clock gating del sistema de memoria, MSCG (experimental)',
+ 'field.lpwr_nvdec_gating': 'Power gating de NVDEC (experimental)',
+ 'field.lpwr_nvenc_gating': 'Power gating de NVENC (experimental)',
+ 'field.lpwr_ofa_gating': 'Power gating de OFA (experimental)',
+ 'field.lpwr_nvjpg_gating': 'Power gating de NVJPG (experimental)',
+ 'field.lpwr_difr': 'Ahorro de energía con imagen fija, DIFR (experimental)',
+ 'field.lpwr_difr_dfpr_idle_ms': 'Tiempo de reposo DFPR de DIFR (experimental)',
+ 'field.lpwr_difr_sw_asr_idle_us': 'Tiempo de reposo SW-ASR de DIFR (experimental)',
+ 'field.lpwr_difr_cg_idle_us': 'Tiempo de reposo del clock gating de DIFR (experimental)',
+ 'field.lpwr_gr_rail_gating': 'Rail gating de GR (experimental)',
+ 'field.lpwr_gr_rail_gating_idle_us': 'Tiempo de reposo del rail gating de GR (pasos de 10 µs, experimental)',
  'section.readonly': 'Campos de solo lectura ({count})',
  'section.voltage_note': ('REL y OV son techos de ecuación; un voltaje fijo REL o ALT fija el valor de una ecuación '
                           'constante, y un REL fijo queda igual o por debajo de ALT: para subirlo más, sube ALT en la '
@@ -105,8 +138,8 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'import.note': ('Los valores se copian como números almacenados, sin adaptarlos a esta placa: las velocidades de '
                  'ventilador, los límites de potencia y corriente y los límites de voltaje de otra placa pueden '
                  'superar lo que soportan los ventiladores, los conectores de alimentación, las etapas de potencia o '
-                 'la GPU de esta placa. Quedan como cambios pendientes: revísalos en la lista de cambios antes de '
-                 'guardar.'),
+                 'la GPU de esta placa, y un offset de reloj de otra placa puede no ser estable en esta. Quedan como '
+                 'cambios pendientes: revísalos en la lista de cambios antes de guardar.'),
  'import.accept': 'Importar',
  'import.close': 'Cerrar',
  'import.reading': 'Leyendo la otra ROM…',
@@ -127,6 +160,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'import.reason.read_only': 'de solo lectura en ambas ROM',
  'import.reason.opt_in': 'campo avanzado, no incluido',
  'import.reason.board_specific': 'cantidad de ventiladores de esta placa; nunca se copia',
+ 'import.reason.product_specific': 'límite de temperatura propio de este producto; nunca se copia',
  'import.reason.different_meaning': ('en la otra ROM es otra magnitud (otras unidades, otro nivel de memoria, otro '
                                      'esquema de potencia u otra ecuación de voltaje)'),
  'import.reason.held_back': 'va junto con campos relacionados que no se importan: {fields}',
@@ -213,6 +247,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'unknown': 'Desconocido',
  'flag_on': 'Activado',
  'flag_off': 'Desactivado',
+ 'flag_stock': 'De fábrica',
  'unknown_version': 'desconocida',
  'unrecognized': 'no reconocido',
  'format': 'Formato: {format}',
@@ -311,6 +346,31 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'reason.single_rail': 'Este formato de un solo riel expone únicamente NVVDD.',
  'reason.rail': 'La identidad del riel y su variante de edición no están validadas.',
  'reason.clock': 'El dominio de reloj y su conversión a MHz no están validados.',
+ 'reason.max_temp_disabled': ('La política térmica que guarda este límite está desactivada en esta ROM (como en las '
+                               'ROM estilo XOC), así que el valor no se aplica. El editor no la activa.'),
+ 'reason.max_temp_unequal': ('Las tres temperaturas guardadas de este límite difieren en esta ROM; el editor solo las '
+                             'escribe juntas.'),
+ 'reason.max_temp_unrecognized': 'Esta entrada de política térmica no tiene el formato de las ROM revisadas.',
+ 'reason.factory_offset_disabled': ('Esta ROM no guarda un offset GPC de fábrica, como las ROM Founders Edition, de '
+                                    'referencia, de portátil y RTX PRO. El editor no agrega uno.'),
+ 'reason.factory_offset_fraction': ('El offset GPC de fábrica guardado no es un número entero de MHz, a diferencia de '
+                                    'todas las ROM revisadas. El driver lo usa truncado a MHz enteros; el editor lo '
+                                    'deja como está guardado.'),
+ 'reason.factory_boost': ('Clock boost nominal del overclock de fábrica. El driver lo escribe en un estado de '
+                          'rendimiento al arrancar; el editor lo deja como está guardado.'),
+ 'reason.depends_on': ('Para cambiar este valor, activa el interruptor "{switch}". Mientras está apagado, se '
+                       'mantiene el valor guardado.'),
+ 'reason.depends_on_stock': ('Para cambiar este valor, deja el interruptor "{switch}" en De fábrica. Mientras está en '
+                             'Desactivado, se mantiene el valor guardado.'),
+ 'reason.perf_cf_policy': ('La entrada de la política de utilización de esta ROM no tiene el formato de las ROM '
+                           'revisadas, así que ni ella ni sus controladores son editables.'),
+ 'reason.perf_cf_controller': 'Este controlador no tiene el formato de las ROM revisadas.',
+ 'reason.lpwr_mixed': ('En esta ROM algunas entradas de esta función están activadas y otras no, a diferencia de las '
+                       'ROM revisadas.'),
+ 'reason.lpwr_gr_rg_unreviewed': ('El rail gating de GR está activado en esta ROM, pero no está revisado qué entradas '
+                                  'activa este producto de fábrica.'),
+ 'reason.lpwr_gr_rg_unrecognized': 'Una entrada del rail gating de GR de esta ROM no guarda el valor revisado.',
+ 'reason.lpwr_time_switch': 'El interruptor de este tiempo de reposo es de solo lectura en esta ROM.',
  'reason.generic': 'Edición no disponible para este campo.',
  'error.INVALID_IMAGE': 'Abra una ROM primero',
  'error.INVALID_CHANGES': 'Prepare una vista previa verificada antes de guardar',
@@ -332,6 +392,8 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'error.UNSUPPORTED_FORMAT': 'Este formato sólo permite inspección',
  'error.FAMILY_MISMATCH': ('La otra ROM es de otra familia de GPU o de otro formato; importar requiere una de '
                            'la misma familia'),
+ 'error.DEPENDENT_FIELD_DISABLED': ('Este valor depende de un interruptor que está apagado; active el interruptor '
+                                    'para cambiarlo'),
  'error.SEPARATE_EDIT_REQUIRED': ('Guarde primero la cantidad de canales de ventilador o el ajuste REL/ALT siguen a '
                                   'OV y luego abra la copia para cambiar los límites, las curvas o la parada en reposo '
                                   'de los ventiladores o los voltajes'),

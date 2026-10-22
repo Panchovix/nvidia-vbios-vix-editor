@@ -4,8 +4,13 @@ from pathlib import Path
 import re
 
 # Sections and visibility are shared with the import from another ROM; the GUI imports them from here too.
-from ..editor.sections import (SECTION_NAMES, SECTIONS, field_section, opt_in_field_keys,  # noqa: F401
-                               technical_field_keys)
+from ..editor.sections import (ADVANCED_SECTION, SECTION_NAMES, SECTIONS, field_section,  # noqa: F401
+                               opt_in_field_keys, technical_field_keys)
+from ..editor.registry import (FACTORY_BOOST_REASON, FACTORY_OFFSET_DISABLED_REASON, FACTORY_OFFSET_FRACTION_REASON,
+                               LPWR_GR_RG_UNRECOGNIZED_REASON, LPWR_GR_RG_UNREVIEWED_REASON, LPWR_MIXED_REASON,
+                               LPWR_TIME_SWITCH_REASON,
+                               MAX_TEMP_DISABLED_REASON, MAX_TEMP_UNEQUAL_REASON, MAX_TEMP_UNRECOGNIZED_REASON,
+                               PERF_CF_CONTROLLER_UNRECOGNIZED_REASON, PERF_CF_POLICY_UNRECOGNIZED_REASON)
 from ..rom.memory import PROFILE_COLUMNS, TIMING_FIELDS
 from .i18n import Messages
 
@@ -20,7 +25,15 @@ FIELD_KEYS = frozenset(('power_min_w', 'power_max_w', 'nvvdd_rel_max_mv', 'msvdd
                         'fan_zero_rpm',
                         'slot_current_threshold_rated_ma', 'slot_current_threshold_max_ma',
                         'nvvdd_power_threshold_rated_w', 'nvvdd_power_threshold_max_w',
-                        'connector_sum_power_max_w', 'connector_sum_power_rated_w', 'gpc_curve_offset_mhz'))
+                        'connector_sum_power_max_w', 'connector_sum_power_rated_w', 'gpc_curve_offset_mhz',
+                        'factory_gpc_offset_mhz', 'factory_rated_boost_mhz', 'max_operating_temp_c',
+                        # Advanced section (GB20x PERF_CF and LPWR).
+                        'perf_cf_util_policy', 'lpwr_gr_power_gating', 'lpwr_mscg', 'lpwr_nvdec_gating',
+                        'lpwr_nvenc_gating', 'lpwr_ofa_gating', 'lpwr_nvjpg_gating', 'lpwr_difr',
+                        'lpwr_difr_dfpr_idle_ms', 'lpwr_difr_sw_asr_idle_us', 'lpwr_difr_cg_idle_us',
+                        'lpwr_gr_rail_gating', 'lpwr_gr_rail_gating_idle_us'))
+# The PERF_CF controller fields of the Advanced section, per clock domain.
+PERF_CF_KEY = re.compile(r'perf_cf_(gpc|dram|vid)_(target_pct|jump_pct|hysteresis_down|hysteresis_up)')
 # Ampere/Turing external 12 V connector-channel power policies, numbered in power-row order
 # (a sense channel, not a physical connector: one connector may span several), and the
 # current hardware threshold on the same channel.
@@ -51,6 +64,18 @@ REASON_KEYS = {
     'Equivalent representation; use the main control.': 'field_alias',
     "no other fan channel layout is stored in this table, or a stored channel's limits do not hold the extra fan "
     'curves': 'reason.fan_layout',
+    MAX_TEMP_DISABLED_REASON: 'reason.max_temp_disabled',
+    MAX_TEMP_UNEQUAL_REASON: 'reason.max_temp_unequal',
+    MAX_TEMP_UNRECOGNIZED_REASON: 'reason.max_temp_unrecognized',
+    FACTORY_OFFSET_DISABLED_REASON: 'reason.factory_offset_disabled',
+    FACTORY_OFFSET_FRACTION_REASON: 'reason.factory_offset_fraction',
+    FACTORY_BOOST_REASON: 'reason.factory_boost',
+    PERF_CF_POLICY_UNRECOGNIZED_REASON: 'reason.perf_cf_policy',
+    PERF_CF_CONTROLLER_UNRECOGNIZED_REASON: 'reason.perf_cf_controller',
+    LPWR_MIXED_REASON: 'reason.lpwr_mixed',
+    LPWR_GR_RG_UNREVIEWED_REASON: 'reason.lpwr_gr_rg_unreviewed',
+    LPWR_GR_RG_UNRECOGNIZED_REASON: 'reason.lpwr_gr_rg_unrecognized',
+    LPWR_TIME_SWITCH_REASON: 'reason.lpwr_time_switch',
 }
 
 
@@ -101,6 +126,9 @@ def field_label(field, language='en'):
         if extra:
             return text(f'field.fan_extra_zero_rpm_{side}_temp_c', curve=extra)
         return text(f'field.fan_zero_rpm_{side}_temp_c', fan=owner)
+    match = PERF_CF_KEY.fullmatch(key)
+    if match:
+        return text('field.perf_cf_' + match.group(2), domain=match.group(1).upper())
     if MEMORY_POINT_KEY.fullmatch(key) and field.get('memory_mhz') is not None:
         return text('field.memory_point_follows_offset', mhz=field['memory_mhz'])
     for domain in ('xbar', 'sys', 'vid'):
@@ -118,6 +146,26 @@ def read_only_reason(field, language='en'):
     # Unmapped evidence stays in English (the JSON manifest keeps it). Avoid pretending
     # to translate an arbitrary extension's backend explanation.
     return reason if language == 'en' and reason else text('reason.generic')
+
+
+def advanced_group(field):
+    """The group of an Advanced section row, which the GUI shows in its own card under its own heading:
+    'advanced_perf' for the PERF_CF policy and controllers, 'advanced_lpwr' for the LPWR switches and idle times."""
+    return 'advanced_perf' if field['key'].startswith('perf_cf_') else 'advanced_lpwr'
+
+
+def dependency_reason(field, fields, language='en'):
+    """Why a field that depends on a switch (depends_on) is greyed out while the switch is off; None otherwise.
+
+    fields maps keys to descriptors; the switch is named by its row title.
+    """
+    dependency = field.get('depends_on')
+    if not dependency:
+        return None
+    switch = fields.get(dependency['field'])
+    name = row_title(switch, language)[0] if switch else dependency['field']
+    stock = bool(switch and switch.get('switch') == 'stock-off')
+    return Messages(language)('reason.depends_on_stock' if stock else 'reason.depends_on', switch=name)
 
 
 def summed_cap_notes(field, fields, language='en'):
@@ -192,7 +240,9 @@ RESOLVER_SECTIONS = {'equation_roles': 'voltage', 'evaluated_vmin': 'voltage',
                      'power': 'power', 'slot_power': 'power', 'connector_power': 'power',
                      'connector_sum_power': 'power', 'output_ocp': 'current', 'input_current': 'current',
                      'memory': 'clocks', 'fans': 'fans', 'fan_zero_rpm': 'fans', 'fan_zero_rpm_temperatures': 'fans',
-                     'dram_offset_points': 'clocks', 'gpc_curve_offset': 'clocks'}
+                     'dram_offset_points': 'clocks', 'gpc_curve_offset': 'clocks',
+                     'max_operating_temperature': 'power', 'factory_clocks': 'clocks',
+                     'perf_cf_controllers': 'advanced', 'lpwr_features': 'advanced'}
 
 
 def unsupported_notes(report, language='en'):
@@ -267,9 +317,11 @@ def number(value):
 
 
 def value_text(field, value, language='en'):
-    """Row text of a display value: On/Off for a 0/1 flag field, else number(value)."""
+    """Row text of a display value: On/Off for a 0/1 flag field (Stock/Off for a stock-off switch), else
+    number(value)."""
     if field.get('units') == 'flag' and value is not None and value in (0, 1):
-        return Messages(language)('flag_on' if value else 'flag_off')
+        on = 'flag_stock' if field.get('switch') == 'stock-off' else 'flag_on'
+        return Messages(language)(on if value else 'flag_off')
     return number(value)
 
 
@@ -285,7 +337,8 @@ def windows_value(field, value):
 # Rows show some stored units on a friendlier scale: table MHz as MHz, mA as A
 # and Hz as kHz (exact: factor 0.001), and C as °C. The backend always receives stored units.
 DISPLAY_UNITS = {'table MHz': ('MHz', Decimal(1)), 'mA': ('A', Decimal('0.001')), 'Hz': ('kHz', Decimal('0.001')),
-                 'channels': ('', Decimal(1)), 'flag': ('', Decimal(1)), 'C': ('°C', Decimal(1))}
+                 'channels': ('', Decimal(1)), 'flag': ('', Decimal(1)), 'C': ('°C', Decimal(1)),
+                 'us': ('µs', Decimal(1)), 'samples': ('', Decimal(1))}
 
 
 def display_units(field):

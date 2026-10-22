@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.1.28
+
+- **Max operating temperature (experimental; Blackwell).** A new Power field sets the thermal limit the driver
+  reports as the GPU's max operating temperature (90 °C on an RTX 5090, 88 °C on an RTX 5080). It can be lowered to
+  40 °C or raised up to 3 °C above the product's stock value. A lower value is expected to make the driver slow the
+  GPU sooner, and a higher one leaves less thermal margin. It is read-only where the ROM ships this limit switched
+  off (ASUS XOC, MSI Lightning), and on a product the editor has no stock value for it can only be lowered. On the
+  RTX 5080 Laptop GPU the ROM holds a second, lower limit, so raising it there may do nothing. Not tested on
+  hardware.
+- **Factory GPC offset (experimental; Blackwell).** The vendor overclock that factory-OC ROMs store (for example
+  +120 MHz on a Gigabyte Aorus, +195 MHz on an ASUS Matrix) is a new Clock offsets field, -500 to +500 whole MHz. A
+  negative value lowers the clock. It is editable only where the ROM already stores one; Founders Edition,
+  reference, laptop and RTX PRO ROMs show 0 read-only and the editor does not add one. The rated boost clock is
+  shown read-only next to it. It is separate from the GPC curve offset, and whether a tuning tool's GPC offset adds
+  to it or replaces it was not traced. Not tested on hardware.
+- **Import from ROM… copies the factory GPC offset with the Clock offsets** when both ROMs store one. A ROM that
+  stores none neither gives nor takes one, and an offset from another board may not be stable on this one. The max
+  operating temperature belongs to each product and is never copied; it shows as left out with that reason.
+- **Advanced section: clock controllers and idle power saving (experimental; Blackwell).** A new collapsed section,
+  separate from the advanced XOC-style fields and never copied by Import, holds:
+  - **Clock controllers.** The utilization policy that decides how the driver raises and lowers the GPC, memory
+    (DRAM) and video (VID) clocks with load: an on/off switch, and per clock domain the utilization target, the jump
+    threshold and the clock-down and clock-up hysteresis. The target goes from 10 % up to one below the jump
+    threshold, the jump threshold up to 100 %, the clock-down hysteresis from 0.5x to 4x stock and the clock-up one
+    from 1 to 4 samples. A lower target raises the clocks sooner, with more power and heat. It is not proven that
+    the driver uses this table on Blackwell.
+  - **Idle power saving.** Stock/Off switches for GR power gating, memory system clock gating (MSCG), NVDEC, NVENC,
+    OFA and NVJPG power gating, DIFR idle display power saving and, on the RTX PRO 4000 SFF and the RTX 5080 Laptop
+    GPU, GR rail gating. The DIFR and GR rail gating idle times can be set from 0.5x to 4x stock. Off uses a little
+    more power at idle; very short idle times can cause stutter or, rarely, a black screen at idle.
+  - A value that depends on a switch can only be changed while that switch is on. Setting every value back to
+    stock gives the original bytes. Nothing in this section is tested on hardware.
+- **Ampere and Ada images that end with an empty table before the checksum are editable, some laptops included.**
+  Some builds, for example the RTX 3060 Laptop GPU 94.06.22, the RTX 3050 6GB 94.07.91 and the RTX 4070 Laptop GPU
+  95.06.15, end their last data image with an empty table and fewer than 15 0xff bytes before the checksum byte. The
+  editor required those 15 bytes before it would repair the checksum, so every field on these images was read-only.
+  It now accepts this ending too and still rewrites only the checksum byte. Turing keeps the previous rule. The
+  loaders still refuse Ada laptop images, so an edited RTX 4070 Laptop GPU copy cannot be loaded yet.
+
 ## 0.1.26
 
 - **Import from another ROM (Turing, Ampere, Ada and Blackwell).** **Import from ROM…** and `nvbios import ROM DONOR

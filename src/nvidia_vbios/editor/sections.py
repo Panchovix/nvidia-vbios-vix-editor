@@ -7,14 +7,14 @@ SECTIONS = (
                'slot_power_max_w', 'slot_power_rated_w') +
               tuple(f'connector_{n}_power_{side}_w' for n in range(1, 5) for side in ('max', 'rated')) +
               ('connector_sum_power_max_w', 'connector_sum_power_rated_w',
-               'nvvdd_power_threshold_max_w', 'nvvdd_power_threshold_rated_w')),
+               'nvvdd_power_threshold_max_w', 'nvvdd_power_threshold_rated_w', 'max_operating_temp_c')),
     ('voltage', ('nvvdd_rel_equation_max_mv', 'nvvdd_rel_max_mv', 'nvvdd_rel_fixed_mv', 'nvvdd_alt_fixed_mv',
                  'nvvdd_ov_equation_max_mv', 'nvvdd_vmin_mv', 'nvvdd_vmin_equation_max_mv', 'nvvdd_alt_equation_max_mv',
                  'nvvdd_rel_alt_follow_ov',
                  'msvdd_rel_equation_max_mv', 'msvdd_rel_max_mv', 'msvdd_ov_equation_max_mv', 'msvdd_vmin_mv',
                  'msvdd_vmin_equation_max_mv', 'msvdd_alt_equation_max_mv')),
-    ('clocks', ('gpc_curve_offset_mhz', 'gpc_offset_max_mhz', 'gpc_offset_min_mhz', 'memory_offset_max_mhz',
-                'memory_offset_min_mhz',
+    ('clocks', ('factory_gpc_offset_mhz', 'factory_rated_boost_mhz', 'gpc_curve_offset_mhz', 'gpc_offset_max_mhz',
+                'gpc_offset_min_mhz', 'memory_offset_max_mhz', 'memory_offset_min_mhz',
                 'xbar_max_table_mhz', 'xbar_min_table_mhz', 'sys_max_table_mhz', 'sys_min_table_mhz',
                 'vid_max_table_mhz', 'vid_min_table_mhz') +
                tuple(f'memory_point_{k}_follows_offset' for k in range(1, 8))),
@@ -33,8 +33,21 @@ SECTIONS = (
                    for unit in FAN_CURVE_UNITS) + ('fan_zero_rpm',) +
              tuple(f'fan_{n}_zero_rpm_{side}_temp_c' for n in range(1, 5) for side in ('low', 'high')) +
              tuple(f'fan_extra_{m}_zero_rpm_{side}_temp_c' for m in range(1, 8) for side in ('low', 'high'))),
+    # GB20x PERF_CF controllers (the utilization policy switch, then per clock domain its target,
+    # jump threshold and hysteresis counts) and LPWR idle power features (each switch, then its idle
+    # times). Shown last, collapsed; never imported from another ROM.
+    ('advanced', ('perf_cf_util_policy',) +
+                 tuple(f'perf_cf_{domain}_{kind}' for domain in ('gpc', 'dram', 'vid')
+                       for kind in ('target_pct', 'jump_pct', 'hysteresis_down', 'hysteresis_up')) +
+                 ('lpwr_gr_power_gating', 'lpwr_mscg', 'lpwr_nvdec_gating', 'lpwr_nvenc_gating', 'lpwr_ofa_gating',
+                  'lpwr_nvjpg_gating', 'lpwr_difr', 'lpwr_difr_dfpr_idle_ms', 'lpwr_difr_sw_asr_idle_us',
+                  'lpwr_difr_cg_idle_us', 'lpwr_gr_rail_gating', 'lpwr_gr_rail_gating_idle_us')),
 )
-SECTION_NAMES = tuple(name for name, _ in SECTIONS) + ('other',)
+ADVANCED_SECTION = 'advanced'
+# 'other' collects unknown keys; the Advanced section comes after it.
+SECTION_NAMES = tuple(name for name, _ in SECTIONS if name != ADVANCED_SECTION) + ('other', ADVANCED_SECTION)
+# The sections one ROM can give another: not 'other' (no editable field) nor the Advanced section.
+IMPORT_SECTION_NAMES = tuple(name for name in SECTION_NAMES if name not in ('other', ADVANCED_SECTION))
 
 
 def field_section(field):

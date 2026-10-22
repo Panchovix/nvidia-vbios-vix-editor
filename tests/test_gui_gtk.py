@@ -116,6 +116,176 @@ class GtkSmokeTests(unittest.TestCase):
                     finally:
                         window.close()
 
+    def test_max_temperature_and_factory_offset_rows_stage_in_both_languages(self):
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gio, GLib, Gtk
+        from nvidia_vbios.gui.app import EditorWindow, texts
+        from test_rom_formats import synthetic_blackwell
+        app = Gtk.Application(application_id='org.nvidia_vbios.ThermalSmoke', flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.assertTrue(app.register(None))
+        context = GLib.MainContext.default()
+
+        def until(condition):
+            deadline = time.monotonic() + 15
+            while not condition():
+                while context.pending():
+                    context.iteration(False)
+                if time.monotonic() >= deadline:
+                    self.fail('GTK operation did not complete')
+                time.sleep(.01)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'factory-oc.rom'
+            path.write_bytes(synthetic_blackwell(thermal=True, factory_clocks=True))
+            for language in ('en', 'es'):
+                with self.subTest(language=language):
+                    window = EditorWindow(app, path, language)
+                    window.present()
+                    try:
+                        until(lambda: not window.busy and window.controller.document is not None)
+                        # Both are regular rows (no advanced toggle); the rated boost is in the read-only list.
+                        self.assertFalse(window.advanced_toggle.get_active())
+                        for key in ('max_operating_temp_c', 'factory_gpc_offset_mhz'):
+                            self.assertIn(key, window.entries)
+                            self.assertIn(window.text('field.' + key).split(' (')[0],
+                                          '\n'.join(texts(window.rows[key]['row'])))
+                        self.assertIn('factory_rated_boost_mhz', window.readonly_rows)
+                        boost = '\n'.join(texts(window.readonly_rows['factory_rated_boost_mhz']))
+                        self.assertIn('2655 MHz', boost)
+                        self.assertIn(window.text('reason.factory_boost'), boost)
+                        self.assertIn('90 °C', '\n'.join(texts(window.rows['max_operating_temp_c']['row'])))
+                        window.entries['max_operating_temp_c'].set_text('83.5')
+                        window.entries['factory_gpc_offset_mhz'].set_text('-50')
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual(window.controller.document.changes['max_operating_temp_c'], '83.5')
+                        self.assertEqual(window.controller.document.changes['factory_gpc_offset_mhz'], '-50')
+                        self.assertIn('120 → -50 MHz', window.preview_text())
+                        # Above the stock ceiling the row is marked with the accepted range.
+                        window.entries['max_operating_temp_c'].set_text('94')
+                        until(lambda: not window.verifying)
+                        self.assertIn('invalid', window.rows['max_operating_temp_c']['row'].get_css_classes())
+                        self.assertIn('93', window.rows['max_operating_temp_c']['delta'].get_text())
+                    finally:
+                        window.close()
+
+    def test_advanced_section_greys_rows_whose_switch_is_off_in_both_languages(self):
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gio, GLib, Gtk
+        from nvidia_vbios.editor import edit, load
+        from nvidia_vbios.gui.app import EditorWindow, texts
+        from test_rom_formats import synthetic_blackwell
+        app = Gtk.Application(application_id='org.nvidia_vbios.AdvancedSmoke', flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.assertTrue(app.register(None))
+        context = GLib.MainContext.default()
+
+        def until(condition):
+            deadline = time.monotonic() + 15
+            while not condition():
+                while context.pending():
+                    context.iteration(False)
+                if time.monotonic() >= deadline:
+                    self.fail('GTK operation did not complete')
+                time.sleep(.01)
+
+        def children(box):
+            child, found = box.get_first_child(), []
+            while child:
+                found.append(child)
+                child = child.get_next_sibling()
+            return found
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'advanced.rom'
+            path.write_bytes(synthetic_blackwell(perf_cf=True, lpwr=True, thermal=True))
+            # The same ROM with the utilization policy stored off.
+            stored_off = Path(tmp) / 'policy-off.rom'
+            stored_off.write_bytes(edit(load(path), {'perf_cf_util_policy': 0}).blob)
+            for language in ('en', 'es'):
+                with self.subTest(language=language):
+                    window = EditorWindow(app, path, language)
+                    window.present()
+                    try:
+                        until(lambda: not window.busy and window.controller.document is not None)
+                        expander = window.advanced_expander
+                        # A collapsed section after the other ones (Power here), without the XOC-style toggle.
+                        self.assertFalse(window.advanced_toggle.get_active())
+                        self.assertFalse(expander.get_expanded())
+                        self.assertIn(window.text('section.advanced'), texts(expander))
+                        self.assertIn(window.text('section.advanced_note'), texts(expander.get_child()))
+                        boxes = children(window.field_box)
+                        self.assertLess(boxes.index(window.rows['max_operating_temp_c']['row'].get_parent()),
+                                        boxes.index(expander))
+                        for key in ('perf_cf_util_policy', 'perf_cf_gpc_target_pct', 'perf_cf_dram_hysteresis_down',
+                                    'lpwr_mscg', 'lpwr_difr', 'lpwr_difr_dfpr_idle_ms'):
+                            self.assertIn(key, window.entries)
+                        # Two cards under their headings: the clock controllers, then idle power saving.
+                        inside = texts(expander.get_child())
+                        self.assertLess(inside.index(window.text('section.advanced_perf')),
+                                        inside.index(window.text('section.advanced_lpwr')))
+                        perf_card = window.rows['perf_cf_util_policy']['row'].get_parent()
+                        self.assertIs(window.rows['perf_cf_vid_hysteresis_up']['row'].get_parent(), perf_card)
+                        lpwr_card = window.rows['lpwr_gr_power_gating']['row'].get_parent()
+                        self.assertIsNot(lpwr_card, perf_card)
+                        self.assertIs(window.rows['lpwr_difr_cg_idle_us']['row'].get_parent(), lpwr_card)
+                        target, policy = window.entries['perf_cf_gpc_target_pct'], window.entries['perf_cf_util_policy']
+                        note = window.rows['perf_cf_gpc_target_pct']['dependency']
+                        self.assertTrue(target.get_sensitive())
+                        self.assertFalse(note.get_visible())
+                        self.assertIn(window.text('flag_stock'), '\n'.join(texts(window.rows['lpwr_mscg']['row'])))
+                        # A typed target, then the policy turned off as a pending change: the row goes back to
+                        # its stored value, greyed out with the reason naming the switch.
+                        target.set_text('55')
+                        policy.set_active(False)
+                        self.assertFalse(target.get_sensitive())
+                        self.assertEqual(target.get_text(), '40')
+                        self.assertTrue(note.get_visible())
+                        self.assertIn(window.text('field.perf_cf_util_policy').split(' (')[0], note.get_text())
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual(window.controller.document.changes, {'perf_cf_util_policy': '0'})
+                        # Back on: editable again, and a target stages.
+                        policy.set_active(True)
+                        self.assertTrue(target.get_sensitive())
+                        self.assertFalse(note.get_visible())
+                        target.set_text('55')
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual(window.controller.document.changes, {'perf_cf_gpc_target_pct': '55'})
+                        self.assertIn('40 → 55 %', window.preview_text())
+                        # DIFR set to Off greys its idle times.
+                        window.entries['lpwr_difr'].set_active(False)
+                        for key in ('lpwr_difr_dfpr_idle_ms', 'lpwr_difr_sw_asr_idle_us', 'lpwr_difr_cg_idle_us'):
+                            self.assertFalse(window.entries[key].get_sensitive())
+                            self.assertTrue(window.rows[key]['dependency'].get_visible())
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual(window.controller.document.changes,
+                                         {'perf_cf_gpc_target_pct': '55', 'lpwr_difr': '0'})
+                        # The expander keeps its state across a re-render of the same ROM.
+                        expander.set_expanded(True)
+                        window.advanced_toggle.set_active(True)
+                        self.assertTrue(window.advanced_expander.get_expanded())
+                        window.advanced_toggle.set_active(False)
+                    finally:
+                        window.close()
+                    # A ROM that stores the policy off opens with the controller rows greyed out.
+                    window = EditorWindow(app, stored_off, language)
+                    window.present()
+                    try:
+                        until(lambda: not window.busy and window.controller.document is not None)
+                        self.assertFalse(window.advanced_expander.get_expanded())
+                        self.assertFalse(window.entries['perf_cf_util_policy'].get_active())
+                        for key in ('perf_cf_gpc_target_pct', 'perf_cf_vid_jump_pct', 'perf_cf_dram_hysteresis_up'):
+                            self.assertFalse(window.entries[key].get_sensitive())
+                            self.assertTrue(window.rows[key]['dependency'].get_visible())
+                        self.assertTrue(window.entries['lpwr_difr_dfpr_idle_ms'].get_sensitive())
+                        window.entries['perf_cf_util_policy'].set_active(True)
+                        window.entries['perf_cf_vid_jump_pct'].set_text('90')
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual(window.controller.document.changes,
+                                         {'perf_cf_util_policy': '1', 'perf_cf_vid_jump_pct': '90'})
+                    finally:
+                        window.close()
+
     def test_ada_fixed_voltage_rows_stage_rel_and_alt_together(self):
         import gi
         gi.require_version('Gtk', '4.0')

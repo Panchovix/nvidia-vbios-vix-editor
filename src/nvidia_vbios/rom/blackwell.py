@@ -59,6 +59,30 @@ FAN_TABLES = {
 }
 # Policy entry byte 0x32, the last byte of the 51-byte entry: the entry's flag byte.
 FAN_POLICY_FLAG_OFFSET = 0x32
+# Thermal policy table (P+0x50, object 0x1b): version 0x20, header 12 bytes (22 on the RTX PRO
+# 4000 SFF), 48-byte entries.
+THERMAL_POLICY_SIZES = (0x20, (12, 22), 48)
+# Factory clock record (P+0x98, object 0x26): version 0x10, header size 7, then array A (2 x 5
+# bytes) and array B (2 x 5 bytes); header byte 6 is 0 on every GB20x image.
+FACTORY_CLOCK_HEADER = bytes((0x10, 7, 5, 2, 5, 2, 0))
+# PERF_CF controller table (P+0xa8, object 0x60): version 0x10, header 6 bytes (14 on the RTX
+# PRO 4000 SFF, whose object 0x60 also covers the 5-byte header of the policy table), 57-byte
+# entries. PERF_CF policy table (P+0xac, object 0x61): version 0x10, header 5 bytes (byte 4 is
+# 0), 10-byte entries.
+PERF_CF_CONTROLLERS = (0x10, (6, 14), 57, 0x60)
+PERF_CF_POLICIES = (0x10, 5, 10, 0x61)
+# LPWR feature tables (version 0x10): name -> (BIT P offset, object, header size, entry size,
+# format of the entry's enable word, whose bit 0 enables the entry).
+LPWR_TABLES = {
+    'gr_pg': (0x80, 0x39, 10, 5, '<I'),      # GR power gating
+    'ms': (0x84, 0x3A, 7, 16, '<I'),         # memory system clock gating (MSCG)
+    'gr_rg': (0xD4, 0x7E, 12, 1, '<B'),      # GR rail gating
+    'difr': (0xE8, 0x8E, 11, 18, '<I'),      # DIFR
+    'nvdec': (0x11C, 0xB4, 10, 2, '<H'),     # video engine power gating
+    'nvenc': (0x120, 0xB5, 10, 2, '<H'),
+    'ofa': (0x124, 0xB6, 10, 2, '<H'),
+    'nvjpg': (0x128, 0xB7, 10, 2, '<H'),
+}
 
 
 class BlackwellRom:
@@ -342,6 +366,131 @@ class BlackwellRom:
         vcount = b[vfe + 5] | b[vfe + 10] << 8
         self.object_for(vfe, base + 25 * vcount - vfe)
         return gpc_curve_slot(b, base, 25, 2, vcount, root)
+
+    def thermal_policies(self):
+        """Thermal policy table (P+0x50, object 0x1b), or None when no table is referenced.
+
+        GSP-RM 615.78.08 reads a version 0x20 table: the header as 5b1w4b (version, header
+        size, entry size, entry count, flags) and each 48-byte entry as 2b3w10d. Entry byte
+        0 is the policy class: 0 skips the entry (the ASUS XOC and MSI Lightning images
+        store 0 on entries 0, 1 and 4), 1..5 pick the decoder. Bytes 2..7 are three
+        temperatures in 1/32 C that the parser shifts left by 3 into 1/256 C. Byte 1 is
+        1 on entry 0 of every image (a channel or sub-type; inferred).
+        """
+        try:
+            at = self.pointer("P", 0x50)
+        except FormatError:
+            return None  # no thermal policy table referenced
+        b = self.blob
+        version, header_size, entry_size, count = b[at:at + 4]
+        expected_version, header_sizes, expected_entry = THERMAL_POLICY_SIZES
+        if version != expected_version or header_size not in header_sizes or entry_size != expected_entry or not count:
+            raise FormatError("unsupported thermal policy table")
+        if self.object_for(at, header_size + entry_size * count)["id"] != 0x1B:
+            raise FormatError("thermal policy table does not address object 0x1b")
+        entries = []
+        for i in range(count):
+            entry = at + header_size + entry_size * i
+            entries.append(dict(index=i, offset=entry, policy_class=b[entry], byte1=b[entry + 1],
+                                temperature_offset=entry + 2, temperatures_raw=unpack(b, "<3h", entry + 2)))
+        return dict(offset=at, header_size=header_size, entries=entries)
+
+    def factory_clocks(self):
+        """Factory clock record (P+0x98, object 0x26), or None when no record is referenced.
+
+        After the 7-byte header come array A and array B, two {u8 flag, u32 kHz} entries
+        each. GSP-RM 615.78.08 applies an A entry whose flag is 1 as a static frequency
+        delta of the clock domain it maps to (A0: GPC), reading the value as signed; a
+        flag of 0 skips the entry and any other flag fails the read. A B entry with flag 1
+        is written, in MHz, into a performance-state clock entry (B1: the rated boost).
+        Vendor factory-OC images set A0 and B1; the other images store zeros.
+        """
+        try:
+            at = self.pointer("P", 0x98)
+        except FormatError:
+            return None  # no factory clock record referenced
+        b = self.blob
+        if b[at:at + 7] != FACTORY_CLOCK_HEADER:
+            raise FormatError("unsupported factory clock record")
+        if self.object_for(at, 27)["id"] != 0x26:
+            raise FormatError("factory clock record does not address object 0x26")
+
+        def entries(start, fmt):
+            return [dict(index=i, offset=start + 5 * i, flag=b[start + 5 * i], value_offset=start + 5 * i + 1,
+                         khz=unpack(b, fmt, start + 5 * i + 1)[0]) for i in range(2)]
+        offsets, clocks = entries(at + 7, "<i"), entries(at + 17, "<I")
+        if any(e["flag"] not in (0, 1) for e in offsets + clocks):
+            raise FormatError("unsupported factory clock entry flag")
+        return dict(offset=at, offsets=offsets, clocks=clocks)
+
+    def perf_cf(self):
+        """PERF_CF controller (P+0xa8, object 0x60) and policy (P+0xac, object 0x61) tables, or None.
+
+        GSP-RM 615.78.08 reads each 57-byte controller entry as 3b5d1b2d1b4d1b1d. For the
+        utilization controllers (type nibble 1, or 5 on the notebook's controller 0, a
+        subclass with the same offsets) bytes 3..6 are the target and 7..10 the jump
+        threshold, both FXP20.12 fractions (0x1000 = 100 %); byte 19 is the clock domain
+        (0 GPC, 2 DRAM, 4 video; inferred from the sensors it reads), bytes 20 and 21 the
+        increase and decrease hysteresis counts. Each 10-byte policy entry is read as 2b2d:
+        the low nibble of byte 0 must be 1, bit 7 is the policy's active flag, bytes 2..5
+        the conflict mask and 6..9 the controller mask; a policy's type is its position.
+        None when either table is not referenced.
+        """
+        try:
+            controllers_at, policies_at = self.pointer("P", 0xA8), self.pointer("P", 0xAC)
+        except FormatError:
+            return None  # no PERF_CF tables referenced
+        b = self.blob
+        version, header_size, entry_size, count = b[controllers_at:controllers_at + 4]
+        expected_version, header_sizes, expected_entry, owner = PERF_CF_CONTROLLERS
+        if version != expected_version or header_size not in header_sizes or entry_size != expected_entry or count < 3:
+            raise FormatError("unsupported PERF_CF controller table")
+        if self.object_for(controllers_at, header_size + entry_size * count)["id"] != owner:
+            raise FormatError("PERF_CF controller table does not address object 0x60")
+        controllers = []
+        for i in range(count):
+            e = controllers_at + header_size + entry_size * i
+            target, jump = unpack(b, "<II", e + 3)
+            controllers.append(dict(index=i, offset=e, type=b[e] & 0x0F, target_raw=target, jump_raw=jump,
+                                    domain=b[e + 19], hysteresis_up=b[e + 20], hysteresis_down=b[e + 21],
+                                    target_offset=e + 3, jump_offset=e + 7, hysteresis_up_offset=e + 20,
+                                    hysteresis_down_offset=e + 21))
+        p_version, p_header, p_entry, p_owner = PERF_CF_POLICIES
+        version, header_size, entry_size, p_count = b[policies_at:policies_at + 4]
+        if (version, header_size, entry_size) != (p_version, p_header, p_entry) or not p_count or b[policies_at + 4]:
+            raise FormatError("unsupported PERF_CF policy table")
+        if self.object_for(policies_at, p_header + p_entry * p_count)["id"] != p_owner:
+            raise FormatError("PERF_CF policy table does not address object 0x61")
+        policies = []
+        for i in range(p_count):
+            e = policies_at + p_header + p_entry * i
+            conflicts, members = unpack(b, "<II", e + 2)
+            policies.append(dict(index=i, offset=e, flags=b[e], kind=b[e] & 0x0F, active=bool(b[e] & 0x80),
+                                 conflicts=conflicts, controllers=members))
+        return dict(controllers=dict(offset=controllers_at, header_size=b[controllers_at + 1], entries=controllers),
+                    policies=dict(offset=policies_at, header_size=p_header, entries=policies))
+
+    def lpwr_table(self, name):
+        """One LPWR feature table (LPWR_TABLES), or None when it is not referenced.
+
+        GSP-RM 615.78.08 checks the version (0x10) and parses every entry; an entry whose
+        enable word has bit 0 clear is skipped. Each entry reports its enable word.
+        """
+        pointer, owner, header_size, entry_size, fmt = LPWR_TABLES[name]
+        try:
+            at = self.pointer("P", pointer)
+        except FormatError:
+            return None  # no table referenced (or past the BIT P token)
+        b = self.blob
+        version, hs, es, count = b[at:at + 4]
+        if (version, hs, es) != (0x10, header_size, entry_size) or not count:
+            raise FormatError(f"unsupported LPWR {name} table")
+        if self.object_for(at, hs + es * count)["id"] != owner:
+            raise FormatError(f"LPWR {name} table does not address object {owner:#x}")
+        entries = [dict(index=i, offset=at + hs + es * i, value=unpack(b, fmt, at + hs + es * i)[0])
+                   for i in range(count)]
+        return dict(name=name, offset=at, header_size=hs, entry_size=es, format=fmt, object_id=owner,
+                    entries=entries)
 
     def power_rows(self):
         at = self.pointer("P", 11 * 4)

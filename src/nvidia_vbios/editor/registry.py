@@ -1,6 +1,7 @@
 """Per-format field evidence registry; unvalidated fields stay read-only."""
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
+import math
 import struct
 from ..rom.blackwell import BlackwellRom, FAN_POLICY_FLAG_OFFSET
 from ..rom.structure import (DRAM_POINT_OFFSET_BIT, GPC_CURVE_OFFSET_LIMIT, vfe_constant_mhz,
@@ -2693,6 +2694,509 @@ def clock_offset_ranges(image, parser, rows):
         for side, word in (('max', 'ceiling'), ('min', 'floor')):
             result.append(bound(f'{domain.lower()}_{side}_table_mhz', f'{domain} offset {word} (table)',
                                 named[domain], side, 'table MHz', 1, base))
+    return result
+
+
+MAX_TEMP_SEMANTICS = 'stored-max-operating-temperature'
+# Entry 0 of the thermal policy table on each reviewed GB20x product (PCI device), in C. The
+# limit can be raised at most MAX_TEMP_RAISE_C above this value; a product without a stored
+# value here can only be lowered.
+MAX_TEMP_STOCK_C = {0x2B85: 90, 0x2BB1: 93, 0x2BB4: 92, 0x2C02: 88, 0x2C05: 88, 0x2C33: 96, 0x2C59: 89,
+                    0x2D04: 87, 0x2F04: 85}
+MAX_TEMP_FLOOR_C = 40
+MAX_TEMP_RAISE_C = 3
+MAX_TEMP_FIRMWARE_EVIDENCE = {
+    'kind': 'static-firmware-analysis',
+    'source': 'GSP-RM firmware 615.78.08 (gsp_ga10x.bin), thermal policy table parser (version 0x20)',
+    'observation': 'each 48-byte entry is unpacked as 2b3w10d; byte 0 is the policy class and an entry with class 0 '
+                   'is skipped; the three words after byte 1 are shifted left by 3 (1/32 C to 1/256 C) and handed to '
+                   'the policy together', 'set_tested': False}
+MAX_TEMP_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'GB20x VBIOS corpus',
+    'observation': 'entry 0 is class 1 with byte 1 = 1 on every image and stores three equal temperatures: 90 C on '
+                   'every RTX 5090, 88 C on the RTX 5080 and 5070 Ti, 85 C on the RTX 5070, 87 C on the RTX 5060 Ti, '
+                   '92 C on the RTX PRO 6000 Max-Q, 93 C on the RTX PRO 6000 Workstation, 96 C on the RTX PRO 4000 '
+                   'SFF and 89 C on the RTX 5080 Laptop GPU; entries 1 and 4 store 105 C (entry 4: 103 C on the '
+                   'notebook); the notebook alone stores a second class 1 entry with byte 1 = 1, entry 2 at 87/75/87 '
+                   'C, whose role was not traced; the ASUS XOC and MSI Lightning images keep the temperatures and set '
+                   'byte 0 of entries 0, 1 and 4 to 0'}
+MAX_TEMP_NVML_EVIDENCE = dict(
+    NVML_CAPTURE, source='read-only nvidia-smi capture',
+    relation="'GPU Current Temp' + 'GPU Current T.Limit Temp' = stored entry 0 temperature",
+    scope='five reviewed GB20x devices: two RTX PRO 6000 Max-Q, an RTX 5080, an RTX 5070 Ti and an RTX PRO 4000 SFF')
+MAX_TEMP_DISABLED_REASON = ('read-only: thermal policy entry 0 is disabled on this image (byte 0 = 0, as on XOC-style '
+                           'images), so its temperature is not applied; the editor does not enable it')
+MAX_TEMP_UNEQUAL_REASON = ('read-only: the three temperatures of thermal policy entry 0 differ on this image; the '
+                           'editor writes them only together')
+MAX_TEMP_UNRECOGNIZED_REASON = ('read-only: thermal policy entry 0 is not the class 1 entry with byte 1 = 1 that '
+                                'every reviewed image stores')
+
+
+def _other_limits(table):
+    """The other enabled class 1 entries with byte 1 = 1 (the notebook's entry 2), as 'entry N (T C)' texts."""
+    return ['entry %d (%s C)' % (e['index'], '/'.join('%g' % (Decimal(t) / 32) for t in e['temperatures_raw']))
+            for e in table['entries'][1:] if e['policy_class'] == 1 and e['byte1'] == 1]
+
+
+@registry.register
+def max_operating_temperature(image, parser):
+    """GB20x: the maximum operating temperature, entry 0 of the thermal policy table (P+0x50), in C.
+
+    Entry 0 (class 1, byte 1 = 1) stores three s16 temperatures in 1/32 C, equal on every
+    image of the corpus; the driver reports the GPU's temperature headroom against this value
+    (nvidia-smi current temperature + T.Limit equals it on five boards). One field writes the
+    three together; byte 0 and every other entry are never written. The value can be lowered
+    to 40 C and raised at most 3 C above the product's stock value (MAX_TEMP_STOCK_C); an
+    unlisted product can only lower it. Entry 0 with byte 0 = 0 (skipped by the driver, as on
+    the XOC-style images) or three different temperatures stay read-only. Where another class 1
+    entry with byte 1 = 1 exists (the notebook's entry 2, 87/75/87 C, untraced), the reason says
+    that it may apply first. Not hardware-tested.
+    """
+    if not isinstance(parser, BlackwellRom):
+        return []
+    table = parser.thermal_policies()
+    if table is None:
+        return []
+    entry = table['entries'][0]
+    raw = entry['temperatures_raw']
+    current = Decimal(raw[0]) / 32
+    stock = MAX_TEMP_STOCK_C.get(parser.legacy['device'])
+    if entry['policy_class'] == 0:
+        reason = MAX_TEMP_DISABLED_REASON
+    elif entry['policy_class'] != 1 or entry['byte1'] != 1 or not 0 < raw[0]:
+        reason = MAX_TEMP_UNRECOGNIZED_REASON
+    elif len(set(raw)) != 1:
+        reason = MAX_TEMP_UNEQUAL_REASON
+    else:
+        reason = None
+    editable = reason is None and can_edit(image, parser)
+    ceiling = max(current, stock + MAX_TEMP_RAISE_C if stock is not None else current)
+    floor = min(current, MAX_TEMP_FLOOR_C)
+    limits = ('from 40 C up to 3 C above the stock %d C of this product' % stock if stock is not None else
+              'from 40 C up to the stored value (this product has no reviewed stock value, so it can only be '
+              'lowered)')
+    others = _other_limits(table)
+    caveat = ('; this image also stores ' + ', '.join(others) + ', a policy of the same kind whose role was not '
+              'traced and that may limit the GPU first, so raising this value may have no effect') if others else ''
+    at = entry['temperature_offset']
+    return [field('max_operating_temp_c', 'Max operating temperature', 'C', float(current),
+                  float(floor) if editable else None, float(ceiling) if editable else None, editable,
+                  [dict(MAX_TEMP_FIRMWARE_EVIDENCE), dict(MAX_TEMP_CORPUS_EVIDENCE), dict(MAX_TEMP_NVML_EVIDENCE)],
+                  offsets=[at, at + 2, at + 4] if editable else (), encoding='<h' if editable else '', scale=32,
+                  stored_units='1/32 C', writable_status=None if editable else 'unsupported', experimental=True,
+                  value_semantics=MAX_TEMP_SEMANTICS, thermal_policy=0, stock_c=stock,
+                  reason=reason or 'experimental: the three temperatures of thermal policy entry 0 (1/32 C, written '
+                                   'together), which the driver reports as the maximum operating temperature '
+                                   f'(nvidia-smi current temperature + T.Limit equals it); {limits}; byte 0 and the '
+                                   f'other entries stay as stored{caveat}; not hardware-tested')]
+
+
+FACTORY_OFFSET_SEMANTICS = 'stored-factory-gpc-offset'
+FACTORY_OFFSET_LIMIT_MHZ = 500
+FACTORY_CLOCK_FIRMWARE_EVIDENCE = {
+    'kind': 'static-firmware-analysis',
+    'source': 'GSP-RM firmware 615.78.08 (gsp_ga10x.bin), factory clock record readers',
+    'observation': 'at boot one reader takes each array-A entry whose flag is 1 and stores its 32-bit kHz value as a '
+                   'static frequency delta of the clock domain the entry maps to (entry 0: the GPC domain, copied to '
+                   'its companion domain); a flag of 0 skips the entry and any other flag fails the read; the function '
+                   'that applies a static delta to a clock loads the 32-bit value sign-extended, divides it by 1000 '
+                   'with a signed division (truncating toward zero to whole MHz), adds it to the clock in MHz and '
+                   'returns 0 when the sum is negative, so the value is a signed kHz offset and a negative one lowers '
+                   'the clock; a second reader writes each array-B entry with flag 1, in MHz, into a '
+                   'performance-state clock entry', 'set_tested': False}
+FACTORY_CLOCK_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'GB20x VBIOS corpus',
+    'observation': 'the record header is 10 07 05 02 05 02 00 on every image; vendor factory-OC images set entry A0 '
+                   '(flag 1) to their factory GPC offset and entry B1 to their rated boost clock: 120/2655 MHz on an '
+                   'RTX 5090 Aorus Master, 195/2730 MHz on three other RTX 5090 images (ASUS ROG, MSI Lightning), '
+                   '45/2580 MHz on the ASUS XOC images, 30/2640 MHz on an RTX 5080, 120/2572 MHz on an RTX 5070 Ti, '
+                   '60/2572 MHz on an RTX 5070 and 30/2602 MHz on two RTX 5060 Ti; the Founders Edition, reference '
+                   'RTX 5070, notebook and RTX PRO images store zeros with flag 0; entries A1 and B0 are 0 everywhere'}
+FACTORY_OFFSET_DISABLED_REASON = ('read-only: this image stores no factory GPC offset (entry A0 of the factory clock '
+                                  'record is disabled, as on Founders Edition, reference, laptop and RTX PRO images); '
+                                  'the editor does not enable it')
+FACTORY_OFFSET_FRACTION_REASON = ('read-only: the stored factory GPC offset is not a whole number of MHz, which no '
+                                  'reviewed image stores; the driver uses it truncated to whole MHz')
+FACTORY_BOOST_REASON = ('read-only: the rated boost clock of the factory clock record (entry B1); the driver writes it '
+                        'into a performance-state clock entry, and the editor keeps it as stored')
+
+
+def _mhz(khz):
+    return khz // 1000 if khz % 1000 == 0 else khz / 1000
+
+
+@registry.register
+def factory_clocks(image, parser):
+    """GB20x: the vendor factory GPC offset (entry A0 of the factory clock record, P+0x98) and its rated boost.
+
+    A0 is a signed kHz offset that GSP-RM applies at boot as the GPC clock domain's static
+    frequency delta, when its flag is 1 (vendor factory-OC images); the driver truncates it
+    toward zero to whole MHz. It is editable in whole MHz, -500..+500 (a layout of kHz
+    values), only where that flag is already 1 and the stored value is whole MHz; the flag,
+    the rest of the record and the rated boost (B1, written into a performance-state clock
+    entry) stay as stored. It is a separate mechanism from gpc_curve_offset_mhz (a VFE
+    equation): both apply. B1 is listed read-only where its flag is 1. Not hardware-tested.
+    """
+    if not isinstance(parser, BlackwellRom):
+        return []
+    record = parser.factory_clocks()
+    if record is None:
+        return []
+    offset, boost = record['offsets'][0], record['clocks'][1]
+    enabled = offset['flag'] == 1
+    whole = offset['khz'] % 1000 == 0
+    editable = enabled and whole and can_edit(image, parser)
+    current = _mhz(offset['khz'])
+    lo, hi = (min(-FACTORY_OFFSET_LIMIT_MHZ, current), max(FACTORY_OFFSET_LIMIT_MHZ, current)) if whole else (0, 0)
+    # Whole MHz only (the driver truncates the kHz value to whole MHz): each MHz value writes its kHz.
+    layout = tuple((mhz, (struct.pack('<i', mhz * 1000),)) for mhz in range(lo, hi + 1)) if editable else ()
+    evidence = [dict(FACTORY_CLOCK_FIRMWARE_EVIDENCE), dict(FACTORY_CLOCK_CORPUS_EVIDENCE)]
+    reason = (None if whole else FACTORY_OFFSET_FRACTION_REASON) if enabled else FACTORY_OFFSET_DISABLED_REASON
+    result = [field('factory_gpc_offset_mhz', 'Factory GPC offset (vendor overclock)', 'MHz', current,
+                    lo if editable else None, hi if editable else None, editable, evidence,
+                    offsets=[offset['value_offset']] if editable else (), encoding='<i' if editable else '',
+                    scale=1, layout=layout, stored_units='kHz', writable_status=None if editable else 'unsupported',
+                    experimental=True, value_semantics=FACTORY_OFFSET_SEMANTICS,
+                    rated_boost_mhz=_mhz(boost['khz']) if boost['flag'] == 1 else None,
+                    reason=reason or 'experimental: the vendor factory GPC offset (entry A0 of the factory clock '
+                                     'record, signed kHz), which the driver applies at boot as the GPC clock frequency '
+                                     'delta; -500..+500 MHz in whole MHz (the driver truncates to whole MHz); a '
+                                     'negative value lowers the clock; a separate mechanism from the GPC curve offset, '
+                                     'so both apply; the rated boost (entry B1) stays as stored; values far from the '
+                                     'stock one can make the card unstable; not hardware-tested')]
+    if boost['flag'] == 1:
+        result.append(field('factory_rated_boost_mhz', 'Factory rated boost clock', 'MHz', _mhz(boost['khz']),
+                            None, None, False, [dict(e) for e in evidence], writable_status='unsupported',
+                            value_semantics='stored-factory-rated-boost', reason=FACTORY_BOOST_REASON))
+    return result
+
+
+# The Advanced section (GB20x): PERF_CF controllers and LPWR idle power features. Its fields carry
+# section='advanced'; a field that only matters while a switch is on carries depends_on={'field':
+# <switch key>, 'value': 1}, and edit() changes it only while that switch is 1, stored or requested
+# in the same edit. The section is not part of the import from another ROM.
+ADVANCED_SECTION = 'advanced'
+PERF_CF_SWITCH_KEY = 'perf_cf_util_policy'
+PERF_CF_SWITCH_SEMANTICS = 'stored-perf-cf-policy-switch'
+PERF_CF_TARGET_SEMANTICS = 'stored-perf-cf-target'
+PERF_CF_JUMP_SEMANTICS = 'stored-perf-cf-jump'
+PERF_CF_HYSTERESIS_SEMANTICS = 'stored-perf-cf-hysteresis'
+LPWR_SWITCH_SEMANTICS = 'stored-lpwr-switch'
+LPWR_TIME_SEMANTICS = 'stored-lpwr-idle-time'
+ADVANCED_SEMANTICS = (PERF_CF_SWITCH_SEMANTICS, PERF_CF_TARGET_SEMANTICS, PERF_CF_JUMP_SEMANTICS,
+                      PERF_CF_HYSTERESIS_SEMANTICS, LPWR_SWITCH_SEMANTICS, LPWR_TIME_SEMANTICS)
+# The utilization controllers of PERF_CF policy 0: (controller index, key part, clock domain name,
+# domain byte 19, then the stock decrease hysteresis count, target and jump threshold fractions,
+# identical on every reviewed image). The stock DRAM target 0x851 (51.98 %) is not the fraction
+# nearest to 52 % (0x852): writing a stock percent stores the stock fraction, so going back to
+# stock gives the stock bytes.
+PERF_CF_CONTROLLERS = ((0, 'gpc', 'GPC', 0, 9, 0x0666, 0x0C00), (1, 'dram', 'DRAM', 2, 4, 0x0851, 0x0A3D),
+                       (2, 'vid', 'VID', 4, 9, 0x0A66, 0x0D9A))
+PERF_CF_FXP_ONE = 0x1000          # FXP20.12 1.0: 100 %
+PERF_CF_TARGET_FLOOR_PCT = 10
+PERF_CF_HYSTERESIS_UP = (1, 4)
+PERF_CF_FIRMWARE_EVIDENCE = {
+    'kind': 'static-firmware-analysis',
+    'source': 'GSP-RM firmware 615.78.08 (gsp_ga10x.bin), PERF_CF controller and policy parsers, load validator and '
+              'control handler',
+    'observation': 'each 57-byte controller entry is unpacked as 3b5d1b2d1b4d1b1d; for the utilization controllers '
+                   '(type 1 and its subclass type 5) bytes 3..6 become the target and 7..10 the jump threshold '
+                   '(FXP20.12, 0x1000 = 100 %) and bytes 20 and 21 the increase and decrease hysteresis counts; the '
+                   'validator run at load requires a target of 1..0x1000, a jump threshold of at most 0x1000 and '
+                   'nonzero hysteresis counts, and the runtime control handler sets exactly these fields, the two '
+                   'gains and one flag bit; each 10-byte policy entry is unpacked as 2b2d, its low nibble must be 1 '
+                   'and bit 7 is read as the policy\'s active flag; a per-chip flag can make GSP-RM skip the VBIOS '
+                   'controllers and what sets it on GB20x was not traced, so that these tables take effect on GB20x '
+                   'is not proven', 'set_tested': False}
+PERF_CF_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'GB20x VBIOS corpus',
+    'observation': 'every image stores 20 controller and 9 policy entries; policy 0 is active (0x81) and names '
+                   'controllers 0, 1, 2 and 13; controllers 0, 1 and 2 are the GPC, DRAM and video utilization '
+                   'controllers (clock domain bytes 0, 2 and 4) with targets of 40, 52 and 65 %, jump thresholds of '
+                   '75, 64 and 85 %, increase hysteresis 1 and decrease hysteresis 9, 4 and 9 on every image; the '
+                   'notebook stores controller 0 as type 5; the controller header is 14 bytes on the RTX PRO 4000 SFF '
+                   '(6 elsewhere), where object 0x60 also covers the policy table header'}
+PERF_CF_POLICY_UNRECOGNIZED_REASON = ('read-only: policy entry 0 of the PERF_CF policy table is not the reviewed '
+                                      'utilization policy (type nibble 1, naming controllers 0, 1 and 2)')
+PERF_CF_CONTROLLER_UNRECOGNIZED_REASON = ('read-only: this PERF_CF controller is not the reviewed utilization '
+                                          'controller (type 1 or 5, its clock domain, a target below its jump '
+                                          'threshold and nonzero hysteresis counts)')
+PERF_CF_GATE = 'editable only while the utilization policy is on (stored or in the same edit)'
+PERF_CF_UNPROVEN = ('that the driver uses these tables on GB20x is not proven; not hardware-tested')
+
+
+def fxp_percent(raw):
+    """A FXP20.12 fraction (0x1000 = 100 %) in whole percent, rounded half up."""
+    return int((Decimal(raw) * 100 / PERF_CF_FXP_ONE).to_integral_value(rounding=ROUND_HALF_UP))
+
+
+def percent_fxp(percent):
+    """Whole percent as the nearest FXP20.12 fraction."""
+    return int((Decimal(percent) * PERF_CF_FXP_ONE / 100).to_integral_value(rounding=ROUND_HALF_UP))
+
+
+def percent_layout(raw, stock_raw, low, high):
+    """Layout of a FXP20.12 percent field: every whole percent from low to high as its nearest fraction; the
+    stored percent keeps its stored fraction and the stock percent takes the stock fraction."""
+    exact = {fxp_percent(stock_raw): stock_raw, fxp_percent(raw): raw}
+    return tuple((p, (struct.pack('<I', exact.get(p, percent_fxp(p))),)) for p in range(low, high + 1))
+
+
+def stock_multiple(stock, current):
+    """0.5x..4x a stock value (rounded inward), widened to hold the stored one."""
+    return min(math.ceil(stock / 2), current), max(4 * stock, current)
+
+
+@registry.register
+def perf_cf_controllers(image, parser):
+    """GB20x Advanced section: the PERF_CF utilization policy switch and its GPC, DRAM and video controllers.
+
+    perf_cf_util_policy is bit 7 (active) of policy entry 0, which runs controllers 0..2. Per
+    controller: the target and the jump threshold (FXP20.12 at bytes 3 and 7, in whole
+    percent; the stored fraction is kept when the percent is unchanged) and the increase and
+    decrease hysteresis counts (bytes 20 and 21). Target: 10 % up to the jump threshold - 1 %;
+    jump: the target + 1 % up to 100 % (GSP-RM refuses more), one ordering group per
+    controller; decrease hysteresis 0.5x..4x its stock count, increase 1..4. The controller
+    fields depend on the switch (depends_on): edit() changes them only while it is on. Policy
+    or controller entries outside the reviewed shape stay read-only. Experimental: that the
+    driver uses these tables on GB20x is not proven, and nothing is hardware-tested.
+    """
+    if not isinstance(parser, BlackwellRom):
+        return []
+    tables = parser.perf_cf()
+    if tables is None:
+        return []
+    writable = can_edit(image, parser)
+    evidence = [PERF_CF_FIRMWARE_EVIDENCE, PERF_CF_CORPUS_EVIDENCE]
+    policy = tables['policies']['entries'][0]
+    policy_ok = policy['kind'] == 1 and policy['controllers'] & 0b111 == 0b111
+    editable = policy_ok and writable
+    flags = policy['flags']
+    result = [field(PERF_CF_SWITCH_KEY, 'Utilization clock policy', 'flag', 1 if policy['active'] else 0,
+                    0 if editable else None, 1 if editable else None, editable, [dict(e) for e in evidence],
+                    offsets=[policy['offset']] if editable else (), encoding='<B' if editable else '', scale=1,
+                    layout=((0, (bytes((flags & 0x7F,)),)), (1, (bytes((flags | 0x80,)),))) if editable else (),
+                    writable_status=None if editable else 'unsupported', experimental=True,
+                    section=ADVANCED_SECTION, value_semantics=PERF_CF_SWITCH_SEMANTICS, perf_cf_policy=0,
+                    perf_cf_controllers=[0, 1, 2],
+                    reason='experimental: bit 7 (active) of PERF_CF policy entry 0, the utilization policy that '
+                           'raises and lowers the GPC, DRAM and video clocks with load through controllers 0..2; '
+                           'off is expected to stop that scaling (inferred); the other bits stay as stored, and the '
+                           'targets, jump thresholds and hysteresis counts of controllers 0..2 are editable only '
+                           'while it is on; ' + PERF_CF_UNPROVEN if policy_ok else PERF_CF_POLICY_UNRECOGNIZED_REASON)]
+    depends = {'field': PERF_CF_SWITCH_KEY, 'value': 1}
+    for index, part, name, domain, stock_down, stock_target, stock_jump in PERF_CF_CONTROLLERS:
+        entry = tables['controllers']['entries'][index]
+        target, jump = fxp_percent(entry['target_raw']), fxp_percent(entry['jump_raw'])
+        recognized = (entry['type'] in (1, 5) and entry['domain'] == domain and 0 < entry['target_raw'] and
+                      entry['jump_raw'] <= PERF_CF_FXP_ONE and target < jump and entry['hysteresis_up'] and
+                      entry['hysteresis_down'])
+        reason = None if recognized and policy_ok else (PERF_CF_CONTROLLER_UNRECOGNIZED_REASON if policy_ok else
+                                                         PERF_CF_POLICY_UNRECOGNIZED_REASON)
+        editable = reason is None and writable
+        common = dict(writable_status=None if editable else 'unsupported', experimental=True,
+                      section=ADVANCED_SECTION, depends_on=dict(depends), perf_cf_controller=index,
+                      clock_domain=name)
+        group = f'perf-cf-{part}' if editable else None
+        floor = min(PERF_CF_TARGET_FLOOR_PCT, target)
+        target_layout = percent_layout(entry['target_raw'], stock_target, floor, max(99, target))
+        jump_layout = percent_layout(entry['jump_raw'], stock_jump, min(floor + 1, jump), max(100, jump))
+        result.append(field(
+            f'perf_cf_{part}_target_pct', f'{name} utilization target', '%', target,
+            floor if editable else None, jump - 1 if editable else None, editable, [dict(e) for e in evidence],
+            offsets=[entry['target_offset']] if editable else (), encoding='<I' if editable else '', scale=1,
+            layout=target_layout if editable else (), ordering_group=group,
+            encoding_bounds=(floor, max(99, target)) if editable else None, stored_units='FXP20.12 fraction',
+            value_semantics=PERF_CF_TARGET_SEMANTICS, stored_raw=entry['target_raw'],
+            stock=fxp_percent(stock_target), **common,
+            reason=reason or f'experimental: the {name} utilization target of PERF_CF controller {index} (FXP20.12 '
+                             'at entry byte 3, shown in whole percent; the stored fraction is kept while the percent '
+                             f'is unchanged): the load the driver keeps the {name} clock near; lower raises the '
+                             'clock sooner at partial load (more power and heat), higher keeps it lower (inferred); '
+                             f'{PERF_CF_TARGET_FLOOR_PCT} % up to 1 % below the jump threshold; {PERF_CF_GATE}; '
+                             + PERF_CF_UNPROVEN))
+        result.append(field(
+            f'perf_cf_{part}_jump_pct', f'{name} jump threshold', '%', jump,
+            target + 1 if editable else None, max(100, jump) if editable else None, editable,
+            [dict(e) for e in evidence], offsets=[entry['jump_offset']] if editable else (),
+            encoding='<I' if editable else '', scale=1, layout=jump_layout if editable else (),
+            ordering_group=group, encoding_bounds=(min(floor + 1, jump), max(100, jump)) if editable else None,
+            stored_units='FXP20.12 fraction', value_semantics=PERF_CF_JUMP_SEMANTICS, stored_raw=entry['jump_raw'],
+            stock=fxp_percent(stock_jump), **common,
+            reason=reason or f'experimental: the {name} jump threshold of PERF_CF controller {index} (FXP20.12 at '
+                             'entry byte 7, whole percent): above this load the driver is expected to raise the clock '
+                             'at once instead of in steps (inferred); 1 % above the target up to 100 %, the most the '
+                             f'driver accepts; {PERF_CF_GATE}; ' + PERF_CF_UNPROVEN))
+        low, high = stock_multiple(stock_down, entry['hysteresis_down'])
+        result.append(field(
+            f'perf_cf_{part}_hysteresis_down', f'{name} clock-down hysteresis', 'samples', entry['hysteresis_down'],
+            low if editable else None, high if editable else None, editable, [dict(e) for e in evidence],
+            offsets=[entry['hysteresis_down_offset']] if editable else (), encoding='<B' if editable else '',
+            scale=1, stored_units='samples', value_semantics=PERF_CF_HYSTERESIS_SEMANTICS, stock=stock_down,
+            **common,
+            reason=reason or f'experimental: the decrease hysteresis count of the {name} PERF_CF controller {index} '
+                             '(entry byte 21, samples, inferred): how long the load stays below the target before '
+                             'the clock steps down; higher keeps clocks up longer, lower drops them sooner and may '
+                             f'stutter; {low}..{high} (0.5x to 4x the stock {stock_down}); {PERF_CF_GATE}; '
+                             + PERF_CF_UNPROVEN))
+        low, high = min(PERF_CF_HYSTERESIS_UP[0], entry['hysteresis_up']), max(PERF_CF_HYSTERESIS_UP[1],
+                                                                               entry['hysteresis_up'])
+        result.append(field(
+            f'perf_cf_{part}_hysteresis_up', f'{name} clock-up hysteresis', 'samples', entry['hysteresis_up'],
+            low if editable else None, high if editable else None, editable, [dict(e) for e in evidence],
+            offsets=[entry['hysteresis_up_offset']] if editable else (), encoding='<B' if editable else '',
+            scale=1, stored_units='samples', value_semantics=PERF_CF_HYSTERESIS_SEMANTICS, stock=1, **common,
+            reason=reason or f'experimental: the increase hysteresis count of the {name} PERF_CF controller {index} '
+                             '(entry byte 20, samples, inferred): how long the load stays above the target before '
+                             f'the clock steps up; 1..4 (stock 1); {PERF_CF_GATE}; ' + PERF_CF_UNPROVEN))
+    return result
+
+
+# LPWR feature switches: (key, table, label, the value a disabled entry of the table stores with bit 0
+# clear, or None when every entry belongs to the switch, effect). A switch covers the entries the
+# image enables in stock: every entry whose value without bit 0 differs from the disabled value
+# (DIFR: entry 0 only). Off clears bit 0 of each covered entry, Stock sets it again.
+LPWR_SWITCHES = (
+    ('lpwr_gr_power_gating', 'gr_pg', 'GR power gating', 0xFFFFFE00,
+     'Off keeps the graphics engine powered at idle'),
+    ('lpwr_mscg', 'ms', 'Memory system clock gating (MSCG)', 0xFFFFF000,
+     'Off keeps the memory system clocks running at idle'),
+    ('lpwr_nvdec_gating', 'nvdec', 'NVDEC power gating', None, 'Off keeps the video decoder powered while idle'),
+    ('lpwr_nvenc_gating', 'nvenc', 'NVENC power gating', None, 'Off keeps the video encoder powered while idle'),
+    ('lpwr_ofa_gating', 'ofa', 'OFA power gating', None, 'Off keeps the optical flow engine powered while idle'),
+    ('lpwr_nvjpg_gating', 'nvjpg', 'NVJPG power gating', None, 'Off keeps the JPEG engine powered while idle'),
+    ('lpwr_difr', 'difr', 'DIFR', 0xFFFFF800,
+     'Off may help with flicker or idle oddities on a static desktop (inferred)'),
+    ('lpwr_gr_rail_gating', 'gr_rg', 'GR rail gating', None, 'Off keeps the GR rail powered at idle'),
+)
+# GR rail gating: the entries each reviewed product enables in stock (RTX PRO 4000 SFF and the
+# RTX 5080 Laptop GPU). Its bit 1 is set on stock-disabled GeForce entries too, so an entry
+# switched off looks like a stock-disabled one: only these products get the switch.
+LPWR_GR_RG_STOCK = {0x2C33: (0,), 0x2C59: (0, 1, 2)}
+# Idle times: (key, table, header offset, switch, units, multiplier into units, stock stored value, label).
+LPWR_TIMES = (
+    ('lpwr_difr_dfpr_idle_ms', 'difr', 5, 'lpwr_difr', 'ms', 1, 1000, 'DIFR DFPR idle time'),
+    ('lpwr_difr_sw_asr_idle_us', 'difr', 7, 'lpwr_difr', 'us', 1, 15, 'DIFR SW-ASR idle time'),
+    ('lpwr_difr_cg_idle_us', 'difr', 9, 'lpwr_difr', 'us', 1, 15, 'DIFR clock gating idle time'),
+    ('lpwr_gr_rail_gating_idle_us', 'gr_rg', 5, 'lpwr_gr_rail_gating', 'us', 10, 50, 'GR rail gating idle time'),
+)
+LPWR_FIRMWARE_EVIDENCE = {
+    'kind': 'static-firmware-analysis',
+    'source': 'GSP-RM firmware 615.78.08 (gsp_ga10x.bin), LPWR VBIOS initialization and table parsers',
+    'observation': 'the LPWR initialization checks each table version (0x10) and parses every entry; an entry whose '
+                   'enable bit (bit 0) is clear is skipped, for GR power gating, MSCG, GR rail gating, DIFR and '
+                   'NVDEC/NVENC/OFA/NVJPG power gating; the DIFR header words at +5 (DFPR, times 1000), +7 (SW-ASR) '
+                   'and +9 (clock gating) and the GR rail gating word at +5 (times 10) are copied without conditions '
+                   'into the idle thresholds of their controllers, which become counter cycles as frequency x time / '
+                   '1e6, so their unit is most likely microseconds (inferred)', 'set_tested': False}
+LPWR_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'GB20x VBIOS corpus',
+    'observation': 'each table has the same version, header and entry sizes and five entries on every image; GR power '
+                   'gating is enabled on entries 0 and 1 (also 2 on the RTX 5080, RTX 5070 Ti, RTX PRO 4000 SFF and '
+                   'the notebook), MSCG on entries 0..2 (0..1 on the RTX PRO 6000 Workstation, RTX 5070 and RTX 5060 '
+                   'Ti), NVDEC/NVENC/OFA/NVJPG on every entry and DIFR on entry 0; disabled GR, MSCG and DIFR entries '
+                   'store 0xfffffe00, 0xfffff000 and 0xfffff800; GR rail gating is enabled only on the RTX PRO 4000 '
+                   'SFF (entry 0) and the notebook (entries 0..2); the DIFR words store 1000, 15 and 15 and the GR '
+                   'rail gating word 50 on every image'}
+LPWR_MIXED_REASON = ('read-only: the entries this switch covers are neither all enabled nor all disabled on this '
+                     'image')
+LPWR_GR_RG_UNREVIEWED_REASON = ('read-only: GR rail gating is enabled on this image, but which entries this product '
+                                'enables in stock is not reviewed')
+LPWR_GR_RG_UNRECOGNIZED_REASON = ('read-only: a GR rail gating entry this product enables in stock does not store '
+                                  'the reviewed value (0xff, or 0xfe when switched off)')
+LPWR_TIME_SWITCH_REASON = 'read-only: the switch this idle time belongs to is read-only on this image'
+LPWR_UNTESTED = ('acts only at idle or light load (inferred); low idle times save more power but can cause stutter '
+                 'or, rarely, a black screen at idle; not hardware-tested')
+
+
+def lpwr_covered(parser, key, table, disabled):
+    """(entries the switch covers, read-only reason or None); no entries means no switch."""
+    entries = table['entries']
+    if key == 'lpwr_gr_rail_gating':
+        stock = LPWR_GR_RG_STOCK.get(parser.legacy['device'])
+        if stock is None:
+            return ([], None) if not any(e['value'] & 1 for e in entries) else (
+                [e for e in entries if e['value'] & 1], LPWR_GR_RG_UNREVIEWED_REASON)
+        covered = [entries[i] for i in stock if i < len(entries)]
+        if len(covered) != len(stock) or any(e['value'] & 0xFE != 0xFE for e in covered):
+            return covered, LPWR_GR_RG_UNRECOGNIZED_REASON
+        return covered, None
+    if key == 'lpwr_difr':
+        entries = entries[:1]
+    return [e for e in entries if disabled is None or e['value'] & ~1 != disabled], None
+
+
+@registry.register
+def lpwr_features(image, parser):
+    """GB20x Advanced section: Stock/Off switches of the LPWR idle power features and their idle times.
+
+    Each switch (LPWR_SWITCHES) covers the entries of its table the image enables in stock
+    (lpwr_covered); 1 (Stock) sets bit 0 of each of them, 0 (Off) clears it, and every other
+    bit and entry stays as stored, so Off and back is byte-identical. Entries that do not all
+    agree leave the switch read-only. GR power gating, MSCG and DIFR never cover an entry
+    holding the disabled value; the video engine switches cover every entry, so a ROM that
+    ships them all disabled reads as Off and Stock would enable them (no reviewed image does).
+    GR rail gating is offered only on the products whose stock entries are reviewed
+    (LPWR_GR_RG_STOCK). The idle
+    times (LPWR_TIMES) are absolute values in their units, 0.5x..4x the stock value, and
+    depend on their switch (depends_on). Experimental, not hardware-tested.
+    """
+    if not isinstance(parser, BlackwellRom):
+        return []
+    writable = can_edit(image, parser)
+    evidence = [LPWR_FIRMWARE_EVIDENCE, LPWR_CORPUS_EVIDENCE]
+    result, switches, tables = [], {}, {}
+    for key, name, label, disabled, effect in LPWR_SWITCHES:
+        table = parser.lpwr_table(name)
+        if table is None:
+            continue
+        covered, reason = lpwr_covered(parser, key, table, disabled)
+        if not covered:
+            continue
+        bits = {e['value'] & 1 for e in covered}
+        state = 1 if bits == {1} else 0 if bits == {0} else None
+        reason = reason or (LPWR_MIXED_REASON if state is None else None)
+        editable = reason is None and writable
+        switches[key], tables[name] = editable, table
+        fmt = table['format']
+        layout = ((0, tuple(struct.pack(fmt, e['value'] & ~1) for e in covered)),
+                  (1, tuple(struct.pack(fmt, e['value'] | 1) for e in covered)))
+        result.append(field(
+            key, label, 'flag', state, 0 if editable else None, 1 if editable else None, editable,
+            [dict(e) for e in evidence], offsets=[e['offset'] for e in covered] if editable else (),
+            encoding=fmt if editable else '', scale=1, layout=layout if editable else (),
+            writable_status=None if editable else 'unsupported', experimental=True, section=ADVANCED_SECTION,
+            switch='stock-off', value_semantics=LPWR_SWITCH_SEMANTICS, lpwr_table=name,
+            lpwr_entries=[e['index'] for e in covered],
+            reason=reason or f'experimental: bit 0 (enable) of the {label} entries this image enables in stock '
+                             f'(entries {", ".join(str(e["index"]) for e in covered)} of its LPWR table); 0 (Off) '
+                             'clears it, so the driver skips them, and 1 (Stock) sets it again; every other bit '
+                             f'and entry stays as stored; {effect}, at a little more idle power; ' + LPWR_UNTESTED))
+    for key, name, at, switch, units, multiplier, stock, label in LPWR_TIMES:
+        if switch not in switches:
+            continue
+        table = tables[name]
+        offset = table['offset'] + at
+        stored = struct.unpack_from('<H', parser.blob, offset)[0]
+        editable = switches[switch]
+        low, high = stock_multiple(stock, stored)
+        stored_units = units if multiplier == 1 else f'{multiplier} {units}'
+        # What the driver does with the stored word: DIFR DFPR (ms) times 1000, GR rail gating times 10.
+        factor = 1000 if units == 'ms' else multiplier
+        driver = (f'the driver multiplies it by {factor} into' if factor != 1 else 'the driver copies it into')
+        result.append(field(
+            key, label, units, stored * multiplier, low * multiplier if editable else None,
+            high * multiplier if editable else None, editable, [dict(e) for e in evidence],
+            offsets=[offset] if editable else (), encoding='<H' if editable else '',
+            scale=Decimal(1) / multiplier, stored_units=stored_units,
+            writable_status=None if editable else 'unsupported', experimental=True, section=ADVANCED_SECTION,
+            depends_on={'field': switch, 'value': 1}, value_semantics=LPWR_TIME_SEMANTICS, lpwr_table=name,
+            stock=stock * multiplier,
+            reason=f'experimental: the {label} (LPWR table header word +{at}, stored in {stored_units}: {driver} '
+                   'an idle threshold most likely in microseconds, inferred): how long the feature waits at idle '
+                   f'before it engages; {low * multiplier}..{high * multiplier} {units} (0.5x to 4x the stock '
+                   f'{stock * multiplier}); editable only while its switch is Stock (stored or in the same edit); '
+                   + LPWR_UNTESTED if editable or not writable else LPWR_TIME_SWITCH_REASON))
     return result
 
 
