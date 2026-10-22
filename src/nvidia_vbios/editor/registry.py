@@ -8,7 +8,7 @@ from ..rom.structure import (DRAM_POINT_OFFSET_BIT, GPC_CURVE_OFFSET_LIMIT, vfe_
                              vfe_free_slot)
 from ..rom.errors import VbiosError, FormatError
 from ..rom.image import metadata
-from ..rom.tables import SOURCE, TableRom
+from ..rom.tables import SOURCE, TOP_SENSE_CODE, TableRom
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,10 @@ class Binding:
     # Optional ((value, (bytes per offset, ...)), ...) for a field whose stored
     # form differs per offset; only the listed values can be written.
     layout: tuple = ()
+    # Optional ((value or None, ((offset, bytes), ...)), ...): raw bytes written with
+    # the value, the set listed for the requested value or else the None set (the
+    # Ada VMIN clone and its link). Only the reviewed binding may write them.
+    companion: tuple = ()
 
 
 class FieldRegistry:
@@ -77,7 +81,7 @@ DRAM_MIN_UNITS_EVIDENCE = dict(NVML_CAPTURE, relation='NVML MHz = 2 * table MHz'
 
 def field(key, label, units, current, lo, hi, editable, evidence, *, offsets=(),
           encoding='', scale=1, reason=None, stored_units=None, writable_status=None,
-          ordering_group=None, encoding_bounds=None, layout=(), **extra):
+          ordering_group=None, encoding_bounds=None, layout=(), companion=(), **extra):
     desc = dict(key=key, label=label, type='number', units=units, current=current,
                 bounds={'minimum': lo, 'maximum': hi, 'kind': 'encoding-and-preserved-defaults',
                         'hardware_safe_maximum': None}, editable=editable,
@@ -100,7 +104,8 @@ def field(key, label, units, current, lo, hi, editable, evidence, *, offsets=(),
         desc['capability']['runtime']['offset'] = dict(desc['runtime_offset'])
     desc['unit_metadata'] = {'symbol': units, 'stored_symbol': stored_units,
                              'storage_encoding': encoding or None,
-                             'storage_signed': encoding in ('<h', '<i', '<f') if encoding else None}
+                             # A pad byte ('<xi': a flag byte the layout writes) does not change the sign.
+                             'storage_signed': encoding.replace('x', '') in ('<h', '<i', '<f') if encoding else None}
     desc.setdefault('value_semantics', 'stored-field-value')
     desc.setdefault('version_metadata', {'schema_version': 1,
                     'format_variant': next((e['format'] for e in evidence if 'format' in e), None)})
@@ -108,7 +113,7 @@ def field(key, label, units, current, lo, hi, editable, evidence, *, offsets=(),
         desc['reason'] = reason
     if stored_units:
         desc['stored_units'] = stored_units
-    return Binding(desc, tuple(offsets), encoding, Decimal(str(scale)), tuple(layout))
+    return Binding(desc, tuple(offsets), encoding, Decimal(str(scale)), tuple(layout), tuple(companion))
 
 
 def can_edit(image, parser):
@@ -157,6 +162,25 @@ ADA_POWER_EVIDENCE = {
     'observation': 'the TGP row is row 2 on every parseable Ada image; its rated value equals the published board '
                    'power of the reference desktop and workstation boards in the corpus (a partner RTX 4090 '
                    'image, VBIOS 95.02.18, is rated 550 W)'}
+# Ada override profiles (P+0xF4) picked by the 16-pin cable sense inputs, first seen on the
+# MSI RTX 4090 Suprim 95.02.3C.40.EA (see TableRom.profile_selection).
+ADA_PROFILE_EVIDENCE = {
+    'kind': 'firmware-static-analysis', 'source': 'GSP-RM 615.78.08 (gsp_ga10x.bin), profile parser 0x17cd67c',
+    'format': 'P+0xF4 v0x10: selection row 0 (type 1) maps a two-input sense code to a vote in mW, row 1 (type 2) '
+              'maps the vote to a profile by threshold; profile entry selector = policy row | field << 8 (0 maximum, '
+              '1 rated)',
+    'observation': 'the profile apply 0x17bc69c calls policy vtable +0x2d0, the wrapper 0x17b2340, which calls the '
+                   'limit setter 0x177fd2c (client 0xfe) and then a notify method; the policy constructor 0x178aa44 '
+                   'seeds the row limits with the same client, so a selected profile replaces the row value (it '
+                   'does not clamp it); the profile of the top sense code equals the base and is written with it; '
+                   'the other profiles keep their values and bound the edit',
+    'inferred': 'static analysis only: that code 3 is the 600 W level of a 12V-2x6 cable (the RTX PRO 6000 Max-Q '
+                'images map codes 0..3 to 150/300/450/600 W) and that raising only the base would be undone by '
+                'the top profile; DCB GPIO functions 0xee/0xed are on this image but also on a GB202 image without '
+                'selection rows (RTX PRO 6000 Workstation), so they do not identify the sense inputs by themselves',
+    'runtime_active_profile': 'inferred from the selection chain; not measured', 'set_tested': False}
+# The level the top sense code most likely stands for (inferred, see ADA_PROFILE_EVIDENCE).
+SENSE_TOP_LEVEL_W = 600
 ADA_RUNTIME_EVIDENCE = {
     'kind': 'saved-get-policy-correlation', 'source': 'saved runtime GET capture',
     'scope': 'RTX 2000 Ada 95.07.47.00.19 (10de:28b0), stock image', 'set_tested': False}
@@ -361,6 +385,46 @@ def top_profile_offsets(top, policies, name):
     return [e['value_offset'] for e in top['entries'] if e['policy'] in policies and e['field'] == name]
 
 
+def ada_input_rated_ma(parser):
+    """Rated value of the Ada 12 V input-current thresholds 0 and 1 when both hold it, else None."""
+    items = [parser.ada_policy('input_current_0'), parser.ada_policy('input_current_1')]
+    rated = {i['default_raw'] for i in items if i is not None}
+    return rated.pop() if None not in items and len(rated) == 1 else None
+
+
+def ada_profile_note(parser, binding, ceiling=False):
+    """Reason clause of a TGP field on an Ada image whose override profiles follow the cable sense inputs."""
+    others = sorted({p['index'] for p in parser.power_profiles()} - {binding['top']})
+    codes = {}
+    for code, index in sorted(parser.profile_selection().items()):
+        if index is not None and index != binding['top']:
+            codes.setdefault(index, []).append(code)
+
+    def named(found):
+        return 'code %d' % found[0] if len(found) == 1 else 'codes ' + ', '.join(map(str, found))
+    only = 'only ' if len(codes) < len(others) else ''
+    if not codes:
+        reached = '; no sense code selects them'
+    elif len(codes) == 1:
+        (index, found), = codes.items()
+        reached = '; %s%d is selected, at %s' % (only, index, named(found))
+    else:
+        reached = '; %s%s are selected' % (only, ' and '.join('%d at %s' % (index, named(found))
+                                                              for index, found in sorted(codes.items())))
+    note = ('this ROM sets its power limits from the 16-pin cable sense inputs; override profile %d, used at the top '
+            'level (code %d, most likely a %d W cable; inferred, not tested), holds the same value and is written '
+            'with it (a selected profile replaces the base value, so raising the base alone would likely be undone; '
+            'static analysis); the other profiles (%s%s) keep their own limits and bound this value; '
+            % (binding['top'], TOP_SENSE_CODE, SENSE_TOP_LEVEL_W, ', '.join(map(str, others)), reached))
+    if ceiling:
+        note += 'going past %d W exceeds that cable rating and is your call; ' % SENSE_TOP_LEVEL_W
+        rated = ada_input_rated_ma(parser)
+        if rated is not None:
+            note += ('the 12 V input current thresholds (rated %g A, about %d W at 12 V) may limit first: raise '
+                     'input_current_rated_ma (opt-in) with it; ' % (rated / 1000, round(rated * 12 / 1000)))
+    return note
+
+
 NOTEBOOK_POWER_REASON = ('stored notebook TGP ceiling; the platform (Dynamic Boost, nvidia-powerd) requests the '
                          'running limit and may keep it lower; output OCP, cooling and the laptop VRM still apply; '
                          'not hardware-tested')
@@ -373,6 +437,7 @@ def power(image, parser):
     matching = parser.matching_power_profiles()
     notebook = isinstance(parser, BlackwellRom) and parser.notebook_power_layout()
     top, maximum_upper, default_lower, default_upper, minimum_evidence = None, 0x7FFFFFFF, None, None, None
+    binding, profile_extra, maximum_note, default_note, minimum_note = None, {}, '', '', ''
     if notebook:
         tgp = rows[2]
         if not 0 <= tgp['minimum_raw'] <= tgp['default_raw'] <= tgp['maximum_raw']:
@@ -420,7 +485,9 @@ def power(image, parser):
             'RM PWR_POLICIES INFO entry 8 limitMin/limitRated/limitMax equal row8 on a Matrix boot; '
             'limitRated is the limit run without a client cap'))]
         if top is not None:
-            # Only the bound profile's entries are written; base rows 2/7/8 cap them.
+            # Only the bound profile's entries are written; the editor keeps them at or below base rows 2/7/8
+            # (in GSP-RM a selected profile replaces the row value rather than being capped by it, see
+            # ADA_PROFILE_EVIDENCE), so the base rows only bound the edit.
             values = top['values']
             tgp = dict(rows[8], default_raw=values[(8, 'default')], maximum_raw=values[(8, 'maximum')])
             minimum = max([values[(i, 'default')] for i in (2, 7, 8)] +
@@ -451,8 +518,39 @@ def power(image, parser):
                      'recognized_variants': ['Ada 30/32/53', 'Ada 30/34/5b', 'Ada 30/2c/4b'] if ada(parser) else
                                             ['Turing 30/2c/42', 'Turing 30/27/42'] if turing(parser) else
                                             ['Ampere 30/2c/47', 'Ampere 30/2c/43', 'Ampere 30/32/47']}]
+        # Ada override profiles picked by the cable sense inputs (profile_binding raises
+        # unless the top level's profile equals the base): that profile's TGP entries are
+        # written with the base; the lower levels keep theirs and bound the edit.
+        binding = parser.profile_binding((parser.tgp_index,)) if ada(parser) else None
+        if binding and notebook:
+            raise FormatError('override profiles of the notebook layout are unreviewed')
+        if binding and binding['outside']:
+            raise FormatError('override profile %s of a lower cable sense level holds a TGP value outside the stored '
+                              'TGP range, which then could not be requested again'
+                              % ', '.join(map(str, binding['outside'])))
+        if binding:
+            offsets = offsets + binding['tied']['maximum']
+            default_offsets = default_offsets + binding['tied']['default']
+            minimum = max([minimum] + binding['values'])
+            default_lower = max([tgp['minimum_raw']] + binding['defaults'])
+            minimum_upper = min([minimum_upper] + binding['ceilings'])
+            minimum_scope = ('header-indexed TGP policy in every validated duplicate chain; at or below every override '
+                             'profile value of the TGP row (twice the value of a profile no cable sense level selects)')
+            default_scope = ('header-indexed TGP rated value in every validated duplicate chain and the TGP rated '
+                             'entry of override profile %d (top sense level)' % binding['top'])
+            maximum_note = ada_profile_note(parser, binding, ceiling=True)
+            default_note = ada_profile_note(parser, binding)
+            minimum_note = ('kept at or below every override profile value of the TGP row, or twice the value of a '
+                            'profile no cable sense level selects%s; ' % (
+                                ' (profiles %s)' % ', '.join(map(str, binding['unreached'])) if binding['unreached']
+                                else ''))
+            profile_extra = dict(override_profiles={
+                'top_profile': binding['top'], 'top_sense_code': TOP_SENSE_CODE,
+                'top_sense_level_w': SENSE_TOP_LEVEL_W, 'top_sense_level_basis': 'inferred',
+                'other_profiles': sorted({p['index'] for p in profiles} - {binding['top']})})
         if ada(parser):
-            evidence = evidence + [dict(ADA_POWER_EVIDENCE)] + ([dict(ADA_NOTEBOOK_EVIDENCE)] if notebook else [])
+            evidence = (evidence + [dict(ADA_POWER_EVIDENCE)] + ([dict(ADA_NOTEBOOK_EVIDENCE)] if notebook else []) +
+                        ([dict(ADA_PROFILE_EVIDENCE)] if binding else []))
         elif turing(parser):
             evidence = evidence + [dict(TURING_POWER_EVIDENCE), dict(TURING_HASH_EVIDENCE)]
         else:
@@ -467,7 +565,8 @@ def power(image, parser):
                 'default and maximum'}
         if turing(parser) else {}))])
     # Ada notebook TGP rows are never the hardware-tested board; Ampere is never tested.
-    flags = {'experimental': True} if notebook and ada(parser) else experimental_flag(image, parser, 'power_max_w')
+    flags = ({'experimental': True} if notebook and ada(parser) or binding else
+             experimental_flag(image, parser, 'power_max_w'))
     untested = TURING_NOTE + '; ' if turing(parser) else 'not hardware-tested on this board; ' if flags else ''
     top_extra = {} if top is None else dict(bound_profile=top['index'], base_values={
         'power_max_w': rows[8]['maximum_raw'] / 1000, 'power_default_w': rows[8]['default_raw'] / 1000})
@@ -480,12 +579,12 @@ def power(image, parser):
                   ordering_group='board-power', encoding_bounds=(0, 0x7FFFFFFF / 1000),
                   reason=(ADA_NOTEBOOK_REASON if ada(parser) else AMPERE_NOTEBOOK_REASON if ampere(parser) else
                           TURING_NOTEBOOK_REASON if turing(parser) else NOTEBOOK_POWER_REASON) if notebook else
-                  'experimental: encoding ceiling only; ' + untested + 'firmware/current/hardware restrictions remain'
-                  if untested else
+                  'experimental: encoding ceiling only; ' + maximum_note + untested +
+                  'firmware/current/hardware restrictions remain' if untested else
                   'experimental: ' + top_profile_note(top, '%g W' % (rows[8]['maximum_raw'] / 1000)) +
                   'firmware/current/hardware restrictions remain' if top else
                   'encoding ceiling only; firmware/current/hardware restrictions remain',
-                  **layout, **(dict(flags, experimental=True, **top_extra) if top else flags)),
+                  **layout, **profile_extra, **(dict(flags, experimental=True, **top_extra) if top else flags)),
             field('power_default_w', 'Boot default board power', 'W', tgp['default_raw'] / 1000,
                   (tgp['minimum_raw'] if default_lower is None else default_lower) / 1000,
                   (tgp['maximum_raw'] if default_upper is None else default_upper) / 1000,
@@ -502,18 +601,19 @@ def power(image, parser):
                   'experimental: ' + top_profile_note(top, '%g W' % (rows[8]['default_raw'] / 1000)) +
                   'rated TGP limit used at boot without a client cap' if top else
                   'experimental: rated TGP limit used at boot without a client cap; ' + TURING_NOTE if turing(parser) else
-                  'experimental: rated TGP limit used at boot without a client cap; not hardware-tested',
-                  **layout, **top_extra),
+                  'experimental: rated TGP limit used at boot without a client cap; ' + default_note +
+                  'not hardware-tested',
+                  **layout, **profile_extra, **top_extra),
             field('power_min_w', 'Board power floor', 'W', tgp['minimum_raw'] / 1000,
                   1, minimum_upper / 1000, can_edit(image, parser), minimum_evidence or evidence,
                   offsets=minimum_offsets, encoding='<I', scale=1000, stored_units='mW',
                   factory_default=tgp['default_raw'] / 1000, policy_indices=list(policy_indices),
                   value_semantics='stored-board-power-minimum', format_scope=minimum_scope,
                   ordering_group='board-power', encoding_bounds=(1, 0x7FFFFFFF / 1000),
-                  reason='experimental: encoded floor only; ' + untested + 'firmware acceptance and runtime minimum '
-                         'remain unknown' if untested else
+                  reason='experimental: encoded floor only; ' + minimum_note + untested +
+                         'firmware acceptance and runtime minimum remain unknown' if untested else
                   'encoded floor only; firmware acceptance and runtime minimum remain unknown',
-                  **layout, **flags)] + fixed_policy_rated(image, parser, rows, matching, top)
+                  **layout, **profile_extra, **flags)] + fixed_policy_rated(image, parser, rows, matching, top)
 
 
 def fixed_policy_rated(image, parser, rows, matching, top=None):
@@ -823,6 +923,63 @@ ADA_VMIN_EVIDENCE = [
      'observed': 'that equation pins 560 mV with its clamp; driver VMIN 650 mV; with the clamp at 700 mV in both '
                  'chains the driver reported 790 mV, the clamp value plus 90 mV both times; a new row byte 11 '
                  'equation did not change the driver VMIN'}]
+# The RTX 4090 95.02.3C images: a constant links the VMIN equation (TableRom._vmin_clone).
+ADA_VMIN_CLONE_EVIDENCE = {
+    'kind': 'firmware-static-analysis', 'source': 'GSP-RM 615.78.08 (gsp_ga10x.bin), VFE equation parser 0x119dd48; '
+                                                  'RTX 4090 95.02.18 and 95.02.3C images',
+    'format': 'Ada VFE equation (25 bytes): next link bytes 2 | 24 << 8; clock programming entry (C+0x0c, 15 bytes): '
+              'VFE equation byte 3 | byte 13 << 8',
+    'observation': 'the 95.02.3C images store a pinned 15 mV voltage constant in the first unused slot of the '
+                   '95.02.18 image and link the row byte 7 VMIN equation as its next equation; the memory clock '
+                   'entries from 810 MHz up name that constant (on 95.02.18 they name their own equations), the '
+                   '405 MHz entry names its own; the parser reads all u16-counted entries, skips unused ones '
+                   '(type 0) wherever they are and builds a type-1 equation in any slot',
+    'inferred': 'that the constant is the NVVDD floor of those memory clocks, and that the driver accepts a copy '
+                'of the VMIN equation in an unused slot (the per-kind constructors and later link checks were not '
+                'traced)', 'set_tested': False}
+
+
+def vmin_clone_companion(parser, item):
+    """Companion bytes of the Ada VMIN binding when a constant shares its equation (TableRom._vmin_clone).
+
+    In every chain: the stock value writes the unused slot pattern into slot S and links
+    the constant to the VMIN equation (the stock bytes); any other value writes the copy of
+    the stock VMIN equation into S and links the constant to S. A copy whose clamp equals
+    the VMIN equation's is not a state an edit makes (a layout no stock image has): there
+    every value keeps the copy and its link, so a request for the current value changes
+    nothing.
+    """
+    clone, selector = item['clone'], item['selector_raw']
+    slots = parser.copy_offsets(clone['slot_offset'], 25)
+    lows = parser.copy_offsets(clone['referrer_offset'] + 2, 1)
+    highs = parser.copy_offsets(clone['referrer_offset'] + 24, 1)
+
+    def writes(body, target):
+        return tuple(w for at, low, high in zip(slots, lows, highs)
+                     for w in ((at, body), (low, bytes((target & 0xFF,))), (high, bytes((target >> 8,)))))
+    copy = (None, writes(clone['clone'], clone['slot']))
+    if clone['state'] == 'decoupled' and item['value_uv'] == clone['stock_uv']:
+        return (copy,)
+    return ((clone['stock_uv'], writes(vfe_free_slot(25), selector)), copy)
+
+
+def vmin_clone_reason(chained, clone):
+    """Reason text of the Ada VMIN field when a constant shares its equation."""
+    constant, stock = clone['constant_uv'] / 1000, clone['stock_uv'] / 1000
+    return ('experimental: clamp of the equation selected at rail row byte 7, which pins the evaluated VMIN; the '
+            f'edit writes the clamp minimum and maximum; {chained}; on this ROM a {constant:g} mV constant also '
+            f"links that equation and most likely sets the memory clock voltage floor from "
+            f"{min(clone['memory_mhz'])} MHz up, so while the value differs from the stock {stock:g} mV a copy of "
+            f"the stock equation in VFE slot {clone['slot']} takes the constant's link, and {stock:g} mV restores "
+            f'the stock bytes; the memory clock voltage floor keeps its stock value (stock VMIN + {constant:g} mV + '
+            f"chain), so a lower VMIN shows only while the memory runs at its lowest clock "
+            f"({clone['idle_memory_mhz']} MHz, single-monitor idle), and a higher one shows at every memory clock "
+            f'only above {stock + constant:g} mV (up to that, also only at that lowest clock; inferred from the '
+            'tables, not measured); no Ada card has run a VFE equation the editor adds, so the override might not '
+            'load or the driver might fail to start, and '
+            'removing the override brings the card back; the GPC curve offset uses the same unused slot, so change '
+            'it in a separate edit; on an RTX 2000 Ada the driver reported the VMIN value plus 90 mV (hardware '
+            'test), and the offset may differ per board')
 
 
 @registry.register
@@ -835,7 +992,11 @@ def evaluated_vmin(image, parser):
     minimum and maximum (both chains). The value stays from a fixed floor up to the lowest
     value of the REL equation list less the most the VMIN equation's chained
     equations add, so the evaluated VMIN never crosses REL. Other shapes, unbounded
-    chains and a stored value that is not a whole uV are read-only.
+    chains and a stored value that is not a whole uV are read-only. On Ada, when a
+    constant shares the VMIN equation (TableRom._vmin_clone, the RTX 4090 95.02.3C
+    images), the binding also carries companion bytes: a copy of the stock equation
+    and the constant's link to it for any value but the stock one, the unused slot
+    and the stock link for the stock value (vmin_clone_companion).
     """
     if not isinstance(parser, (BlackwellRom, TableRom)):
         return []
@@ -846,6 +1007,7 @@ def evaluated_vmin(image, parser):
         floor, added = VMIN_FLOOR_MV[family], item['added_uv']
         top = (item['rel_lowest_uv'] - added[1]) / 1000 if added and item['rel_lowest_uv'] is not None else None
         current = item['value_uv'] / 1000 if item['pinned'] else None
+        clone = item.get('clone')
         reason = None
         if not item['pinned']:
             reason = 'read-only: the evaluated VMIN equation ' + item['diagnostic'] + '; only a ' + (
@@ -858,15 +1020,19 @@ def evaluated_vmin(image, parser):
         elif not floor <= current <= top:
             reason = (f'read-only: the stored VMIN is outside {floor} mV up to {top:g} mV, the lowest REL value less '
                       'what the chained equations can add')
+        elif clone and not floor <= clone['stock_uv'] / 1000 <= top:
+            reason = (f"read-only: the stock VMIN ({clone['stock_uv'] / 1000:g} mV), which restores the stock bytes, "
+                      f'is outside {floor} mV up to {top:g} mV')
         editable = reason is None and can_edit(image, parser)
-        offsets = ()
+        offsets, companion = (), ()
         if editable:
             offsets = ([item['minimum_offset'], item['maximum_offset'], item['value_offset']] if family == 'gb20x' else
                        parser.copy_offsets(item['minimum_offset'], 4) + parser.copy_offsets(item['maximum_offset'], 4))
+            companion = vmin_clone_companion(parser, item) if clone else ()
         if reason is None:
             chained = (f'its chained equations add {added[0] / 1000:g} to {added[1] / 1000:g} mV, so the value stays '
                        f'at most the lowest REL value less {added[1] / 1000:g} mV')
-            reason = {
+            reason = vmin_clone_reason(chained, clone) if clone else {
                 'gb20x': 'experimental: constant equation selected at rail row +0x13, the evaluated VMIN; the edit '
                          'writes its minimum, maximum and value; at most the lowest REL value; hardware-tested '
                          'on an RTX 5080 (800 -> 850 mV: the driver reported VMIN 850 mV and the idle voltage was '
@@ -888,12 +1054,20 @@ def evaluated_vmin(image, parser):
                             [dict(e) for e in (GB20X_VMIN_EVIDENCE if family == 'gb20x' else
                                                [TURING_VMIN_EVIDENCE, TURING_VOLTAGE_EVIDENCE] + ADA_VMIN_EVIDENCE
                                                if family == 'turing' else ADA_VMIN_EVIDENCE +
-                                               ([AMPERE_VOLTAGE_EVIDENCE] if family == 'ampere' else []))],
+                                               ([AMPERE_VOLTAGE_EVIDENCE] if family == 'ampere' else []) +
+                                               ([ADA_VMIN_CLONE_EVIDENCE] if clone else []))],
                             offsets=offsets, encoding='<f' if editable else '', scale=1000, stored_units='uV',
+                            companion=companion,
                             writable_status=None if editable else 'unsupported', experimental=True,
                             value_semantics=VMIN_SEMANTICS, rail_identity=rail_identity(parser, item),
                             selector=selector, equation_offset=item['equation_offset'],
                             equation_type=item['equation_type'], runtime_role_candidate='VMIN', reason=reason,
+                            # The constant sharing the Ada VMIN equation and the slot of its copy.
+                            **({'vfe_clone': dict(state=clone['state'], referrer=clone['referrer'],
+                                                  slot=clone['slot'], stock_mv=clone['stock_uv'] / 1000,
+                                                  constant_mv=clone['constant_uv'] / 1000,
+                                                  memory_mhz=list(clone['memory_mhz']),
+                                                  idle_memory_mhz=clone['idle_memory_mhz'])} if clone else {}),
                             # Turing: checked with the fixed REL/ALT values on a joint result.
                             **(dict(ordering_group=FIXED_GROUP, encoding_bounds=(floor, 0x7FFFFFFF / 1000))
                                if family == 'turing' and editable else {})))
@@ -1214,19 +1388,57 @@ def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, re
             ' of the same class and unit on this power channel; which row binds is unknown, '
             'so editing this row alone may have no effect')
     one_max, one_rated = len(maxima) == 1 and not others, len(rated) == 1 and not others
+    max_lower, rated_lower = max(rated), max(i['minimum_raw'] for i in items)
+    tied = {'maximum': [], 'default': []}
     if not profiles_decoded(parser):
         # As for the TGP: an undecoded override profile may target this policy.
         one_max = one_rated = False
         differ = ('read-only: the power override profiles do not decode, so a profile may override this '
                   'policy; editing it alone may have no effect')
+    elif ada(parser):
+        # Ada profiles picked by the cable sense inputs: the top level's entries on these rows
+        # are written with the base; the lower levels' values bound it (see power()).
+        try:
+            binding = parser.profile_binding(tuple(i['vbios_row_index'] for i in items))
+        except FormatError:
+            binding, one_max, one_rated = None, False, False
+            differ = ('read-only: the override profile of the top cable sense level differs from the base table, so '
+                      'a profile may override this policy; editing it alone may have no effect')
+        if binding and binding['outside']:
+            several = len(binding['outside']) > 1
+            differ = ('read-only: override profile%s %s of a lower cable sense level hold%s a value outside the '
+                      'stored range of this policy, so the stored values could not be requested again' % (
+                          's' if several else '', ', '.join(map(str, binding['outside'])), '' if several else 's'))
+            binding, one_max, one_rated = None, False, False
+        if binding:
+            tied = binding['tied']
+            max_lower = max([max_lower] + binding['values'])
+            rated_lower = max([rated_lower] + binding['defaults'])
+            if binding['values'] or tied['maximum'] or tied['default']:
+                evidence = list(evidence) + [ADA_PROFILE_EVIDENCE]
+
+            def replaced(found, what, holder):
+                # The lower-level profiles that replace this field's value, per stored field.
+                if not found:
+                    return ''
+                indices = sorted({index for index, _ in found})
+                several = len(indices) > 1
+                return ('; at %s cable sense level%s override profile%s %s replace%s %s with %s, so %s stays at or '
+                        'above that' % ('lower' if several else 'a lower', 's' if several else '',
+                                        's' if several else '', ', '.join(map(str, indices)), '' if several else 's',
+                                        what, ', '.join(amount(v) for v in sorted({v for _, v in found})), holder))
+            entries = binding['entries']
+            reasons = (reasons[0] + replaced(entries['maximum'], 'this value', 'it') +
+                       replaced(entries['default'], 'the rated value', 'this ceiling'),
+                       reasons[1] + replaced(entries['default'], 'this value', 'it'))
     return [field(keys[0], labels[0], units, max(maxima) / scale if len(maxima) == 1 else None,
-                  max(rated) / scale, 0x7FFFFFFF / scale, editable and one_max, [dict(e) for e in evidence],
-                  offsets=offsets('maximum_offset'), value_semantics='stored-policy-maximum',
+                  max_lower / scale, 0x7FFFFFFF / scale, editable and one_max, [dict(e) for e in evidence],
+                  offsets=offsets('maximum_offset') + tied['maximum'], value_semantics='stored-policy-maximum',
                   writable_status=None if one_max else 'unsupported', reason=reasons[0] if one_max else differ,
                   **common),
             field(keys[1], labels[1], units, max(rated) / scale if len(rated) == 1 else None,
-                  max(i['minimum_raw'] for i in items) / scale, min(maxima) / scale, editable and one_rated,
-                  [dict(e) for e in evidence], offsets=offsets('default_offset'),
+                  rated_lower / scale, min(maxima) / scale, editable and one_rated,
+                  [dict(e) for e in evidence], offsets=offsets('default_offset') + tied['default'],
                   value_semantics='stored-policy-rated-default', writable_status=None if one_rated else 'unsupported',
                   reason=reasons[1] if one_rated else differ, **common)]
 
@@ -2450,7 +2662,8 @@ GPC_CURVE_CORPUS_EVIDENCE = {
     'observation': 'the GPC root is a compare equation with MHz output that no other equation references and that '
                    'links no next equation; the first unused VFE slot is clean; compare equations with a next link '
                    'and MHz output are common, and a newer RTX 4090 BIOS fills the older one\'s first unused slot '
-                   'with a constant equation (a 15 mV voltage constant no equation references); no image links a '
+                   'with a constant equation (a 15 mV voltage constant that links the VMIN equation and that the '
+                   'memory clock programming entries name, see nvvdd_vmin_mv); no image links a '
                    'constant to the GPC root: two SKUs of one chip (RTX 2080 Ti and TITAN RTX) differ by +45 MHz in '
                    'the constant term of one polynomial inside the curve\'s floor and cap, and vendor factory-OC '
                    'images keep the reference curve'}
@@ -2492,6 +2705,11 @@ def gpc_curve_offset(image, parser):
     layout = tuple((value, chunks(value)) for value in range(-GPC_CURVE_OFFSET_LIMIT, GPC_CURVE_OFFSET_LIMIT + 1))
     offsets, layout = chain_copies(parser, offsets, 2, layout)
     writable = can_edit(image, parser)
+    # Ada images where a constant shares the VMIN equation: a VMIN edit copies it into an unused slot too.
+    try:
+        shared = isinstance(parser, TableRom) and any(item.get('clone') for item in parser.rail_vmin())
+    except VbiosError:
+        shared = False
     return [field('gpc_curve_offset_mhz', 'GPC curve offset', 'MHz', curve['current'],
                   -GPC_CURVE_OFFSET_LIMIT if writable else None, GPC_CURVE_OFFSET_LIMIT if writable else None, writable,
                   [dict(GPC_CURVE_FIRMWARE_EVIDENCE), dict(GPC_CURVE_CORPUS_EVIDENCE)],
@@ -2502,7 +2720,9 @@ def gpc_curve_offset(image, parser):
                          'curve root in the VFE table (first unused slot); it is expected to move every point of the '
                          'stock curve by this many MHz (inferred); a tuning tool\'s offset still applies on top, and '
                          'nvidia-smi max clocks and the rated boost do not change; values far from 0 can make the card '
-                         'unstable; 0 restores the stock bytes; not hardware-tested')]
+                         'unstable; 0 restores the stock bytes; ' +
+                         ('on this ROM a VMIN edit also uses an unused VFE slot, so change VMIN in a separate edit; '
+                          if shared else '') + 'not hardware-tested')]
 
 
 @registry.register
@@ -2698,11 +2918,26 @@ def clock_offset_ranges(image, parser, rows):
 
 
 MAX_TEMP_SEMANTICS = 'stored-max-operating-temperature'
-# Entry 0 of the thermal policy table on each reviewed GB20x product (PCI device), in C. The
-# limit can be raised at most MAX_TEMP_RAISE_C above this value; a product without a stored
-# value here can only be lowered.
-MAX_TEMP_STOCK_C = {0x2B85: 90, 0x2BB1: 93, 0x2BB4: 92, 0x2C02: 88, 0x2C05: 88, 0x2C33: 96, 0x2C59: 89,
-                    0x2D04: 87, 0x2F04: 85}
+# The maximum operating temperature of each reviewed product (PCI device), in C: GB20x entry 0 of the
+# thermal policy table, Turing, Ampere and Ada the entry its header byte 9 names. The limit can be
+# raised at most MAX_TEMP_RAISE_C above this value; a product without a stored value here can only
+# be lowered.
+MAX_TEMP_STOCK_C = {
+    # GB20x
+    0x2B85: 90, 0x2BB1: 93, 0x2BB4: 92, 0x2C02: 88, 0x2C05: 88, 0x2C33: 96, 0x2C59: 89, 0x2D04: 87, 0x2F04: 85,
+    # Turing (102 C: laptop and Max-Q products)
+    0x1E02: 89, 0x1E07: 89, 0x1E30: 89, 0x1E81: 89, 0x1E84: 88, 0x1E87: 88, 0x1E90: 102, 0x1E91: 102, 0x1E93: 102,
+    0x1F06: 89, 0x1F07: 89, 0x1F08: 86, 0x1F10: 102, 0x1F11: 102, 0x1F82: 92, 0x1F83: 95, 0x2182: 90, 0x2184: 91,
+    0x2187: 88, 0x2191: 102, 0x21C4: 91,
+    # Ampere (105 C: laptop products, where the field stays read-only)
+    0x2203: 92, 0x2204: 93, 0x2206: 93, 0x2208: 93, 0x220A: 93, 0x2230: 93, 0x2231: 90, 0x2232: 90, 0x2233: 90,
+    0x2235: 88, 0x2414: 93, 0x2482: 93, 0x2484: 93, 0x2486: 93, 0x2487: 93, 0x249C: 105, 0x249D: 105, 0x24A0: 105,
+    0x24B0: 98, 0x24C9: 93, 0x24DC: 105, 0x2501: 93, 0x2503: 93, 0x2507: 92, 0x2520: 105, 0x2531: 95, 0x2544: 93,
+    0x2571: 95, 0x2582: 92, 0x2584: 92, 0x25A0: 105, 0x25A2: 105, 0x25A9: 105, 0x25B0: 94,
+    # Ada (105 C: laptop products, where the field stays read-only)
+    0x2684: 90, 0x26B1: 91, 0x26B2: 91, 0x2702: 90, 0x2704: 90, 0x2705: 90, 0x2730: 105, 0x2783: 90, 0x2786: 90,
+    0x27B0: 95, 0x27B1: 91, 0x27B2: 98, 0x27E0: 105, 0x2803: 90, 0x2805: 90, 0x2860: 105, 0x2882: 90, 0x28A0: 105,
+    0x28B0: 96, 0x28E1: 105}
 MAX_TEMP_FLOOR_C = 40
 MAX_TEMP_RAISE_C = 3
 MAX_TEMP_FIRMWARE_EVIDENCE = {
@@ -2724,12 +2959,48 @@ MAX_TEMP_NVML_EVIDENCE = dict(
     NVML_CAPTURE, source='read-only nvidia-smi capture',
     relation="'GPU Current Temp' + 'GPU Current T.Limit Temp' = stored entry 0 temperature",
     scope='five reviewed GB20x devices: two RTX PRO 6000 Max-Q, an RTX 5080, an RTX 5070 Ti and an RTX PRO 4000 SFF')
-MAX_TEMP_DISABLED_REASON = ('read-only: thermal policy entry 0 is disabled on this image (byte 0 = 0, as on XOC-style '
-                           'images), so its temperature is not applied; the editor does not enable it')
-MAX_TEMP_UNEQUAL_REASON = ('read-only: the three temperatures of thermal policy entry 0 differ on this image; the '
-                           'editor writes them only together')
-MAX_TEMP_UNRECOGNIZED_REASON = ('read-only: thermal policy entry 0 is not the class 1 entry with byte 1 = 1 that '
-                                'every reviewed image stores')
+LEGACY_MAX_TEMP_FIRMWARE_EVIDENCE = {
+    'kind': 'static-firmware-analysis',
+    'source': 'GSP-RM firmware 615.78.08 (gsp_tu10x.bin for Turing, gsp_ga10x.bin for Ampere and Ada), thermal '
+              'policy table parser (version 0x10)',
+    'observation': 'the header is read as 7b1w1b (10 bytes) or 7b1w2b (11 bytes) and each 40-byte entry as 2b3w8d; '
+                   'an entry with class 0 is skipped and class 1 is read; the three words after byte 1 are shifted '
+                   'left by 3 (1/32 C to 1/256 C) and handed to the policy together; header bytes 4, 5, 6 and 9 are '
+                   'kept as four policy indices (0xff: none), the fields the version 0x20 parser (GB20x) fills from '
+                   'its header bytes 7..10, and at load the driver drops the index from byte 9 (sets it to 0xff) '
+                   'when it does not name a policy it read; on GB20x that index (header byte 10 there) names entry '
+                   '0, the maximum operating temperature, on every image but the XOC-style ones (0xff, every entry '
+                   'disabled)',
+    'set_tested': False}
+LEGACY_MAX_TEMP_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'Turing, Ampere and Ada VBIOS corpus',
+    'observation': 'header byte 9 names entry 0 on every desktop and workstation image and on the Turing and Ampere '
+                   'laptop images, entry 1 on the Ada laptop images, and none (0xff) on the Turing XOC images, whose '
+                   'entries are all disabled; the named entry is class 1 with three equal temperatures, one value per '
+                   'product: 86 to 98 C on desktop and workstation products, 102 C on the Turing laptop and Max-Q '
+                   'products, 105 C on the Ampere and Ada laptops; the Ampere and Ada laptop images also store an '
+                   'enabled 89 C entry that no header byte names'}
+LEGACY_MAX_TEMP_NVML_EVIDENCE = dict(
+    NVML_CAPTURE, source='read-only nvidia-smi capture',
+    relation="'GPU Current Temp' + 'GPU Current T.Limit Temp' = the temperature of the entry header byte 9 names "
+             "(entry 0, 96 C); 'GPU Target Temperature Specification' = the first temperature of the entry header "
+             "byte 4 names (88 C)",
+    scope='one RTX 2000 Ada (95.07.47.00.19): a desktop entry with byte 1 (thermal channel) = 0; not checked on the '
+          'laptop and Max-Q entries, which have byte 1 = 1')
+MAX_TEMP_DISABLED_REASON = ('read-only: the thermal policy entry that holds the maximum operating temperature is '
+                            'disabled on this image (byte 0 = 0, as on XOC-style images), so its temperature is not '
+                            'applied; the editor does not enable it')
+MAX_TEMP_UNEQUAL_REASON = ('read-only: the three temperatures of the thermal policy entry that holds the maximum '
+                           'operating temperature differ on this image; the editor writes them only together')
+MAX_TEMP_UNRECOGNIZED_REASON = ('read-only: the thermal policy entry that holds the maximum operating temperature '
+                                'does not have the reviewed layout (GB20x: entry 0, class 1 with byte 1 = 1; Turing, '
+                                'Ampere and Ada: a class 1 entry that header byte 9 names)')
+MAX_TEMP_NO_POLICY_REASON = ('read-only: the thermal policy table of this image names no maximum operating '
+                             'temperature policy (header byte 9 = 0xff, as on XOC-style images), so none is applied; '
+                             'the editor does not add one')
+MAX_TEMP_LOWER_LIMIT_REASON = ('read-only: this image also stores a lower temperature limit of the same kind that the '
+                               'table header does not name (as on Ampere and Ada laptop images); which one limits the '
+                               'GPU first is not known, so the editor keeps both as stored')
 
 
 def _other_limits(table):
@@ -2738,72 +3009,129 @@ def _other_limits(table):
             for e in table['entries'][1:] if e['policy_class'] == 1 and e['byte1'] == 1]
 
 
+def _lower_limits(table, entry):
+    """Turing, Ampere and Ada: other enabled class 1 entries that no header index names and that hold three equal
+    temperatures below the maximum operating temperature entry (the 89 C entry of the Ampere and Ada laptops)."""
+    raw = entry['temperatures_raw']
+    return ['entry %d (%g C)' % (e['index'], Decimal(e['temperatures_raw'][0]) / 32) for e in table['entries']
+            if e['index'] != entry['index'] and e['index'] not in table['role_indices'] and e['policy_class'] == 1 and
+            len(set(e['temperatures_raw'])) == 1 and 0 < e['temperatures_raw'][0] < raw[0]]
+
+
 @registry.register
 def max_operating_temperature(image, parser):
-    """GB20x: the maximum operating temperature, entry 0 of the thermal policy table (P+0x50), in C.
+    """The maximum operating temperature, one entry of the thermal policy table (P+0x50), in C.
 
-    Entry 0 (class 1, byte 1 = 1) stores three s16 temperatures in 1/32 C, equal on every
-    image of the corpus; the driver reports the GPU's temperature headroom against this value
-    (nvidia-smi current temperature + T.Limit equals it on five boards). One field writes the
-    three together; byte 0 and every other entry are never written. The value can be lowered
-    to 40 C and raised at most 3 C above the product's stock value (MAX_TEMP_STOCK_C); an
-    unlisted product can only lower it. Entry 0 with byte 0 = 0 (skipped by the driver, as on
-    the XOC-style images) or three different temperatures stay read-only. Where another class 1
-    entry with byte 1 = 1 exists (the notebook's entry 2, 87/75/87 C, untraced), the reason says
+    GB20x (version 0x20): entry 0 (class 1, byte 1 = 1). Turing, Ampere and Ada (version 0x10):
+    the entry header byte 9 names, which GSP-RM keeps as a policy index in the field the GB20x
+    parser fills from its header byte 10 (entry 0 on every GB20x image but the XOC-style ones).
+    The entry stores three s16 temperatures in 1/32 C, equal on every image of the corpus; the
+    driver reports the GPU's temperature headroom against this value (nvidia-smi current
+    temperature + T.Limit equals it on five GB20x boards and on an RTX 2000 Ada entry with byte 1 =
+    0; the Turing, Ampere and Ada laptop entries, with byte 1 = 1, were not checked). One field
+    writes the three together, in every chain; byte 0 and every other entry are never written. The
+    value can be lowered to 40 C and raised at
+    most 3 C above the product's stock value (MAX_TEMP_STOCK_C); an unlisted product can only lower
+    it. Read-only: a disabled entry (byte 0 = 0, as on the XOC-style images), three different
+    temperatures, an unrecognized entry, no named entry (header byte 9 = 0xff), and on Turing,
+    Ampere and Ada an image that also stores a lower limit of the same kind no header index names
+    (the Ampere and Ada laptops: which one limits first is not known). On GB20x, where another class
+    1 entry with byte 1 = 1 exists (the notebook's entry 2, 87/75/87 C, untraced), the reason says
     that it may apply first. Not hardware-tested.
     """
-    if not isinstance(parser, BlackwellRom):
-        return []
-    table = parser.thermal_policies()
-    if table is None:
-        return []
-    entry = table['entries'][0]
-    raw = entry['temperatures_raw']
-    current = Decimal(raw[0]) / 32
-    stock = MAX_TEMP_STOCK_C.get(parser.legacy['device'])
-    if entry['policy_class'] == 0:
-        reason = MAX_TEMP_DISABLED_REASON
-    elif entry['policy_class'] != 1 or entry['byte1'] != 1 or not 0 < raw[0]:
-        reason = MAX_TEMP_UNRECOGNIZED_REASON
-    elif len(set(raw)) != 1:
-        reason = MAX_TEMP_UNEQUAL_REASON
+    if isinstance(parser, BlackwellRom):
+        table = parser.thermal_policies()
+        if table is None:
+            return []
+        entry, index = table['entries'][0], 0
+        raw = entry['temperatures_raw']
+        if entry['policy_class'] == 0:
+            reason = MAX_TEMP_DISABLED_REASON
+        elif entry['policy_class'] != 1 or entry['byte1'] != 1 or not 0 < raw[0]:
+            reason = MAX_TEMP_UNRECOGNIZED_REASON
+        elif len(set(raw)) != 1:
+            reason = MAX_TEMP_UNEQUAL_REASON
+        else:
+            reason = None
+        others = _other_limits(table)
+        evidence = [MAX_TEMP_FIRMWARE_EVIDENCE, MAX_TEMP_CORPUS_EVIDENCE, MAX_TEMP_NVML_EVIDENCE]
+    elif isinstance(parser, TableRom):
+        table = parser.thermal_policies()
+        if table is None:
+            return []
+        index = table['max_temp_index']
+        entry = table['entries'][index] if index < len(table['entries']) else None
+        raw = entry['temperatures_raw'] if entry else None
+        lower = []
+        if index == 0xFF:
+            reason = MAX_TEMP_NO_POLICY_REASON
+        elif entry is None or entry['policy_class'] not in (0, 1) or not 0 < raw[0]:
+            reason = MAX_TEMP_UNRECOGNIZED_REASON
+        elif entry['policy_class'] == 0:
+            reason = MAX_TEMP_DISABLED_REASON
+        elif len(set(raw)) != 1:
+            reason = MAX_TEMP_UNEQUAL_REASON
+        else:
+            lower = _lower_limits(table, entry)
+            reason = MAX_TEMP_LOWER_LIMIT_REASON if lower else None
+        others = []
+        evidence = [LEGACY_MAX_TEMP_FIRMWARE_EVIDENCE, LEGACY_MAX_TEMP_CORPUS_EVIDENCE, LEGACY_MAX_TEMP_NVML_EVIDENCE]
     else:
-        reason = None
+        return []
+    current = Decimal(raw[0]) / 32 if raw else None
+    stock = MAX_TEMP_STOCK_C.get(parser.legacy['device'])
     editable = reason is None and can_edit(image, parser)
-    ceiling = max(current, stock + MAX_TEMP_RAISE_C if stock is not None else current)
-    floor = min(current, MAX_TEMP_FLOOR_C)
+    offsets, floor, ceiling = (), None, None
+    if editable:
+        ceiling = float(max(current, stock + MAX_TEMP_RAISE_C if stock is not None else current))
+        floor = float(min(current, MAX_TEMP_FLOOR_C))
+        at = entry['temperature_offset']
+        starts = parser.copy_offsets(at, 6) if isinstance(parser, TableRom) else [at]
+        offsets = [start + k for start in starts for k in (0, 2, 4)]
     limits = ('from 40 C up to 3 C above the stock %d C of this product' % stock if stock is not None else
               'from 40 C up to the stored value (this product has no reviewed stock value, so it can only be '
               'lowered)')
-    others = _other_limits(table)
     caveat = ('; this image also stores ' + ', '.join(others) + ', a policy of the same kind whose role was not '
               'traced and that may limit the GPU first, so raising this value may have no effect') if others else ''
-    at = entry['temperature_offset']
-    return [field('max_operating_temp_c', 'Max operating temperature', 'C', float(current),
-                  float(floor) if editable else None, float(ceiling) if editable else None, editable,
-                  [dict(MAX_TEMP_FIRMWARE_EVIDENCE), dict(MAX_TEMP_CORPUS_EVIDENCE), dict(MAX_TEMP_NVML_EVIDENCE)],
-                  offsets=[at, at + 2, at + 4] if editable else (), encoding='<h' if editable else '', scale=32,
+    named = ('thermal policy entry 0' if isinstance(parser, BlackwellRom) else
+             f'thermal policy entry {index} (the one header byte 9 names)')
+    # The nvidia-smi relation was checked on GB20x entry 0 and on a desktop Ada entry with byte 1 = 0, not on the
+    # Turing, Ampere and Ada laptop entries (byte 1 = 1).
+    relation = ('nvidia-smi current temperature + T.Limit equals it' if isinstance(parser, BlackwellRom) or
+                entry is None or entry['byte1'] == 0 else
+                'on desktop cards nvidia-smi current temperature + T.Limit equals it; this entry is on another thermal '
+                'channel, byte 1 = %d, where that was not checked' % entry['byte1'])
+    extra = dict(lower_limits=lower) if isinstance(parser, TableRom) and lower else {}
+    return [field('max_operating_temp_c', 'Max operating temperature', 'C',
+                  float(current) if current is not None else None, floor, ceiling, editable,
+                  [dict(e) for e in evidence], offsets=offsets, encoding='<h' if editable else '', scale=32,
                   stored_units='1/32 C', writable_status=None if editable else 'unsupported', experimental=True,
-                  value_semantics=MAX_TEMP_SEMANTICS, thermal_policy=0, stock_c=stock,
-                  reason=reason or 'experimental: the three temperatures of thermal policy entry 0 (1/32 C, written '
-                                   'together), which the driver reports as the maximum operating temperature '
-                                   f'(nvidia-smi current temperature + T.Limit equals it); {limits}; byte 0 and the '
-                                   f'other entries stay as stored{caveat}; not hardware-tested')]
+                  value_semantics=MAX_TEMP_SEMANTICS, thermal_policy=index, stock_c=stock, **extra,
+                  reason=reason or f'experimental: the three temperatures (1/32 C, written together) of {named}, '
+                                   'which the driver reports as the maximum operating temperature '
+                                   f'({relation}); {limits}; byte 0 and the other entries stay as stored{caveat}; '
+                                   'not hardware-tested')]
 
 
 FACTORY_OFFSET_SEMANTICS = 'stored-factory-gpc-offset'
+FACTORY_MEMORY_OFFSET_SEMANTICS = 'stored-factory-memory-offset'
+FACTORY_SEMANTICS = (FACTORY_OFFSET_SEMANTICS, FACTORY_MEMORY_OFFSET_SEMANTICS)
 FACTORY_OFFSET_LIMIT_MHZ = 500
+FACTORY_MEMORY_OFFSET_LIMIT_MHZ = 5000
 FACTORY_CLOCK_FIRMWARE_EVIDENCE = {
     'kind': 'static-firmware-analysis',
     'source': 'GSP-RM firmware 615.78.08 (gsp_ga10x.bin), factory clock record readers',
-    'observation': 'at boot one reader takes each array-A entry whose flag is 1 and stores its 32-bit kHz value as a '
-                   'static frequency delta of the clock domain the entry maps to (entry 0: the GPC domain, copied to '
-                   'its companion domain); a flag of 0 skips the entry and any other flag fails the read; the function '
-                   'that applies a static delta to a clock loads the 32-bit value sign-extended, divides it by 1000 '
-                   'with a signed division (truncating toward zero to whole MHz), adds it to the clock in MHz and '
-                   'returns 0 when the sum is negative, so the value is a signed kHz offset and a negative one lowers '
-                   'the clock; a second reader writes each array-B entry with flag 1, in MHz, into a '
-                   'performance-state clock entry', 'set_tested': False}
+    'observation': 'at boot one reader maps each array-A entry through a descriptor table chosen by the clocks '
+                   'table HAL (entry 0: the GPC domain, its value copied to the companion domain; entry 1: the '
+                   'memory clock domain), looks the domain up and reads the entry\'s flag: 0 skips the entry, 1 '
+                   'stores its 32-bit kHz value as the domain\'s static frequency delta and any other flag fails the '
+                   'read; the delta is stored for the domain class that every GB20x clocks table row (usage 2, the '
+                   'GPC and memory clock rows included) gets, and refused for fixed rows; the function that applies a '
+                   'static delta to a clock loads the 32-bit value sign-extended, divides it by 1000 with a signed '
+                   'division (truncating toward zero to whole MHz), adds it to the clock in MHz and returns 0 when '
+                   'the sum is negative, so the value is a signed kHz offset and a negative one lowers the clock; a '
+                   'second reader writes each array-B entry with flag 1, in MHz, into a performance-state clock entry',
+    'set_tested': False}
 FACTORY_CLOCK_CORPUS_EVIDENCE = {
     'kind': 'structural-table', 'source': 'GB20x VBIOS corpus',
     'observation': 'the record header is 10 07 05 02 05 02 00 on every image; vendor factory-OC images set entry A0 '
@@ -2811,70 +3139,168 @@ FACTORY_CLOCK_CORPUS_EVIDENCE = {
                    'RTX 5090 Aorus Master, 195/2730 MHz on three other RTX 5090 images (ASUS ROG, MSI Lightning), '
                    '45/2580 MHz on the ASUS XOC images, 30/2640 MHz on an RTX 5080, 120/2572 MHz on an RTX 5070 Ti, '
                    '60/2572 MHz on an RTX 5070 and 30/2602 MHz on two RTX 5060 Ti; the Founders Edition, reference '
-                   'RTX 5070, notebook and RTX PRO images store zeros with flag 0; entries A1 and B0 are 0 everywhere'}
-FACTORY_OFFSET_DISABLED_REASON = ('read-only: this image stores no factory GPC offset (entry A0 of the factory clock '
-                                  'record is disabled, as on Founders Edition, reference, laptop and RTX PRO images); '
-                                  'the editor does not enable it')
-FACTORY_OFFSET_FRACTION_REASON = ('read-only: the stored factory GPC offset is not a whole number of MHz, which no '
+                   'RTX 5070, notebook and RTX PRO images store zeros with flag 0; entries A1 and B0 are 0 with flag '
+                   '0 everywhere'}
+LEGACY_FACTORY_FIRMWARE_EVIDENCE = {
+    'kind': 'static-firmware-analysis',
+    'source': 'GSP-RM firmware 615.78.08 (gsp_tu10x.bin for Turing, gsp_ga10x.bin for Ampere and Ada), factory '
+              'clock record reader',
+    'observation': 'the same array-A reader as on GB20x, in both firmware images: the header must have version 0x10 '
+                   'and is read as 6b when it is 6 bytes long (Turing) and as 7b when it is longer (header byte 6 is '
+                   'kept as a clock flag); the descriptor table is the same in both images, and its entry for the GV '
+                   'clocks HAL of the Turing (v0x35), Ampere and Ada (v0x40) clocks tables maps A0 to the GPC domain '
+                   '(copied to its companion domain) and A1 to the memory clock domain; flag 0 skips an entry, 1 '
+                   'stores the value as the domain\'s static frequency delta (applied as on GB20x), any other value '
+                   'fails the read; the Ampere and Ada clocks table loader gives every row of one usage the same '
+                   'domain class (usage 1: one the reader accepts; usage 0, fixed: refused); the GPC and memory clock '
+                   'rows have usage 1 on every Turing, Ampere and Ada image; on Turing, whose clocks table loader was '
+                   'not traced, two vendor images ship with A1 enabled', 'set_tested': False}
+LEGACY_FACTORY_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'Turing, Ampere and Ada VBIOS corpus',
+    'observation': 'the header is 10 06 05 02 05 02 on every Turing image and 10 07 05 02 05 02 00 on every Ampere '
+                   'and Ada image except three Ada factory-OC images (two RTX 4090, one RTX 4080) with byte 6 = 1; '
+                   'factory-OC images set A0 (flag 1) and B1: 75/1650, 135/1800 and 120/1680 MHz on RTX 2080 Ti '
+                   'images, 120/1890 MHz on an RTX 2080, 30/1845 on an RTX 2080 SUPER, 15 to 60 MHz on RTX 2060/2070 '
+                   'and GTX 16 images; 15 to 45 MHz on RTX 30 images (RTX 3060 to 3090 Ti); 60/2625 MHz on RTX 4090 '
+                   'images, 15/2595 and 75/2640 MHz on RTX 4080 images, 15/2565 MHz on an RTX 4070 SUPER; two RTX '
+                   '3060 Ti images, an RTX 3070, an RTX 4060, two RTX 4060 Ti and a GTX 1660 Ti laptop image set '
+                   'A0\'s flag to 1 with 0 MHz, and an RTX 3060, an RTX 4080 SUPER and an RTX 4070 image set B1 alone; '
+                   'the TITAN RTX image stores 60 MHz with flag 0, which the driver skips; Founders Edition, '
+                   'reference, workstation and laptop images store zeros with flag 0; A1 is enabled on two Turing '
+                   'images only (70 and 400 MHz) and B0 nowhere'}
+FACTORY_MEMORY_UNITS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'Turing VBIOS corpus',
+    'observation': 'an RTX 2080 factory-OC image stores A0/B1 = 120/1890 MHz and A1 = 70 MHz with flag 1: its '
+                   'vendor rates that board at 1890 MHz boost and 14140 MT/s memory, 7000 + 70 = 7070 MHz of memory '
+                   'clock, so A1 is in the memory clock scale nvidia-smi and MSI Afterburner show (half the '
+                   'transfer rate)'}
+FACTORY_OFFSET_FRACTION_REASON = ('read-only: the stored factory offset is not a whole number of MHz, which no '
                                   'reviewed image stores; the driver uses it truncated to whole MHz')
+FACTORY_UNREVIEWED_REASON = ('read-only: the factory clock record or the clocks table of this image does not have the '
+                             'reviewed layout (a record header, or an entry flag other than 0 or 1, that the driver '
+                             'refuses; a clocks table the editor does not read), so the editor keeps the record as '
+                             'stored')
 FACTORY_BOOST_REASON = ('read-only: the rated boost clock of the factory clock record (entry B1); the driver writes it '
                         'into a performance-state clock entry, and the editor keeps it as stored')
+FACTORY_ENABLE_NOTE = ('a value other than 0 sets the entry\'s flag, so on a ROM whose entry is off (flag 0, whatever '
+                       'value it stores) it turns one on (not tested on such ROMs); 0 turns it off with flag 0 and 0 '
+                       'kHz, as ROMs without a factory offset store it, so such a ROM goes back to its own bytes even '
+                       'after an edited copy was saved; 0 on an entry that already reads 0 keeps its bytes')
+# The two editable entries of array A: (index, key, label, MHz limit, semantics, note).
+FACTORY_OFFSETS = (
+    (0, 'factory_gpc_offset_mhz', 'Factory GPC offset (vendor overclock)', FACTORY_OFFSET_LIMIT_MHZ,
+     FACTORY_OFFSET_SEMANTICS,
+     'experimental: the factory GPC offset (entry A0 of the factory clock record: a flag and a signed kHz value), '
+     'which the driver applies at boot as the GPC clock frequency delta while the flag is 1; -500..+500 MHz in whole '
+     'MHz (the driver truncates to whole MHz); a negative value lowers the clock; ' + FACTORY_ENABLE_NOTE + '; a '
+     'separate mechanism from the GPC curve offset, so both apply; the rated boost (entry B1) stays as stored; values '
+     'far from the stock one can make the card unstable; not hardware-tested'),
+    (1, 'factory_memory_offset_mhz', 'Factory memory offset (vendor overclock)', FACTORY_MEMORY_OFFSET_LIMIT_MHZ,
+     FACTORY_MEMORY_OFFSET_SEMANTICS,
+     'experimental: the factory memory offset (entry A1 of the factory clock record: a flag and a signed kHz value), '
+     'which the driver applies at boot as the memory clock frequency delta while the flag is 1, in the memory clock '
+     'that nvidia-smi and MSI Afterburner show (7000 MHz on 14 Gbps GDDR6); tools that show the transfer rate, such '
+     'as nvidia-settings, and the memory offset floor and ceiling of this editor show twice this number; '
+     '-5000..+5000 MHz in whole MHz; a negative value lowers the clock; ' + FACTORY_ENABLE_NOTE + '; values far from '
+     'the stock one can make the memory unstable or keep the card from starting; not hardware-tested'),
+)
 
 
 def _mhz(khz):
     return khz // 1000 if khz % 1000 == 0 else khz / 1000
 
 
+def _factory_offset(parser, entry, spec, evidence, writable, blocked, **extra):
+    """One array-A entry as an offset field in whole MHz; its value is the effective one (0 while the flag is 0).
+
+    The layout writes the flag and the four value bytes: flag 1 and the kHz value for a value other than 0. For 0 it
+    keeps the stored five bytes when the entry already reads 0 (flag 0 whatever it stores, or flag 1 with 0 kHz), and
+    otherwise writes flag 0 with 0 kHz, the bytes of ROMs that ship without the offset: an edited copy of such a ROM
+    set back to 0 is byte-identical to it.
+    """
+    index, key, label, limit, semantics, note = spec
+    if entry is None:
+        return field(key, label, 'MHz', None, None, None, False, [dict(e) for e in evidence],
+                     writable_status='unsupported', experimental=True, value_semantics=semantics, factory_entry=index,
+                     reason=blocked, **extra)
+    effective = entry['khz'] if entry['flag'] == 1 else 0
+    whole = effective % 1000 == 0
+    current = _mhz(effective)
+    editable = writable and whole and blocked is None
+    reason = note if editable else blocked or (note if whole else FACTORY_OFFSET_FRACTION_REASON)
+    extra.update(factory_entry=index, stored_flag=entry['flag'])
+    if not editable:
+        return field(key, label, 'MHz', current, None, None, False, [dict(e) for e in evidence], stored_units='kHz',
+                     writable_status='unsupported', experimental=True, value_semantics=semantics, reason=reason,
+                     **extra)
+    lo, hi = min(-limit, current), max(limit, current)
+    at = entry['offset']
+    offsets = parser.copy_offsets(at, 5) if isinstance(parser, TableRom) else [at]
+    stored = bytes(parser.blob[at:at + 5])
+
+    def chunk(mhz):
+        if mhz:
+            return struct.pack('<Bi', 1, mhz * 1000)
+        return stored if effective == 0 else struct.pack('<Bi', 0, 0)
+    # Whole MHz only (the driver truncates the kHz value to whole MHz): each MHz value writes its flag and kHz.
+    layout = tuple((mhz, (chunk(mhz),) * len(offsets)) for mhz in range(lo, hi + 1))
+    return field(key, label, 'MHz', current, lo, hi, True, [dict(e) for e in evidence], offsets=offsets,
+                 encoding='<xi', scale=1, layout=layout, stored_units='kHz', experimental=True,
+                 value_semantics=semantics, reason=note, **extra)
+
+
 @registry.register
 def factory_clocks(image, parser):
-    """GB20x: the vendor factory GPC offset (entry A0 of the factory clock record, P+0x98) and its rated boost.
+    """The factory GPC and memory offsets (entries A0 and A1 of the factory clock record, P+0x98) and its rated boost.
 
-    A0 is a signed kHz offset that GSP-RM applies at boot as the GPC clock domain's static
-    frequency delta, when its flag is 1 (vendor factory-OC images); the driver truncates it
-    toward zero to whole MHz. It is editable in whole MHz, -500..+500 (a layout of kHz
-    values), only where that flag is already 1 and the stored value is whole MHz; the flag,
-    the rest of the record and the rated boost (B1, written into a performance-state clock
-    entry) stay as stored. It is a separate mechanism from gpc_curve_offset_mhz (a VFE
-    equation): both apply. B1 is listed read-only where its flag is 1. Not hardware-tested.
+    GB20x, Ada, Ampere and Turing. A0 and A1 are signed kHz values that GSP-RM applies at boot as the
+    GPC and memory clock domains' static frequency deltas while their flag is 1 (vendor factory-OC
+    images set A0); a flag of 0 skips the entry. Each is shown as its effective value (0 while the
+    flag is 0) and editable in whole MHz: A0 -500..+500, A1 -5000..+5000 in the memory clock that
+    nvidia-smi shows (bounds widened to hold a stored value outside), wherever the record has the
+    reviewed layout and the clocks table is one the editor reads (its GPC and memory clock rows then
+    have the usage whose domain class the reader accepts). A value other than 0 writes flag 1 and
+    the kHz value; 0 keeps the stored bytes where the entry already reads 0 and otherwise writes flag 0 with
+    0 kHz (how ROMs without the offset store it).
+    Read-only: a stored value that is not whole MHz, an unreviewed record or clocks table. The
+    rest of the record (header, array B) stays as stored; B1 (the rated boost, written into a
+    performance-state clock entry) is listed read-only where its flag is 1. A0 is a separate
+    mechanism from gpc_curve_offset_mhz (a VFE equation): both apply. Not hardware-tested.
     """
-    if not isinstance(parser, BlackwellRom):
+    if not isinstance(parser, (BlackwellRom, TableRom)):
         return []
     record = parser.factory_clocks()
     if record is None:
         return []
-    offset, boost = record['offsets'][0], record['clocks'][1]
-    enabled = offset['flag'] == 1
-    whole = offset['khz'] % 1000 == 0
-    editable = enabled and whole and can_edit(image, parser)
-    current = _mhz(offset['khz'])
-    lo, hi = (min(-FACTORY_OFFSET_LIMIT_MHZ, current), max(FACTORY_OFFSET_LIMIT_MHZ, current)) if whole else (0, 0)
-    # Whole MHz only (the driver truncates the kHz value to whole MHz): each MHz value writes its kHz.
-    layout = tuple((mhz, (struct.pack('<i', mhz * 1000),)) for mhz in range(lo, hi + 1)) if editable else ()
-    evidence = [dict(FACTORY_CLOCK_FIRMWARE_EVIDENCE), dict(FACTORY_CLOCK_CORPUS_EVIDENCE)]
-    reason = (None if whole else FACTORY_OFFSET_FRACTION_REASON) if enabled else FACTORY_OFFSET_DISABLED_REASON
-    result = [field('factory_gpc_offset_mhz', 'Factory GPC offset (vendor overclock)', 'MHz', current,
-                    lo if editable else None, hi if editable else None, editable, evidence,
-                    offsets=[offset['value_offset']] if editable else (), encoding='<i' if editable else '',
-                    scale=1, layout=layout, stored_units='kHz', writable_status=None if editable else 'unsupported',
-                    experimental=True, value_semantics=FACTORY_OFFSET_SEMANTICS,
-                    rated_boost_mhz=_mhz(boost['khz']) if boost['flag'] == 1 else None,
-                    reason=reason or 'experimental: the vendor factory GPC offset (entry A0 of the factory clock '
-                                     'record, signed kHz), which the driver applies at boot as the GPC clock frequency '
-                                     'delta; -500..+500 MHz in whole MHz (the driver truncates to whole MHz); a '
-                                     'negative value lowers the clock; a separate mechanism from the GPC curve offset, '
-                                     'so both apply; the rated boost (entry B1) stays as stored; values far from the '
-                                     'stock one can make the card unstable; not hardware-tested')]
-    if boost['flag'] == 1:
-        result.append(field('factory_rated_boost_mhz', 'Factory rated boost clock', 'MHz', _mhz(boost['khz']),
+    blackwell = isinstance(parser, BlackwellRom)
+    evidence = ([FACTORY_CLOCK_FIRMWARE_EVIDENCE, FACTORY_CLOCK_CORPUS_EVIDENCE] if blackwell else
+                [LEGACY_FACTORY_FIRMWARE_EVIDENCE, LEGACY_FACTORY_CORPUS_EVIDENCE])
+    try:
+        parser.clock_ranges()
+        clocks_read = True
+    except FormatError:
+        clocks_read = False
+    blocked = None if record['reviewed'] and clocks_read else FACTORY_UNREVIEWED_REASON
+    writable = can_edit(image, parser)
+    boost = record['clocks'][1] if record['reviewed'] and record['clocks'][1]['flag'] == 1 else None
+    boost_mhz = _mhz(boost['khz']) if boost else None
+    result = []
+    for spec in FACTORY_OFFSETS:
+        entry = record['offsets'][spec[0]] if record['reviewed'] else None
+        sources = evidence + ([FACTORY_MEMORY_UNITS_EVIDENCE] if spec[0] == 1 else [])
+        extra = dict(rated_boost_mhz=boost_mhz) if spec[0] == 0 else {}
+        result.append(_factory_offset(parser, entry, spec, sources, writable, blocked, **extra))
+    if boost:
+        result.append(field('factory_rated_boost_mhz', 'Factory rated boost clock', 'MHz', boost_mhz,
                             None, None, False, [dict(e) for e in evidence], writable_status='unsupported',
                             value_semantics='stored-factory-rated-boost', reason=FACTORY_BOOST_REASON))
     return result
 
 
-# The Advanced section (GB20x): PERF_CF controllers and LPWR idle power features. Its fields carry
-# section='advanced'; a field that only matters while a switch is on carries depends_on={'field':
-# <switch key>, 'value': 1}, and edit() changes it only while that switch is 1, stored or requested
-# in the same edit. The section is not part of the import from another ROM.
+# The Advanced section (GB20x, Ada, Ampere, Turing): PERF_CF controllers and LPWR idle power features. Its
+# fields carry section='advanced'; a field that only matters while a switch is on carries depends_on={'field':
+# <switch key>, 'value': 1}, and edit() changes it only while that switch is 1, stored or requested in the same
+# edit. The section is not part of the import from another ROM.
 ADVANCED_SECTION = 'advanced'
 PERF_CF_SWITCH_KEY = 'perf_cf_util_policy'
 PERF_CF_SWITCH_SEMANTICS = 'stored-perf-cf-policy-switch'
@@ -2885,13 +3311,19 @@ LPWR_SWITCH_SEMANTICS = 'stored-lpwr-switch'
 LPWR_TIME_SEMANTICS = 'stored-lpwr-idle-time'
 ADVANCED_SEMANTICS = (PERF_CF_SWITCH_SEMANTICS, PERF_CF_TARGET_SEMANTICS, PERF_CF_JUMP_SEMANTICS,
                       PERF_CF_HYSTERESIS_SEMANTICS, LPWR_SWITCH_SEMANTICS, LPWR_TIME_SEMANTICS)
-# The utilization controllers of PERF_CF policy 0: (controller index, key part, clock domain name,
-# domain byte 19, then the stock decrease hysteresis count, target and jump threshold fractions,
-# identical on every reviewed image). The stock DRAM target 0x851 (51.98 %) is not the fraction
-# nearest to 52 % (0x852): writing a stock percent stores the stock fraction, so going back to
-# stock gives the stock bytes.
+# The utilization controllers of PERF_CF policy 0: (controller index, key part, clock domain name, GB20x
+# domain byte 19, then the stock decrease hysteresis count and the GB20x stock target and jump threshold
+# fractions, identical on every reviewed GB20x image). On Turing, Ampere and Ada byte 19 names the row of the
+# clocks table (C+8) whose GV HAL name is the clock domain (GPC 0, DRAM 2 and VID 5 on every reviewed image);
+# the stock decrease hysteresis counts are the same there, the targets and jump thresholds vary per product.
 PERF_CF_CONTROLLERS = ((0, 'gpc', 'GPC', 0, 9, 0x0666, 0x0C00), (1, 'dram', 'DRAM', 2, 4, 0x0851, 0x0A3D),
                        (2, 'vid', 'VID', 4, 9, 0x0A66, 0x0D9A))
+# Some stock fractions are not the nearest ones (52 % is 0x851, not 0x852). GB20x: the stock percent of each
+# controller field (PERF_CF_CONTROLLERS) stores its stock fraction. Turing, Ampere and Ada, whose stock percents
+# vary per product: a request for one of these percents stores the fraction NVIDIA stores for it in the reviewed
+# tables (52 % as on GB20x), on any controller. Either way going back to a stock percent gives the stock bytes on
+# every reviewed image.
+LEGACY_PERF_CF_STOCK_FRACTIONS = {52: 0x0851, 55: 0x08CC, 58: 0x0947, 60: 0x0999, 80: 0x0CCC}
 PERF_CF_FXP_ONE = 0x1000          # FXP20.12 1.0: 100 %
 PERF_CF_TARGET_FLOOR_PCT = 10
 PERF_CF_HYSTERESIS_UP = (1, 4)
@@ -2916,13 +3348,36 @@ PERF_CF_CORPUS_EVIDENCE = {
                    '75, 64 and 85 %, increase hysteresis 1 and decrease hysteresis 9, 4 and 9 on every image; the '
                    'notebook stores controller 0 as type 5; the controller header is 14 bytes on the RTX PRO 4000 SFF '
                    '(6 elsewhere), where object 0x60 also covers the policy table header'}
+LEGACY_PERF_CF_FIRMWARE_EVIDENCE = {
+    'kind': 'static-firmware-analysis',
+    'source': 'GSP-RM firmware 615.78.08 (gsp_tu10x.bin for Turing, gsp_ga10x.bin for Ampere and Ada), PERF_CF '
+              'controller and policy parsers',
+    'observation': 'the controller parser of both firmware images reads the 6-byte header as 4b1w and each entry by '
+                   'its size: 23 bytes as 3b5d, 24..27 as 3b5d1b, 28..31 as 3b5d1b1d, 32..40 as 3b5d1b2d, 41..53 as '
+                   '3b5d1b2d1b2d and longer ones as on GB20x; the 3b5d part (type nibble, target and jump threshold '
+                   'at bytes 3 and 7, gains, clock domain at byte 19 and the increase and decrease hysteresis counts '
+                   'at bytes 20 and 21) is the same in every size, and the type 1 (utilization) decoder that unpacks '
+                   'it is the GB20x one in both images (the type 5 subclass was traced in gsp_ga10x.bin only, so '
+                   'Turing accepts type 1 alone); policy entries are read as on GB20x; whether a per-chip flag makes '
+                   'GSP-RM skip the VBIOS controllers on these chips was not traced, so that these tables take effect '
+                   'is not proven', 'set_tested': False}
+LEGACY_PERF_CF_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'Turing, Ampere and Ada VBIOS corpus',
+    'observation': 'every image stores 8 or 12 controllers (entries of 24 or 28 bytes on Turing, 24, 32 or 49 on '
+                   'Ampere, 49 on Ada) and 8 or 9 policies; policy 0 is active (0x81) and names controllers 0, 1 and '
+                   '2, utilization controllers (type 1) whose byte 19 is 0, 2 and 5, the GPC, DRAM and VID rows of '
+                   'the clocks table, with increase hysteresis 1 and decrease hysteresis 9, 4 and 9 on every image; '
+                   'targets and jump thresholds vary per product: GPC 40 % with 55 to 75 %, DRAM 40 to 65 % with 55 '
+                   'to 80 %, VID 60 to 75 % with 80 to 90 % (40/75, 65/80 and 65/85 % on every Ada image)'}
 PERF_CF_POLICY_UNRECOGNIZED_REASON = ('read-only: policy entry 0 of the PERF_CF policy table is not the reviewed '
                                       'utilization policy (type nibble 1, naming controllers 0, 1 and 2)')
 PERF_CF_CONTROLLER_UNRECOGNIZED_REASON = ('read-only: this PERF_CF controller is not the reviewed utilization '
-                                          'controller (type 1 or 5, its clock domain, a target below its jump '
-                                          'threshold and nonzero hysteresis counts)')
+                                          'controller (type 1, or its subclass type 5 except on Turing, its clock '
+                                          'domain, a target below its jump threshold and nonzero hysteresis counts)')
 PERF_CF_GATE = 'editable only while the utilization policy is on (stored or in the same edit)'
 PERF_CF_UNPROVEN = ('that the driver uses these tables on GB20x is not proven; not hardware-tested')
+LEGACY_PERF_CF_UNPROVEN = ('that the driver uses these tables on Turing, Ampere and Ada is not proven; not '
+                           'hardware-tested')
 
 
 def fxp_percent(raw):
@@ -2935,11 +3390,12 @@ def percent_fxp(percent):
     return int((Decimal(percent) * PERF_CF_FXP_ONE / 100).to_integral_value(rounding=ROUND_HALF_UP))
 
 
-def percent_layout(raw, stock_raw, low, high):
-    """Layout of a FXP20.12 percent field: every whole percent from low to high as its nearest fraction; the
-    stored percent keeps its stored fraction and the stock percent takes the stock fraction."""
-    exact = {fxp_percent(stock_raw): stock_raw, fxp_percent(raw): raw}
-    return tuple((p, (struct.pack('<I', exact.get(p, percent_fxp(p))),)) for p in range(low, high + 1))
+def percent_layout(raw, low, high, copies=1, fractions=None):
+    """Layout of a FXP20.12 percent field written at copies offsets: every whole percent from low to high as a
+    fraction; the stored percent keeps its stored fraction, a percent of fractions ({percent: fraction}, the stock
+    ones) takes that fraction and any other percent its nearest one."""
+    exact = {**(fractions or {}), fxp_percent(raw): raw}
+    return tuple((p, (struct.pack('<I', exact.get(p, percent_fxp(p))),) * copies) for p in range(low, high + 1))
 
 
 def stock_multiple(stock, current):
@@ -2947,35 +3403,61 @@ def stock_multiple(stock, current):
     return min(math.ceil(stock / 2), current), max(4 * stock, current)
 
 
+def _advanced_copies(parser):
+    """The offsets an Advanced field writes for a value at (at, size): itself on GB20x (its object is repaired),
+    the same bytes in every chain on Turing, Ampere and Ada."""
+    if isinstance(parser, BlackwellRom):
+        return lambda at, size: [at]
+    return parser.copy_offsets
+
+
 @registry.register
 def perf_cf_controllers(image, parser):
-    """GB20x Advanced section: the PERF_CF utilization policy switch and its GPC, DRAM and video controllers.
+    """Advanced section: the PERF_CF utilization policy switch and its GPC, DRAM and video controllers.
 
-    perf_cf_util_policy is bit 7 (active) of policy entry 0, which runs controllers 0..2. Per
-    controller: the target and the jump threshold (FXP20.12 at bytes 3 and 7, in whole
-    percent; the stored fraction is kept when the percent is unchanged) and the increase and
-    decrease hysteresis counts (bytes 20 and 21). Target: 10 % up to the jump threshold - 1 %;
-    jump: the target + 1 % up to 100 % (GSP-RM refuses more), one ordering group per
-    controller; decrease hysteresis 0.5x..4x its stock count, increase 1..4. The controller
-    fields depend on the switch (depends_on): edit() changes them only while it is on. Policy
-    or controller entries outside the reviewed shape stay read-only. Experimental: that the
-    driver uses these tables on GB20x is not proven, and nothing is hardware-tested.
+    GB20x, Ada, Ampere and Turing. perf_cf_util_policy is bit 7 (active) of policy entry 0,
+    which runs controllers 0..2. Per controller: the target and the jump threshold (FXP20.12
+    at bytes 3 and 7, in whole percent; the stored fraction is kept when the percent is
+    unchanged) and the increase and decrease hysteresis counts (bytes 20 and 21). Target: 10 %
+    up to the jump threshold - 1 %; jump: the target + 1 % up to 100 % (GSP-RM refuses more),
+    one ordering group per controller; decrease hysteresis 0.5x..4x its stock count, increase
+    1..4. A controller's clock domain is its byte 19: on GB20x the domain byte (0 GPC, 2 DRAM,
+    4 VID), on Turing, Ampere and Ada the row of the clocks table (C+8) it names, whose GV HAL
+    name must be the controller's domain (rows 0, 2 and 5 on every reviewed image). The
+    controller fields depend on the switch (depends_on): edit() changes them only while it is
+    on. Policy or controller entries outside the reviewed shape stay read-only. Every chain is
+    written. Experimental: that the driver uses these tables is not proven, and nothing is
+    hardware-tested.
     """
-    if not isinstance(parser, BlackwellRom):
+    if not isinstance(parser, (BlackwellRom, TableRom)):
         return []
     tables = parser.perf_cf()
     if tables is None:
         return []
+    blackwell = isinstance(parser, BlackwellRom)
+    if blackwell:
+        evidence, unproven = [PERF_CF_FIRMWARE_EVIDENCE, PERF_CF_CORPUS_EVIDENCE], PERF_CF_UNPROVEN
+        names = {domain: name for _, _, name, domain, *_ in PERF_CF_CONTROLLERS}
+    else:
+        evidence, unproven = [LEGACY_PERF_CF_FIRMWARE_EVIDENCE, LEGACY_PERF_CF_CORPUS_EVIDENCE], LEGACY_PERF_CF_UNPROVEN
+        try:
+            names = {row['row']: row['domain'] for row in parser.clock_ranges()}
+        except FormatError:
+            names = {}  # a clocks table the editor does not read names no domain: no controller is recognized
+    # Type 5, a subclass with the same offsets, was traced in gsp_ga10x.bin (GB20x, Ampere, Ada) only.
+    kinds = (1,) if isinstance(parser, TableRom) and parser.family == 'turing' else (1, 5)
+    copies = _advanced_copies(parser)
     writable = can_edit(image, parser)
-    evidence = [PERF_CF_FIRMWARE_EVIDENCE, PERF_CF_CORPUS_EVIDENCE]
     policy = tables['policies']['entries'][0]
     policy_ok = policy['kind'] == 1 and policy['controllers'] & 0b111 == 0b111
     editable = policy_ok and writable
     flags = policy['flags']
+    offsets = copies(policy['offset'], 1)
     result = [field(PERF_CF_SWITCH_KEY, 'Utilization clock policy', 'flag', 1 if policy['active'] else 0,
                     0 if editable else None, 1 if editable else None, editable, [dict(e) for e in evidence],
-                    offsets=[policy['offset']] if editable else (), encoding='<B' if editable else '', scale=1,
-                    layout=((0, (bytes((flags & 0x7F,)),)), (1, (bytes((flags | 0x80,)),))) if editable else (),
+                    offsets=offsets if editable else (), encoding='<B' if editable else '', scale=1,
+                    layout=((0, (bytes((flags & 0x7F,)),) * len(offsets)),
+                            (1, (bytes((flags | 0x80,)),) * len(offsets))) if editable else (),
                     writable_status=None if editable else 'unsupported', experimental=True,
                     section=ADVANCED_SECTION, value_semantics=PERF_CF_SWITCH_SEMANTICS, perf_cf_policy=0,
                     perf_cf_controllers=[0, 1, 2],
@@ -2983,12 +3465,12 @@ def perf_cf_controllers(image, parser):
                            'raises and lowers the GPC, DRAM and video clocks with load through controllers 0..2; '
                            'off is expected to stop that scaling (inferred); the other bits stay as stored, and the '
                            'targets, jump thresholds and hysteresis counts of controllers 0..2 are editable only '
-                           'while it is on; ' + PERF_CF_UNPROVEN if policy_ok else PERF_CF_POLICY_UNRECOGNIZED_REASON)]
+                           'while it is on; ' + unproven if policy_ok else PERF_CF_POLICY_UNRECOGNIZED_REASON)]
     depends = {'field': PERF_CF_SWITCH_KEY, 'value': 1}
-    for index, part, name, domain, stock_down, stock_target, stock_jump in PERF_CF_CONTROLLERS:
+    for index, part, name, _, stock_down, stock_target, stock_jump in PERF_CF_CONTROLLERS:
         entry = tables['controllers']['entries'][index]
         target, jump = fxp_percent(entry['target_raw']), fxp_percent(entry['jump_raw'])
-        recognized = (entry['type'] in (1, 5) and entry['domain'] == domain and 0 < entry['target_raw'] and
+        recognized = (entry['type'] in kinds and names.get(entry['domain']) == name and 0 < entry['target_raw'] and
                       entry['jump_raw'] <= PERF_CF_FXP_ONE and target < jump and entry['hysteresis_up'] and
                       entry['hysteresis_down'])
         reason = None if recognized and policy_ok else (PERF_CF_CONTROLLER_UNRECOGNIZED_REASON if policy_ok else
@@ -2997,88 +3479,122 @@ def perf_cf_controllers(image, parser):
         common = dict(writable_status=None if editable else 'unsupported', experimental=True,
                       section=ADVANCED_SECTION, depends_on=dict(depends), perf_cf_controller=index,
                       clock_domain=name)
+        # GB20x: every reviewed image stores the same targets and thresholds; elsewhere they vary per product.
+        target_stock = dict(stock=fxp_percent(stock_target)) if blackwell else {}
+        jump_stock = dict(stock=fxp_percent(stock_jump)) if blackwell else {}
         group = f'perf-cf-{part}' if editable else None
         floor = min(PERF_CF_TARGET_FLOOR_PCT, target)
-        target_layout = percent_layout(entry['target_raw'], stock_target, floor, max(99, target))
-        jump_layout = percent_layout(entry['jump_raw'], stock_jump, min(floor + 1, jump), max(100, jump))
+        target_offsets, jump_offsets = copies(entry['target_offset'], 4), copies(entry['jump_offset'], 4)
+        # GB20x: the stock fraction of this field; elsewhere the fractions NVIDIA stores in the reviewed tables.
+        target_fractions = {fxp_percent(stock_target): stock_target} if blackwell else LEGACY_PERF_CF_STOCK_FRACTIONS
+        jump_fractions = {fxp_percent(stock_jump): stock_jump} if blackwell else LEGACY_PERF_CF_STOCK_FRACTIONS
+        target_layout = percent_layout(entry['target_raw'], floor, max(99, target), len(target_offsets),
+                                       target_fractions)
+        jump_layout = percent_layout(entry['jump_raw'], min(floor + 1, jump), max(100, jump), len(jump_offsets),
+                                     jump_fractions)
         result.append(field(
             f'perf_cf_{part}_target_pct', f'{name} utilization target', '%', target,
             floor if editable else None, jump - 1 if editable else None, editable, [dict(e) for e in evidence],
-            offsets=[entry['target_offset']] if editable else (), encoding='<I' if editable else '', scale=1,
+            offsets=target_offsets if editable else (), encoding='<I' if editable else '', scale=1,
             layout=target_layout if editable else (), ordering_group=group,
             encoding_bounds=(floor, max(99, target)) if editable else None, stored_units='FXP20.12 fraction',
-            value_semantics=PERF_CF_TARGET_SEMANTICS, stored_raw=entry['target_raw'],
-            stock=fxp_percent(stock_target), **common,
+            value_semantics=PERF_CF_TARGET_SEMANTICS, stored_raw=entry['target_raw'], **target_stock, **common,
             reason=reason or f'experimental: the {name} utilization target of PERF_CF controller {index} (FXP20.12 '
                              'at entry byte 3, shown in whole percent; the stored fraction is kept while the percent '
                              f'is unchanged): the load the driver keeps the {name} clock near; lower raises the '
                              'clock sooner at partial load (more power and heat), higher keeps it lower (inferred); '
                              f'{PERF_CF_TARGET_FLOOR_PCT} % up to 1 % below the jump threshold; {PERF_CF_GATE}; '
-                             + PERF_CF_UNPROVEN))
+                             + unproven))
         result.append(field(
             f'perf_cf_{part}_jump_pct', f'{name} jump threshold', '%', jump,
             target + 1 if editable else None, max(100, jump) if editable else None, editable,
-            [dict(e) for e in evidence], offsets=[entry['jump_offset']] if editable else (),
+            [dict(e) for e in evidence], offsets=jump_offsets if editable else (),
             encoding='<I' if editable else '', scale=1, layout=jump_layout if editable else (),
             ordering_group=group, encoding_bounds=(min(floor + 1, jump), max(100, jump)) if editable else None,
             stored_units='FXP20.12 fraction', value_semantics=PERF_CF_JUMP_SEMANTICS, stored_raw=entry['jump_raw'],
-            stock=fxp_percent(stock_jump), **common,
+            **jump_stock, **common,
             reason=reason or f'experimental: the {name} jump threshold of PERF_CF controller {index} (FXP20.12 at '
                              'entry byte 7, whole percent): above this load the driver is expected to raise the clock '
                              'at once instead of in steps (inferred); 1 % above the target up to 100 %, the most the '
-                             f'driver accepts; {PERF_CF_GATE}; ' + PERF_CF_UNPROVEN))
+                             f'driver accepts; {PERF_CF_GATE}; ' + unproven))
         low, high = stock_multiple(stock_down, entry['hysteresis_down'])
         result.append(field(
             f'perf_cf_{part}_hysteresis_down', f'{name} clock-down hysteresis', 'samples', entry['hysteresis_down'],
             low if editable else None, high if editable else None, editable, [dict(e) for e in evidence],
-            offsets=[entry['hysteresis_down_offset']] if editable else (), encoding='<B' if editable else '',
+            offsets=copies(entry['hysteresis_down_offset'], 1) if editable else (), encoding='<B' if editable else '',
             scale=1, stored_units='samples', value_semantics=PERF_CF_HYSTERESIS_SEMANTICS, stock=stock_down,
             **common,
             reason=reason or f'experimental: the decrease hysteresis count of the {name} PERF_CF controller {index} '
                              '(entry byte 21, samples, inferred): how long the load stays below the target before '
                              'the clock steps down; higher keeps clocks up longer, lower drops them sooner and may '
                              f'stutter; {low}..{high} (0.5x to 4x the stock {stock_down}); {PERF_CF_GATE}; '
-                             + PERF_CF_UNPROVEN))
+                             + unproven))
         low, high = min(PERF_CF_HYSTERESIS_UP[0], entry['hysteresis_up']), max(PERF_CF_HYSTERESIS_UP[1],
                                                                                entry['hysteresis_up'])
         result.append(field(
             f'perf_cf_{part}_hysteresis_up', f'{name} clock-up hysteresis', 'samples', entry['hysteresis_up'],
             low if editable else None, high if editable else None, editable, [dict(e) for e in evidence],
-            offsets=[entry['hysteresis_up_offset']] if editable else (), encoding='<B' if editable else '',
+            offsets=copies(entry['hysteresis_up_offset'], 1) if editable else (), encoding='<B' if editable else '',
             scale=1, stored_units='samples', value_semantics=PERF_CF_HYSTERESIS_SEMANTICS, stock=1, **common,
             reason=reason or f'experimental: the increase hysteresis count of the {name} PERF_CF controller {index} '
                              '(entry byte 20, samples, inferred): how long the load stays above the target before '
-                             f'the clock steps up; 1..4 (stock 1); {PERF_CF_GATE}; ' + PERF_CF_UNPROVEN))
+                             f'the clock steps up; 1..4 (stock 1); {PERF_CF_GATE}; ' + unproven))
     return result
 
 
-# LPWR feature switches: (key, table, label, the value a disabled entry of the table stores with bit 0
-# clear, or None when every entry belongs to the switch, effect). A switch covers the entries the
-# image enables in stock: every entry whose value without bit 0 differs from the disabled value
-# (DIFR: entry 0 only). Off clears bit 0 of each covered entry, Stock sets it again.
+# LPWR feature switches: (key, table, label, effect). A switch covers the entries the image enables in stock
+# (lpwr_covered). Off clears bit 0 of each covered entry, Stock sets it again.
 LPWR_SWITCHES = (
-    ('lpwr_gr_power_gating', 'gr_pg', 'GR power gating', 0xFFFFFE00,
-     'Off keeps the graphics engine powered at idle'),
-    ('lpwr_mscg', 'ms', 'Memory system clock gating (MSCG)', 0xFFFFF000,
-     'Off keeps the memory system clocks running at idle'),
-    ('lpwr_nvdec_gating', 'nvdec', 'NVDEC power gating', None, 'Off keeps the video decoder powered while idle'),
-    ('lpwr_nvenc_gating', 'nvenc', 'NVENC power gating', None, 'Off keeps the video encoder powered while idle'),
-    ('lpwr_ofa_gating', 'ofa', 'OFA power gating', None, 'Off keeps the optical flow engine powered while idle'),
-    ('lpwr_nvjpg_gating', 'nvjpg', 'NVJPG power gating', None, 'Off keeps the JPEG engine powered while idle'),
-    ('lpwr_difr', 'difr', 'DIFR', 0xFFFFF800,
-     'Off may help with flicker or idle oddities on a static desktop (inferred)'),
-    ('lpwr_gr_rail_gating', 'gr_rg', 'GR rail gating', None, 'Off keeps the GR rail powered at idle'),
+    ('lpwr_gr_power_gating', 'gr_pg', 'GR power gating', 'Off keeps the graphics engine powered at idle'),
+    ('lpwr_mscg', 'ms', 'Memory system clock gating (MSCG)', 'Off keeps the memory system clocks running at idle'),
+    ('lpwr_nvdec_gating', 'nvdec', 'NVDEC power gating', 'Off keeps the video decoder powered while idle'),
+    ('lpwr_nvenc_gating', 'nvenc', 'NVENC power gating', 'Off keeps the video encoder powered while idle'),
+    ('lpwr_ofa_gating', 'ofa', 'OFA power gating', 'Off keeps the optical flow engine powered while idle'),
+    ('lpwr_nvjpg_gating', 'nvjpg', 'NVJPG power gating', 'Off keeps the JPEG engine powered while idle'),
+    ('lpwr_difr', 'difr', 'DIFR', 'Off may help with flicker or idle oddities on a static desktop (inferred)'),
+    ('lpwr_gr_rail_gating', 'gr_rg', 'GR rail gating', 'Off keeps the GR rail powered at idle'),
 )
-# GR rail gating: the entries each reviewed product enables in stock (RTX PRO 4000 SFF and the
-# RTX 5080 Laptop GPU). Its bit 1 is set on stock-disabled GeForce entries too, so an entry
-# switched off looks like a stock-disabled one: only these products get the switch.
-LPWR_GR_RG_STOCK = {0x2C33: (0,), 0x2C59: (0, 1, 2)}
-# Idle times: (key, table, header offset, switch, units, multiplier into units, stock stored value, label).
+# The values (bit 0 clear) that stock-disabled entries store, per family and table, where no entry a reviewed
+# image enables stores one of them once bit 0 is cleared: the switch covers every other entry (GB20x DIFR:
+# entry 0 only; the video engine tables, with no value listed, every entry). A switched-off entry keeps its
+# other bits, so a ROM saved with Off still shows which entries Stock turns back on.
+LPWR_DISABLED = {
+    'gb20x': {'gr_pg': (0xFFFFFE00,), 'ms': (0xFFFFF000,), 'difr': (0xFFFFF800,), 'nvdec': (), 'nvenc': (),
+              'ofa': (), 'nvjpg': ()},
+    'ampere': {'gr_pg': (0xFFFFFF80, 0xFFFFFFC0), 'ms': (0xFFFFFC00,)},
+    'ada': {'gr_pg': (0xFFFFFF80, 0xFFFFFFC0), 'ms': (0xFFFFFC00,)},
+}
+# Elsewhere a stock-disabled entry stores what an enabled entry stores switched off (GR rail gating 0xfe on
+# every family; Ada DIFR 0xfffffffe and 0xffffffee; Turing GR power gating 0xffffffe6 and MSCG 0xffffffec), so
+# the bytes cannot tell them apart: the switch covers the entries each reviewed product (PCI device) enables in
+# stock, and only while each of them stores one of LPWR_STOCK_FORMS once bit 0 is cleared.
+TURING_GR_PG_DESKTOPS = (0x1E02, 0x1E07, 0x1E30, 0x1E81, 0x1E84, 0x1E87, 0x1F06, 0x1F07, 0x1F08)
+TURING_GR_PG_OTHERS = (0x1E90, 0x1E91, 0x1E93, 0x1F10, 0x1F11, 0x1F82, 0x1F83, 0x2182, 0x2184, 0x2187, 0x2191, 0x21C4)
+LPWR_STOCK = {
+    # GB20x: RTX PRO 4000 SFF and RTX 5080 Laptop GPU; GA102: RTX 3090, 3080, 3080 Ti, 3080 12GB, RTX A6000, A5000,
+    # A4500, A5500 (entries 0..1) and A40 (entry 0); not the RTX 3090 Ti, which ships it disabled.
+    'gr_rg': {0x2C33: (0,), 0x2C59: (0, 1, 2), 0x2204: (0, 1), 0x2206: (0, 1), 0x2208: (0, 1), 0x220A: (0, 1),
+              0x2230: (0, 1), 0x2231: (0, 1), 0x2232: (0, 1), 0x2233: (0, 1), 0x2235: (0,)},
+    # Ada: RTX 6000 Ada, RTX 5000 Ada (desktop and laptop), RTX 4500 and 4000 Ada, RTX 2000 Ada, RTX 4070 Ti SUPER,
+    # RTX 4060 Ti (8 and 16 GB), RTX 4060, RTX 4080, 4070, 4060 and 4050 Laptop GPUs (entry 0).
+    'difr': {device: (0,) for device in (0x26B1, 0x26B2, 0x2730, 0x27B1, 0x27B2, 0x28B0, 0x2705, 0x2803, 0x2805,
+                                         0x2882, 0x27E0, 0x2860, 0x28A0, 0x28E1)},
+    # Turing: TU102, TU104 and TU106 desktops enable entries 0, 1 and 4; their laptop chips, TU116 and TU117 also 3.
+    'gr_pg': {**{device: (0, 1, 4) for device in TURING_GR_PG_DESKTOPS},
+              **{device: (0, 1, 3, 4) for device in TURING_GR_PG_OTHERS}},
+    'ms': {device: (0, 1) for device in TURING_GR_PG_DESKTOPS + TURING_GR_PG_OTHERS},
+}
+LPWR_STOCK_FORMS = {'gr_rg': (0xFE,), 'difr': (0xFFFFFFFE, 0xFFFFFFEE),
+                    'gr_pg': (0xFFFFFFEE, 0xFFFFFFE6, 0xFFFFFFE4), 'ms': (0xFFFFFFFC, 0xFFFFFFEC)}
+# Idle times: (key, table, header offset, switch, units, multiplier into units, stock stored value per family,
+# label). A family without a stock value lists no such field.
 LPWR_TIMES = (
-    ('lpwr_difr_dfpr_idle_ms', 'difr', 5, 'lpwr_difr', 'ms', 1, 1000, 'DIFR DFPR idle time'),
-    ('lpwr_difr_sw_asr_idle_us', 'difr', 7, 'lpwr_difr', 'us', 1, 15, 'DIFR SW-ASR idle time'),
-    ('lpwr_difr_cg_idle_us', 'difr', 9, 'lpwr_difr', 'us', 1, 15, 'DIFR clock gating idle time'),
-    ('lpwr_gr_rail_gating_idle_us', 'gr_rg', 5, 'lpwr_gr_rail_gating', 'us', 10, 50, 'GR rail gating idle time'),
+    ('lpwr_difr_dfpr_idle_ms', 'difr', 5, 'lpwr_difr', 'ms', 1, {'gb20x': 1000, 'ada': 1000}, 'DIFR DFPR idle time'),
+    ('lpwr_difr_sw_asr_idle_us', 'difr', 7, 'lpwr_difr', 'us', 1, {'gb20x': 15, 'ada': 15}, 'DIFR SW-ASR idle time'),
+    ('lpwr_difr_cg_idle_us', 'difr', 9, 'lpwr_difr', 'us', 1, {'gb20x': 15, 'ada': 15}, 'DIFR clock gating idle time'),
+    ('lpwr_gr_rail_gating_idle_us', 'gr_rg', 5, 'lpwr_gr_rail_gating', 'us', 10, {'gb20x': 50, 'ampere': 500,
+                                                                                    'ada': 500},
+     'GR rail gating idle time'),
 )
 LPWR_FIRMWARE_EVIDENCE = {
     'kind': 'static-firmware-analysis',
@@ -3098,59 +3614,100 @@ LPWR_CORPUS_EVIDENCE = {
                    'store 0xfffffe00, 0xfffff000 and 0xfffff800; GR rail gating is enabled only on the RTX PRO 4000 '
                    'SFF (entry 0) and the notebook (entries 0..2); the DIFR words store 1000, 15 and 15 and the GR '
                    'rail gating word 50 on every image'}
+LEGACY_LPWR_FIRMWARE_EVIDENCE = {
+    'kind': 'static-firmware-analysis',
+    'source': 'GSP-RM firmware 615.78.08 (gsp_tu10x.bin for Turing, gsp_ga10x.bin for Ampere and Ada), LPWR VBIOS '
+              'initialization and table parsers',
+    'observation': 'the GB20x LPWR initialization: each table must have version 0x10 and at most 5 entries, and an '
+                   'entry whose enable bit (bit 0 of its first word) is clear is skipped; GR power gating entries '
+                   'are read as 1d1b (5 bytes, as on GB20x), MSCG entries of 15 bytes as 1d2w1b3w (16 bytes: '
+                   '1d2w1b3w1b), a 9-byte GR rail gating header as 5b2w (12 bytes: 5b2w3b), whose word at +5 goes '
+                   'times 10 into the GR rail gating idle threshold in both sizes, and DIFR entries of 17 bytes as '
+                   '1d1b6w (18 bytes: 1d1b6w1b) after the GB20x header (words at +5 times 1000, +7 and +9); the '
+                   'gsp_tu10x.bin parsers of GR power gating and MSCG read the same formats and the same enable bit',
+    'set_tested': False}
+LEGACY_LPWR_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'Turing, Ampere and Ada VBIOS corpus',
+    'observation': 'GR power gating (10-byte header, five 5-byte entries) and MSCG (7-byte header, five 15-byte '
+                   'entries) on every image, GR rail gating (9-byte header, five 1-byte entries) on every Ampere and '
+                   'Ada image, DIFR (11-byte header, five 17-byte entries) on every Ada image; GR power gating is '
+                   'enabled on entries 0, 1 and 4 (also 3 on the laptop chips, TU116 and TU117) on Turing, on 0 and 1 '
+                   '(also 3 on most images) on Ampere and on 0..2 on Ada (two RTX 4090 images: 0, 1 and 3, entry 2 '
+                   'stored like an enabled entry switched off); MSCG on entries 0 and 1 (entry 0 alone on one Ampere '
+                   'image); GR rail gating on entries 0 and 1 of the GA102 RTX 3080/3090 and RTX A4500..A6000 images '
+                   'and entry 0 of an A40 image, on no Ada image; DIFR entry 0 on 14 of the 25 Ada images; disabled '
+                   'Ampere and Ada GR power gating entries store 0xffffff80 or 0xffffffc0 and MSCG entries 0xfffffc00, '
+                   'while disabled Turing GR power gating and MSCG entries, GR rail gating entries (0xfe) and Ada DIFR '
+                   'entries (0xfffffffe, 0xffffffee) store what an enabled entry stores with bit 0 cleared; the DIFR '
+                   'words store 1000, 15 and 15 and the GR rail gating word 500 on every image'}
 LPWR_MIXED_REASON = ('read-only: the entries this switch covers are neither all enabled nor all disabled on this '
                      'image')
 LPWR_GR_RG_UNREVIEWED_REASON = ('read-only: GR rail gating is enabled on this image, but which entries this product '
                                 'enables in stock is not reviewed')
 LPWR_GR_RG_UNRECOGNIZED_REASON = ('read-only: a GR rail gating entry this product enables in stock does not store '
                                   'the reviewed value (0xff, or 0xfe when switched off)')
+LPWR_STOCK_UNREVIEWED_REASON = ('read-only: this feature is enabled on this image, but which entries this product '
+                                'enables in stock is not reviewed, and an entry shipped disabled looks like one '
+                                'switched off')
+LPWR_STOCK_UNRECOGNIZED_REASON = ('read-only: an entry of this feature that this product enables in stock does not '
+                                  'store a reviewed value')
 LPWR_TIME_SWITCH_REASON = 'read-only: the switch this idle time belongs to is read-only on this image'
 LPWR_UNTESTED = ('acts only at idle or light load (inferred); low idle times save more power but can cause stutter '
                  'or, rarely, a black screen at idle; not hardware-tested')
 
 
-def lpwr_covered(parser, key, table, disabled):
+def lpwr_covered(parser, family, name, table):
     """(entries the switch covers, read-only reason or None); no entries means no switch."""
     entries = table['entries']
-    if key == 'lpwr_gr_rail_gating':
-        stock = LPWR_GR_RG_STOCK.get(parser.legacy['device'])
-        if stock is None:
-            return ([], None) if not any(e['value'] & 1 for e in entries) else (
-                [e for e in entries if e['value'] & 1], LPWR_GR_RG_UNREVIEWED_REASON)
-        covered = [entries[i] for i in stock if i < len(entries)]
-        if len(covered) != len(stock) or any(e['value'] & 0xFE != 0xFE for e in covered):
-            return covered, LPWR_GR_RG_UNRECOGNIZED_REASON
-        return covered, None
-    if key == 'lpwr_difr':
-        entries = entries[:1]
-    return [e for e in entries if disabled is None or e['value'] & ~1 != disabled], None
+    disabled = LPWR_DISABLED.get(family, {}).get(name)
+    if disabled is not None:
+        if name == 'difr':
+            entries = entries[:1]
+        return [e for e in entries if e['value'] & ~1 not in disabled], None
+    gr_rg = name == 'gr_rg'
+    stock = LPWR_STOCK.get(name, {}).get(parser.legacy['device'])
+    if stock is None:
+        enabled = [e for e in entries if e['value'] & 1]
+        reason = LPWR_GR_RG_UNREVIEWED_REASON if gr_rg else LPWR_STOCK_UNREVIEWED_REASON
+        return enabled, reason if enabled else None
+    covered = [entries[i] for i in stock if i < len(entries)]
+    if len(covered) != len(stock) or any(e['value'] & ~1 not in LPWR_STOCK_FORMS[name] for e in covered):
+        return covered, LPWR_GR_RG_UNRECOGNIZED_REASON if gr_rg else LPWR_STOCK_UNRECOGNIZED_REASON
+    return covered, None
 
 
 @registry.register
 def lpwr_features(image, parser):
-    """GB20x Advanced section: Stock/Off switches of the LPWR idle power features and their idle times.
+    """Advanced section: Stock/Off switches of the LPWR idle power features and their idle times.
 
-    Each switch (LPWR_SWITCHES) covers the entries of its table the image enables in stock
-    (lpwr_covered); 1 (Stock) sets bit 0 of each of them, 0 (Off) clears it, and every other
-    bit and entry stays as stored, so Off and back is byte-identical. Entries that do not all
-    agree leave the switch read-only. GR power gating, MSCG and DIFR never cover an entry
-    holding the disabled value; the video engine switches cover every entry, so a ROM that
-    ships them all disabled reads as Off and Stock would enable them (no reviewed image does).
-    GR rail gating is offered only on the products whose stock entries are reviewed
-    (LPWR_GR_RG_STOCK). The idle
-    times (LPWR_TIMES) are absolute values in their units, 0.5x..4x the stock value, and
-    depend on their switch (depends_on). Experimental, not hardware-tested.
+    GB20x (every table of LPWR_SWITCHES), Ada (GR power gating, MSCG, GR rail gating, DIFR),
+    Ampere (the same without DIFR) and Turing (GR power gating, MSCG). Each switch covers the
+    entries of its table the image enables in stock (lpwr_covered); 1 (Stock) sets bit 0 of each
+    of them, 0 (Off) clears it, and every other bit and entry stays as stored, so Off and back is
+    byte-identical. Entries that do not all agree leave the switch read-only. Where a
+    stock-disabled entry stores a value of its own (LPWR_DISABLED), no switch covers it; the
+    GB20x video engine switches cover every entry, so a ROM that ships them all disabled reads
+    as Off and Stock would enable them (no reviewed image does). Where a stock-disabled entry
+    looks like a switched-off one (GR rail gating, Ada DIFR, Turing), the switch is offered
+    only on the products whose stock entries are reviewed (LPWR_STOCK). The idle times
+    (LPWR_TIMES) are absolute values in their units, 0.5x..4x the family's stock value, and
+    depend on their switch (depends_on). Every chain is written. Experimental, not
+    hardware-tested.
     """
-    if not isinstance(parser, BlackwellRom):
+    if not isinstance(parser, (BlackwellRom, TableRom)):
         return []
+    blackwell = isinstance(parser, BlackwellRom)
+    family = 'gb20x' if blackwell else parser.family
+    evidence = ([LPWR_FIRMWARE_EVIDENCE, LPWR_CORPUS_EVIDENCE] if blackwell else
+                [LEGACY_LPWR_FIRMWARE_EVIDENCE, LEGACY_LPWR_CORPUS_EVIDENCE])
+    copies = _advanced_copies(parser)
     writable = can_edit(image, parser)
-    evidence = [LPWR_FIRMWARE_EVIDENCE, LPWR_CORPUS_EVIDENCE]
     result, switches, tables = [], {}, {}
-    for key, name, label, disabled, effect in LPWR_SWITCHES:
+    for key, name, label, effect in LPWR_SWITCHES:
         table = parser.lpwr_table(name)
         if table is None:
             continue
-        covered, reason = lpwr_covered(parser, key, table, disabled)
+        covered, reason = lpwr_covered(parser, family, name, table)
         if not covered:
             continue
         bits = {e['value'] & 1 for e in covered}
@@ -3159,11 +3716,13 @@ def lpwr_features(image, parser):
         editable = reason is None and writable
         switches[key], tables[name] = editable, table
         fmt = table['format']
-        layout = ((0, tuple(struct.pack(fmt, e['value'] & ~1) for e in covered)),
-                  (1, tuple(struct.pack(fmt, e['value'] | 1) for e in covered)))
+        width = struct.calcsize(fmt)
+        groups = [copies(e['offset'], width) for e in covered]
+        layout = ((0, tuple(struct.pack(fmt, e['value'] & ~1) for e, g in zip(covered, groups) for _ in g)),
+                  (1, tuple(struct.pack(fmt, e['value'] | 1) for e, g in zip(covered, groups) for _ in g)))
         result.append(field(
             key, label, 'flag', state, 0 if editable else None, 1 if editable else None, editable,
-            [dict(e) for e in evidence], offsets=[e['offset'] for e in covered] if editable else (),
+            [dict(e) for e in evidence], offsets=[at for g in groups for at in g] if editable else (),
             encoding=fmt if editable else '', scale=1, layout=layout if editable else (),
             writable_status=None if editable else 'unsupported', experimental=True, section=ADVANCED_SECTION,
             switch='stock-off', value_semantics=LPWR_SWITCH_SEMANTICS, lpwr_table=name,
@@ -3172,9 +3731,10 @@ def lpwr_features(image, parser):
                              f'(entries {", ".join(str(e["index"]) for e in covered)} of its LPWR table); 0 (Off) '
                              'clears it, so the driver skips them, and 1 (Stock) sets it again; every other bit '
                              f'and entry stays as stored; {effect}, at a little more idle power; ' + LPWR_UNTESTED))
-    for key, name, at, switch, units, multiplier, stock, label in LPWR_TIMES:
-        if switch not in switches:
+    for key, name, at, switch, units, multiplier, stocks, label in LPWR_TIMES:
+        if switch not in switches or family not in stocks:
             continue
+        stock = stocks[family]
         table = tables[name]
         offset = table['offset'] + at
         stored = struct.unpack_from('<H', parser.blob, offset)[0]
@@ -3187,7 +3747,7 @@ def lpwr_features(image, parser):
         result.append(field(
             key, label, units, stored * multiplier, low * multiplier if editable else None,
             high * multiplier if editable else None, editable, [dict(e) for e in evidence],
-            offsets=[offset] if editable else (), encoding='<H' if editable else '',
+            offsets=copies(offset, 2) if editable else (), encoding='<H' if editable else '',
             scale=Decimal(1) / multiplier, stored_units=stored_units,
             writable_status=None if editable else 'unsupported', experimental=True, section=ADVANCED_SECTION,
             depends_on={'field': switch, 'value': 1}, value_semantics=LPWR_TIME_SEMANTICS, lpwr_table=name,

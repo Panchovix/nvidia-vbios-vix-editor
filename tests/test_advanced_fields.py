@@ -1,4 +1,5 @@
-"""GB20x Advanced section (PERF_CF controllers, LPWR idle power): synthetic images and opt-in reference ROMs."""
+"""Advanced section (PERF_CF controllers, LPWR idle power) on GB20x, Ada, Ampere and Turing: synthetic images and
+opt-in reference ROMs."""
 import contextlib
 from decimal import Decimal
 import io
@@ -14,9 +15,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from nvidia_vbios import cli
 from nvidia_vbios.editor import IMPORT_SECTIONS, edit, import_fields
 from nvidia_vbios.editor.registry import (LPWR_GR_RG_UNRECOGNIZED_REASON, LPWR_GR_RG_UNREVIEWED_REASON,
-                                          LPWR_MIXED_REASON, LPWR_TIME_SWITCH_REASON,
+                                          LPWR_MIXED_REASON, LPWR_STOCK_UNRECOGNIZED_REASON,
+                                          LPWR_STOCK_UNREVIEWED_REASON, LPWR_TIME_SWITCH_REASON,
                                           PERF_CF_CONTROLLER_UNRECOGNIZED_REASON, PERF_CF_POLICY_UNRECOGNIZED_REASON,
-                                          registry)
+                                          percent_fxp, registry)
 from nvidia_vbios.gui.i18n import MESSAGES_EN
 from nvidia_vbios.gui.messages_es import MESSAGES_ES
 from nvidia_vbios.gui.presentation import (SECTION_NAMES, dependency_reason, field_label, field_section,
@@ -24,7 +26,9 @@ from nvidia_vbios.gui.presentation import (SECTION_NAMES, dependency_reason, fie
 from nvidia_vbios.rom import from_bytes, inspect_image, load, VbiosError
 from nvidia_vbios.rom.image import backend
 from test_extended_fields import changed_bytes_within, custom_registry, descriptors, repair_fixture, set_device
-from test_rom_formats import synthetic_blackwell
+from test_rom_formats import synthetic_blackwell, synthetic_rom
+from test_thermal_factory_fields import probe
+from test_turing import synthetic_turing
 
 DOMAINS = ('gpc', 'dram', 'vid')
 CONTROLLER_KINDS = ('target_pct', 'jump_pct', 'hysteresis_down', 'hysteresis_up')
@@ -83,6 +87,102 @@ def set_gr_rail_gating(*values):
         for i, value in enumerate(values):
             blob[lpwr_entry(parser, 'gr_rg', i)['offset']] = value
     return mutate
+
+
+# Generated Turing, Ampere and Ada images with the PERF_CF and LPWR tables in the shapes of the reviewed images:
+# each table sits in the data image at its offset from the legacy image start and the BIT P token of every chain
+# points to it (the Turing token ends before the GR rail gating and DIFR pointers, the Ampere one before DIFR).
+LEGACY_DEVICES = {'turing': 0x1F06, 'ampere': 0x2204, 'ada': 0x28B0}
+LEGACY_TABLE_AT = {0xA8: 9000, 0xAC: 9600, 0x80: 9700, 0x84: 9750, 0xD4: 9850, 0xE8: 9880}
+LEGACY_ENTRY_SIZES = {'turing': 24, 'ampere': 32, 'ada': 49}
+# Controllers 0..2 as (type, clock table row, target, jump threshold, decrease hysteresis): the GPC, DRAM and VID
+# controllers of an RTX 2080 Ti (40/55, 40/55 and 60/80 %, truncated fractions) and of an RTX 3090 or an RTX 2000
+# Ada (40/75, 65/80 and 65/85 %); then a second GPC and DRAM pair, a type 3 controller and empty entries.
+LEGACY_CONTROLLERS = {'turing': ((1, 0, 0x666, 0x8CC, 9), (1, 2, 0x666, 0x8CC, 4), (1, 5, 0x999, 0xCCC, 9)),
+                      'ampere': ((1, 0, 0x666, 0xC00, 9), (1, 2, 0xA66, 0xCCC, 4), (1, 5, 0xA66, 0xD9A, 9))}
+LEGACY_CONTROLLERS['ada'] = LEGACY_CONTROLLERS['ampere']
+LEGACY_POLICIES = bytes.fromhex('10 05 0a 08 00' '81 00 00000000 07000000' '01 01 01000000 18000000'
+                                '81 02 00000000 20000000') + bytes.fromhex('01 00 00000000 00000000') * 5
+# LPWR tables per family: BIT P offset -> (header, entries), as stored on an RTX 2060 SUPER, an RTX 3090 and an RTX
+# 2000 Ada.
+GR_PG_HEADER, LEGACY_MS_OFF = '10 0a 05 05 00 58 1b 01 00 01', '00fcffffffffffff00ffffffffffff'
+LEGACY_LPWR = {
+    'turing': {0x80: (GR_PG_HEADER, ['efffffff01', 'e7ffffff01', 'e6ffffff01', 'e6ffffff01', 'e5ffffff01']),
+               0x84: ('10 07 0f 05 00 0a 00', ['fdffffff7f0affff026400b400e600', 'edffffff7f0affff026400b400e600',
+                                               'ecffffffffffffff006400b400e600', 'ecffffffffffffff006400b400e600',
+                                               'ccffffffffffffff006400b400e600'])},
+    'ampere': {0x80: (GR_PG_HEADER, ['e7ffffff00', 'e7ffffff00', 'c0ffffff00', 'e7ffffff00', 'c0ffffff00']),
+               0x84: ('10 07 0f 05 00 0f 00', ['fdffffff7f0affff0364005e015e01', '2dffffff7f0affff0064005e015e01']
+                      + [LEGACY_MS_OFF] * 3),
+               0xD4: ('10 09 01 05 00 f4 01 dc 05', ['ff', 'ff', 'fe', 'fe', 'fe'])},
+    'ada': {0x80: (GR_PG_HEADER, ['a7ffffff00', 'a7ffffff00', 'a7ffffff00', '80ffffff00', '80ffffff00']),
+            0x84: ('10 07 0f 05 00 0f 00', ['fdffffff7f0affff0264005e019001', '2dffffff7f0affff0064005e015e01']
+                   + [LEGACY_MS_OFF] * 3),
+            0xD4: ('10 09 01 05 ff f4 01 88 13', ['fe'] * 5),
+            0xE8: ('10 0b 11 05 ff e8 03 0f 00 0f 00', ['ffffffff026400fa002c01640096009600'] +
+                   ['00feffff00ffffffffffffffffffffffff'] * 4)},
+}
+LPWR_POINTERS = {'gr_pg': 0x80, 'ms': 0x84, 'gr_rg': 0xD4, 'difr': 0xE8}
+
+
+def legacy_controllers(family, entry_size, count=8):
+    rows = LEGACY_CONTROLLERS[family] + ((1, 0, 0x999, 0xCCC, 9), (1, 2, 0xB33, 0xE66, 4))
+    table = bytearray((0x10, 6, entry_size, count, 0xC8, 0))
+    for i in range(count):
+        entry = bytearray(entry_size)
+        if i < len(rows):
+            kind, row, target, jump, down = rows[i]
+            entry[:3] = bytes((kind, 1, i))
+            struct.pack_into('<IIII', entry, 3, target, jump, 0x1000, 0xCCC)
+            entry[19:23] = bytes((row, 1, down, 9))
+        elif i == len(rows):
+            entry[:3] = bytes((3, 1, 0xFF))
+        table += entry
+    return bytes(table)
+
+
+def legacy_advanced(family, *, device=None, entry_size=None, lpwr=None, mutate=None):
+    """A generated Turing, Ampere or Ada image (two chains) with the PERF_CF tables (legacy_controllers, policy 0
+    active over controllers 0..2) and the LPWR tables of LEGACY_LPWR, whose entries lpwr may replace ({BIT P offset:
+    [hex entry, ...]}); mutate(blob, parser) reshapes them in every chain before the checksums are repaired."""
+    device = device or LEGACY_DEVICES[family]
+    blob = (synthetic_turing(clocks=True, device=device) if family == 'turing' else
+            synthetic_rom(family=family, copies=2, device=device))
+    parser = backend(from_bytes(blob))
+    out = bytearray(blob)
+    if family == 'ada':
+        # The generated Ada image always carries the RTX 2000 Ada identity: rewrite its PCI device.
+        for image in (image for chain in parser.chains for image in chain if image['type'] in (0, 3)):
+            struct.pack_into('<H', out, image['pcir'] + 6, device)
+    tables = {0xA8: legacy_controllers(family, entry_size or LEGACY_ENTRY_SIZES[family]), 0xAC: LEGACY_POLICIES}
+    for pointer, (header, entries) in LEGACY_LPWR[family].items():
+        tables[pointer] = bytes.fromhex(header) + b''.join(bytes.fromhex(e) for e in (lpwr or {}).get(pointer, entries))
+    legacy, efi = parser.legacy, parser.efi
+    token = parser.tokens['P']['data'] - legacy['start']
+    for pointer, data in tables.items():
+        if pointer + 4 > parser.tokens['P']['size']:
+            continue  # past this family's BIT P token
+        relative = LEGACY_TABLE_AT[pointer]
+        value = relative - (efi['size'] if efi is not None and relative >= legacy['size'] else 0)
+        for chain in parser.chains:
+            start = chain[0]['start'] + relative
+            if any(out[start:start + len(data)]):
+                raise AssertionError('the generated image has no room for this table')
+            out[start:start + len(data)] = data
+            struct.pack_into('<I', out, chain[0]['start'] + token + pointer, value)
+    if mutate is not None:
+        mutate(out, backend(from_bytes(bytes(out))))
+    for image in (image for chain in parser.chains for image in chain):
+        out[image['end'] - 1] = (out[image['end'] - 1] - sum(out[image['start']:image['end']])) & 255
+    return from_bytes(bytes(out))
+
+
+def in_every_chain(parser, at, value, width=1):
+    """mutate helper: store value (bytes) at at in every chain."""
+    def write(blob, _):
+        for start in parser.copy_offsets(at, width):
+            blob[start:start + len(value)] = value
+    return write
 
 
 class PerfCfTests(unittest.TestCase):
@@ -500,6 +600,264 @@ class SectionTests(unittest.TestCase):
         self.assertEqual(fields['perf_cf_vid_jump_pct']['depends_on'], {'field': 'perf_cf_util_policy', 'value': 1})
         self.assertEqual(fields['lpwr_difr_cg_idle_us']['depends_on'], {'field': 'lpwr_difr', 'value': 1})
         self.assertEqual((fields['lpwr_difr']['section'], fields['lpwr_difr']['switch']), ('advanced', 'stock-off'))
+
+
+class LegacyAdvancedTests(unittest.TestCase):
+    """Turing, Ampere and Ada: the same Advanced fields, read from their own table layouts."""
+    SWITCHES = {'turing': {'lpwr_gr_power_gating': [0, 1, 4], 'lpwr_mscg': [0, 1]},
+                'ampere': {'lpwr_gr_power_gating': [0, 1, 3], 'lpwr_mscg': [0, 1], 'lpwr_gr_rail_gating': [0, 1]},
+                'ada': {'lpwr_gr_power_gating': [0, 1, 2], 'lpwr_mscg': [0, 1], 'lpwr_difr': [0]}}
+    TIMES = {'turing': {}, 'ampere': {'lpwr_gr_rail_gating_idle_us': (5000, 2500, 20000)},
+             'ada': {'lpwr_difr_dfpr_idle_ms': (1000, 500, 4000), 'lpwr_difr_sw_asr_idle_us': (15, 8, 60),
+                     'lpwr_difr_cg_idle_us': (15, 8, 60)}}
+    PERCENTS = {'turing': (40, 55, 40, 55, 60, 80), 'ampere': (40, 75, 65, 80, 65, 85), 'ada': (40, 75, 65, 80, 65, 85)}
+
+    def test_fields_per_family(self):
+        for family, switches in self.SWITCHES.items():
+            with self.subTest(family=family):
+                image = legacy_advanced(family)
+                parser = backend(image)
+                fields = {k: f for k, f in descriptors(image).items() if f.get('section') == 'advanced'}
+                self.assertEqual(set(fields), set(PERF_CF_KEYS) | set(switches) | set(self.TIMES[family]))
+                self.assertTrue(all(f['editable'] and f['experimental'] for f in fields.values()))
+                self.assertEqual([fields[f'perf_cf_{d}_{k}']['current'] for d in DOMAINS
+                                  for k in ('target_pct', 'jump_pct')], list(self.PERCENTS[family]))
+                self.assertEqual([fields[f'perf_cf_{d}_hysteresis_{k}']['current'] for d in DOMAINS
+                                  for k in ('down', 'up')], [9, 1, 4, 1, 9, 1])
+                self.assertEqual([fields[f'perf_cf_{d}_target_pct']['clock_domain'] for d in DOMAINS],
+                                 ['GPC', 'DRAM', 'VID'])
+                # The targets and jump thresholds vary per product here: no stock value is claimed.
+                self.assertNotIn('stock', fields['perf_cf_gpc_target_pct'])
+                self.assertIn('Turing, Ampere and Ada', fields['perf_cf_util_policy']['reason'])
+                self.assertEqual({k: fields[k]['lpwr_entries'] for k in switches}, switches)
+                for key, (current, low, high) in self.TIMES[family].items():
+                    self.assertEqual((fields[key]['current'], fields[key]['bounds']['minimum'],
+                                      fields[key]['bounds']['maximum']), (current, low, high))
+                image_bindings = bindings(image)
+                chains = len(parser.chains)
+                for key, field in fields.items():
+                    covered = len(field.get('lpwr_entries', [0]))
+                    self.assertEqual(len(image_bindings[key].offsets), chains * covered, key)
+
+    def test_edits_write_every_chain_and_revert(self):
+        changes = {'perf_cf_gpc_target_pct': 30, 'perf_cf_gpc_jump_pct': 95, 'perf_cf_dram_hysteresis_down': 16,
+                   'perf_cf_vid_hysteresis_up': 4, 'lpwr_mscg': 0, 'lpwr_gr_power_gating': 0}
+        extra = {'turing': {}, 'ampere': {'lpwr_gr_rail_gating_idle_us': 2500},
+                 'ada': {'lpwr_difr_dfpr_idle_ms': 4000, 'lpwr_difr_cg_idle_us': 8}}
+        for family in LEGACY_DEVICES:
+            with self.subTest(family=family):
+                image = legacy_advanced(family)
+                request = {**changes, **extra[family]}
+                result = edit(image, request)
+                self.assertTrue(result.manifest['integrity']['valid'])
+                self.assertTrue(inspect_image(result.image)['integrity']['valid'])
+                after = descriptors(result.image)
+                for key, value in request.items():
+                    self.assertEqual(Decimal(str(after[key]['current'])), Decimal(value), key)
+                image_bindings = bindings(image)
+                allowed = {at for key in request for start in image_bindings[key].offsets
+                           for at in range(start, start + struct.calcsize(image_bindings[key].encoding))}
+                self.assertLessEqual(changed(image, result), allowed | {r['offset'] for r in
+                                                                        result.manifest['integrity_repairs']})
+                before = descriptors(image)
+                self.assertEqual(edit(result.image, {key: before[key]['current'] for key in request}).blob, image.blob)
+
+    def test_stock_percents_store_the_stored_fractions(self):
+        """Turing, Ampere and Ada store 55, 60 and 80 % truncated (0x8cc, 0x999, 0xccc): going back to them gives the
+        stock bytes."""
+        image = legacy_advanced('turing')
+        parser = backend(image)
+        gpc, vid = controller(parser, 0), controller(parser, 2)
+        lowered = edit(image, {'perf_cf_gpc_jump_pct': 50, 'perf_cf_vid_target_pct': 50, 'perf_cf_vid_jump_pct': 70})
+        self.assertEqual([struct.unpack_from('<I', lowered.blob, at)[0]
+                          for at in (gpc['jump_offset'], vid['target_offset'], vid['jump_offset'])],
+                         [0x800, 0x800, percent_fxp(70)])
+        back = edit(lowered.image, {'perf_cf_gpc_jump_pct': 55, 'perf_cf_vid_target_pct': 60,
+                                    'perf_cf_vid_jump_pct': 80})
+        self.assertEqual(back.blob, image.blob)
+        # GB20x keeps its own rule: the stock fraction of each field (the DRAM target's 0x851 for 52 %) and the
+        # nearest fraction for any other percent, so these percents store their nearest fractions there.
+        gb20x = fixture()
+        gpc, dram = controller(backend(gb20x), 0), controller(backend(gb20x), 1)
+        for changes, at, raw in (({'perf_cf_gpc_jump_pct': 80}, gpc['jump_offset'], 0xCCD),
+                                 ({'perf_cf_dram_target_pct': 55}, dram['target_offset'], 0x8CD),
+                                 ({'perf_cf_gpc_target_pct': 52}, gpc['target_offset'], 0x852),
+                                 ({'perf_cf_gpc_jump_pct': 60}, gpc['jump_offset'], 0x99A),
+                                 ({'perf_cf_gpc_target_pct': 58}, gpc['target_offset'], 0x948)):
+            with self.subTest(changes=changes):
+                self.assertEqual(struct.unpack_from('<I', edit(gb20x, changes).blob, at)[0], raw)
+
+    def test_reviewed_entry_sizes(self):
+        for size in (24, 28, 32, 49):
+            with self.subTest(size=size):
+                image = legacy_advanced('ampere', entry_size=size)
+                parser = backend(image)
+                self.assertEqual(controller(parser, 2)['offset'],
+                                 parser.perf_cf()['controllers']['offset'] + 6 + 2 * size)
+                result = edit(image, {'perf_cf_vid_target_pct': 50})
+                at = controller(parser, 2)['target_offset']
+                self.assertEqual([struct.unpack_from('<I', result.blob, a)[0] for a in parser.copy_offsets(at, 4)],
+                                 [0x800, 0x800])
+        for size in (23, 40):
+            with self.subTest(size=size):
+                report = inspect_image(legacy_advanced('ampere', entry_size=size))
+                self.assertFalse(set(PERF_CF_KEYS) & {f['key'] for f in report['fields']})
+                self.assertIn('perf_cf_controllers', {d.get('resolver') for d in report['diagnostics']})
+                self.assertEqual(unsupported_notes(report).keys(), {'advanced'})
+
+    def test_the_clock_table_row_names_the_controller_domain(self):
+        image = legacy_advanced('ada')
+        parser = backend(image)
+        # Byte 19 = 4 is the GB20x video domain, but the HUB row of these clocks tables.
+        fields = descriptors(legacy_advanced('ada', mutate=in_every_chain(parser, controller(parser, 2)['offset'] + 19,
+                                                                          b'\x04')))
+        for kind in CONTROLLER_KINDS:
+            self.assertEqual((fields[f'perf_cf_vid_{kind}']['editable'], fields[f'perf_cf_vid_{kind}']['reason']),
+                             (False, PERF_CF_CONTROLLER_UNRECOGNIZED_REASON))
+            self.assertTrue(fields[f'perf_cf_gpc_{kind}']['editable'])
+        # The type 5 subclass is read where it was traced (gsp_ga10x.bin), not on Turing.
+        for family, editable in (('ampere', True), ('turing', False)):
+            parser = backend(legacy_advanced(family))
+            fields = descriptors(legacy_advanced(family, mutate=in_every_chain(parser, controller(parser, 0)['offset'],
+                                                                               b'\x05')))
+            self.assertEqual(fields['perf_cf_gpc_target_pct']['editable'], editable, family)
+        # A policy entry 0 that does not run controllers 0..2 leaves every PERF_CF field read-only.
+        at = parser.perf_cf()['policies']['entries'][0]['offset'] + 6
+        fields = descriptors(legacy_advanced('turing', mutate=in_every_chain(backend(legacy_advanced('turing')), at,
+                                                                             b'\x03')))
+        self.assertTrue(all(fields[k]['reason'] == PERF_CF_POLICY_UNRECOGNIZED_REASON for k in PERF_CF_KEYS))
+
+    def test_switches_of_stock_disabled_values(self):
+        """Ampere and Ada GR power gating and MSCG: disabled entries keep their own values, so Off stays readable."""
+        for family in ('ampere', 'ada'):
+            for key in ('lpwr_gr_power_gating', 'lpwr_mscg'):
+                with self.subTest(family=family, key=key):
+                    image = legacy_advanced(family)
+                    covered = self.SWITCHES[family][key]
+                    off = edit(image, {key: 0})
+                    parser = backend(image)
+                    table = parser.lpwr_table(LPWR_SWITCHES[key])
+                    after = backend(off.image).lpwr_table(LPWR_SWITCHES[key])['entries']
+                    self.assertEqual([e['value'] for e in after], [e['value'] & ~1 if e['index'] in covered else
+                                                                   e['value'] for e in table['entries']])
+                    field = descriptors(off.image)[key]
+                    self.assertEqual((field['current'], field['lpwr_entries'], field['editable']), (0, covered, True))
+                    self.assertEqual(edit(off.image, {key: 1}).blob, image.blob)
+        # An Ada image whose stock-disabled entry 2 stores an enabled entry switched off (two RTX 4090 images).
+        mixed = legacy_advanced('ada', lpwr={0x80: ['e7ffffff00', 'e7ffffff00', 'e6ffffff00', 'e7ffffff00',
+                                                    'c0ffffff00']})
+        field = descriptors(mixed)['lpwr_gr_power_gating']
+        self.assertEqual((field['editable'], field['current'], field['reason']), (False, None, LPWR_MIXED_REASON))
+
+    def test_switches_of_reviewed_products(self):
+        """Where a stock-disabled entry looks like a switched-off one, only the reviewed products get the switch."""
+        # Turing: a desktop TU106 (entries 0, 1 and 4) and a laptop TU106 (also entry 3).
+        laptop = legacy_advanced('turing', device=0x1F11, lpwr={0x80: ['efffffff01', 'e7ffffff01', 'e6ffffff00',
+                                                                       'e7ffffff00', 'e5ffffff00']})
+        fields = descriptors(laptop)
+        self.assertEqual(fields['lpwr_gr_power_gating']['lpwr_entries'], [0, 1, 3, 4])
+        off = edit(laptop, {'lpwr_gr_power_gating': 0, 'lpwr_mscg': 0})
+        table = backend(off.image).lpwr_table('gr_pg')['entries']
+        self.assertEqual([e['value'] & 0xFF for e in table], [0xEE, 0xE6, 0xE6, 0xE6, 0xE4])
+        self.assertEqual((descriptors(off.image)['lpwr_gr_power_gating']['current'],
+                          descriptors(off.image)['lpwr_mscg']['current']), (0, 0))
+        self.assertEqual(edit(off.image, {'lpwr_gr_power_gating': 1, 'lpwr_mscg': 1}).blob, laptop.blob)
+        # Another Turing product: both switches read-only.
+        fields = descriptors(legacy_advanced('turing', device=0x1F95))
+        for key in ('lpwr_gr_power_gating', 'lpwr_mscg'):
+            self.assertEqual((fields[key]['editable'], fields[key]['reason']), (False, LPWR_STOCK_UNREVIEWED_REASON))
+        # A reviewed product whose entry stores another value: read-only.
+        fields = descriptors(legacy_advanced('turing', lpwr={0x80: ['c1ffffff01', 'e7ffffff01', 'e6ffffff01',
+                                                                    'e6ffffff01', 'e5ffffff01']}))
+        self.assertEqual(fields['lpwr_gr_power_gating']['reason'], LPWR_STOCK_UNRECOGNIZED_REASON)
+        # Ada DIFR on an AD107 product no reviewed image covers: shipped disabled (0xfffffffe and 0xffffffee, as on
+        # the RTX 4070 and RTX 4090, look like a switched-off entry 0) there is no switch; enabled, it is read-only.
+        disabled = ['00feffff00ffffffffffffffffffffffff'] * 4
+        for value in ('feffffff', 'eeffffff'):
+            entries = [value + '026400fa002c01640096009600'] + disabled
+            fields = descriptors(legacy_advanced('ada', device=0x28E0, lpwr={0xE8: entries}))
+            self.assertFalse({'lpwr_difr', *DIFR_TIMES} & set(fields))
+        fields = descriptors(legacy_advanced('ada', device=0x28E0))
+        self.assertEqual((fields['lpwr_difr']['editable'], fields['lpwr_difr']['reason']),
+                         (False, LPWR_STOCK_UNREVIEWED_REASON))
+        self.assertTrue(all(fields[k]['reason'] == LPWR_TIME_SWITCH_REASON for k in DIFR_TIMES))
+        # The RTX 2000 Ada enables entry 0: a stored Off reads 0 and Stock enables exactly entry 0.
+        stored_off = legacy_advanced('ada', lpwr={0xE8: ['feffffff026400fa002c01640096009600'] + disabled})
+        self.assertEqual(descriptors(stored_off)['lpwr_difr']['current'], 0)
+        self.assertEqual(edit(stored_off, {'lpwr_difr': 1}).blob, legacy_advanced('ada').blob)
+        # Ampere GR rail gating: an RTX 3090 enables entries 0..1, an RTX 3090 Ti none (no switch); another product
+        # with an enabled entry shows it read-only.
+        self.assertNotIn('lpwr_gr_rail_gating', descriptors(legacy_advanced('ampere', device=0x2203,
+                                                                            lpwr={0xD4: ['fe'] * 5})))
+        fields = descriptors(legacy_advanced('ampere', device=0x2203))
+        self.assertEqual((fields['lpwr_gr_rail_gating']['reason'], fields['lpwr_gr_rail_gating_idle_us']['reason']),
+                         (LPWR_GR_RG_UNREVIEWED_REASON, LPWR_TIME_SWITCH_REASON))
+        self.assertEqual(descriptors(legacy_advanced('ampere', lpwr={0xD4: ['7f', 'ff', 'fe', 'fe', 'fe']}))
+                         ['lpwr_gr_rail_gating']['reason'], LPWR_GR_RG_UNRECOGNIZED_REASON)
+
+    def test_dependent_fields_change_only_while_their_switch_is_on(self):
+        for family, switch, key, value in (('turing', 'perf_cf_util_policy', 'perf_cf_gpc_target_pct', 50),
+                                           ('ampere', 'lpwr_gr_rail_gating', 'lpwr_gr_rail_gating_idle_us', 3000),
+                                           ('ada', 'lpwr_difr', 'lpwr_difr_sw_asr_idle_us', 30)):
+            with self.subTest(family=family, key=key):
+                image = legacy_advanced(family)
+                with self.assertRaises(VbiosError) as exc:
+                    edit(image, {switch: 0, key: value})
+                self.assertEqual(exc.exception.code, 'DEPENDENT_FIELD_DISABLED')
+                off = edit(image, {switch: 0}).image
+                with self.assertRaises(VbiosError) as exc:
+                    edit(off, {key: value})
+                self.assertEqual(exc.exception.code, 'DEPENDENT_FIELD_DISABLED')
+                self.assertEqual(descriptors(edit(off, {switch: 1, key: value}).image)[key]['current'], value)
+        image = legacy_advanced('ada')
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'perf_cf_dram_target_pct': 85, 'perf_cf_dram_jump_pct': 70})
+        self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+
+    def test_only_the_reviewed_bindings_write_the_tables(self):
+        for family in LEGACY_DEVICES:
+            image = legacy_advanced(family)
+            parser = backend(image)
+            gpc = controller(parser, 0)
+            probes = [(gpc['offset'] + 11, '<I'), (gpc['offset'] + 22, '<B'),          # a gain, a topology index
+                      (controller(parser, 3)['target_offset'], '<I'),                   # another controller
+                      (parser.perf_cf()['controllers']['offset'] + 4, '<B'),            # a header byte
+                      (policy(parser)['offset'] + 1, '<B'),                             # policy entry 0, not bit 7
+                      (lpwr_entry(parser, 'gr_pg', 0)['offset'] + 4, '<B'),             # a GR rail mask byte
+                      (lpwr_entry(parser, 'ms', 0)['offset'], '<I'),                    # a covered word, other bits
+                      (lpwr_entry(parser, 'ms', 4)['offset'], '<B'),                    # a disabled entry
+                      (parser.lpwr_table('ms')['offset'] + 5, '<B')]                    # the MSCG idle word
+            if family == 'ampere':
+                probes += [(parser.lpwr_table('gr_rg')['offset'] + 7, '<H'), (lpwr_entry(parser, 'gr_rg', 3)['offset'],
+                                                                             '<B')]
+            if family == 'ada':
+                probes += [(lpwr_entry(parser, 'difr', 1)['offset'], '<B'),
+                           (lpwr_entry(parser, 'difr', 0)['offset'] + 4, '<B'),
+                           (parser.lpwr_table('gr_rg')['offset'] + 5, '<H')]
+            for offset, encoding in probes:
+                with self.subTest(family=family, offset=offset):
+                    probe(self, image, parser.copy_offsets(offset, 1), encoding)
+            # The reviewed key over other bytes is refused.
+            with self.assertRaises(VbiosError) as exc:
+                edit(image, {'perf_cf_gpc_hysteresis_up': 2}, field_registry=custom_registry(
+                    'perf_cf_gpc_hysteresis_up', parser.copy_offsets(gpc['offset'] + 1, 1), encoding='<B', scale=1))
+            self.assertEqual(exc.exception.code, 'INVALID_FIELD_EVIDENCE')
+
+    def test_import_and_texts(self):
+        image = legacy_advanced('ampere')
+        donor = edit(image, {'perf_cf_gpc_target_pct': 60, 'lpwr_mscg': 0, 'lpwr_gr_rail_gating_idle_us': 3000}).image
+        report, result = import_fields(image, donor, IMPORT_SECTIONS, include_opt_in=True)
+        self.assertEqual((report['changes'], result), ({}, None))
+        for reason in (LPWR_STOCK_UNREVIEWED_REASON, LPWR_STOCK_UNRECOGNIZED_REASON):
+            with self.subTest(reason=reason):
+                english, spanish = (read_only_reason(dict(reason=reason), lang) for lang in ('en', 'es'))
+                self.assertTrue(english and spanish and english != spanish)
+                self.assertNotEqual(spanish, read_only_reason(dict(reason='unmapped'), 'es'))
+        self.assertTrue(MESSAGES_EN['section.advanced_note'].startswith('Blackwell, Ada, Ampere and Turing.'))
+        self.assertTrue(MESSAGES_ES['section.advanced_note'].startswith('Blackwell, Ada, Ampere y Turing.'))
+        fields = descriptors(legacy_advanced('ada'))
+        self.assertEqual(field_label(fields['perf_cf_vid_jump_pct']), 'VID jump threshold (experimental)')
+        self.assertEqual(value_text(fields['lpwr_difr'], 0, 'es'), 'Desactivado')
 
 
 if __name__ == '__main__':

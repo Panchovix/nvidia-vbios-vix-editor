@@ -38,19 +38,21 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                                        '(avanzado, experimental)'),
  'field.gpc_curve_offset_mhz': 'Offset de la curva GPC (avanzado, experimental)',
  'field.factory_gpc_offset_mhz': 'Offset GPC de fábrica (overclock del fabricante, experimental)',
+ 'field.factory_memory_offset_mhz': 'Offset de memoria de fábrica (overclock del fabricante, experimental)',
  'field.factory_rated_boost_mhz': 'Clock boost nominal de fábrica',
  'field.max_operating_temp_c': 'Temperatura máxima de funcionamiento (experimental)',
  'section.advanced': 'Avanzado: controladores de rendimiento y ahorro en reposo',
- 'section.advanced_note': ('Solo Blackwell. Experimental y sin probar en hardware. La política de utilización y sus '
-                           'controladores deciden cómo el driver sube y baja los clocks GPC, de memoria (DRAM) y de '
-                           'video (VID) según la carga. No está probado que el driver use esta tabla en Blackwell. Un '
-                           'objetivo más bajo sube los clocks antes, con más consumo y calor. Los interruptores de '
-                           'ahorro en reposo dejan cada función como viene (De fábrica) o la apagan (Desactivado), y '
-                           'deberían actuar solo en reposo o con carga ligera. Desactivado gasta un poco más en '
-                           'reposo, y tiempos de reposo muy cortos pueden causar tirones o, rara vez, pantalla negra '
-                           'en reposo. Un valor que depende de un interruptor queda en gris mientras ese interruptor '
-                           'está apagado. Esta sección se muestra con o sin Mostrar campos avanzados (estilo XOC), e '
-                           'Importar desde ROM… nunca la copia.'),
+ 'section.advanced_note': ('Blackwell, Ada, Ampere y Turing. Experimental y sin probar en hardware. La política de '
+                           'utilización y sus controladores deciden cómo el driver sube y baja los clocks GPC, de '
+                           'memoria (DRAM) y de video (VID) según la carga. No está probado que el driver use esta '
+                           'tabla en ninguna de estas tarjetas. Un objetivo más bajo sube los clocks antes, con más '
+                           'consumo y calor. Los interruptores de ahorro en reposo dejan cada función como viene (De '
+                           'fábrica) o la apagan (Desactivado), y deberían actuar solo en reposo o con carga ligera. '
+                           'Ahorro en reposo muestra solo las funciones que la ROM trae activadas. Desactivado gasta '
+                           'un poco más en reposo, y tiempos de reposo muy cortos pueden causar tirones o, rara vez, '
+                           'pantalla negra en reposo. Un valor que depende de un interruptor queda en gris mientras '
+                           'ese interruptor está apagado. Esta sección se muestra con o sin Mostrar campos avanzados '
+                           '(estilo XOC), e Importar desde ROM… nunca la copia.'),
  'section.advanced_perf': 'Controladores de clocks',
  'section.advanced_lpwr': 'Ahorro en reposo',
  'field.perf_cf_util_policy': 'Política de clocks por utilización (experimental)',
@@ -191,13 +193,16 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'windows_short': 'Afterburner: {value} MHz',
  'range_hint': 'Permitido: {minimum} a {maximum} {units}',
  'windows_equivalent': 'En Windows (MSI Afterburner): {value} MHz',
+ 'linux_short': 'nvidia-settings: {value} MHz',
+ 'linux_equivalent': 'Como en MSI Afterburner · En Linux (nvidia-settings): {value} MHz',
+ 'factory_offset_on': 'activa un offset de fábrica que está apagado en esta ROM (sin probar en esas ROM)',
  'copy_note': 'Guardar crea una ROM nueva + manifiesto JSON. Sin validación en hardware.',
  'license_note': ('NVIDIA VBIOS Vix Editor {version} · Copyright (C) 2026 panchovix · '
                   'Software libre bajo la GNU GPL v3 o posterior, SIN GARANTÍA. Licencia y código fuente: '
                   'https://github.com/Panchovix/nvidia-vbios-vix-editor'),
  'save': 'Guardar copia…',
  'heading': 'Editor de archivos · Guardar crea una copia',
- 'open_prompt': 'Abra una ROM para inspeccionar su identidad y formato.',
+ 'open_prompt': 'Abre una ROM para inspeccionar su identidad y formato.',
  'rel_notice': 'REL: techo de ecuación, no voltaje efectivo.',
  'fields_heading': 'Campos · valores y unidades',
  'preview_heading': 'Vista previa · original → copia',
@@ -231,17 +236,17 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'open_path': 'Abrir por ruta…',
  'save_path': 'Guardar copia por ruta…',
  'path_label': 'Ruta del archivo',
- 'path_hint': 'Escriba una ruta del equipo donde corre el editor, también al usar SSH. Se aceptan rutas absolutas y ~/.',
- 'path_error': 'Introduzca una ruta de archivo local, no una URL.',
+ 'path_hint': 'Escribe una ruta del equipo donde corre el editor, también al usar SSH. Se aceptan rutas absolutas y ~/.',
+ 'path_error': 'Introduce una ruta de archivo local, no una URL.',
  'cli_theme': 'Tema: auto sigue el modo de apps de Windows (en otros sistemas, el escritorio); light o dark',
  'cli_file_dialog': 'Selector: auto usa el integrado por SSH; system usa el diálogo del escritorio',
- 'local_file': 'Seleccione un archivo local.',
+ 'local_file': 'Selecciona un archivo local.',
  'save_dialog': 'Guardar copia nueva + manifiesto JSON',
- 'stale_dialog': 'La ROM o vista previa cambió. Elija el destino de nuevo.',
- 'preview_first': 'Prepare la vista previa actual antes de guardar.',
- 'new_destination': 'Seleccione un destino local nuevo.',
+ 'stale_dialog': 'La ROM o vista previa cambió. Elige el destino de nuevo.',
+ 'preview_first': 'Prepara la vista previa actual antes de guardar.',
+ 'new_destination': 'Selecciona un destino local nuevo.',
  'saving': 'Guardando copia y manifiesto sin sobrescribir…',
- 'dirty': 'Valores modificados: pulse Preparar y verificar para actualizar la vista previa.',
+ 'dirty': 'Valores modificados: pulsa Preparar y verificar para actualizar la vista previa.',
  'staging': 'Construyendo y verificando vista previa…',
  'reset_done': 'Cambios restablecidos al original inmutable.',
  'unknown': 'Desconocido',
@@ -300,7 +305,20 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'summed_cap.channels': 'La fila {row} también limita la suma de los canales de potencia {channels} a {rated} {units} '
                         'nominal / {maximum} {units} máximo y puede actuar primero: subir solo este límite puede no '
                         'tener efecto.',
- 'summed_cap.raise': 'Suba también los límites de la suma de potencia de conectores.',
+ 'summed_cap.raise': 'Sube también los límites de la suma de potencia de conectores.',
+ 'sense_profiles.levels': 'Esta ROM fija sus límites de potencia según los pines de detección del cable de 16 pines. '
+                          'Este valor se aplica en el nivel más alto, probablemente un cable de {watts} W (deducido, '
+                          'sin probar). Los niveles más bajos mantienen sus propios límites.',
+ 'sense_profiles.past_top': 'Pasar de {watts} W supera lo que admite ese cable. Es decisión tuya.',
+ 'sense_profiles.input_current': 'El umbral de corriente de entrada de 12 V (nominal {amps} A, unos {watts} W a 12 V) '
+                                 'puede limitar antes. Súbelo también, en Mostrar campos avanzados (estilo XOC).',
+ 'vmin_clone.memory': 'En esta ROM el piso de voltaje del reloj de memoria mantiene su valor de fábrica. Un VMIN más '
+                      'bajo solo se nota mientras la memoria va a su reloj más bajo ({mhz} MHz, reposo con un monitor). '
+                      'Un VMIN más alto se nota con cualquier reloj de memoria solo por encima de {floor} mV (VMIN de '
+                      'fábrica + {constant} mV). Hasta ahí también se nota solo en ese reloj más bajo.',
+ 'vmin_clone.risk': 'Sin probar en hardware. Un VMIN distinto del de fábrica agrega una ecuación VFE a la ROM, y '
+                    'ninguna tarjeta Ada ha usado todavía una ecuación agregada por el editor. El override podría no '
+                    'cargar o el driver podría no iniciar. Quitar el override devuelve la tarjeta a como estaba.',
  'field.connector_current_threshold_rated': ('Umbral de corriente del canal de conector {connector}, nominal '
                                              '(avanzado, experimental)'),
  'field.connector_current_threshold_max': ('Techo del umbral de corriente del canal de conector {connector} '
@@ -351,11 +369,16 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'reason.max_temp_unequal': ('Las tres temperaturas guardadas de este límite difieren en esta ROM; el editor solo las '
                              'escribe juntas.'),
  'reason.max_temp_unrecognized': 'Esta entrada de política térmica no tiene el formato de las ROM revisadas.',
- 'reason.factory_offset_disabled': ('Esta ROM no guarda un offset GPC de fábrica, como las ROM Founders Edition, de '
-                                    'referencia, de portátil y RTX PRO. El editor no agrega uno.'),
- 'reason.factory_offset_fraction': ('El offset GPC de fábrica guardado no es un número entero de MHz, a diferencia de '
+ 'reason.max_temp_no_policy': ('Esta ROM no indica ninguna política de temperatura máxima de funcionamiento (como '
+                               'las ROM estilo XOC), así que no se aplica ninguna. El editor no agrega una.'),
+ 'reason.max_temp_lower_limit': ('Esta ROM también guarda un límite de temperatura más bajo del mismo tipo, como las '
+                                 'ROM de portátil Ampere y Ada, y no se sabe cuál limita primero a la GPU. El editor '
+                                 'deja los dos como están guardados.'),
+ 'reason.factory_offset_fraction': ('El offset de fábrica guardado no es un número entero de MHz, a diferencia de '
                                     'todas las ROM revisadas. El driver lo usa truncado a MHz enteros; el editor lo '
                                     'deja como está guardado.'),
+ 'reason.factory_unreviewed': ('El registro del overclock de fábrica o la tabla de clocks de esta ROM no tiene el '
+                               'formato de las ROM revisadas, así que el editor lo deja como está guardado.'),
  'reason.factory_boost': ('Clock boost nominal del overclock de fábrica. El driver lo escribe en un estado de '
                           'rendimiento al arrancar; el editor lo deja como está guardado.'),
  'reason.depends_on': ('Para cambiar este valor, activa el interruptor "{switch}". Mientras está apagado, se '
@@ -370,33 +393,39 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'reason.lpwr_gr_rg_unreviewed': ('El rail gating de GR está activado en esta ROM, pero no está revisado qué entradas '
                                   'activa este producto de fábrica.'),
  'reason.lpwr_gr_rg_unrecognized': 'Una entrada del rail gating de GR de esta ROM no guarda el valor revisado.',
+ 'reason.lpwr_stock_unreviewed': ('Esta función está activada en esta ROM, pero no está revisado qué entradas '
+                                  'activa este producto de fábrica. En esta tabla una entrada que viene desactivada '
+                                  'se ve igual que una apagada.'),
+ 'reason.lpwr_stock_unrecognized': 'Una entrada de esta función en esta ROM no guarda un valor revisado.',
  'reason.lpwr_time_switch': 'El interruptor de este tiempo de reposo es de solo lectura en esta ROM.',
  'reason.generic': 'Edición no disponible para este campo.',
- 'error.INVALID_IMAGE': 'Abra una ROM primero',
+ 'error.INVALID_IMAGE': 'Abre una ROM primero',
  'error.INVALID_CHANGES': 'Prepare una vista previa verificada antes de guardar',
  'error.FIELD_READ_ONLY': 'Este campo es de solo lectura',
- 'error.CONFLICTING_FIELDS': 'Elija una sola representación del campo',
+ 'error.CONFLICTING_FIELDS': 'Elige una sola representación del campo',
  'error.UNKNOWN_FIELD': 'Este campo es desconocido o no está validado',
- 'error.INVALID_VALUE': 'Introduzca un número finito válido',
+ 'error.INVALID_VALUE': 'Introduce un número finito válido',
  'error.OUT_OF_BOUNDS': 'El valor está fuera del rango permitido o rompe el orden mínimo/por defecto/máximo',
  'error.UNREPRESENTABLE_VALUE': 'El valor no se puede almacenar exactamente en este formato',
  'error.INTEGRITY_FAILED': 'Fallaron los controles de integridad de la ROM',
- 'error.SOURCE_OVERWRITE': 'Elija un destino diferente del original',
+ 'error.SOURCE_OVERWRITE': 'Elige un destino diferente del original',
  'error.SOURCE_CHANGED': 'El original cambió desde que se abrió',
  'error.OUTPUT_EXISTS': 'La copia o el manifiesto ya existe',
  'error.LOADER_OUTPUT_EXISTS': ('Ya existe un archivo -loader con este nombre, quizás de una copia '
                                 'anterior: bórralo o elige otro nombre'),
  'error.IO_ERROR': 'No se pudo leer o escribir el archivo',
- 'error.INVALID_PATH': 'Elija una ruta local válida',
+ 'error.INVALID_PATH': 'Elige una ruta local válida',
  'error.UNSUPPORTED_ARCHITECTURE': 'Esta arquitectura sólo permite inspección',
  'error.UNSUPPORTED_FORMAT': 'Este formato sólo permite inspección',
  'error.FAMILY_MISMATCH': ('La otra ROM es de otra familia de GPU o de otro formato; importar requiere una de '
                            'la misma familia'),
- 'error.DEPENDENT_FIELD_DISABLED': ('Este valor depende de un interruptor que está apagado; active el interruptor '
+ 'error.DEPENDENT_FIELD_DISABLED': ('Este valor depende de un interruptor que está apagado; activa el interruptor '
                                     'para cambiarlo'),
- 'error.SEPARATE_EDIT_REQUIRED': ('Guarde primero la cantidad de canales de ventilador o el ajuste REL/ALT siguen a '
-                                  'OV y luego abra la copia para cambiar los límites, las curvas o la parada en reposo '
-                                  'de los ventiladores o los voltajes'),
+ 'error.SEPARATE_EDIT_REQUIRED': ('Guarda estos cambios en copias separadas. La cantidad de canales de ventilador '
+                                  'va antes que los límites, las curvas o la parada en reposo de los ventiladores, y '
+                                  'el ajuste REL/ALT siguen a OV antes que los voltajes. En algunas ROM de RTX 4090 el '
+                                  'VMIN y el offset de la curva GPC también se guardan por separado. Guarda uno y '
+                                  'luego abre la copia para cambiar el resto'),
  'cli_usage': 'uso: ',
  'cli_positionals': 'argumentos posicionales',
  'cli_options': 'opciones',

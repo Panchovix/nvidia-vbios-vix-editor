@@ -116,6 +116,100 @@ class GtkSmokeTests(unittest.TestCase):
                     finally:
                         window.close()
 
+    def test_ada_cable_sense_profile_notes_in_both_languages(self):
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gio, GLib, Gtk
+        from nvidia_vbios.gui.app import EditorWindow, texts
+        from test_ada_fields import sense_profiles
+        from test_rom_formats import synthetic_rom
+        app = Gtk.Application(application_id='org.nvidia_vbios.SenseSmoke', flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.assertTrue(app.register(None))
+        context = GLib.MainContext.default()
+
+        def until(condition):
+            deadline = time.monotonic() + 15
+            while not condition():
+                while context.pending():
+                    context.iteration(False)
+                if time.monotonic() >= deadline:
+                    self.fail('GTK operation did not complete')
+                time.sleep(.01)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'sense.rom'
+            path.write_bytes(sense_profiles(synthetic_rom(copies=2, policies=True)))
+            for language, top, past in (('en', 'most likely a 600 W cable', 'Going past 600 W'),
+                                        ('es', 'probablemente un cable de 600 W', 'Pasar de 600 W')):
+                with self.subTest(language=language):
+                    window = EditorWindow(app, path, language)
+                    window.present()
+                    try:
+                        until(lambda: not window.busy and window.controller.document is not None)
+                        ceiling = '\n'.join(texts(window.rows['power_max_w']['row']))
+                        default = '\n'.join(texts(window.rows['power_default_w']['row']))
+                        self.assertIn(top, ceiling)
+                        self.assertIn(past, ceiling)
+                        self.assertIn('360 W', ceiling)
+                        self.assertIn(top, default)
+                        self.assertNotIn(past, default)
+                        self.assertNotIn(top, '\n'.join(texts(window.rows['power_min_w']['row'])))
+                        window.entries['power_max_w'].set_text('90')
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual(window.controller.document.changes['power_max_w'], '90')
+                    finally:
+                        window.close()
+
+    def test_shared_vmin_notes_and_separate_gpc_offset_in_both_languages(self):
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gio, GLib, Gtk
+        from nvidia_vbios.gui.app import EditorWindow, texts
+        from test_rail_vmin import ada_vmin_clone
+        app = Gtk.Application(application_id='org.nvidia_vbios.VminCloneSmoke', flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.assertTrue(app.register(None))
+        context = GLib.MainContext.default()
+
+        def until(condition):
+            deadline = time.monotonic() + 15
+            while not condition():
+                while context.pending():
+                    context.iteration(False)
+                if time.monotonic() >= deadline:
+                    self.fail('GTK operation did not complete')
+                time.sleep(.01)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'vmin.rom'
+            path.write_bytes(ada_vmin_clone())
+            for language, floor, risk in (('en', 'lowest clock (405 MHz, single-monitor idle)',
+                                           'Removing the override brings the card back'),
+                                          ('es', 'reloj más bajo (405 MHz, reposo con un monitor)',
+                                           'Quitar el override devuelve la tarjeta')):
+                with self.subTest(language=language):
+                    window = EditorWindow(app, path, language)
+                    window.present()
+                    try:
+                        until(lambda: not window.busy and window.controller.document is not None)
+                        row = '\n'.join(texts(window.rows['nvvdd_vmin_mv']['row']))
+                        self.assertIn(floor, row)
+                        self.assertIn(risk, row)
+                        self.assertNotIn(floor, '\n'.join(texts(window.rows['power_max_w']['row'])))
+                        window.entries['nvvdd_vmin_mv'].set_text('600')
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual(window.controller.document.changes, {'nvvdd_vmin_mv': '600'})
+                        # The GPC curve offset (an advanced field) takes the same unused slot: a separate copy.
+                        window.advanced_toggle.set_active(True)
+                        until(lambda: 'gpc_curve_offset_mhz' in window.entries)
+                        window.entries['gpc_curve_offset_mhz'].set_text('30')
+                        until(lambda: not window.verifying)
+                        self.assertIn(window.text('error.SEPARATE_EDIT_REQUIRED'), window.status.get_text())
+                        window.entries['gpc_curve_offset_mhz'].set_text('0')
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual(window.controller.document.changes, {'nvvdd_vmin_mv': '600'})
+                    finally:
+                        window.close()
+
     def test_max_temperature_and_factory_offset_rows_stage_in_both_languages(self):
         import gi
         gi.require_version('Gtk', '4.0')
@@ -155,12 +249,26 @@ class GtkSmokeTests(unittest.TestCase):
                         self.assertIn('2655 MHz', boost)
                         self.assertIn(window.text('reason.factory_boost'), boost)
                         self.assertIn('90 °C', '\n'.join(texts(window.rows['max_operating_temp_c']['row'])))
+                        # The factory memory offset is on the Afterburner scale; its row also shows the
+                        # nvidia-settings number, and a value other than 0 says it turns the offset on (flag 0).
+                        memory = window.rows['factory_memory_offset_mhz']
+                        self.assertIn(window.text('linux_equivalent', value='0'), '\n'.join(texts(memory['row'])))
                         window.entries['max_operating_temp_c'].set_text('83.5')
                         window.entries['factory_gpc_offset_mhz'].set_text('-50')
+                        window.entries['factory_memory_offset_mhz'].set_text('500')
+                        delta = memory['delta'].get_text()
+                        self.assertIn('nvidia-settings: 1000 MHz', delta)
+                        self.assertIn(window.text('factory_offset_on'), delta)
+                        # The GPC offset is stored with flag 1: no such note, and no second scale.
+                        gpc = window.rows['factory_gpc_offset_mhz']['delta'].get_text()
+                        self.assertNotIn(window.text('factory_offset_on'), gpc)
+                        self.assertNotIn('nvidia-settings', gpc)
                         until(lambda: not window.verifying and not window.dirty)
                         self.assertEqual(window.controller.document.changes['max_operating_temp_c'], '83.5')
                         self.assertEqual(window.controller.document.changes['factory_gpc_offset_mhz'], '-50')
+                        self.assertEqual(window.controller.document.changes['factory_memory_offset_mhz'], '500')
                         self.assertIn('120 → -50 MHz', window.preview_text())
+                        self.assertIn('0 → 500 MHz', window.preview_text())
                         # Above the stock ceiling the row is marked with the accepted range.
                         window.entries['max_operating_temp_c'].set_text('94')
                         until(lambda: not window.verifying)
@@ -285,6 +393,63 @@ class GtkSmokeTests(unittest.TestCase):
                                          {'perf_cf_util_policy': '1', 'perf_cf_vid_jump_pct': '90'})
                     finally:
                         window.close()
+
+    def test_advanced_section_on_ampere_and_turing_roms(self):
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gio, GLib, Gtk
+        from nvidia_vbios.gui.app import EditorWindow, texts
+        from test_advanced_fields import legacy_advanced
+        app = Gtk.Application(application_id='org.nvidia_vbios.LegacyAdvancedSmoke',
+                              flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.assertTrue(app.register(None))
+        context = GLib.MainContext.default()
+
+        def until(condition):
+            deadline = time.monotonic() + 15
+            while not condition():
+                while context.pending():
+                    context.iteration(False)
+                if time.monotonic() >= deadline:
+                    self.fail('GTK operation did not complete')
+                time.sleep(.01)
+
+        # Each family lists the idle power switches its ROM has.
+        shown = {'ampere': ('lpwr_gr_power_gating', 'lpwr_mscg', 'lpwr_gr_rail_gating', 'lpwr_gr_rail_gating_idle_us'),
+                 'turing': ('lpwr_gr_power_gating', 'lpwr_mscg')}
+        missing = {'ampere': ('lpwr_difr', 'lpwr_nvdec_gating'),
+                   'turing': ('lpwr_difr', 'lpwr_gr_rail_gating', 'lpwr_nvdec_gating')}
+        with tempfile.TemporaryDirectory() as tmp:
+            for family in ('ampere', 'turing'):
+                path = Path(tmp) / f'{family}.rom'
+                path.write_bytes(legacy_advanced(family).blob)
+                for language in ('en', 'es'):
+                    with self.subTest(family=family, language=language):
+                        window = EditorWindow(app, path, language)
+                        window.present()
+                        try:
+                            until(lambda: not window.busy and window.controller.document is not None)
+                            expander = window.advanced_expander
+                            self.assertFalse(expander.get_expanded())
+                            self.assertIn(window.text('section.advanced_note'), texts(expander.get_child()))
+                            for key in ('perf_cf_util_policy', 'perf_cf_vid_target_pct') + shown[family]:
+                                self.assertIn(key, window.entries)
+                            for key in missing[family]:
+                                self.assertNotIn(key, window.entries)
+                            if family == 'ampere':
+                                # GR rail gating set to Off greys its idle time.
+                                window.entries['lpwr_gr_rail_gating'].set_active(False)
+                                self.assertFalse(window.entries['lpwr_gr_rail_gating_idle_us'].get_sensitive())
+                                self.assertTrue(window.rows['lpwr_gr_rail_gating_idle_us']['dependency'].get_visible())
+                                until(lambda: not window.verifying and not window.dirty)
+                                self.assertEqual(window.controller.document.changes, {'lpwr_gr_rail_gating': '0'})
+                            else:
+                                window.entries['perf_cf_vid_target_pct'].set_text('50')
+                                until(lambda: not window.verifying and not window.dirty)
+                                self.assertEqual(window.controller.document.changes, {'perf_cf_vid_target_pct': '50'})
+                                self.assertIn('60 → 50 %', window.preview_text())
+                        finally:
+                            window.close()
 
     def test_ada_fixed_voltage_rows_stage_rel_and_alt_together(self):
         import gi

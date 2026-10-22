@@ -43,8 +43,22 @@ Todos los campos Turing están marcados como experimentales. Los marcados como *
 - **Rangos de offset de reloj**: `gpc_offset_max_mhz` / `gpc_offset_min_mhz` (núcleo) y `memory_offset_max_mhz` /
   `memory_offset_min_mhz`, los rangos que puede usar una herramienta de overclock. Por sí solos no cambian los
   relojes.
+- **Offsets de fábrica**: `factory_gpc_offset_mhz` (de -500 a +500 MHz) y `factory_memory_offset_mhz` (de -5000 a
+  +5000 MHz, en el clock de memoria que muestran `nvidia-smi` y MSI Afterburner, la mitad de lo que muestra
+  nvidia-settings), el overclock que algunos fabricantes guardan en la ROM (+135 MHz de núcleo y +400 MHz de memoria
+  en la ROG Matrix RTX 2080 Ti). Una ROM sin overclock de fábrica muestra 0, y un valor distinto de 0 lo activa,
+  algo que no se probó. El clock boost nominal (`factory_rated_boost_mhz`) es de solo lectura.
+- **Temperatura máxima de funcionamiento**: `max_operating_temp_c`, el límite que `nvidia-smi` informa como
+  temperatura actual más T.Limit (de 86 a 95 °C en placas de escritorio, 102 °C en portátiles y Max-Q, donde esa
+  relación no se comprobó). Va de 40 °C hasta 3 °C sobre el valor de fábrica del producto, y es de solo lectura en
+  las dos imágenes XOC, que no indican ese límite.
 - **Ventiladores**: `fan_pwm_frequency_hz`, los límites de velocidad (RPM) y de nivel (%, avanzados) de cada
   ventilador y los puntos de su curva.
+- **Sección Avanzado** (su propia sección plegada, sin depender del interruptor de campos avanzados): la política
+  de clocks por utilización y los objetivos, umbrales de salto e histéresis de sus controladores GPC, DRAM y VID, y
+  los interruptores De fábrica/Desactivado del power gating de GR y del MSCG (ahorro en reposo) en los productos
+  cuyas entradas de fábrica se revisaron (todas las imágenes Turing examinadas). No está probado que el driver use
+  estas tablas; ver `extended-fields.md`.
 - **Solo lectura**: el límite de voltaje OV (1125 mV), los campos de ecuación y de selector de REL/ALT/OV, el
   voltaje de arranque y la cantidad de canales de ventilador.
 - No todas las imágenes tienen todos los campos: las Max-Q y las de portátil no tienen filas de slot ni de

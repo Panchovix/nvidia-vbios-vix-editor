@@ -1,6 +1,7 @@
 """Import from another ROM: the values of chosen sections go through edit(), a dependent set at a time."""
 import os
 from pathlib import Path
+import struct
 import sys
 import unittest
 from unittest.mock import patch
@@ -9,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from nvidia_vbios.editor import IMPORT_SECTIONS, VbiosError, edit, import_fields, load
 from nvidia_vbios.editor.sections import field_section, technical_field_keys
 from nvidia_vbios.rom import from_bytes
+from nvidia_vbios.rom.image import backend
 from test_rom_formats import synthetic_blackwell, synthetic_rom
 
 # Fan 1's maximum lowered with every curve point above it: alone it would be below the stored curves.

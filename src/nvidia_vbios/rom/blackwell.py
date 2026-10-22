@@ -5,6 +5,7 @@ interpretations retain their original evidence gates, without dump-size
 or filename gates. The directory SHA384 envelope at metadata+0x209 remains an
 explicit supported layout constraint; unknown envelopes are read-only.
 """
+import copy
 import hashlib
 import math
 import re
@@ -263,6 +264,14 @@ class BlackwellRom:
         return owners[0]
 
     def integrity(self):
+        # The editor asks once per field binding (about 150 times per edit) and the blob is immutable bytes:
+        # compute once per blob, and give callers their own copy.
+        cached = getattr(self, "_integrity", None)
+        if cached is None or cached[0] is not self.blob:
+            cached = self._integrity = (self.blob, self._integrity_report())
+        return copy.deepcopy(cached[1])
+
+    def _integrity_report(self):
         b, d = self.blob, self.directory
         mismatches = [o["id"] for o in self.objects
                       if hashlib.sha384(b[o["data"]:o["data"] + o["size"]]).digest()
@@ -400,28 +409,30 @@ class BlackwellRom:
 
         After the 7-byte header come array A and array B, two {u8 flag, u32 kHz} entries
         each. GSP-RM 615.78.08 applies an A entry whose flag is 1 as a static frequency
-        delta of the clock domain it maps to (A0: GPC), reading the value as signed; a
-        flag of 0 skips the entry and any other flag fails the read. A B entry with flag 1
-        is written, in MHz, into a performance-state clock entry (B1: the rated boost).
-        Vendor factory-OC images set A0 and B1; the other images store zeros.
+        delta of the clock domain it maps to (A0: GPC, A1: memory clock), reading the value
+        as signed; a flag of 0 skips the entry and any other flag fails the read. A B entry
+        with flag 1 is written, in MHz, into a performance-state clock entry (B1: the rated
+        boost). Vendor factory-OC images set A0 and B1; the other images store zeros.
+        reviewed is False for another header (no entry is decoded then) or a flag other
+        than 0 or 1.
         """
         try:
             at = self.pointer("P", 0x98)
         except FormatError:
             return None  # no factory clock record referenced
         b = self.blob
-        if b[at:at + 7] != FACTORY_CLOCK_HEADER:
-            raise FormatError("unsupported factory clock record")
-        if self.object_for(at, 27)["id"] != 0x26:
+        header = bytes(b[at:at + 7])
+        if self.object_for(at, 27 if header == FACTORY_CLOCK_HEADER else 7)["id"] != 0x26:
             raise FormatError("factory clock record does not address object 0x26")
+        if header != FACTORY_CLOCK_HEADER:
+            return dict(offset=at, size=None, reviewed=False, header=header, offsets=[], clocks=[])
 
         def entries(start, fmt):
             return [dict(index=i, offset=start + 5 * i, flag=b[start + 5 * i], value_offset=start + 5 * i + 1,
                          khz=unpack(b, fmt, start + 5 * i + 1)[0]) for i in range(2)]
         offsets, clocks = entries(at + 7, "<i"), entries(at + 17, "<I")
-        if any(e["flag"] not in (0, 1) for e in offsets + clocks):
-            raise FormatError("unsupported factory clock entry flag")
-        return dict(offset=at, offsets=offsets, clocks=clocks)
+        return dict(offset=at, size=27, reviewed=all(e["flag"] in (0, 1) for e in offsets + clocks), header=header,
+                    offsets=offsets, clocks=clocks)
 
     def perf_cf(self):
         """PERF_CF controller (P+0xa8, object 0x60) and policy (P+0xac, object 0x61) tables, or None.

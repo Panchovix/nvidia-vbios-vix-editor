@@ -19,8 +19,9 @@ NOTE = ('Values are copied as stored numbers, not adapted to this board: fan spe
 IDENTITY = ('units', 'memory_mhz', 'notebook_tgp', 'equation_type')
 # The fan channel count describes this board's fans: never copied.
 BOARD_KEYS = frozenset(('fan_channels',))
-# The GB20x maximum operating temperature: each product has its own. Never copied, and never listed as
-# unchanged, so a value typed here stays.
+# The maximum operating temperature (GB20x, Ada, Ampere, Turing): each product has its own. Never copied, and
+# never listed as unchanged, so a value typed here stays. The factory GPC and memory offsets follow the
+# generic rules: editable on almost every ROM, a donor without one (a Founders Edition) gives 0 MHz.
 PRODUCT_KEYS = frozenset(('max_operating_temp_c',))
 # One fan curve: the fan limits and each point's temperature, speed and level (three ordering groups in the editor).
 FAN_CURVE = re.compile(r'fan_(\d+_(min|max)_(rpm|pct)|(\d+|extra_\d+)_curve_\d+_(temp_c|rpm|pct))')

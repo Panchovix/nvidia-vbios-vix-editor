@@ -67,13 +67,13 @@ def vfe_constant_mhz(size, var, value):
             (bytes((0xFF,)) if size == 25 else b''))
 
 
-def vfe_reference_counts(blob, base, size, width, count):
-    """How many times each equation index is referenced (next links and min/max and compare children).
+def vfe_referrers(blob, base, size, width, count):
+    """Equation index -> [(referrer index, 'next' or 'child')]: who links each equation.
 
     Kinds 1, 4 and 7 link only their next equation; min/max (2) and compare (3) also link
     two children (bytes 11/12 and 15/16, u16 high bytes 4 further on).
     """
-    none, counts = (1 << 8 * width) - 1, {}
+    none, result = (1 << 8 * width) - 1, {}
     high = (lambda e, k: e[k + 4] << 8) if width == 2 else (lambda e, k: 0)
     for i in range(count):
         e = blob[base + size * i:base + size * i + size]
@@ -81,15 +81,20 @@ def vfe_reference_counts(blob, base, size, width, count):
             raise FormatError("unreviewed VFE equation kind")
         if not e[0]:
             continue
-        links = [e[2] | ((e[24] << 8) if width == 2 else 0)]
+        links = [(e[2] | ((e[24] << 8) if width == 2 else 0), 'next')]
         if e[0] == 2:
-            links += [e[11] | high(e, 11), e[12] | high(e, 12)]
+            links += [(e[11] | high(e, 11), 'child'), (e[12] | high(e, 12), 'child')]
         elif e[0] == 3:
-            links += [e[15] | high(e, 15), e[16] | high(e, 16)]
-        for x in links:
+            links += [(e[15] | high(e, 15), 'child'), (e[16] | high(e, 16), 'child')]
+        for x, kind in links:
             if x != none:
-                counts[x] = counts.get(x, 0) + 1
-    return counts
+                result.setdefault(x, []).append((i, kind))
+    return result
+
+
+def vfe_reference_counts(blob, base, size, width, count):
+    """How many times each equation index is referenced (next links and min/max and compare children)."""
+    return {index: len(who) for index, who in vfe_referrers(blob, base, size, width, count).items()}
 
 
 def gpc_curve_slot(blob, base, size, width, count, root):

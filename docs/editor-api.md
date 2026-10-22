@@ -69,21 +69,40 @@ editable.
 | `memory_offset_max_mhz` | MHz | signed int16 table MHz | GB20x; MHz (NVML/Linux scale) = 2 × table MHz, validated relationship supplied by user (Ada: NVML reading; Ampere and Turing: by analogy, experimental); Windows tools such as MSI Afterburner show the table value |
 | `current_limit_a`, `ocp_limit_a` | A | unknown | Read-only pending independent field evidence |
 
+### Factory offsets and maximum operating temperature
+
+`factory_gpc_offset_mhz` and `factory_memory_offset_mhz` (GB20x, Ada, Ampere and Turing)
+report the effective offset of their entry in the factory clock record: the stored value
+while the entry's flag is 1, and 0 while it is 0, whatever value bytes are stored. Their
+descriptors carry `factory_entry` (0 for the GPC entry, 1 for the memory entry) and
+`stored_flag` (the flag this image stores; with 0, a value other than 0 turns the offset
+on); `factory_gpc_offset_mhz` also carries `rated_boost_mhz` (the stored rated boost, or
+`null`). An editable one has `unit_metadata.storage_encoding` `"<xi"`: each value writes the
+flag byte and a signed 32-bit kHz value (flag 1 and the value for anything but 0; for 0,
+the stored five bytes where the entry already reads 0, else flag 0 with 0 kHz, the bytes of
+ROMs without the offset, so an edited copy of such a ROM set back to 0 matches it again).
+`factory_memory_offset_mhz` is in the memory clock `nvidia-smi` shows, half the scale of
+`memory_offset_max_mhz`. `max_operating_temp_c` carries `thermal_policy` (the index of the
+entry it writes) and `stock_c` (the product's reviewed stock value, or `null`); on Turing,
+Ampere and Ada a read-only one may also carry `lower_limits`, the other entries (`"entry N
+(T C)"`) that keep it read-only.
+
 ### Advanced section and dependent fields
 
-GB20x images also list the fields of the Advanced section: the PERF_CF utilization policy
-switch and its controllers (`perf_cf_*`) and the LPWR idle power switches and idle times
-(`lpwr_*`), all experimental (see `extended-fields.md`). Their descriptors carry
-`section: "advanced"`, which `nvbios fields` shows; the GUI lists them in a collapsed
-section of their own, and `import_fields` never copies them. A switch is a 0/1 flag; an
-LPWR switch also carries `switch: "stock-off"` (1 is Stock, 0 is Off). A field that only
-matters while a switch is on carries `depends_on: {"field": <switch key>, "value": 1}`:
-`edit` changes it only while that switch has that value, stored in the image or requested
-in the same edit, and otherwise refuses with `DEPENDENT_FIELD_DISABLED` (`details.field`
-is the refused key, `details.depends_on` the dependency). Requesting the stored value
-again is accepted and changes nothing, and turning a switch off leaves its dependent
-values as stored. A dependent field keeps `editable: true` while its switch is off;
-callers decide from `depends_on` and the switch's value whether to offer it.
+GB20x, Ada, Ampere and Turing images also list the fields of the Advanced section: the
+PERF_CF utilization policy switch and its controllers (`perf_cf_*`) and the LPWR idle power
+switches and idle times (`lpwr_*`), all experimental (see `extended-fields.md`). Their
+descriptors carry `section: "advanced"`, which `nvbios fields` shows; the GUI lists them in
+a collapsed section of their own, and `import_fields` never copies them. A switch is a 0/1
+flag; an LPWR switch also carries `switch: "stock-off"` (1 is Stock, 0 is Off). A field
+that only matters while a switch is on carries
+`depends_on: {"field": <switch key>, "value": 1}`: `edit` changes it only while that switch
+has that value, stored in the image or requested in the same edit, and otherwise refuses
+with `DEPENDENT_FIELD_DISABLED` (`details.field` is the refused key, `details.depends_on`
+the dependency). Requesting the stored value again is accepted and changes nothing, and
+turning a switch off leaves its dependent values as stored. A dependent field keeps
+`editable: true` while its switch is off; callers decide from `depends_on` and the switch's
+value whether to offer it.
 
 The two GB20x memory keys edit the same field. Supply one representation per
 request; an overlapping request produces `CONFLICTING_FIELDS`. When an Ada, Ampere or Turing
@@ -149,12 +168,12 @@ parts differ. Its `meaning` is `unknown`. It never says which ROM is better.
 `import_fields(target, donor, sections, *, include_opt_in=False, dry_run=False)` copies the
 editable values of the chosen sections from `donor` into `target`, two `BiosImage`s of the same
 family and format. The sections are the GUI's (`IMPORT_SECTIONS`: `power`, `voltage`, `clocks`,
-`current`, `fans`); the GB20x Advanced section (`advanced`, PERF_CF and LPWR tuning) is never
-imported, and asking for it is refused with `INVALID_SECTIONS`. The GB20x maximum operating
-temperature (Power) is never copied either. The GB20x factory GPC offset (`factory_gpc_offset_mhz`,
-Clock offsets) is copied like the other clock offsets when both ROMs store one. A donor that stores
-none leaves it out as `read_only_in_donor`, and a target that stores none as
-`read_only_in_target`, since the editor never adds one. Another family
+`current`, `fans`); the Advanced section (`advanced`, PERF_CF and LPWR tuning) is never
+imported, and asking for it is refused with `INVALID_SECTIONS`. The maximum operating
+temperature (Power) is never copied either. The factory GPC and memory offsets
+(`factory_gpc_offset_mhz`, `factory_memory_offset_mhz`, Clock offsets) are copied like the other
+clock offsets: they are editable on almost every ROM, so a donor that stores none gives 0 MHz and a
+target that stores none takes the donor's value (the editor sets the entry's flag). Another family
 or format is refused with `FAMILY_MISMATCH`; another device of the family (another PCI device ID)
 is allowed with a `DIFFERENT_DEVICE` warning. `nvbios import ROM DONOR [OUTPUT] --sections
 fans[,power,...] [--include-opt-in] [--dry-run]` prints the report with the `manifest` of the edit;
@@ -184,15 +203,15 @@ values), `unchanged` (the keys editable in the target whose value already equals
 except the `product_specific` field), `warnings` and a `note`. A skipped field's `reason` is
 `absent_in_donor`, `absent_in_target`, `read_only_in_donor`, `read_only_in_target`, `read_only` (in
 both ROMs; listed only when it holds a set back), `opt_in`, `board_specific` (the fan channel
-count), `product_specific` (the GB20x `max_operating_temp_c`, set for each product),
+count), `product_specific` (`max_operating_temp_c`, set for each product),
 `different_meaning`, `out_of_bounds` (with the `bounds`), `held_back` (with the `partners` that
 held its set back) or `refused` (with the editor's `code` and `message`). An opt-in field is listed
 only when both ROMs hold it with different values.
 
 Values are copied as stored numbers, not adapted to the board: fan speeds, power or current
 limits and voltage limits from another board can exceed this board's hardware (fans rated for a
-lower speed, a single 12V-2x6 connector), and a factory GPC offset from another board may not be
-stable on this one.
+lower speed, a single 12V-2x6 connector), and a factory GPC or memory offset from another board may
+not be stable on this one.
 
 ## Structural and preservation checks
 
@@ -310,7 +329,11 @@ library and must be supplied independently by callers with evidence.
 `FieldRegistry` and immutable `Binding` provide an explicit extension point for
 new independently reviewed fields. A resolver receives `(image, parser)`, returns
 bindings with descriptor/evidence, exact encoding/scale and bounded offsets, and
-must establish the format and units before marking a field editable. Pass a
+must establish the format and units before marking a field editable. A built-in
+binding may also carry `companion` raw bytes written with its value (the Ada VMIN
+copy on the RTX 4090 95.02.3C images); only the reviewed binding may write them, and
+a request through any other binding that carries them fails with
+`INVALID_FIELD_EVIDENCE`. Pass a
 registry via `edit(..., field_registry=registry)` or register a resolver with the
 default registry. The writer rechecks ownership, overlap, factory defaults and
 post-edit field values. New resolvers do not bypass the architecture gate.

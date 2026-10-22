@@ -35,18 +35,20 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'field.memory_point_follows_offset': 'Memory clock {mhz} MHz follows the memory offset (advanced, experimental)',
  'field.gpc_curve_offset_mhz': 'GPC curve offset (advanced, experimental)',
  'field.factory_gpc_offset_mhz': 'Factory GPC offset (vendor overclock, experimental)',
+ 'field.factory_memory_offset_mhz': 'Factory memory offset (vendor overclock, experimental)',
  'field.factory_rated_boost_mhz': 'Factory rated boost clock',
  'field.max_operating_temp_c': 'Max operating temperature (experimental)',
  'section.advanced': 'Advanced: performance controllers and idle power',
- 'section.advanced_note': ('Blackwell only. Experimental and not tested on hardware. The utilization policy and its '
-                           'controllers decide how the driver raises and lowers the GPC, memory (DRAM) and video (VID) '
-                           'clocks with load. It is not proven that the driver uses this table on Blackwell. A lower '
-                           'target raises the clocks sooner, with more power and heat. The idle power switches leave '
-                           'a power-saving feature as shipped (Stock) or turn it off (Off), and they are expected to '
-                           'act only at idle or light load. Off uses a little more power at idle, and very short idle '
-                           'times can cause stutter or, rarely, a black screen at idle. A value that depends on a '
-                           'switch is greyed out while that switch is off. This section is shown with or without '
-                           'Show advanced XOC-style fields, and Import from ROM… never copies it.'),
+ 'section.advanced_note': ('Blackwell, Ada, Ampere and Turing. Experimental and not tested on hardware. The '
+                           'utilization policy and its controllers decide how the driver raises and lowers the GPC, '
+                           'memory (DRAM) and video (VID) clocks with load. It is not proven that the driver uses '
+                           'this table on any of these cards. A lower target raises the clocks sooner, with more power '
+                           'and heat. The idle power switches leave a power-saving feature as shipped (Stock) or turn '
+                           'it off (Off), and they are expected to act only at idle or light load. Idle power saving '
+                           'lists only the features the ROM ships turned on. Off uses a little more power at idle, '
+                           'and very short idle times can cause stutter or, rarely, a black screen at idle. A value '
+                           'that depends on a switch is greyed out while that switch is off. This section is shown '
+                           'with or without Show advanced XOC-style fields, and Import from ROM… never copies it.'),
  'section.advanced_perf': 'Clock controllers',
  'section.advanced_lpwr': 'Idle power saving',
  'field.perf_cf_util_policy': 'Utilization clock policy (experimental)',
@@ -183,6 +185,9 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'windows_short': 'Afterburner: {value} MHz',
  'range_hint': 'Allowed: {minimum} to {maximum} {units}',
  'windows_equivalent': 'Windows (MSI Afterburner): {value} MHz',
+ 'linux_short': 'nvidia-settings: {value} MHz',
+ 'linux_equivalent': 'As in MSI Afterburner · Linux (nvidia-settings): {value} MHz',
+ 'factory_offset_on': 'turns on a factory offset that is off in this ROM (not tested on such ROMs)',
  'copy_note': 'Saving creates a new ROM + JSON manifest. Not validated on hardware.',
  'license_note': ('NVIDIA VBIOS Vix Editor {version} · Copyright (C) 2026 panchovix · '
                   'Free software under the GNU GPL v3 or later, with NO WARRANTY. License and source code: '
@@ -291,6 +296,19 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'summed_cap.channels': 'Row {row} also caps the sum of power channels {channels} at {rated} {units} rated / '
                         '{maximum} {units} maximum and may bind first: raising this limit alone may have no effect.',
  'summed_cap.raise': 'Raise the connector power sum limits too.',
+ 'sense_profiles.levels': 'This ROM sets its power limits from the 16-pin cable sense pins. This value applies at the '
+                          'top level, most likely a {watts} W cable (inferred, not tested). Lower levels keep their '
+                          'own limits.',
+ 'sense_profiles.past_top': 'Going past {watts} W is more than that cable is rated for. That is your call.',
+ 'sense_profiles.input_current': 'The 12 V input current threshold (rated {amps} A, about {watts} W at 12 V) may '
+                                 'limit first. Raise it too, under Show advanced XOC-style fields.',
+ 'vmin_clone.memory': 'On this ROM the memory clock voltage floor keeps its stock value. A lower VMIN shows only while '
+                      'the memory runs at its lowest clock ({mhz} MHz, single-monitor idle). A higher VMIN shows at '
+                      'every memory clock only above {floor} mV (stock VMIN + {constant} mV). Up to that it also '
+                      'shows only at that lowest clock.',
+ 'vmin_clone.risk': 'Not tested on hardware. A VMIN other than the stock value adds a VFE equation to the ROM, and '
+                    'no Ada card has run an equation added by the editor yet. The override might not load or the '
+                    'driver might fail to start. Removing the override brings the card back.',
  'field.connector_current_threshold_rated': 'Connector channel {connector} current threshold, rated (advanced, '
                                             'experimental)',
  'field.connector_current_threshold_max': 'Connector channel {connector} current threshold ceiling (advanced, '
@@ -337,10 +355,15 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'reason.max_temp_unequal': ('The three stored temperatures of this limit differ in this ROM; the editor only writes '
                              'them together.'),
  'reason.max_temp_unrecognized': 'This thermal policy entry does not have the layout of the reviewed ROMs.',
- 'reason.factory_offset_disabled': ('This ROM stores no factory GPC offset, like Founders Edition, reference, laptop '
-                                    'and RTX PRO ROMs. The editor does not add one.'),
- 'reason.factory_offset_fraction': ('The stored factory GPC offset is not a whole number of MHz, unlike every reviewed '
+ 'reason.max_temp_no_policy': ('This ROM names no max operating temperature policy (as on XOC-style ROMs), so none '
+                               'is applied. The editor does not add one.'),
+ 'reason.max_temp_lower_limit': ('This ROM also stores a lower temperature limit of the same kind, as Ampere and '
+                                 'Ada laptop ROMs do, and it is not known which one limits the GPU first. The editor '
+                                 'keeps both as stored.'),
+ 'reason.factory_offset_fraction': ('The stored factory offset is not a whole number of MHz, unlike every reviewed '
                                     'ROM. The driver uses it truncated to whole MHz; the editor keeps it as stored.'),
+ 'reason.factory_unreviewed': ('The factory overclock record or the clock table of this ROM does not have the layout '
+                               'of the reviewed ROMs, so the editor keeps it as stored.'),
  'reason.factory_boost': ('Rated boost clock of the factory overclock. The driver writes it into a performance state '
                           'at boot; the editor keeps it as stored.'),
  'reason.depends_on': 'Turn on "{switch}" to change this value. While it is off, the stored value is kept.',
@@ -353,6 +376,10 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'reason.lpwr_gr_rg_unreviewed': ('GR rail gating is enabled in this ROM, but which entries this product enables as '
                                   'shipped is not reviewed.'),
  'reason.lpwr_gr_rg_unrecognized': 'A GR rail gating entry of this ROM does not store the reviewed value.',
+ 'reason.lpwr_stock_unreviewed': ('This feature is enabled in this ROM, but which entries this product enables as '
+                                  'shipped is not reviewed. In this table an entry shipped disabled looks the same as '
+                                  'one turned off.'),
+ 'reason.lpwr_stock_unrecognized': 'An entry of this feature in this ROM does not store a reviewed value.',
  'reason.lpwr_time_switch': 'The switch of this idle time is read-only in this ROM.',
  'reason.generic': 'Editing unavailable for this field.',
  'error.INVALID_IMAGE': 'Open a ROM first',
@@ -375,8 +402,10 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'error.UNSUPPORTED_FORMAT': 'This format supports inspection only',
  'error.FAMILY_MISMATCH': 'The other ROM is of another GPU family or format; import needs one of the same family',
  'error.DEPENDENT_FIELD_DISABLED': 'This value depends on a switch that is off; turn the switch on to change it',
- 'error.SEPARATE_EDIT_REQUIRED': ('Save the fan channel count or the REL/ALT follow OV setting first, then open '
-                                  'the copy to change the fan limits, curves, zero RPM or voltages'),
+ 'error.SEPARATE_EDIT_REQUIRED': ('Save these changes in separate copies. The fan channel count goes before the '
+                                  'fan limits, curves or zero RPM, and the REL/ALT follow OV setting before the '
+                                  'voltages. On some RTX 4090 ROMs VMIN and the GPC curve offset also need separate '
+                                  'saves. Save one, then open the copy to change the rest'),
  'cli_usage': 'usage: ',
  'cli_positionals': 'positional arguments',
  'cli_options': 'options',

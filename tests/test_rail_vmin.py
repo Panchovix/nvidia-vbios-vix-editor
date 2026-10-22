@@ -12,6 +12,7 @@ from nvidia_vbios.editor import edit
 from nvidia_vbios.rom import VbiosError, ada_general, from_bytes, inspect_image, load, normalize
 from nvidia_vbios.rom.blackwell import BlackwellRom
 from nvidia_vbios.rom.image import backend
+from nvidia_vbios.rom.structure import vfe_free_slot
 from test_ada_fields import messages, patched
 from test_extended_fields import changed_bytes_within, custom_registry, descriptors, extended_fixture, repair_fixture
 from test_rom_formats import synthetic_rom
@@ -253,6 +254,244 @@ class AdaVminTests(unittest.TestCase):
         self.assertFalse(fields['nvvdd_rel_max_mv']['editable'])
         self.assertEqual(fields['nvvdd_rel_equation_max_mv']['equation_kind'], 'shared')
         self.assertTrue(descriptors(from_bytes(blob))['nvvdd_rel_max_mv']['editable'])
+
+
+# The synthetic shape of the RTX 4090 95.02.3C VMIN (TableRom._vmin_clone): the VMIN equation, the 15 mV constant
+# that links it, the GPC root, the first unused slot and the memory clock entries 8..11 that name the constant.
+CLONE_VMIN, CLONE_CONSTANT, CLONE_GPC_ROOT, CLONE_SLOT = 6, 8, 9, 10
+CLONE_MEMORY_MHZ = ((0x03, 405), (0x03, 810), (0x03, 5001), (0x13, 10251), (0x13, 10501))
+
+
+def ada_vmin_clone():
+    """ada_vmin() with a constant sharing the VMIN equation, at the synthetic scale.
+
+    Row byte 7 selects equation 6 (clamp 560 mV, next 7). Equation 8 is a 15 mV voltage constant whose next link
+    is 6, 9 a GPC root (compare, MHz output), 0, 1 and 5 fixed-point equations and 10..15 unused slots (16
+    equations). The BIT C token grows to 16 bytes for a clock programming table (C+0x0c, version 0x40, twelve
+    15-byte entries): entry 0 names the GPC root, the memory entries 7..11 run at 405..10501 MHz and 8..11 name
+    the constant, entry 7 (the idle clock) and the others name no equation.
+    """
+    blob = bytearray(ada_vmin())
+    parsed = backend(from_bytes(bytes(blob)))
+    vfe, base = vfe_base(parsed)
+    start = parsed.legacy['start']
+    bit = blob.find(b'\xff\xb8BIT\x00', start)
+    table = start + 7800  # free data-image bytes after the clocks table, before the power channels
+    writes = [(vfe + 5, bytes((16,))), (bit + 18 + 2, struct.pack('<H', 16)),
+              (parsed.tokens['C']['data'] + 0x0C, struct.pack('<I', 7800 - 512))]
+    eq = bytearray(25)
+    eq[0:3], eq[23:25] = bytes((4, 0, 0xFF)), bytes((2, 0xFF))
+    writes += [(base + 25 * i, bytes(eq)) for i in (0, 1, 5)]
+    constant(eq, 0, 15000, link=CLONE_VMIN)
+    eq[1] = 0
+    writes.append((base + 25 * CLONE_CONSTANT, bytes(eq)))
+    root = bytearray(25)
+    root[0:3], root[15:17], root[19:21], root[23:25] = bytes((3, 0, 0xFF)), b'\xff\xff', b'\xff\xff', bytes((1, 0xFF))
+    struct.pack_into('<ff', root, 3, 210, 3450)
+    writes.append((base + 25 * CLONE_GPC_ROOT, bytes(root)))
+    writes += [(base + 25 * i, vfe_free_slot(25)) for i in range(CLONE_SLOT, 16)]
+    entries = bytearray(bytes.fromhex('40 08 0f 0c 00 00 00 00') + bytes(12 * 15))
+    for i in range(12):
+        e = 8 + 15 * i
+        flags, mhz = CLONE_MEMORY_MHZ[i - 7] if 7 <= i <= 11 else (0x11 if i == 0 else 0x03, 100 * (i + 1))
+        index = CLONE_GPC_ROOT if i == 0 else CLONE_CONSTANT if 8 <= i <= 11 else 0xFFFF
+        entries[e:e + 4] = struct.pack('<BHB', flags, mhz, index & 0xFF)
+        entries[e + 4], entries[e + 13], entries[e + 14] = 0xFF, index >> 8, 0xFF
+    writes.append((table, bytes(entries)))
+    for at, data in writes:
+        for copy in parsed.copy_offsets(at, len(data)):
+            blob[copy:copy + len(data)] = data
+    for begin, end in parsed.image_regions:
+        blob[end - 1] = (blob[end - 1] - sum(blob[begin:end])) & 255
+    return bytes(blob)
+
+
+def clone_positions(image):
+    """(equation base, clock programming table, rail row) of an ada_vmin_clone() image."""
+    parsed = backend(image)
+    return vfe_base(parsed)[1], parsed.pointer('C', 0x0C), parsed.pointer('P', 0x68) + 5
+
+
+class AdaVminCloneTests(unittest.TestCase):
+    def changed(self, image, result):
+        return {i for i, (a, b) in enumerate(zip(image.blob, result.blob)) if a != b}
+
+    def test_shared_vmin_equation_takes_vmin_through_a_copy(self):
+        image = from_bytes(ada_vmin_clone())
+        parser = backend(image)
+        base = clone_positions(image)[0]
+        field = descriptors(image)['nvvdd_vmin_mv']
+        self.assertEqual((field['current'], field['editable'], field['experimental'], field.get('opt_in')),
+                         (560, True, True, None))
+        self.assertEqual((field['bounds']['minimum'], field['bounds']['maximum']), (400, 840))
+        self.assertEqual(field['vfe_clone'], dict(state='coupled', referrer=8, slot=10, stock_mv=560, constant_mv=15,
+                                                  memory_mhz=[810, 5001, 10251, 10501], idle_memory_mhz=405))
+        for text in ('a 15 mV constant also links that equation', 'from 810 MHz up', 'VFE slot 10',
+                     'its lowest clock (405 MHz, single-monitor idle)', 'the override might not load',
+                     'a higher one shows at every memory clock only above 575 mV',
+                     'removing the override brings the card back', 'change it in a separate edit'):
+            self.assertIn(text, field['reason'])
+        vmin, constant_at, slot = (base + 25 * i for i in (CLONE_VMIN, CLONE_CONSTANT, CLONE_SLOT))
+        stock = image.blob[vmin:vmin + 25]
+        clamp = {at for o in (3, 7) for c in parser.copy_offsets(vmin + o, 4) for at in range(c, c + 4)}
+        copy_bytes = {at for c in parser.copy_offsets(slot, 25) for at in range(c, c + 25)}
+        # Link bytes 2 and 24; slot 10 changes only byte 2 (the high byte stays 0).
+        links = {c + k for k in (2, 24) for c in parser.copy_offsets(constant_at, 1)}
+        checksums = {end - 1 for _, end in parser.image_regions}
+        result = edit(image, {'nvvdd_vmin_mv': 600})
+        self.assertTrue(result.manifest['integrity']['valid'])
+        changed = self.changed(image, result)
+        self.assertLessEqual(changed, clamp | copy_bytes | links | checksums)
+        self.assertEqual(changed & links, {c + 2 for c in parser.copy_offsets(constant_at, 1)})
+        self.assertTrue(changed & clamp and changed & copy_bytes)
+        for c, k in zip(parser.copy_offsets(slot, 25), parser.copy_offsets(constant_at, 25)):
+            self.assertEqual(result.blob[c:c + 25], stock)
+            self.assertEqual((result.blob[k + 2], result.blob[k + 24]), (CLONE_SLOT, 0))
+        for c in parser.copy_offsets(vmin, 25):
+            self.assertEqual(struct.unpack_from('<ff', result.blob, c + 3), (600000, 600000))
+        self.assertIn('raw bytes', {e['stored_units'] for e in result.manifest['edits']})
+        after = descriptors(result.image)['nvvdd_vmin_mv']
+        self.assertEqual((after['current'], after['vfe_clone']['state'], after['vfe_clone']['slot']),
+                         (600, 'decoupled', CLONE_SLOT))
+        # The constant keeps its value through the copy; VMIN alone changes.
+        item = backend(result.image).rail_vmin()[0]
+        self.assertEqual((item['value_uv'], item['clone']['stock_uv']), (600000, 560000))
+        # Another value moves only the clamp; the stock value restores every byte.
+        again = edit(result.image, {'nvvdd_vmin_mv': 700})
+        self.assertLessEqual(self.changed(result.image, again), clamp | checksums)
+        self.assertEqual(edit(again.image, {'nvvdd_vmin_mv': 560}).blob, image.blob)
+        self.assertEqual(edit(result.image, {'nvvdd_vmin_mv': 560}).blob, image.blob)
+        for value in (399, 841):
+            with self.subTest(value=value), self.assertRaises(VbiosError) as exc:
+                edit(image, {'nvvdd_vmin_mv': value})
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+
+    def test_gpc_curve_offset_and_vmin_need_separate_edits_in_either_order(self):
+        image = from_bytes(ada_vmin_clone())
+        base = clone_positions(image)[0]
+        self.assertEqual(backend(image).gpc_curve()['slot'], CLONE_SLOT)
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'nvvdd_vmin_mv': 600, 'gpc_curve_offset_mhz': 30})
+        self.assertEqual((exc.exception.code, exc.exception.details['fields']),
+                         ('SEPARATE_EDIT_REQUIRED', ['nvvdd_vmin_mv', 'gpc_curve_offset_mhz']))
+        # VMIN first: the copy takes slot 10, the offset slot 11; revert in either order.
+        vmin = edit(image, {'nvvdd_vmin_mv': 600}).image
+        both = edit(vmin, {'gpc_curve_offset_mhz': 30}).image
+        self.assertEqual(backend(both).gpc_curve()['slot'], CLONE_SLOT + 1)
+        self.assertEqual(descriptors(both)['nvvdd_vmin_mv']['vfe_clone']['slot'], CLONE_SLOT)
+        self.assertEqual(edit(edit(both, {'gpc_curve_offset_mhz': 0}).image, {'nvvdd_vmin_mv': 560}).blob, image.blob)
+        gap = edit(both, {'nvvdd_vmin_mv': 560}).image
+        self.assertEqual(gap.blob[base + 25 * CLONE_SLOT:base + 25 * CLONE_SLOT + 25], vfe_free_slot(25))
+        self.assertEqual(descriptors(gap)['nvvdd_vmin_mv']['vfe_clone']['state'], 'coupled')
+        self.assertEqual(edit(gap, {'gpc_curve_offset_mhz': 0}).blob, image.blob)
+        # The offset first: it takes slot 10 and the copy slot 11; reverting the offset first leaves 10 unused
+        # below the copy, and the copy is still found through the constant's link.
+        gpc = edit(image, {'gpc_curve_offset_mhz': -30}).image
+        both = edit(gpc, {'nvvdd_vmin_mv': 620}).image
+        self.assertEqual((backend(both).gpc_curve()['slot'], descriptors(both)['nvvdd_vmin_mv']['vfe_clone']['slot']),
+                         (CLONE_SLOT, CLONE_SLOT + 1))
+        gap = edit(both, {'gpc_curve_offset_mhz': 0}).image
+        self.assertEqual(gap.blob[base + 25 * CLONE_SLOT:base + 25 * CLONE_SLOT + 25], vfe_free_slot(25))
+        clone = descriptors(gap)['nvvdd_vmin_mv']['vfe_clone']
+        self.assertEqual((clone['state'], clone['slot']), ('decoupled', CLONE_SLOT + 1))
+        self.assertEqual(edit(gap, {'nvvdd_vmin_mv': 560}).blob, image.blob)
+        self.assertEqual(edit(edit(both, {'nvvdd_vmin_mv': 560}).image, {'gpc_curve_offset_mhz': 0}).blob, image.blob)
+
+    def test_a_copy_with_the_vmin_clamp_keeps_its_bytes(self):
+        # A copy whose clamp equals the VMIN equation's (a layout no edit makes): the current value changes
+        # nothing, another value moves only the clamp, and the stock value then gives the coupled shape.
+        image = from_bytes(ada_vmin_clone())
+        parser = backend(image)
+        vmin = clone_positions(image)[0] + 25 * CLONE_VMIN
+        clamp = {at for o in (3, 7) for c in parser.copy_offsets(vmin + o, 4) for at in range(c, c + 4)}
+        checksums = {end - 1 for _, end in parser.image_regions}
+        blob = bytearray(edit(image, {'nvvdd_vmin_mv': 600}).blob)
+        for at in parser.copy_offsets(vmin + 3, 4) + parser.copy_offsets(vmin + 7, 4):
+            struct.pack_into('<f', blob, at, 560000)
+        for begin, end in parser.image_regions:
+            blob[end - 1] = (blob[end - 1] - sum(blob[begin:end])) & 255
+        vendor = from_bytes(bytes(blob))
+        field = descriptors(vendor)['nvvdd_vmin_mv']
+        self.assertEqual((field['current'], field['editable'], field['vfe_clone']['state']), (560, True, 'decoupled'))
+        self.assertEqual(edit(vendor, {'nvvdd_vmin_mv': 560}).blob, vendor.blob)
+        moved = edit(vendor, {'nvvdd_vmin_mv': 600})
+        self.assertLessEqual(self.changed(vendor, moved), clamp | checksums)
+        self.assertEqual(edit(moved.image, {'nvvdd_vmin_mv': 560}).blob, image.blob)
+        self.assertIn('change VMIN in a separate edit', descriptors(image)['gpc_curve_offset_mhz']['reason'])
+
+    def test_guard_allows_only_the_canonical_copy_and_link(self):
+        from decimal import Decimal
+        from nvidia_vbios.editor import Binding, FieldRegistry
+        image = from_bytes(ada_vmin_clone())
+        parser = backend(image)
+        base = clone_positions(image)[0]
+        vmin, constant_at, slot = (base + 25 * i for i in (CLONE_VMIN, CLONE_CONSTANT, CLONE_SLOT))
+        clamp = parser.copy_offsets(vmin + 3, 4) + parser.copy_offsets(vmin + 7, 4)
+        # The clamp alone, under the reviewed key: not the complete binding.
+        alias = custom_registry('nvvdd_vmin_mv', clamp, encoding='<f', bounds={'minimum': 0, 'maximum': 2000})
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'nvvdd_vmin_mv': 600}, field_registry=alias)
+        self.assertEqual(exc.exception.code, 'INVALID_FIELD_EVIDENCE')
+        # The constant's link, or the copy in its slot, under another key.
+        decoupled = edit(image, {'nvvdd_vmin_mv': 600}).image
+        for source, at in ((image, constant_at + 1), (decoupled, constant_at + 1), (decoupled, slot + 11)):
+            current = struct.unpack_from('<h', source.blob, at)[0]
+            with self.subTest(at=at - base), self.assertRaises(VbiosError) as exc:
+                edit(source, {'probe': current ^ 0x0100}, field_registry=custom_registry(
+                    'probe', parser.copy_offsets(at, 2), encoding='<h', scale=1,
+                    bounds={'minimum': -32768, 'maximum': 32767}))
+            self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+        # Companion bytes from an extension binding are refused.
+        custom = FieldRegistry()
+
+        @custom.register
+        def probe(image, parser):
+            descriptor = dict(key='probe', label='probe', type='number', units='probe', current=0, editable=True,
+                              bounds={'minimum': -10, 'maximum': 10}, evidence=[{'kind': 'synthetic-test'}])
+            return [Binding(descriptor, tuple(parser.copy_offsets(slot + 3, 4)), '<f', Decimal(1),
+                            companion=((None, ((constant_at + 2, b'\x0a'),)),))]
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'probe': 1}, field_registry=custom)
+        self.assertEqual(exc.exception.code, 'INVALID_FIELD_EVIDENCE')
+
+    def test_other_shapes_keep_the_shared_vmin_read_only(self):
+        blob = ada_vmin_clone()
+        image = from_bytes(blob)
+        base, table, row = clone_positions(image)
+
+        def eq(index, offset):
+            return base + 25 * index + offset
+
+        def entry(index, offset):
+            return table + 8 + 15 * index + offset
+        variants = {
+            'constant referenced by another equation': [(eq(5, 2), b'\x08'), (eq(5, 24), b'\x00')],
+            'constant with a slope': [(eq(CLONE_CONSTANT, 15), struct.pack('<f', 1.0))],
+            'constant not a voltage': [(eq(CLONE_CONSTANT, 23), b'\x01')],
+            'VMIN also linked by another equation': [(eq(5, 2), b'\x06'), (eq(5, 24), b'\x00')],
+            'VMIN a min/max child instead': [(eq(CLONE_CONSTANT, 2), b'\xff'), (eq(CLONE_CONSTANT, 24), b'\xff'),
+                                             (eq(5, 0), b'\x02'), (eq(5, 11), b'\x06'), (eq(5, 15), b'\x00')],
+            'clock programming entry names VMIN': [(entry(1, 3), b'\x06'), (entry(1, 13), b'\x00')],
+            'another row byte selects VMIN': [(row + 9, b'\x06')],
+            'first unused slot not clean': [(eq(CLONE_SLOT, 1), b'\x00')],
+            'no memory entry names the constant': [(entry(i, 3), b'\xff') for i in range(8, 12)] +
+                                                  [(entry(i, 13), b'\xff') for i in range(8, 12)],
+            'idle memory entry names the constant too': [(entry(7, 3), b'\x08'), (entry(7, 13), b'\x00')],
+        }
+        self.assertTrue(descriptors(image)['nvvdd_vmin_mv']['editable'])
+        for name, writes in variants.items():
+            with self.subTest(name=name):
+                changed = blob
+                for at, data in writes:
+                    changed = patched(changed, at, data)
+                field = descriptors(from_bytes(changed))['nvvdd_vmin_mv']
+                self.assertFalse(field['editable'])
+                self.assertNotIn('vfe_clone', field)
+                self.assertIn('used by another equation or role', field['reason'])
+        # Without the clock programming table (a 12-byte C token) the constant's users are unknown.
+        bit = blob.find(b'\xff\xb8BIT\x00')
+        field = descriptors(from_bytes(patched(blob, bit + 20, struct.pack('<H', 12))))['nvvdd_vmin_mv']
+        self.assertEqual((field['editable'], field['current']), (False, None))
 
 
 class FollowOvTests(unittest.TestCase):

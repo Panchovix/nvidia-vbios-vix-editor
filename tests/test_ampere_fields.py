@@ -11,7 +11,8 @@ from nvidia_vbios.editor import edit, plan
 from nvidia_vbios.editor.registry import registry
 from nvidia_vbios.rom import VbiosError, from_bytes, inspect_image, load
 from nvidia_vbios.rom.image import backend
-from test_ada_fields import GV_HAL, dram_points, fan_curves, fan_limits, messages, patched, zero_rpm_temps
+from test_ada_fields import (GV_HAL, checked_elsewhere, dram_points, fan_curves, fan_limits, messages, patched,
+                            zero_rpm_temps)
 from test_extended_fields import changed_bytes_within, curve_step, descriptors
 from test_rom_formats import synthetic_rom
 

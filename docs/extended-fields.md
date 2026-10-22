@@ -72,7 +72,7 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `*_alt_equation_max_mv` | VFE output clamp maximum addressed by ALT selector | Reviewed Blackwell when present; Ada temperature-derated ALT (experimental) |
 | `*_ov_equation_max_mv` | VFE output clamp maximum addressed by OV selector | Reviewed Blackwell |
 | `*_vmin_equation_max_mv` | VFE output clamp maximum addressed by the rail INFO VMIN slot (GB20x row+`0x21`, Ada/Ampere row byte 11); **not** the evaluated VMIN | Read-only |
-| `*_vmin_mv` | Evaluated minimum voltage (VMIN): the equation at GB20x row+`0x13`, Ada/Ampere row byte 7, Turing row byte 9 | Experimental, constant (GB20x) or clamp-pinned (Ada/Ampere/Turing) equations only, kept below the lowest REL value |
+| `*_vmin_mv` | Evaluated minimum voltage (VMIN): the equation at GB20x row+`0x13`, Ada/Ampere row byte 7, Turing row byte 9 | Experimental, constant (GB20x) or clamp-pinned (Ada/Ampere/Turing) equations only, kept below the lowest REL value; on the RTX 4090 95.02.3C images through a copy of the shared equation |
 | `nvvdd_rel_alt_follow_ov` | 1 when the NVVDD REL and ALT selectors (REL alone without ALT) point at the OV equation (XOC-style) | Experimental, opt-in, GB20x and Ada; only 0 -> 1 |
 | `nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv` | Value of a constant NVVDD REL or ALT equation: its constant and clamp maximum | Experimental, Ada and Turing (opt-in); from the clamp minimum up to the OV value, REL <= ALT; on Turing also at least the boot voltage and the highest VMIN |
 | `fan_zero_rpm` | Bits 1\|2 of byte `0x32` of every enabled fan policy entry: 1 both set, 0 both clear (inferred meaning: the fans may stand still at low temperature) | Experimental, opt-in, GB20x; 1 only where the entries store fan-stop parameters; read-only when an entry sets one bit alone or the entries disagree |
@@ -93,17 +93,18 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `fan_N_min/max_rpm`, `fan_N_min/max_pct` | Speed (RPM) and level (%) limits of active fan channel N, numbered from 1 | Experimental, Blackwell, Ada, Ampere and Turing; move alone only as far as the stored fan curves, past them together with the curve points; level limits opt-in |
 | `fan_N_curve_K_temp_c/rpm/pct`, `fan_extra_M_curve_K_temp_c/rpm/pct` | Point K (1..3) of channel N's stored fan curve or of extra curve M: temperature (°C, 1/32 °C steps), speed (RPM), level (%) | Experimental, Blackwell, Ada, Ampere and Turing; points stay in order and inside the limits; levels opt-in |
 | `power_default_w` | Rated TGP value used at boot | Experimental; Blackwell, Ada, Ampere, Turing |
-| `max_operating_temp_c` | Maximum operating temperature: the three temperatures (1/32 °C) of thermal policy entry 0 (P+0x50), written together | Experimental, GB20x; 40 °C up to the product's stock value + 3 °C (only lower on products without a reviewed stock value); read-only where entry 0 is disabled (XOC-style images); never imported |
+| `max_operating_temp_c` | Maximum operating temperature: the three temperatures (1/32 °C) of one thermal policy entry (P+0x50; GB20x entry 0, Turing, Ampere and Ada the entry header byte 9 names), written together | Experimental, GB20x, Ada, Ampere and Turing; 40 °C up to the product's stock value + 3 °C (only lower on products without a reviewed stock value); read-only where that entry is disabled or not named (XOC-style images) and on Ampere and Ada laptops (a lower limit of the same kind); never imported |
 | `gpc_offset_min/max_mhz`, `memory_offset_min_mhz` | Clock offset range in MHz (NVML scale) | Experimental, reviewed Blackwell and Ada; Ampere and Turing by analogy |
 | `gpc_curve_offset_mhz` | Default offset of the GPC VF curve: a constant MHz equation linked as the next equation of the GPC root in the VFE table | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); -500..+500 MHz; 0 restores the stock bytes |
-| `factory_gpc_offset_mhz` | Vendor factory GPC offset: entry A0 of the factory clock record (P+0x98), signed kHz, applied at boot as the GPC clock frequency delta | Experimental, GB20x; -500..+500 MHz in whole MHz, only where A0 is already enabled (vendor factory-OC images); imported only between ROMs that both store one |
-| `factory_rated_boost_mhz` | Rated boost clock of the factory clock record (entry B1) | Read-only, GB20x, where B1 is enabled |
+| `factory_gpc_offset_mhz` | Factory GPC offset: entry A0 of the factory clock record (P+0x98), a flag and a signed kHz value, applied at boot as the GPC clock frequency delta while the flag is 1 | Experimental, GB20x, Ada, Ampere and Turing; -500..+500 MHz in whole MHz on every image with the reviewed record; a value other than 0 sets the flag; imported with the clock offsets |
+| `factory_memory_offset_mhz` | Factory memory offset: entry A1 of the same record, applied as the memory clock frequency delta, in the memory clock `nvidia-smi` shows (half the transfer rate) | Experimental, GB20x, Ada, Ampere and Turing; -5000..+5000 MHz in whole MHz, with the rules of `factory_gpc_offset_mhz`; imported with the clock offsets |
+| `factory_rated_boost_mhz` | Rated boost clock of the factory clock record (entry B1) | Read-only, GB20x, Ada, Ampere and Turing, where B1 is enabled |
 | `memory_point_K_follows_offset` | Bit 4 of the flag byte of the K-th intermediate memory level (from the lowest) in the clock programming table: 1 when a memory offset was expected to move that level | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); the levels with the bit stay the top ones; idle and top levels not offered; did not stop the drop on the one card tested (RTX 3050 Laptop GPU) |
 | `xbar/sys/vid_min/max_table_mhz`, `dram_min_table_mhz` | Clock offset range in table MHz | Experimental, reviewed Blackwell and Ada; Ampere; Turing `dram_min_table_mhz` only (its XBAR/SYS/VID rows store no range) |
-| `perf_cf_util_policy` | PERF_CF utilization policy (policy entry 0, bit 7): 1 on, 0 off | Experimental, GB20x, Advanced section; see [Advanced section](#advanced-section-performance-controllers-and-idle-power-gb20x) |
-| `perf_cf_D_target_pct`, `perf_cf_D_jump_pct`, `perf_cf_D_hysteresis_down`, `perf_cf_D_hysteresis_up` (D = `gpc`, `dram`, `vid`) | Utilization target and jump threshold (whole %) and decrease/increase hysteresis counts of the GPC, DRAM and video utilization controllers | Experimental, GB20x, Advanced section; only while `perf_cf_util_policy` is 1 (`depends_on`) |
-| `lpwr_gr_power_gating`, `lpwr_mscg`, `lpwr_nvdec_gating`, `lpwr_nvenc_gating`, `lpwr_ofa_gating`, `lpwr_nvjpg_gating`, `lpwr_difr`, `lpwr_gr_rail_gating` | LPWR idle power feature switches: 1 Stock, 0 Off (bit 0 of the entries the image enables in stock) | Experimental, GB20x, Advanced section; GR rail gating only on the RTX PRO 4000 SFF and the RTX 5080 Laptop GPU |
-| `lpwr_difr_dfpr_idle_ms`, `lpwr_difr_sw_asr_idle_us`, `lpwr_difr_cg_idle_us`, `lpwr_gr_rail_gating_idle_us` | LPWR idle times (DIFR DFPR, SW-ASR and clock gating; GR rail gating) | Experimental, GB20x, Advanced section; 0.5x..4x stock; only while their switch is Stock (`depends_on`) |
+| `perf_cf_util_policy` | PERF_CF utilization policy (policy entry 0, bit 7): 1 on, 0 off | Experimental, GB20x, Ada, Ampere and Turing, Advanced section; see [Advanced section](#advanced-section-performance-controllers-and-idle-power) |
+| `perf_cf_D_target_pct`, `perf_cf_D_jump_pct`, `perf_cf_D_hysteresis_down`, `perf_cf_D_hysteresis_up` (D = `gpc`, `dram`, `vid`) | Utilization target and jump threshold (whole %) and decrease/increase hysteresis counts of the GPC, DRAM and video utilization controllers | Experimental, GB20x, Ada, Ampere and Turing, Advanced section; only while `perf_cf_util_policy` is 1 (`depends_on`) |
+| `lpwr_gr_power_gating`, `lpwr_mscg`, `lpwr_nvdec_gating`, `lpwr_nvenc_gating`, `lpwr_ofa_gating`, `lpwr_nvjpg_gating`, `lpwr_difr`, `lpwr_gr_rail_gating` | LPWR idle power feature switches: 1 Stock, 0 Off (bit 0 of the entries the image enables in stock) | Experimental, Advanced section; GR power gating and MSCG on every family, the video engines on GB20x, DIFR on GB20x and Ada, GR rail gating only on the products that ship it on (RTX PRO 4000 SFF, RTX 5080 Laptop GPU, GA102 RTX 3080/3090 and RTX A4500..A6000, A40) |
+| `lpwr_difr_dfpr_idle_ms`, `lpwr_difr_sw_asr_idle_us`, `lpwr_difr_cg_idle_us`, `lpwr_gr_rail_gating_idle_us` | LPWR idle times (DIFR DFPR, SW-ASR and clock gating; GR rail gating) | Experimental, GB20x, Ada and Ampere, Advanced section; 0.5x..4x stock; only while their switch is Stock (`depends_on`) |
 
 Each selector field uses one complete role name, for example
 `msvdd_vmin_selector_index`. Original `nvvdd_rel_max_mv` and
@@ -170,10 +171,12 @@ it is read-only and labelled as such:
   which no other equation references and no other role selects. The edit writes the
   clamp minimum and maximum in every chain. Corpus: 8 of the 21 parseable Ada images
   (RTX 2000 Ada, RTX 4090 95.02.18, both 4080 images, 4080 SUPER, 4070, 4070 SUPER, RTX 4500 Ada;
-  the newer RTX 4090 image chains another equation into it, and a compare REL on
-  fused inputs gives no bound on the 4070 Ti SUPER) and 21 of the 35 Ampere images,
-  both rails on nine two-rail GA102 images. The A40 stores 668088.3125 uV, which an
-  edit in whole uV could not write back, so it stays read-only.
+  a compare REL on fused inputs gives no bound on the 4070 Ti SUPER) and 21 of the 35
+  Ampere images, both rails on nine two-rail GA102 images. The A40 stores
+  668088.3125 uV, which an edit in whole uV could not write back, so it stays
+  read-only. On the RTX 4090 95.02.3C images another equation links the VMIN
+  equation as its next equation; the edit then goes through a copy, see
+  [Shared VMIN equation on RTX 4090 95.02.3C](#shared-vmin-equation-on-rtx-4090-95023c).
 
 The value goes from 450 mV (GB20x) or 400 mV (Ada, Ampere; no voltage device
 minimum is decoded) up to the lowest value the rail's REL equation list can take,
@@ -190,6 +193,75 @@ RTX 2000 Ada REL is at least 915 mV and the chain after the VMIN clamp adds 70 t
 Ti the MSVDD REL links a compare that can add -139.8 mV, so MSVDD REL can drop to
 760.2 mV. The edit guard allows exactly the declared floats of that one equation,
 and only through this canonical binding.
+
+### Shared VMIN equation on RTX 4090 95.02.3C
+
+The RTX 4090 95.02.3C images (95.02.3C.40.EA of an MSI RTX 4090 Suprim,
+95.02.3C.80.0B and a Dell 95.02.3C.08.5B) keep the 95.02.18 VMIN equation: row
+byte 7 selects equation 7, a float quadratic whose clamp pins 811 mV, followed by a
+chain that adds 0 to 115 mV. What they add is equation 584, in the first unused slot of the 95.02.18 image: a
+voltage constant of 15 mV (type 1, unit uV, minimum = maximum = constant, zero
+slopes) whose next link is equation 7. No equation and no rail row byte names 584.
+The clock programming entries (C+`0x0c`, VFE index byte 3 | byte 13 << 8) of the
+memory clocks from 810 MHz up (810, 5001, 10251 and 10501 MHz) name it, so their
+NVVDD floor is VMIN + 15 mV + the VMIN chain (826 to 941 mV with the stock VMIN). On
+95.02.18 those entries name equation chains of their own; the 405 MHz entry keeps its
+own on both. A new clamp on equation 7 alone would move that memory floor too.
+
+GSP-RM 615.78.08 (`gsp_ga10x.bin`) reads the Ada equation table at 0x119dd48: the
+equation count is u16 (1024 on these images), the loop reads every entry, sends
+types 0 (unused), 4 and 5 straight to the next index without building an equation,
+and builds a type-1 equation in any slot; there is no rule that used slots are
+contiguous. The per-kind constructors and any later link check were not traced.
+
+- **Edit.** A value other than the stock 811 mV copies the stock bytes of equation 7
+  into the first unused slot (585) and points 584's u16 next link (bytes 2 and 24) at
+  the copy, in every chain, then writes the clamp of equation 7 as above. 584 then
+  evaluates the same tree as before (the copy is the stock equation with the same next
+  chain), so the memory floor keeps its stock value, and only row byte 7 still names
+  equation 7. 811 mV again points 584 back at 7 and writes the unused-slot pattern
+  into 585: the stock file, byte for byte. Once an earlier edit has made the copy, the
+  slot is the one 584 links, not the first unused one.
+- **What changes on the card (inferred from the tables, not measured).** A lower VMIN
+  shows only while the memory runs at its lowest clock (405 MHz, single-monitor
+  idle): there the floor is the new VMIN plus its chain, and the 405 MHz entry's own
+  requirement and the GPC clock still apply. From 810 MHz up the floor stays stock
+  VMIN + 15 mV + chain, so a lower VMIN does not show there. A higher VMIN shows at
+  every memory clock only above 826 mV (stock VMIN + 15 mV); up to that it too shows
+  only at 405 MHz.
+- **Risk.** No Ada card has run a VFE equation the editor adds (the GPC curve offset
+  below adds one too and is also untested). The override might not load or the driver
+  might fail to start; removing the override brings the card back. A VMIN below
+  stock can also make idle or light-load states unstable.
+- **Range.** As for the other Ada images: 400 mV up to the lowest REL value less what
+  the chain adds, 400..935 mV on these images, and the stock value has to lie inside
+  it so that it can be restored.
+- **GPC curve offset.** `gpc_curve_offset_mhz` also takes the first unused slot, so a
+  request that changes both is refused (`SEPARATE_EDIT_REQUIRED`). Separate edits
+  work in either order and revert to the stock file in either order. With the offset
+  set first, the copy goes to 586; removing the offset first then leaves 585 unused
+  below the copy, a gap no stock image has and the equation parser skips.
+- **Gates.** This exact shape only: equation 7 pinned and linked only by the next link
+  of one equation; that equation a pinned voltage constant that no equation references
+  and no rail row byte selects; no rail row byte other than byte 7 and no clock
+  programming entry naming equation 7 or the slot; the memory clock entries naming the
+  constant except one lower entry (the idle clock); the first unused slot holding the
+  clean unused pattern (type 0, links 0xffff). On a copy, the constant has to link an
+  equation that only it references and that equals equation 7 except the clamp, which
+  pins a whole uV value. Anything else keeps the field read-only while equation 7 is
+  shared. Across the Ada corpus only the three 95.02.3C images match. A copy whose clamp
+  equals equation 7's is not a state an edit makes; there every value keeps the copy
+  and its link, so a request for the current value changes nothing.
+- **Guard.** Whatever the field registry, the constant and the slot of its copy change
+  only at the bytes this canonical binding declares (the copy and the two link bytes,
+  in every chain), the shape must still be recognized afterwards with the same
+  constant, and the GPC curve guard exempts exactly those slot and link bytes.
+- **Descriptor and manifest.** The field carries `vfe_clone` (`state` coupled or
+  decoupled, `referrer`, `slot`, `stock_mv`, `constant_mv`, `memory_mhz`,
+  `idle_memory_mhz`) and a `firmware-static-analysis` evidence entry. The copy and link
+  bytes appear in the manifest `edits` with `stored_units: "raw bytes"`, and their
+  `before` and `after` are hex strings. The `gpc_curve_offset_mhz` reason on these
+  images says to change VMIN in a separate edit.
 
 ## REL and ALT follow OV (`nvvdd_rel_alt_follow_ov`, opt-in)
 
@@ -412,8 +484,10 @@ not been tested on hardware.
 
 Ada V3x `30/34/5b`, `30/32/53` and `30/2c/4b` and Ampere V3x `30/2c/47`, `30/2c/43` and `30/32/47` locate the
 TGP policy using header byte 10 (notebooks: byte 13), validate its type1/mW flags, bounds and power
-channel, and write its row+2 minimum in every validated duplicate chain. Nonempty Ada profiles remain unsupported;
-the Ampere BIT P token has no profile-table pointer (or a null one). Neither format
+channel, and write its row+2 minimum in every validated duplicate chain. Nonempty Ada profiles are accepted only
+in the cable sense layout described under [Ada fields](#ada-fields), where the floor stays at or below every
+profile value of the TGP row; other nonempty Ada profiles, and any on Ampere or Turing, keep the power fields
+hidden. The Ampere BIT P token has no profile-table pointer (or a null one). Neither format
 inherits a Blackwell row index or unit association for unrelated policies.
 
 Only the canonical `power_min_w` request with the complete reviewed offsets,
@@ -450,7 +524,8 @@ The rated value of the TGP policy is the limit the firmware applies at boot when
 client sets a cap. On reviewed Blackwell images that is row 8 at row+17, written
 together with the `(8, default)` entry of every complete matching profile (on a
 top-level profile binding, only that profile's `(8, default)` entry). Ada and
-Ampere write the header-indexed TGP row+6 in every validated duplicate chain.
+Ampere write the header-indexed TGP row+6 in every validated duplicate chain (on an
+Ada image with cable sense profiles, also the rated entry of the top-level profile).
 A read-only NVML capture (`nvmlDeviceGetPowerManagementDefaultLimit`) showed the
 default power limit equal to this stored value in the deployed payload tables on
 the seven reviewed Blackwell devices and on the reviewed Ada device. The capture
@@ -477,7 +552,8 @@ than the rated value: a third-party STATUS read showed a limit of 80 A and an
 arbitrated 62 A. Raising the rated value needs `input_current_rated_ma` and, when
 above the stored ceiling, `input_current_max_ma` in the same request. Both write the
 base row and the `(9, default)`/`(9, maximum)` entries of complete matching profiles
-(on a top-level profile binding, only that profile's entries, capped by the base row).
+(on a top-level profile binding, only that profile's entries, which the editor keeps at
+or below the base row).
 These are stored policy values, not hardware-safe current ratings. Connector, slot
 and cable limits still apply, for example on a slot-powered card.
 
@@ -597,6 +673,48 @@ GPU first and a raised value may have no effect; the field stays editable there,
 - **Import.** `import_fields` never copies it (skip reason `product_specific`): each
   product has its own limit.
 
+**Turing, Ampere and Ada.** These images store a version 0x10 table at P+0x50: a
+10-byte header (11 bytes on Ada) and four (Turing) or five 40-byte entries. GSP-RM
+615.78.08 (`gsp_tu10x.bin` for Turing, `gsp_ga10x.bin` for Ampere and Ada) reads each
+entry as `2b3w8d`, with the class byte (0 skips the entry, 1 is read) and the three
+temperatures in 1/32 °C of GB20x; byte 1 is the thermal channel. Which entry holds the
+maximum operating temperature is not fixed. The parser keeps header bytes 4, 5, 6 and 9
+as four policy indices (0xff: none), in the fields the version 0x20 parser fills from
+its header bytes 7..10, and at load the driver drops the index from byte 9 when it does
+not name a policy it read. On GB20x that index (header byte 10 there) names entry 0, the entry the
+capture above matched, on every image but the XOC-style ones (0xff). So on these families
+the editor takes the entry header byte 9 names:
+
+| Images | Named entry | Temperature |
+| --- | --- | --- |
+| Desktop and workstation, every family | entry 0 (channel 0) | 86-98 °C, one value per product |
+| Turing laptop and Max-Q | entry 0 (channel 1) | 102 °C |
+| Ampere laptop | entry 0 (channel 1) | 105 °C |
+| Ada laptop | entry 1 (channel 1) | 105 °C |
+| Turing XOC (two RTX 2080 Ti images) | none (0xff) | every entry disabled |
+
+A read-only `nvidia-smi` capture on an RTX 2000 Ada (95.07.47.00.19, running an override
+with the same table) showed "GPU Current Temp" plus "GPU Current T.Limit Temp" equal to
+96 °C, the temperature of entry 0, which header byte 9 names, and "GPU Target Temperature
+Specification" equal to 88 °C, the first temperature of entry 2, which header byte 4
+names. No laptop and no Turing or Ampere board was in the capture.
+
+- **Edit, range and import.** As on GB20x: the three temperatures of that entry, together
+  and in every chain, from 40 °C up to 3 °C above the product's stock value (the editor
+  keeps one per PCI device from the corpus, for example 89 °C on an RTX 2080 Ti, 93 °C on
+  an RTX 3090, 90 °C on an RTX 4090 and 96 °C on an RTX 2000 Ada); never imported. The
+  table's other bytes stay as stored, whatever the field registry, and the checksum of its
+  image (the data image of the power and fan tables) is repaired.
+- **Read-only cases.** Header byte 9 = 0xff (the Turing XOC images, whose entries are all
+  disabled), a named entry that is disabled, not class 1 or holds three different
+  temperatures, and the Ampere and Ada laptop images: besides the named 105 °C entry
+  (channel 1) they store an enabled 89 °C entry (channel 0) that no header byte names, and
+  which of the two limits the GPU first is not known, so both stay as stored. The Turing
+  laptop and Max-Q images store no such entry and stay editable, although the
+  `nvidia-smi` relation above was only checked on a desktop entry (channel 0), not on
+  their channel 1 entry.
+- Not hardware-tested.
+
 ### Clock offset ranges
 
 The GB20x clock table (object 3) stores a signed 16-bit minimum and maximum offset
@@ -653,54 +771,98 @@ and 0, so it cannot lower the curve.
   and the first unused slot is clean and unreferenced (below 0xff on Ampere's u8
   links). Writes go to every image chain; on GB20x they stay in object 0x14, whose
   hash is repaired. After every edit, the root equation and that slot of every chain
-  may differ only at the bytes of the reviewed binding, whatever the field registry.
+  may differ only at the bytes of the reviewed binding, whatever the field registry,
+  or at the copy and link bytes of a VMIN edit on the RTX 4090 95.02.3C images, which
+  takes the same first unused slot (one or the other per edit, see
+  [Shared VMIN equation on RTX 4090 95.02.3C](#shared-vmin-equation-on-rtx-4090-95023c)).
   Turing is not covered. Not hardware-tested.
 
-### Factory GPC offset (`factory_gpc_offset_mhz`) and rated boost (`factory_rated_boost_mhz`)
+### Factory GPC and memory offsets (`factory_gpc_offset_mhz`, `factory_memory_offset_mhz`) and rated boost (`factory_rated_boost_mhz`)
 
-The factory clock record (P+0x98, object 0x26) is 27 bytes on every GB20x image: the
-header `10 07 05 02 05 02 00`, then array A and array B, two `{u8 flag, u32 kHz}` entries
-each. GSP-RM 615.78.08 reads it twice at boot:
+The factory clock record (P+0x98) holds a header, then array A and array B, two `{u8
+flag, u32 kHz}` entries each. It is 27 bytes with the header `10 07 05 02 05 02 00` on
+GB20x (object 0x26), Ampere and Ada (byte 6 is 1 on three Ada factory-OC images, two RTX
+4090 and an RTX 4080), and 26 bytes with the 6-byte header `10 06 05 02 05 02` on Turing.
+GSP-RM 615.78.08 reads it at boot, with the same code in `gsp_tu10x.bin` and
+`gsp_ga10x.bin`:
 
-- Each array-A entry whose flag is 1 becomes a static frequency delta of the clock
-  domain the entry maps to; entry A0 maps to the GPC domain (its value is copied to the
-  companion domain too). A flag of 0 skips the entry, and any other flag fails the read.
-  The function that applies a static delta to a clock loads the 32-bit value
+- The header must have version 0x10; a 6-byte header is read as `6b`, a longer one as
+  `7b` (byte 6 is kept as a clock flag). Each array-A entry is mapped to a clock domain
+  through a descriptor table chosen by the clocks table HAL, the same table in both
+  firmware images. For the GV HAL of the Turing (v0x35), Ampere and Ada (v0x40) clocks
+  tables and for the GB20x HAL, **A0 maps to the GPC domain** (its value is copied to the
+  companion domain too) and **A1 to the memory clock domain**. A flag of 0 skips the entry,
+  1 stores its value as the domain's static frequency delta, and any other flag fails the
+  read.
+- The delta is stored for the domain class the clocks table gives programmable rows and
+  refused for fixed rows. The GPC and memory clock rows have the same usage on every image
+  (usage 2 on GB20x, 1 elsewhere), so the driver accepts A1 wherever it accepts A0, which
+  vendor images of every family enable. On Turing, whose clocks table loader was not
+  traced, two vendor images ship with A1 enabled.
+- The function that applies a static delta to a clock loads the 32-bit value
   sign-extended, divides it by 1000 with a signed division (truncating toward zero to
-  whole MHz), adds it to the clock in MHz and returns 0 if the sum is negative. So A0 is
-  a **signed** kHz offset: a negative value lowers the clock.
+  whole MHz), adds it to the clock in MHz and returns 0 if the sum is negative. So both are
+  **signed** kHz offsets: a negative value lowers the clock.
 - Each array-B entry whose flag is 1 is written, in MHz (kHz / 1000), into a
   performance-state clock entry; B1 is the rated boost clock.
 
-Vendor factory-OC images set A0 (flag 1) to their factory GPC offset and B1 to their
-rated boost: 120/2655 MHz on an RTX 5090 Aorus Master, 195/2730 MHz on three other RTX
-5090 images (ASUS ROG, MSI Lightning), 45/2580 MHz on the ASUS XOC images, 30/2640 MHz on
-an RTX 5080, 120/2572 MHz on an RTX 5070 Ti, 60/2572 MHz on an RTX 5070 and 30/2602 MHz on
-two RTX 5060 Ti. The Founders Edition, the reference RTX 5070, the notebook and every RTX
-PRO image store zeros with flag 0. A1 and B0 are 0 everywhere.
+What the corpus stores (A0/B1 in MHz):
 
-- **Edit.** `factory_gpc_offset_mhz` writes only the four value bytes of A0, from -500
-  to +500 MHz in whole MHz (stored as kHz; the driver drops any fraction of a MHz), and
-  only where A0's flag is already 1. Elsewhere the field is read-only: the editor never
-  sets the flag. A stored value that is not a whole number of MHz (no reviewed image has
-  one) leaves the field read-only too. The flag, A1, array B and the header stay as
-  stored, whatever the field registry, and object 0x26's hash is repaired. A stored
-  value outside the range may stay as it is.
-- **Rated boost.** `factory_rated_boost_mhz` shows B1, read-only. It stays stock when
-  the offset changes, so the advertised boost clock does not follow the new offset.
-- **Interactions.** This is not the GPC curve offset (`gpc_curve_offset_mhz`), which
-  links a VFE equation to the curve root: the two are separate mechanisms and both
-  apply. Whether a tuning tool's GPC offset adds to the factory offset or replaces it
-  (both are clock domain frequency deltas) was not traced. The stored GPC offset range
-  (-1000..+1000 MHz or wider on every image) holds the whole -500..+500 MHz range. Not
-  hardware-tested: zeroing the offset on a factory-OC card and comparing the GPC clock at
-  a fixed voltage is the expected first check.
-- **Import.** `import_fields` copies it with the other clock offsets (section `clocks`, not
-  opt-in) when both ROMs store one, through `edit` with the field's usual bounds. A donor that
-  stores none, or stores one that is not a whole number of MHz, leaves it out as
-  `read_only_in_donor`, so the target keeps its own. A target that stores none leaves it out
-  as `read_only_in_target`, since the editor never enables A0. The rated boost (B1) stays the
-  target's. A factory GPC offset from another board may not be stable on this one.
+| Family | Factory-OC images | Other images |
+| --- | --- | --- |
+| GB20x | 120/2655 (RTX 5090 Aorus Master), 195/2730 (three other RTX 5090), 45/2580 (ASUS XOC), 30/2640 (RTX 5080), 120/2572 (RTX 5070 Ti), 60/2572 (RTX 5070), 30/2602 (two RTX 5060 Ti) | zeros with flag 0 |
+| Ada | 60/2625 (three RTX 4090), 15/2595 and 75/2640 (RTX 4080), 15/2565 (RTX 4070 SUPER) | A0 flag 1 with 0 MHz on the RTX 4060 and 4060 Ti; B1 alone on an RTX 4080 SUPER and an RTX 4070; zeros elsewhere |
+| Ampere | 15 to 45 (RTX 3060 to 3090 Ti) | A0 flag 1 with 0 MHz on two RTX 3060 Ti and an RTX 3070; B1 alone on an RTX 3060; zeros elsewhere |
+| Turing | 75/1650, 135/1800 and 120/1680 (RTX 2080 Ti), 120/1890 (RTX 2080), 30/1845 (RTX 2080 SUPER), 15 to 60 (RTX 2060/2070, GTX 16) | A0 flag 1 with 0 MHz on a GTX 1660 Ti laptop; 60 MHz with flag 0 (skipped) on the TITAN RTX; zeros elsewhere |
+
+A1 is enabled on two Turing images only: 400 MHz on an RTX 2080 Ti, and 70 MHz on an RTX
+2080 whose vendor rates it at 1890 MHz boost (its B1) and 14140 MT/s memory, that is
+7000 + 70 = 7070 MHz of memory clock. So A1 is in the memory clock that `nvidia-smi` and
+MSI Afterburner show (7000 MHz on 14 Gbps GDDR6), half the transfer rate. Tools that show
+the transfer rate, such as nvidia-settings, and this editor's memory offset floor and
+ceiling (`memory_offset_min/max_mhz`) use twice this number: +500 MHz here is +1000 MHz
+there. The GUI shows that number next to the field.
+
+- **Value.** Each field shows the entry's effective value: the stored value while the
+  flag is 1, and 0 while it is 0, whatever value bytes are stored (as on the TITAN RTX).
+- **Edit.** `factory_gpc_offset_mhz` takes -500..+500 MHz and
+  `factory_memory_offset_mhz` -5000..+5000 MHz, in whole MHz (stored as kHz; the driver
+  drops any fraction of a MHz), on every image whose record has the reviewed header and
+  flags and whose clocks table the editor reads. A value other than 0 writes flag 1 and
+  the kHz value. On a ROM that stores no offset (Founders Edition, reference, workstation
+  and laptop ROMs) that turns one on, which was not tested on such ROMs. 0 on an entry
+  that already reads 0 (flag 0 whatever it stores, or flag 1 with 0 kHz) leaves its five
+  bytes as they were; 0 on an entry with an offset writes flag 0 with 0 kHz, how ROMs
+  without the offset store it, so a saved copy of such a ROM set back to 0 is
+  byte-identical to it again. The few ROMs that store flag 1 with 0 kHz, and the TITAN RTX
+  with its skipped 60 MHz, come back as flag 0 with 0 kHz instead, also no offset for the
+  driver; a saved copy cannot tell which of the two a ROM shipped with. A stored value
+  outside the range may stay as it is. The header, the other entries, array B and, on
+  GB20x, the rest of object 0x26 stay as stored, whatever the field registry. GB20x
+  repairs object 0x26's hash; the other families write every chain and repair the
+  checksum of the record's image (the data image of the power and fan tables).
+- **Read-only cases.** A stored value that is not a whole number of MHz (no reviewed image
+  has one), a record with another header or with a flag other than 0 or 1 (the driver
+  refuses both; the field then shows no value), and a clocks table the editor does not
+  read.
+- **Rated boost.** `factory_rated_boost_mhz` shows B1, read-only, where its flag is 1. It
+  stays stock when an offset changes, so the advertised boost clock does not follow it.
+- **Interactions.** The factory GPC offset is not the GPC curve offset
+  (`gpc_curve_offset_mhz`), which links a VFE equation to the curve root: the two are
+  separate mechanisms and both apply. Whether a tuning tool's offset adds to a factory
+  offset or replaces it (both are clock domain frequency deltas) was not traced. The
+  stored GPC offset range (-1000..+1000 MHz or wider on every image) holds the whole
+  -500..+500 MHz range. The memory range is wide on purpose; memory seldom runs stable
+  far above stock, and a value far from the stock one can make the card unstable or keep
+  it from starting. Not hardware-tested: zeroing the GPC offset on a factory-OC card and
+  comparing the GPC clock at a fixed voltage, and a small memory offset (+50 MHz) read
+  back with `nvidia-smi -q -d CLOCK`, are the expected first checks.
+- **Import.** `import_fields` copies both with the other clock offsets (section `clocks`,
+  not opt-in), through `edit` with the target's bounds. A donor that stores none gives
+  0 MHz; a target that stores none takes the donor's value, with the flag set. A donor
+  value that is not a whole number of MHz leaves the target's own (`read_only_in_donor`).
+  The rated boost (B1) stays the target's. A factory offset from another board may not be
+  stable on this one.
 
 ### Memory levels that follow the offset (`memory_point_K_follows_offset`, opt-in)
 
@@ -779,7 +941,9 @@ an edit that would let another profile exceed it, or make it equal the base tabl
 (it would then become a matching profile and later edits would write the base), is
 refused with `OUT_OF_BOUNDS`, a message naming the profile and entry, and
 `details.field` set to the field of that entry; a plain order mistake gets the usual
-ordering message. When a rated value
+ordering message. On Ada, a profile entry changes only through a canonical binding of
+the same request (the top-level profile of the cable sense layout, written with the
+base), in every duplicate chain; the other profiles keep their bytes. When a rated value
 changes, the manifest sets `preservation.factory_defaults` to `false` and lists the
 fields in `preservation.changed_rated_defaults`. Both describe that edit relative to
 the image it received, not the original archive of a chain of edits.
@@ -1154,11 +1318,14 @@ Bytes 30..33 of a policy entry hold two `<H` temperatures in 1/32 °C, the lower
   image in the corpus stores zeros and 0xff there, so there is nothing to edit and
   no field is offered.
 
-## Advanced section: performance controllers and idle power (GB20x)
+## Advanced section: performance controllers and idle power
 
-These fields tune two families of GB20x tables: PERF_CF, the controllers that decide how
-the driver raises and lowers the GPC, memory and video clocks with load, and LPWR, the
-power-saving features that act at idle. Each descriptor carries `section: "advanced"`.
+These fields tune two families of tables: PERF_CF, the controllers that decide how the
+driver raises and lowers the GPC, memory and video clocks with load, and LPWR, the
+power-saving features that act at idle. They are read on GB20x and, with their own table
+layouts, on Ada, Ampere and Turing (see
+[Turing, Ampere and Ada](#turing-ampere-and-ada-performance-controllers-and-idle-power)).
+Each descriptor carries `section: "advanced"`.
 The GUI shows them in their own collapsed section after the Fans card and before the
 read-only fields, labelled "Advanced: performance controllers and idle power", in two
 cards (clock controllers, idle power saving); they are not opt-in, so the
@@ -1181,7 +1348,7 @@ below) leaves its dependent fields read-only too.
 
 ### PERF_CF utilization policy and controllers
 
-The controller table (P+0xa8, object 0x60) has version 0x10, a 6-byte header (14 bytes
+On GB20x the controller table (P+0xa8, object 0x60) has version 0x10, a 6-byte header (14 bytes
 on the RTX PRO 4000 SFF) and 20 entries of 57 bytes; the policy table (P+0xac, object
 0x61) has version 0x10, a 5-byte header and 9 entries of 10 bytes. On the RTX PRO 4000
 SFF object 0x60 also covers the 5-byte header of the policy table; no field writes those
@@ -1199,7 +1366,7 @@ is unpacked as `2b2d`: the low nibble of byte 0 must be 1, bit 7 is the policy's
 flag, then a conflict mask and a controller mask; a policy's type comes from its
 position, so the order never changes.
 
-| Key | Bytes | Range | Stock on every image |
+| Key | Bytes | Range | Stock on every GB20x image |
 | --- | --- | --- | --- |
 | `perf_cf_util_policy` | bit 7 of policy entry 0 | 1 on, 0 off | 1 (0x81), controllers 0, 1, 2 and 13 |
 | `perf_cf_gpc/dram/vid_target_pct` | controller 0/1/2, bytes 3..6 | 10 % up to the jump threshold - 1 % | 40 / 52 / 65 % |
@@ -1208,11 +1375,15 @@ position, so the order never changes.
 | `perf_cf_gpc/dram/vid_hysteresis_up` | byte 20 | 1..4 | 1 |
 
 - **Percent.** The fractions are shown in whole percent (raw / 40.96, rounded). A
-  percent left unchanged keeps its stored fraction, and the stock percent stores the
-  stock fraction, so going back to stock gives the stock bytes (the stock DRAM target
-  0x851 is 51.98 %, not the fraction nearest to 52 %, 0x852). Any other percent stores
-  its nearest fraction. The firmware accepts at most 100 %, so 100 % is the ceiling
-  here rather than a multiple of stock.
+  percent left unchanged keeps its stored fraction. Some stock fractions are truncated
+  rather than the nearest ones, so going back to a stock percent stores the stock
+  fraction. On GB20x that is each field's stock percent (the stock DRAM target 0x851 is
+  51.98 %, not 0x852 for 52 %). Turing, Ampere and Ada store 55, 58, 60 and 80 % as
+  0x8cc, 0x947, 0x999 and 0xccc, and since their stock percents vary per product, a
+  request for one of these percents (or 52 %, as 0x851) stores that fraction on any
+  controller. Any other percent stores its nearest fraction.
+  The firmware accepts at most 100 %, so 100 % is the ceiling here rather than a
+  multiple of stock.
 - **Target and jump threshold together.** They form one ordering group per controller:
   alone, each moves only as far as the other allows; requested together they may cross
   the stored values, and the result must keep the target below the jump threshold
@@ -1241,6 +1412,8 @@ position, so the order never changes.
   at load.
 
 ### LPWR idle power switches and idle times
+
+The GB20x tables:
 
 | Key | Table (BIT P offset, object, header, entry size, enable word) | Entries the switch covers in the corpus |
 | --- | --- | --- |
@@ -1292,6 +1465,70 @@ an entry whose bit 0 is clear is skipped, for each of these features.
   more idle power; it may avoid idle stutter or flicker, DIFR in particular on a static
   desktop). Shorter idle times save more power but can cause stutter or, rarely, a black
   screen at idle. Removing the override restores stock.
+
+### Turing, Ampere and Ada: performance controllers and idle power
+
+The same keys, ranges, switches, dependencies and guards as on GB20x, read from the
+layouts these families store. Each table changes only at the bytes of the canonical
+bindings, in every duplicate chain, and the additive checksum of each touched image is
+repaired; the tables join the edited-table list of the checksum tail check
+(`ADA_EDITED_TABLES`, `TURING_EDITED_TABLES`). They sit in the same data image as the
+power table on every image of the corpus (25 Turing, 38 Ampere and 25 Ada images), so
+no image loses or gains editability.
+
+- **PERF_CF tables.** The controller table has a 6-byte header and 8 or 12 entries of
+  24 or 28 bytes (Turing), 24, 32 or 49 bytes (Ampere) or 49 bytes (Ada); the policy
+  table is the GB20x one (8 or 9 entries). GSP-RM (`gsp_tu10x.bin` for Turing,
+  `gsp_ga10x.bin` for Ampere and Ada) unpacks an entry by its size: 23 bytes as `3b5d`,
+  24..27 as `3b5d1b`, 28..31 as `3b5d1b1d`, 32..40 as `3b5d1b2d`, 41..53 as
+  `3b5d1b2d1b2d`, so the target, jump threshold, clock domain and hysteresis bytes are
+  where they are on GB20x, and the same utilization decoder and load validator read
+  them. Other entry sizes are not read (the section reports an unsupported layout).
+- **Clock domain by row.** Byte 19 names a row of the clocks table (C+8). On every
+  image of these families controllers 0, 1 and 2 name rows 0, 2 and 5, the GPC, DRAM
+  and VID rows of the GV HAL order (GB20x stores 0, 2 and 4: its VID row is 4). A
+  controller is recognized only when the row it names has its domain's name, so the
+  video controller is found by its row, not by a fixed byte value; a clocks table the
+  editor does not read leaves the controllers read-only.
+- **Stock values.** Policy 0 is active and runs controllers 0..2 on every image, with
+  increase hysteresis 1 and decrease hysteresis 9, 4 and 9 as on GB20x. The targets and
+  jump thresholds vary per product: GPC 40 % with 55 to 75 %, DRAM 40 to 65 % with 55 to
+  80 %, VID 60 to 75 % with 80 to 90 % (every Ada image: 40/75, 65/80 and 65/85 %).
+  Their descriptors carry no `stock` value.
+- **Not proven.** As on GB20x: whether a per-chip flag makes GSP-RM skip the VBIOS
+  controllers on these chips was not traced.
+
+| Key | Table (BIT P offset, header, entry size, enable word) | Families | Entries the switch covers in the corpus |
+| --- | --- | --- | --- |
+| `lpwr_gr_power_gating` | P+0x80, 10, 5, u32 | all three | Turing 0, 1, 4 (TU102/TU104/TU106 desktops) or 0, 1, 3, 4 (their laptop chips, TU116, TU117); Ampere 0..1 or 0, 1, 3 (0 on one image); Ada 0..2 |
+| `lpwr_mscg` | P+0x84, 7, 15, u32 | all three | 0..1 (0 on one Ampere image) |
+| `lpwr_gr_rail_gating` | P+0xd4, 9, 1, u8 | Ampere, Ada | GA102 RTX 3080, 3080 Ti, 3090 and RTX A4500, A5000, A5500, A6000 entries 0..1, A40 entry 0; no other image enables it (no Ada image) |
+| `lpwr_difr` | P+0xe8, 11, 17, u32 | Ada | entry 0 on 14 of the 25 images |
+
+GSP-RM reads 15-byte MSCG entries as `1d2w1b3w`, a 9-byte GR rail gating header as
+`5b2w` and 17-byte DIFR entries as `1d1b6w` (GB20x: 16, 12 and 18 bytes), checks the
+version and at most 5 entries, and skips every entry whose bit 0 is clear;
+`gsp_tu10x.bin` reads GR power gating and MSCG the same way. The Turing token ends
+before the GR rail gating and DIFR pointers, the Ampere one before DIFR; no image has
+the video engine tables.
+
+- **Which entries a switch covers.** On Ampere and Ada a stock-disabled GR power gating
+  entry stores 0xffffff80 or 0xffffffc0 and a disabled MSCG entry 0xfffffc00, values no
+  enabled entry stores with bit 0 cleared, so the GB20x rule applies with these values.
+  Elsewhere a stock-disabled entry stores exactly what an enabled one stores switched
+  off: GR rail gating 0xfe, Ada DIFR 0xfffffffe or 0xffffffee, Turing GR power gating
+  0xffffffe6 and MSCG 0xffffffec. There, as for GR rail gating on GB20x, the switch is
+  offered only on the products (PCI devices) whose stock entries are reviewed, and only
+  while each covered entry stores one of the reviewed values with or without bit 0;
+  another product that enables the feature shows the switch, and its idle times, read-only.
+- **Two RTX 4090 images** (factory-OC boards) store GR power gating entry 2 like an
+  enabled entry switched off: their switch is read-only, since its entries disagree.
+- **Idle times.** The DIFR words (header +5, +7, +9: 1000, 15 and 15 on every Ada image)
+  and the GR rail gating word (header +5, times 10) are the GB20x fields: the same parser
+  code reads them. The GR rail gating word stores 500 on every Ampere and Ada image
+  (5000 µs, ten times the GB20x value), so its range is 2500..20000 µs; it is listed
+  where the switch is (Ampere). The GR power gating and MSCG idle times are left out for
+  the GB20x reason (copied only when an LPWR state flag is set).
 
 ### Left out on purpose
 
@@ -1364,6 +1601,62 @@ Raising the slot power or slot current threshold of a slot-powered board exceeds
 the PCIe CEM slot rating. Auxiliary-connector rows, laptop-only rows and
 placeholder rows stay unexposed.
 
+**Override profiles picked by the cable sense pins (P+0xF4, experimental).** One Ada
+image, an MSI RTX 4090 (95.02.3C.40.EA), stores override profiles; every other Ada
+image of the corpus keeps them empty. The table has the GB20x layout, and GSP-RM 615.78.08
+parses it with the same code for Ada and GB20x. A profile entry names a power row
+and a limit (0 maximum, 1 rated). Static analysis shows that the selected entry
+replaces that row's value instead of clamping it: the firmware applies it with the
+same client it uses for the row value. The editor accepts exactly this selection
+chain:
+
+| Part | Stored | Meaning |
+| --- | --- | --- |
+| Selection row 0 | `01 08 00 00 00`, codes 0..3 | Reads two sense inputs into a code and votes that code's value: 0 and 1 vote nothing, 2 votes 450 W, 3 votes 520 W |
+| Selection row 1 | `02 00 00 00 00`, thresholds 150/300/450/520 W | The vote selects the profile of the last threshold at or below it: profiles 4, 5, 6 and 7 |
+| Rows 2 and 3 | off | |
+| Profiles 4 and 5 | TGP maximum 150 W and 300 W | Not reached by any code |
+| Profile 6 (code 2) | TGP 450 W maximum and rated, 12 V input thresholds rated 45 A | The 450 W level |
+| Profile 7 (code 3) | TGP 520 W maximum, 480 W rated | Equal to the base row 2 |
+
+Code 3 is read with both sense inputs asserted. That it is the 600 W state of a
+12V-2x6 cable is inferred from the RTX PRO 6000 Max-Q images, which map codes 0..3
+to 150/300/450/600 W; it was not measured. With codes 0 and 1 no profile gets a vote
+and the firmware fails the power setup (static reading, not tested). The DCB GPIO
+functions 0xee/0xed of this image also appear on a GB202 image without selection
+rows, so they do not identify the sense inputs by themselves.
+
+Because a selected profile replaces the base value, raising only the base would
+most likely be undone at the top level (static reading, not tested). So
+`power_max_w` and `power_default_w` write the base TGP row and the matching entry of
+the top-level profile together, in both chains. The other profiles keep their values
+and set the bounds: the ceiling stays at or above every other profile value on the
+row (480 W, the rated value, on this image), the rated value at or above their
+rated values (450 W), and `power_min_w` at or below all of them. A profile that no
+sense code selects (profiles 4 and 5 here) counts with twice its value as an upper
+bound and half as a lower one, so profile 4's 150 W lets the floor go up to 300 W;
+profile 6, selected at code 2, counts with its own values. The 12 V
+input current fields follow the same rule: profile 6 holds only their rated value (45 A), so
+both the rated value and the ceiling stay at or above it.
+`power_max_w` keeps no upper bound but the encoding. Its reason, and notes in the
+GUI, say that the top level is most likely a 600 W cable, that going past 600 W is
+the user's call, and that the 12 V input current thresholds (rated 48 A, about
+576 W at 12 V) may limit first, so `input_current_rated_ma` (opt-in) should be raised
+with it. Descriptors carry `override_profiles` (top profile, its sense code, the
+inferred 600 W level and the other profiles) and an evidence entry of kind
+`firmware-static-analysis`.
+
+Anything else keeps the power fields hidden (the Power card then says some fields
+are not shown) and the slot, 12 V input and NVVDD threshold fields read-only: other
+selection headers (such as the presence gate bit), a used row 2 or 3, codes other
+than 0..3, a threshold param other than 0xff, thresholds out of order or naming a
+disabled profile, a profile entry with field 2 (minimum) or a malformed or
+duplicate entry, and a top-level profile that differs from the base table. A lower
+profile entry outside the stored range of its base row (below the floor, above the
+ceiling, or a rated entry above the rated value) also hides the power fields, or
+keeps that policy's fields read-only, because the stored value could not be requested
+again within the bounds. No image of the corpus has one.
+
 **Voltage (rail P+0x68, VFE P+0x20).** One V20 logic rail (NVVDD). Row selectors
 are u8: REL +4, ALT +5, OV +6 and VMIN +11 (0xff = absent); the RTX 2000 Ada runtime
 INFO selectors REL 2, ALT absent, OV 4 and VMIN 3 equal those bytes. Every
@@ -1405,6 +1698,11 @@ and every curve point is editable, except on the RTX 4080 Super: its second chan
 3000 RPM maximum is below the extra curves' 3200 RPM, so that maximum and the extra
 curves' top speeds are read-only (out of shape), and so is the channel count (one
 channel could not be raised back to two).
+
+**Thermal policy table (P+0x50) and factory clock record (P+0x98).** Both sit in the
+data image of the power and fan tables and are written in both chains. See [Maximum
+operating temperature](#maximum-operating-temperature-max_operating_temp_c) and [Factory
+GPC and memory offsets](#factory-gpc-and-memory-offsets-factory_gpc_offset_mhz-factory_memory_offset_mhz-and-rated-boost-factory_rated_boost_mhz).
 
 `ada-relocated-v2` compares `power_rows`, `clock_ranges`, `rail_limits`,
 `rail_equations` and `fan_coolers` between the source and the relocated payload.
@@ -1512,6 +1810,11 @@ holds the maximum only where the speed table is enabled. Boards that stop the fa
 minimum and curve start: those minimums rise only together with the first curve
 points, which stay editable. The GA103 3060 Ti, A4000 and A2000 curves top out below
 100 % (97, 81 and 95 %), so their level maximum also moves alone.
+
+**Thermal policy table (P+0x50) and factory clock record (P+0x98).** As on Ada, except
+that the thermal policy header is 10 bytes (11 on Ada); see [Maximum operating
+temperature](#maximum-operating-temperature-max_operating_temp_c) and [Factory GPC and
+memory offsets](#factory-gpc-and-memory-offsets-factory_gpc_offset_mhz-factory_memory_offset_mhz-and-rated-boost-factory_rated_boost_mhz).
 
 **Load path.** GA102-GA107 load `gsp_ga10x.bin`, the same GSP firmware as Ada, which
 loads at most 512 KiB counted from the legacy image; a larger payload is ignored and
@@ -1656,6 +1959,13 @@ tables in the second E0 image (power, VFE, fans: padded on all 25 images). The c
 table sits in the legacy image, which lacks the padding on one RTX 2080 image: its
 clock fields alone stay read-only, with that reason. Writes go to both banks and
 repair the checksum of each touched image.
+
+**Thermal policy table (P+0x50) and factory clock record (P+0x98).** Both sit in the
+second E0 image (10-byte thermal header, 6-byte factory record header) and are written
+in both banks; the GSP-RM readers are those of `gsp_tu10x.bin`. See [Maximum operating
+temperature](#maximum-operating-temperature-max_operating_temp_c) and [Factory GPC and
+memory offsets](#factory-gpc-and-memory-offsets-factory_gpc_offset_mhz-factory_memory_offset_mhz-and-rated-boost-factory_rated_boost_mhz).
+Like every Turing write, they leave the signed digest list below stale.
 
 **Signed digest list.** The type-0x70 image at the end of each bank's chain holds a
 signed list of 16-byte digests (algorithm unknown). Its chunks cover the E0 images and

@@ -20,7 +20,7 @@ from nvidia_vbios.rom import FormatError, VbiosError, from_bytes, inspect_image,
 from nvidia_vbios.rom.image import backend
 from nvidia_vbios.rom.structure import image_chains, scan_images
 from nvidia_vbios.rom.turing import npde
-from test_ada_fields import patched
+from test_ada_fields import THERMAL_FACTORY_KEYS, checked_elsewhere, patched
 
 POWER = ['power_max_w', 'power_default_w', 'power_min_w']
 E0_END = 'turing-e0-end-v1'
@@ -903,6 +903,12 @@ def joint_step(field):
     """A different in-bounds value for a joint edit of every canonical field (the Ampere corpus rule)."""
     from test_extended_fields import curve_step
     bounds, current = field['bounds'], Decimal(str(field['current']))
+    if field['key'] == 'max_operating_temp_c':
+        return current - 1
+    if field['key'] in ('factory_gpc_offset_mhz', 'factory_memory_offset_mhz'):
+        # A value other than 0 sets the flag and 0 writes flag 0 with 0 kHz: step only an entry that stores an offset
+        # (flag 1, not 0 kHz), which going back restores byte for byte.
+        return current + 1 if field['stored_flag'] == 1 and current != 0 else current
     if field['value_semantics'] == 'stored-fixed-equation-value':
         return current + 5  # REL and ALT: above their clamp minimum (the stored value), below OV
     if 'fan_policy' in field:
@@ -928,7 +934,8 @@ def joint_edit(test, image):
     fields = descriptors(image)
     chosen, used, spans = {}, set(), {}
     for key, field in fields.items():
-        if not field['editable']:
+        # The Advanced section (switches and the fields that depend on them) has its own corpus test.
+        if not field['editable'] or field.get('section') == 'advanced':
             continue
         binding = bindings[key]
         spans[key] = {at for o in binding.offsets for at in range(o, o + struct.calcsize(binding.encoding))}

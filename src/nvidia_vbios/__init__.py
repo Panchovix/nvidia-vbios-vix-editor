@@ -1,2 +1,2 @@
 """NVIDIA VBIOS inspection and editing tools."""
-__version__ = "0.1.28"
+__version__ = "0.1.29"

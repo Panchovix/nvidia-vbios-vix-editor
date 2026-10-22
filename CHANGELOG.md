@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.1.29
+
+- **Factory GPC and memory offsets on every ROM (experimental; Turing, Ampere, Ada and Blackwell).** The vendor
+  overclock of the factory clock record is now editable on Turing, Ampere and Ada as on Blackwell, and on every ROM,
+  not only on factory-OC ones: the driver reads the entry the same way whether the ROM ships it on or off. The GPC
+  offset goes from -500 to +500 MHz. A new **Factory memory offset** goes from -5000 to +5000 MHz in the memory
+  clock nvidia-smi and MSI Afterburner show (7000 MHz on 14 Gbps GDDR6); nvidia-settings shows the transfer rate,
+  twice that number, and the row shows that value too. On a ROM that shipped without an offset (Founders Edition,
+  reference, workstation and laptop ROMs) a value other than 0 turns one on, which was not tested on such ROMs.
+  0 turns it off the way those ROMs store it, so it gives back their original bytes even from a saved copy. A
+  negative value lowers the clock, and values far from stock can make the card unstable or keep it from starting.
+  Import from ROM… copies both offsets, so a Founders Edition donor brings 0 MHz. Not tested on hardware.
+- **Max operating temperature on Turing, Ampere and Ada (experimental).** The same field as on Blackwell: lower it
+  to 40 °C or raise it up to 3 °C above the product's stock value. It is read-only on Ampere and Ada laptop ROMs,
+  which hold a second, lower limit, and on the two Turing XOC ROMs, which name none. On a desktop RTX 2000 Ada the
+  current temperature plus nvidia-smi's T.Limit matched the stored value; laptops were not checked. Never copied by
+  Import. Not tested on hardware.
+- **Advanced section on Turing, Ampere and Ada (experimental).** The clock controllers (utilization policy, and per
+  GPC, DRAM and VID clock the target, jump threshold and hysteresis) on all three families, and the idle power
+  switches each ROM ships turned on: GR power gating and MSCG on all three, GR rail gating with its idle time on
+  GA102 cards and the A40, DIFR with its idle times on Ada. The same ranges, switches and caveats as on Blackwell,
+  including that it is not proven the driver uses the clock controller table. Not tested on hardware.
+- **RTX 4090 BIOS with 16-pin cable power profiles (experimental; Ada).** Newer builds such as the MSI RTX 4090
+  Suprim 95.02.3C.40.EA pick their power limits from the 16-pin cable sense pins (150/300/450/520 W profiles), and
+  the editor hid the power limits on them. They are editable again: the board power ceiling and boot default write
+  the base table and the profile of the top cable level (most likely a 600 W cable, inferred) together, since a
+  selected profile replaces the base value. The ceiling has no cap at 600 W, as on other Ada ROMs; going past the
+  cable rating is the user's call. The boot default goes from 450 to 520 W and the floor up to 300 W (a profile no
+  cable level selects bounds an edit with twice its value). The 12 V input threshold (48 A, about 576 W) may limit first, so raise it too
+  (advanced field). Not tested on hardware.
+- **VMIN on RTX 4090 95.02.3C builds (experimental; Ada).** These builds link the VMIN equation to the voltage floor
+  of the higher memory clocks, so VMIN was read-only. The editor now copies the equation to an unused slot for the
+  memory floor and edits VMIN alone (400 to 935 mV); 811 mV gives back the original bytes. A lower VMIN shows only
+  while the memory runs at 405 MHz; a higher one shows at every memory clock only above 826 mV. This is the first
+  equation the editor adds on Ada, so the override might not load or the driver might not start; removing the
+  override brings the card back. VMIN and the GPC curve offset are saved in separate edits on these ROMs. Not
+  tested on hardware.
+- **Smaller changes.** Edits on Blackwell are about three times faster. The Spanish texts use "tú" throughout.
+  For API users: factory offsets use the `"<xi"` encoding (flag byte plus signed kHz) and carry `factory_entry` and
+  `stored_flag`; `max_operating_temp_c` may carry `lower_limits`; VMIN on 95.02.3C carries `vfe_clone`, and its
+  manifest lists the copied equation bytes as raw hex (`docs/editor-api.md`).
+
 ## 0.1.28
 
 - **Max operating temperature (experimental; Blackwell).** A new Power field sets the thermal limit the driver

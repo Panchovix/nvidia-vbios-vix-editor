@@ -39,8 +39,21 @@ XOC-style fields**.
   ALT and REL fixed to 1125 mV in one edit gives the same evaluated values (not tested on Turing hardware).
 - **Clock offset ranges**: `gpc_offset_max_mhz` / `gpc_offset_min_mhz` (core) and `memory_offset_max_mhz` /
   `memory_offset_min_mhz`, the ranges an overclocking tool may use. They do not change the clocks by themselves.
+- **Factory clock offsets**: `factory_gpc_offset_mhz` (-500..+500 MHz) and `factory_memory_offset_mhz`
+  (-5000..+5000 MHz, in the memory clock `nvidia-smi` and MSI Afterburner show, half of what nvidia-settings
+  shows), the vendor overclock some boards store in the ROM (+135 MHz core and +400 MHz memory on the ROG Matrix
+  RTX 2080 Ti). A ROM without one shows 0, and a value other than 0 turns one on, which was not tested. The rated
+  boost clock (`factory_rated_boost_mhz`) is read-only.
+- **Max operating temperature**: `max_operating_temp_c`, the limit `nvidia-smi` reports as the current temperature
+  plus T.Limit (86-95 °C on desktop boards, 102 °C on laptop and Max-Q boards, where that relation was not
+  checked). It goes from 40 °C up to 3 °C above the product's stock value, and is read-only on the two XOC images,
+  which name no such limit.
 - **Fans**: `fan_pwm_frequency_hz`, the speed (RPM) and level (%, advanced) limits of each fan and the points of
   its fan curve.
+- **Advanced section** (its own collapsed section, not behind the advanced toggle): the utilization clock policy and
+  the targets, jump thresholds and hysteresis of its GPC, DRAM and VID controllers, and Stock/Off switches for GR
+  power gating and MSCG (idle power saving) on the products whose stock entries were reviewed (every Turing image
+  examined). That the driver uses these tables is not proven; see `extended-fields.md`.
 - **Read-only**: the OV voltage limit (1125 mV), the REL/ALT/OV equation and selector fields, the boot voltage
   and the number of fan channels.
 - Not every image has every field: Max-Q and laptop images have no slot or connector rows and no GPU-driven fan;

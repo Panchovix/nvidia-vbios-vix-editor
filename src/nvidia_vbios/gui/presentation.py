@@ -6,10 +6,11 @@ import re
 # Sections and visibility are shared with the import from another ROM; the GUI imports them from here too.
 from ..editor.sections import (ADVANCED_SECTION, SECTION_NAMES, SECTIONS, field_section,  # noqa: F401
                                opt_in_field_keys, technical_field_keys)
-from ..editor.registry import (FACTORY_BOOST_REASON, FACTORY_OFFSET_DISABLED_REASON, FACTORY_OFFSET_FRACTION_REASON,
+from ..editor.registry import (FACTORY_BOOST_REASON, FACTORY_OFFSET_FRACTION_REASON, FACTORY_UNREVIEWED_REASON,
                                LPWR_GR_RG_UNRECOGNIZED_REASON, LPWR_GR_RG_UNREVIEWED_REASON, LPWR_MIXED_REASON,
-                               LPWR_TIME_SWITCH_REASON,
-                               MAX_TEMP_DISABLED_REASON, MAX_TEMP_UNEQUAL_REASON, MAX_TEMP_UNRECOGNIZED_REASON,
+                               LPWR_STOCK_UNRECOGNIZED_REASON, LPWR_STOCK_UNREVIEWED_REASON, LPWR_TIME_SWITCH_REASON,
+                               MAX_TEMP_DISABLED_REASON, MAX_TEMP_LOWER_LIMIT_REASON, MAX_TEMP_NO_POLICY_REASON,
+                               MAX_TEMP_UNEQUAL_REASON, MAX_TEMP_UNRECOGNIZED_REASON,
                                PERF_CF_CONTROLLER_UNRECOGNIZED_REASON, PERF_CF_POLICY_UNRECOGNIZED_REASON)
 from ..rom.memory import PROFILE_COLUMNS, TIMING_FIELDS
 from .i18n import Messages
@@ -26,8 +27,9 @@ FIELD_KEYS = frozenset(('power_min_w', 'power_max_w', 'nvvdd_rel_max_mv', 'msvdd
                         'slot_current_threshold_rated_ma', 'slot_current_threshold_max_ma',
                         'nvvdd_power_threshold_rated_w', 'nvvdd_power_threshold_max_w',
                         'connector_sum_power_max_w', 'connector_sum_power_rated_w', 'gpc_curve_offset_mhz',
-                        'factory_gpc_offset_mhz', 'factory_rated_boost_mhz', 'max_operating_temp_c',
-                        # Advanced section (GB20x PERF_CF and LPWR).
+                        'factory_gpc_offset_mhz', 'factory_memory_offset_mhz', 'factory_rated_boost_mhz',
+                        'max_operating_temp_c',
+                        # Advanced section (PERF_CF and LPWR).
                         'perf_cf_util_policy', 'lpwr_gr_power_gating', 'lpwr_mscg', 'lpwr_nvdec_gating',
                         'lpwr_nvenc_gating', 'lpwr_ofa_gating', 'lpwr_nvjpg_gating', 'lpwr_difr',
                         'lpwr_difr_dfpr_idle_ms', 'lpwr_difr_sw_asr_idle_us', 'lpwr_difr_cg_idle_us',
@@ -67,14 +69,18 @@ REASON_KEYS = {
     MAX_TEMP_DISABLED_REASON: 'reason.max_temp_disabled',
     MAX_TEMP_UNEQUAL_REASON: 'reason.max_temp_unequal',
     MAX_TEMP_UNRECOGNIZED_REASON: 'reason.max_temp_unrecognized',
-    FACTORY_OFFSET_DISABLED_REASON: 'reason.factory_offset_disabled',
+    MAX_TEMP_NO_POLICY_REASON: 'reason.max_temp_no_policy',
+    MAX_TEMP_LOWER_LIMIT_REASON: 'reason.max_temp_lower_limit',
     FACTORY_OFFSET_FRACTION_REASON: 'reason.factory_offset_fraction',
+    FACTORY_UNREVIEWED_REASON: 'reason.factory_unreviewed',
     FACTORY_BOOST_REASON: 'reason.factory_boost',
     PERF_CF_POLICY_UNRECOGNIZED_REASON: 'reason.perf_cf_policy',
     PERF_CF_CONTROLLER_UNRECOGNIZED_REASON: 'reason.perf_cf_controller',
     LPWR_MIXED_REASON: 'reason.lpwr_mixed',
     LPWR_GR_RG_UNREVIEWED_REASON: 'reason.lpwr_gr_rg_unreviewed',
     LPWR_GR_RG_UNRECOGNIZED_REASON: 'reason.lpwr_gr_rg_unrecognized',
+    LPWR_STOCK_UNREVIEWED_REASON: 'reason.lpwr_stock_unreviewed',
+    LPWR_STOCK_UNRECOGNIZED_REASON: 'reason.lpwr_stock_unrecognized',
     LPWR_TIME_SWITCH_REASON: 'reason.lpwr_time_switch',
 }
 
@@ -189,6 +195,42 @@ def summed_cap_notes(field, fields, language='en'):
     return notes
 
 
+def sense_profile_notes(field, fields, language='en'):
+    """Notes of a board power field on an Ada ROM whose override profiles follow the 16-pin cable sense pins.
+
+    The field carries override_profiles (the top level is most likely a 600 W cable; inferred). The
+    ceiling also notes that going past that level is the user's call and, when the 12 V input
+    current threshold has a rated value, that it may limit first.
+    """
+    profiles = field.get('override_profiles')
+    if not profiles or field['key'] not in ('power_max_w', 'power_default_w'):
+        return []
+    text = Messages(language)
+    level = number(profiles['top_sense_level_w'])
+    notes = [text('sense_profiles.levels', watts=level)]
+    if field['key'] == 'power_max_w':
+        notes.append(text('sense_profiles.past_top', watts=level))
+        rated = next((f.get('current') for f in fields if f['key'] == 'input_current_rated_ma'), None)
+        if rated is not None:
+            amps = Decimal(str(rated)) / 1000
+            notes.append(text('sense_profiles.input_current', amps=number(amps), watts=number(round(amps * 12))))
+    return notes
+
+
+def vmin_clone_notes(field, language='en'):
+    """Notes of the VMIN field on an Ada ROM where a constant shares the VMIN equation (vfe_clone): the memory
+    clock voltage floor keeps its stock value, so a lower VMIN shows only at the idle memory clock and a higher
+    one at every memory clock only above stock VMIN + the constant, and the edit adds a VFE equation, which no
+    Ada card has run yet."""
+    clone = field.get('vfe_clone')
+    if not clone:
+        return []
+    text = Messages(language)
+    floor = Decimal(str(clone['stock_mv'])) + Decimal(str(clone['constant_mv']))
+    return [text('vmin_clone.memory', mhz=number(clone['idle_memory_mhz']), floor=number(floor),
+                 constant=number(clone['constant_mv'])), text('vmin_clone.risk')]
+
+
 def fan_curve_hint(field, fields, values, language='en'):
     """Explain curve points blocking a fan limit, using all pending stored values.
 
@@ -260,6 +302,9 @@ def primary_preview(document):
 # Windows tools such as MSI Afterburner show the stored table value: half of
 # the NVML/Linux memory offset, the same value for the core (observed on hardware).
 WINDOWS_SCALE = {'memory_offset_max_mhz': Decimal('0.5'), 'memory_offset_min_mhz': Decimal('0.5')}
+# The factory memory offset is stored in the memory clock nvidia-smi and MSI Afterburner show;
+# nvidia-settings (the transfer rate) and the memory offset ceiling and floor rows use twice that number.
+LINUX_SCALE = {'factory_memory_offset_mhz': Decimal(2)}
 _EXPERIMENTAL = re.compile(r'(?:\s*\(experimental\)|,\s*experimental(?=\)))')
 
 
@@ -327,7 +372,15 @@ def value_text(field, value, language='en'):
 
 def windows_value(field, value):
     """Value as Windows tools show it, when that scale differs; else None."""
-    scale = WINDOWS_SCALE.get(field['key'])
+    return _scaled(WINDOWS_SCALE.get(field['key']), value)
+
+
+def linux_value(field, value):
+    """Value as nvidia-settings shows it (the transfer rate), when that scale differs; else None."""
+    return _scaled(LINUX_SCALE.get(field['key']), value)
+
+
+def _scaled(scale, value):
     amount = parse_number(str(value)) if value is not None else None
     if scale is None or amount is None:
         return None

@@ -13,13 +13,13 @@ import time
 from ..rom import BiosImage, VbiosError
 from ..rom.blackwell import BlackwellRom, LPWR_TABLES, PERF_CF_CONTROLLERS as PERF_CF_TABLE, PERF_CF_POLICIES
 from ..rom.image import backend, inspect_image
-from ..rom.tables import checksum_tail
+from ..rom.tables import ADVANCED_TABLES, PROFILE_BYTES, TableRom, checksum_tail
 from .registry import (registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
                        fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
                        fixed_voltage, dram_offset_points, gpc_curve_offset, max_operating_temperature,
                        factory_clocks, perf_cf_controllers, lpwr_features, VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS,
                        FIXED_SEMANTICS, DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS, MAX_TEMP_SEMANTICS,
-                       FACTORY_OFFSET_SEMANTICS, ADVANCED_SEMANTICS, PERF_CF_CONTROLLERS, fxp_percent)
+                       FACTORY_SEMANTICS, ADVANCED_SEMANTICS, PERF_CF_CONTROLLERS, fxp_percent)
 
 # Reviewed resolvers whose bindings are canonical for range and joint checks.
 REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
@@ -32,8 +32,8 @@ REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresh
 RAIL_EXCEPTIONS = (VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS)
 # Layout fields whose bytes no other check rereads through the canonical parser: only the
 # reviewed complete binding (offsets, encoding, scale and layout) may write them.
-COMPLETE_BINDING_SEMANTICS = RAIL_EXCEPTIONS + (DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS, MAX_TEMP_SEMANTICS,
-                                                 FACTORY_OFFSET_SEMANTICS) + ADVANCED_SEMANTICS
+COMPLETE_BINDING_SEMANTICS = (RAIL_EXCEPTIONS + (DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS, MAX_TEMP_SEMANTICS) +
+                              FACTORY_SEMANTICS + ADVANCED_SEMANTICS)
 # GB20x Advanced section: the objects of its tables (BIT P offset -> object), which change only at
 # the bytes the canonical Advanced bindings declare.
 ADVANCED_OBJECTS = {0xA8: PERF_CF_TABLE[-1], 0xAC: PERF_CF_POLICIES[-1],
@@ -126,8 +126,14 @@ def _reviewed(image, parser):
 
 
 def _same(left, right):
-    return ((left.offsets, left.encoding, left.scale, left.layout) ==
-            (right.offsets, right.encoding, right.scale, right.layout))
+    return ((left.offsets, left.encoding, left.scale, left.layout, left.companion) ==
+            (right.offsets, right.encoding, right.scale, right.layout, right.companion))
+
+
+def _companion_bytes(bindings, semantics):
+    """Every byte the companion sets of these bindings with this value semantics may write."""
+    return {at for binding in bindings if binding.descriptor['value_semantics'] == semantics
+            for _, writes in binding.companion for start, data in writes for at in range(start, start + len(data))}
 
 
 def _profile_pairs(profile):
@@ -136,15 +142,19 @@ def _profile_pairs(profile):
             for policy, name in values if name == 'default' and (policy, 'maximum') in values}
 
 
-def _ranges(before, after):
-    ranges = []
-    for at, (a, b) in enumerate(zip(before, after)):
-        if a == b:
+def _ranges(before, after, block=4096):
+    ranges, size = [], min(len(before), len(after))
+    for base in range(0, size, block):
+        # Compare whole blocks first: an edit changes a few bytes of a 1-2 MiB image.
+        if before[base:base + block] == after[base:base + block]:
             continue
-        if ranges and ranges[-1][1] == at:
-            ranges[-1][1] += 1
-        else:
-            ranges.append([at, at + 1])
+        for at in range(base, min(base + block, size)):
+            if before[at] == after[at]:
+                continue
+            if ranges and ranges[-1][1] == at:
+                ranges[-1][1] += 1
+            else:
+                ranges.append([at, at + 1])
     return [dict(start=a, end_exclusive=b, before=before[a:b].hex(), after=after[a:b].hex())
             for a, b in ranges]
 
@@ -200,6 +210,14 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     if 'nvvdd_rel_alt_follow_ov' in changes and voltages:
         raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change nvvdd_rel_alt_follow_ov and the voltage fields in separate '
                          'edits', details={'fields': ['nvvdd_rel_alt_follow_ov'] + voltages})
+    # A VMIN that copies its equation into the first unused VFE slot (Ada, a constant shares it) and the GPC
+    # curve offset, which takes that slot too.
+    cloned = sorted(k for k in changes if k in reviewed and reviewed[k].companion and
+                    reviewed[k].descriptor['value_semantics'] == VMIN_SEMANTICS)
+    if cloned and 'gpc_curve_offset_mhz' in changes:
+        raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change ' + ', '.join(cloned) + ' and gpc_curve_offset_mhz in '
+                         'separate edits: on this ROM both use the first unused VFE slot',
+                         details={'fields': cloned + ['gpc_curve_offset_mhz']})
     for key in changes:
         if (key in available and key in reviewed and
                 reviewed[key].descriptor['value_semantics'] in COMPLETE_BINDING_SEMANTICS and key not in canonical):
@@ -218,6 +236,26 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
             groups.setdefault(binding.descriptor['ordering_group'], set()).add(key)
     joint = {key for keys in groups.values() if len(keys) > 1 for key in keys}
     target, writes, edits, allowed = bytearray(image.blob), [], [], set()
+
+    def owned(at, size):
+        if isinstance(parser, BlackwellRom):
+            parser.write_owner(at, size)
+            return
+        # All writes must be the same relative field in each structurally
+        # validated duplicate chain. Extension resolvers cannot select
+        # archive records outside a chain.
+        primary_at = at
+        for chain in parser.chains:
+            if chain[0]['start'] <= at and at + size <= chain[-1]['end']:
+                primary_at = parser.legacy['start'] + at - chain[0]['start']
+                break
+        parser.owner(primary_at, size)
+
+    def claim(at, size):
+        field_bytes = set(range(at, at + size))
+        if allowed & field_bytes:
+            raise VbiosError('CONFLICTING_FIELDS', 'requested fields overlap; choose one unit representation')
+        allowed.update(field_bytes)
     for key, value in changes.items():
         if key not in available:
             raise VbiosError('UNKNOWN_FIELD', f'unrecognized or unvalidated field {key!r}', details={'diagnostics': diagnostics})
@@ -236,22 +274,8 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                                  details={'field': key, 'bounds': binding.descriptor['bounds']})
         for at, encoded in zip(binding.offsets, chunks):
             size = len(encoded)
-            if isinstance(parser, BlackwellRom):
-                parser.write_owner(at, size)
-            else:
-                # All writes must be the same relative field in each structurally
-                # validated duplicate chain. Extension resolvers cannot select
-                # archive records outside a chain.
-                primary_at = at
-                for chain in parser.chains:
-                    if chain[0]['start'] <= at and at + size <= chain[-1]['end']:
-                        primary_at = parser.legacy['start'] + at - chain[0]['start']
-                        break
-                parser.owner(primary_at, size)
-            field_bytes = set(range(at, at + size))
-            if allowed & field_bytes:
-                raise VbiosError('CONFLICTING_FIELDS', 'requested fields overlap; choose one unit representation')
-            allowed.update(field_bytes)
+            owned(at, size)
+            claim(at, size)
             old = struct.unpack_from(binding.encoding, image.blob, at)[0]
             target[at:at + size] = encoded
             writes.append((at, at + size))
@@ -261,6 +285,20 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                 edits.append(dict(field=key, offset=at, before=old, after=written,
                                   stored_units='layout byte' if binding.layout else
                                   binding.descriptor.get('stored_units', binding.descriptor['units'])))
+        if binding.companion:
+            # Raw bytes written with the value (the Ada VMIN copy and its link): the set listed for the
+            # value, else the default set. Only the reviewed binding may carry them.
+            if key not in canonical:
+                raise VbiosError('INVALID_FIELD_EVIDENCE', f'{key} must use the reviewed complete binding')
+            sets = dict(binding.companion)
+            for at, data in sets.get(decoded, sets.get(None, ())):
+                owned(at, len(data))
+                claim(at, len(data))
+                target[at:at + len(data)] = data
+                writes.append((at, at + len(data)))
+                if data != image.blob[at:at + len(data)]:
+                    edits.append(dict(field=key, offset=at, before=image.blob[at:at + len(data)].hex(),
+                                      after=data.hex(), stored_units='raw bytes'))
     touched_objects = []
     repairs = []
     if edits:
@@ -453,6 +491,11 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
             except FormatError as exc:
                 raise VbiosError('PRESERVED_FIELD_CHANGED', 'edit invalidated recognized power profiles') from exc
             changeable = lambda e: e['field'] == 'maximum' or e['value_offset'] in default_offsets
+            if isinstance(parser, TableRom):
+                # Ada: a profile entry changes only through a canonical binding of this request (the
+                # top sense level's profile, written with the base); the lower levels stay as stored.
+                canonical_offsets = {at for binding in canonical.values() for at in binding.offsets}
+                changeable = lambda e: e['value_offset'] in canonical_offsets
             profile_fixed = lambda profiles: [dict(p, entries=[{k: v for k, v in e.items()
                 if k != 'value_raw' or not changeable(e)} for e in p['entries']]) for p in profiles]
             if profile_fixed(source_profiles) != profile_fixed(target_profiles):
@@ -472,8 +515,13 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
             if profile_table is not None:
                 profile_allowed = {at for p in source_profiles for e in p['entries'] if changeable(e)
                                    for at in range(e['value_offset'], e['value_offset'] + 4)}
+                tables = [profile_table]
+                if isinstance(parser, TableRom):
+                    # The same bytes in every duplicate chain.
+                    tables = parser.copy_offsets(profile_table, PROFILE_BYTES)
+                    profile_allowed = {copy + at - profile_table for copy in tables for at in profile_allowed}
                 if any(image.blob[at] != output.blob[at] and at not in profile_allowed
-                       for at in range(profile_table, profile_table + 0xFE + 16 * 0x49)):
+                       for start in tables for at in range(start, start + 0xFE + 16 * 0x49)):
                     raise VbiosError('PRESERVED_FIELD_CHANGED', 'power profile metadata and opaque bytes must be preserved')
     # Clock rows keep their identity, and every range that contained a zero
     # offset still contains it, including simultaneous minimum/maximum edits.
@@ -581,6 +629,7 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     # The evaluated VMIN selector stays, and its equation changes only at the floats
     # the canonical *_vmin_mv binding declares (GB20x minimum, maximum and value;
     # Ada/Ampere clamp minimum and maximum).
+    clone_bytes = _companion_bytes(canonical.values(), VMIN_SEMANTICS)
     try:
         source_vmin = parser.rail_vmin() if hasattr(parser, 'rail_vmin') else None
     except FormatError:
@@ -598,8 +647,23 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                     image.blob[i] != output.blob[i] and i not in vmin_bytes for i in range(at, at + left['equation_size'])):
                 raise VbiosError('PRESERVED_FIELD_CHANGED', 'the evaluated VMIN selector and equation bytes must be '
                                  'preserved', details={'rail': left['logical_rail_id']})
+            # Ada, a constant sharing the VMIN equation (TableRom._vmin_clone): the constant, and the copy it
+            # links, change only at the companion bytes of the canonical binding, and the shape stays recognized
+            # with the same constant (a copy stays in its slot until the stock value frees it).
+            clone, after = left.get('clone'), right.get('clone')
+            if clone is None and after is None:
+                continue
+            starts = [] if clone is None else [clone['referrer_offset']] + (
+                [clone['slot_offset']] if clone['state'] == 'decoupled' else [])
+            if (clone is None or after is None or after['referrer'] != clone['referrer'] or
+                    after['state'] == 'decoupled' and after['slot'] != clone['slot'] or
+                    any(image.blob[i] != output.blob[i] and i not in clone_bytes
+                        for start in starts for copy in parser.copy_offsets(start, 25) for i in range(copy, copy + 25))):
+                raise VbiosError('PRESERVED_FIELD_CHANGED', 'the constant linked to the evaluated VMIN equation and '
+                                 'its copy must be preserved', details={'rail': left['logical_rail_id']})
     # The GPC curve root equation and the VFE slot of its offset (linked or first unused) change only
-    # at the bytes the canonical gpc_curve_offset_mhz binding declares, in every chain.
+    # at the bytes the canonical gpc_curve_offset_mhz binding declares, in every chain, and at the
+    # copy and link bytes of a canonical VMIN binding that clones its equation into that unused slot.
     try:
         source_curve = parser.gpc_curve() if hasattr(parser, 'gpc_curve') else None
     except FormatError:
@@ -607,6 +671,7 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     if source_curve is not None:
         curve_bytes = {at for binding in canonical.values() if binding.descriptor['value_semantics'] == GPC_CURVE_SEMANTICS
                        for start in binding.offsets for at in range(start, start + struct.calcsize(binding.encoding))}
+        curve_bytes |= clone_bytes
         size, starts = source_curve['size'], (source_curve['root_offset'], source_curve['slot_offset'])
         if not isinstance(parser, BlackwellRom):
             starts = [copy for at in starts for copy in parser.copy_offsets(at, size)]
@@ -642,38 +707,53 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
         if any(image.blob[at] != output.blob[at] and at not in fan_allowed
                for start, size in regions for at in range(start, start + size)):
             raise VbiosError('PRESERVED_FIELD_CHANGED', 'fan table bytes must be preserved')
-    # GB20x: the object holding the thermal policy table (0x1b) and the one holding the factory
-    # clock record (0x26) change only at the bytes the canonical max_operating_temp_c and
-    # factory_gpc_offset_mhz bindings declare, whatever the field registry, decoded or not.
-    if isinstance(parser, BlackwellRom):
-        for semantics, pointer, owner, noun in ((MAX_TEMP_SEMANTICS, 0x50, 0x1B, 'thermal policy table'),
-                                                (FACTORY_OFFSET_SEMANTICS, 0x98, 0x26, 'factory clock record')):
+    # The thermal policy table and the factory clock record change only at the bytes the canonical
+    # max_operating_temp_c and factory_gpc/memory_offset_mhz bindings declare, whatever the field
+    # registry, decoded or not: on GB20x the whole object holding each (0x1b, 0x26), on Turing,
+    # Ampere and Ada the table as its header sizes it, in every chain.
+    for semantics, pointer, owner, noun in (((MAX_TEMP_SEMANTICS,), 0x50, 0x1B, 'thermal policy table'),
+                                            (FACTORY_SEMANTICS, 0x98, 0x26, 'factory clock record')):
+        declared = {at for binding in canonical.values() if binding.descriptor['value_semantics'] in semantics
+                    for start in binding.offsets for at in range(start, start + struct.calcsize(binding.encoding))}
+        if isinstance(parser, BlackwellRom):
             try:
                 obj = parser.object_for(parser.pointer('P', pointer))
             except FormatError:
                 continue
             if obj['id'] != owner:
                 continue
-            declared = {at for binding in canonical.values() if binding.descriptor['value_semantics'] == semantics
-                        for start in binding.offsets for at in range(start, start + struct.calcsize(binding.encoding))}
-            if any(image.blob[at] != output.blob[at] and at not in declared
-                   for at in range(obj['data'], obj['data'] + obj['size'])):
-                raise VbiosError('PRESERVED_FIELD_CHANGED', f'{noun} bytes must be preserved')
-        # The objects of the PERF_CF and LPWR tables change only at the bytes the canonical Advanced
-        # bindings declare (on the RTX PRO 4000 SFF object 0x60 also covers the policy table header).
+            regions = [(obj['data'], obj['size'])]
+        elif isinstance(parser, TableRom):
+            regions = _table_copies(parser, pointer)
+        else:
+            continue
+        if any(image.blob[at] != output.blob[at] and at not in declared
+               for start, size in regions for at in range(start, start + size)):
+            raise VbiosError('PRESERVED_FIELD_CHANGED', f'{noun} bytes must be preserved')
+    if isinstance(parser, (BlackwellRom, TableRom)):
+        # The PERF_CF and LPWR tables change only at the bytes the canonical Advanced bindings declare, whatever
+        # the field registry: on GB20x the whole object holding each (on the RTX PRO 4000 SFF object 0x60 also
+        # covers the policy table header), on Turing, Ampere and Ada each table as its header sizes it, in every
+        # chain.
         declared = {at for binding in canonical.values() if binding.descriptor['value_semantics'] in ADVANCED_SEMANTICS
                     for start in binding.offsets for at in range(start, start + struct.calcsize(binding.encoding))}
-        for pointer, owner in ADVANCED_OBJECTS.items():
-            try:
-                at = parser.pointer('P', pointer)
-            except FormatError:
-                continue
-            for obj in parser.objects:
-                if obj['id'] == owner and obj['data'] <= at < obj['data'] + obj['size'] and any(
-                        image.blob[i] != output.blob[i] and i not in declared
-                        for i in range(obj['data'], obj['data'] + obj['size'])):
-                    raise VbiosError('PRESERVED_FIELD_CHANGED', f'object {owner:#x} bytes (PERF_CF or LPWR table) '
-                                     'must be preserved')
+        if isinstance(parser, BlackwellRom):
+            for pointer, owner in ADVANCED_OBJECTS.items():
+                try:
+                    at = parser.pointer('P', pointer)
+                except FormatError:
+                    continue
+                for obj in parser.objects:
+                    if obj['id'] == owner and obj['data'] <= at < obj['data'] + obj['size'] and any(
+                            image.blob[i] != output.blob[i] and i not in declared
+                            for i in range(obj['data'], obj['data'] + obj['size'])):
+                        raise VbiosError('PRESERVED_FIELD_CHANGED', f'object {owner:#x} bytes (PERF_CF or LPWR '
+                                         'table) must be preserved')
+        else:
+            for _, pointer in ADVANCED_TABLES:
+                if any(image.blob[i] != output.blob[i] and i not in declared
+                       for start, size in _table_copies(parser, pointer) for i in range(start, start + size)):
+                    raise VbiosError('PRESERVED_FIELD_CHANGED', 'PERF_CF or LPWR table bytes must be preserved')
         # PERF_CF: a reviewed utilization controller whose target was below its jump threshold keeps it so.
         try:
             source_cf, target_cf = parser.perf_cf(), rebuilt.perf_cf()
@@ -722,6 +802,21 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                                         'source_hardware_tested': None},
                     cryptographic_signatures='not verified or regenerated')
     return EditResult(output, manifest)
+
+
+def _table_copies(parser, pointer):
+    """Turing, Ampere and Ada: (start, size) in every chain of the P-token table at pointer, sized by its header
+    (header size + entry size x count; the factory clock record: header size + four 5-byte entries) and cut at the
+    end of the image that holds it; [] when no table is referenced."""
+    from ..rom.errors import FormatError
+    try:
+        at = parser.pointer('P', pointer)
+    except FormatError:
+        return []
+    blob = parser.blob
+    size = blob[at + 1] + (20 if pointer == 0x98 else blob[at + 2] * blob[at + 3])
+    size = min(size, parser.owner(at, 1)['end'] - at)
+    return [(start, size) for start in parser.copy_offsets(at, size)]
 
 
 def plan(image, changes, *, field_registry=None):

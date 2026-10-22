@@ -155,6 +155,38 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.controller.stage({'fan_channels': '2', 'fan_1_min_rpm': '900'}).changes,
                          {'fan_1_min_rpm': '900'})
 
+    def test_shared_vmin_notes_the_memory_floor_and_the_added_equation(self):
+        from nvidia_vbios.gui.presentation import vmin_clone_notes
+        from nvidia_vbios.rom import from_bytes, inspect_image
+        from test_rail_vmin import ada_vmin, ada_vmin_clone
+        source = self.root / 'vmin.rom'
+        source.write_bytes(ada_vmin_clone())
+        doc = self.controller.open(source)
+        fields = {f['key']: f for f in doc.report['fields']}
+        self.assertEqual(vmin_clone_notes(fields['nvvdd_vmin_mv']), [
+            'On this ROM the memory clock voltage floor keeps its stock value. A lower VMIN shows only while the memory '
+            'runs at its lowest clock (405 MHz, single-monitor idle). A higher VMIN shows at every memory clock only '
+            'above 575 mV (stock VMIN + 15 mV). Up to that it also shows only at that lowest clock.',
+            'Not tested on hardware. A VMIN other than the stock value adds a VFE equation to the ROM, and no Ada '
+            'card has run an equation added by the editor yet. The override might not load or the driver might fail '
+            'to start. Removing the override brings the card back.'])
+        self.assertEqual(vmin_clone_notes(fields['nvvdd_vmin_mv'], 'es'), [
+            'En esta ROM el piso de voltaje del reloj de memoria mantiene su valor de fábrica. Un VMIN más bajo solo '
+            'se nota mientras la memoria va a su reloj más bajo (405 MHz, reposo con un monitor). Un VMIN más alto se '
+            'nota con cualquier reloj de memoria solo por encima de 575 mV (VMIN de fábrica + 15 mV). Hasta ahí '
+            'también se nota solo en ese reloj más bajo.',
+            'Sin probar en hardware. Un VMIN distinto del de fábrica agrega una ecuación VFE a la ROM, y ninguna '
+            'tarjeta Ada ha usado todavía una ecuación agregada por el editor. El override podría no cargar o el '
+            'driver podría no iniciar. Quitar el override devuelve la tarjeta a como estaba.'])
+        plain = {f['key']: f for f in inspect_image(from_bytes(ada_vmin()))['fields']}
+        self.assertEqual(vmin_clone_notes(plain['nvvdd_vmin_mv']), [])
+        # VMIN and the GPC curve offset take the same unused slot: separate copies.
+        with self.assertRaises(VbiosError) as exc:
+            self.controller.stage({'nvvdd_vmin_mv': '600', 'gpc_curve_offset_mhz': '30'})
+        self.assertEqual(exc.exception.code, 'SEPARATE_EDIT_REQUIRED')
+        self.assertEqual(self.controller.stage({'nvvdd_vmin_mv': '600', 'gpc_curve_offset_mhz': '0'}).changes,
+                         {'nvvdd_vmin_mv': '600'})
+
     def test_a_fan_maximum_and_its_curve_points_lower_in_one_copy(self):
         from nvidia_vbios.rom import from_bytes
         from nvidia_vbios.rom.image import backend
@@ -427,7 +459,7 @@ class PresentationNumberTests(unittest.TestCase):
 
     def test_extreme_and_invalid_input_is_refused_before_arithmetic(self):
         from decimal import Decimal
-        from nvidia_vbios.gui.presentation import classify_number, number, parse_number, windows_value
+        from nvidia_vbios.gui.presentation import classify_number, linux_value, number, parse_number, windows_value
         cases = {'1e29': 'out_of_range', '-1e29': 'out_of_range', '1e999999999': 'out_of_range',
                  '1e-999999999': 'out_of_range', '0.0000001': 'out_of_range', '9' * 5000: 'out_of_range',
                  'abc': 'not_a_number', '': 'not_a_number', 'nan': 'not_a_number', 'inf': 'not_a_number',
@@ -437,11 +469,17 @@ class PresentationNumberTests(unittest.TestCase):
                 self.assertEqual(classify_number(text), (None, problem))
                 self.assertIsNone(parse_number(text))
                 self.assertIsNone(windows_value({'key': 'memory_offset_max_mhz'}, text))
+                self.assertIsNone(linux_value({'key': 'factory_memory_offset_mhz'}, text))
         for text, value in (('0', Decimal(0)), ('-2000', Decimal(-2000)), ('10000', Decimal(10000)),
                             ('2147483.647', Decimal('2147483.647')), ('0.001', Decimal('0.001'))):
             self.assertEqual(classify_number(text), (value, None))
         self.assertEqual(windows_value({'key': 'memory_offset_max_mhz'}, '10000'), '5000')
         self.assertIsNone(windows_value({'key': 'gpc_offset_max_mhz'}, '10000'))
+        # The factory memory offset is on the Afterburner scale: nvidia-settings shows twice the number.
+        self.assertEqual(linux_value({'key': 'factory_memory_offset_mhz'}, '-5000'), '-10000')
+        self.assertIsNone(windows_value({'key': 'factory_memory_offset_mhz'}, '500'))
+        self.assertIsNone(linux_value({'key': 'factory_gpc_offset_mhz'}, '500'))
+        self.assertIsNone(linux_value({'key': 'memory_offset_max_mhz'}, '10000'))
 
     def test_milliamp_fields_show_amps_and_store_exact_milliamps(self):
         from decimal import Decimal
@@ -532,7 +570,7 @@ class PresentationNumberTests(unittest.TestCase):
         self.assertEqual(len(spanish), 1)
         self.assertTrue(spanish[0].startswith('La fila 11 también limita la suma de los canales de potencia de '
                                               'conector 1, 2 a 280 W nominal / 280 W máximo'))
-        self.assertTrue(spanish[0].endswith('Suba también los límites de la suma de potencia de conectores.'))
+        self.assertTrue(spanish[0].endswith('Sube también los límites de la suma de potencia de conectores.'))
         # A sum row without its own field (weight -1.0) keeps the warning; a channel without a
         # connector field is named by its power channel index.
         negative = descriptors(from_bytes(connector_sum(blob, weight=0xFFFFF000)))
@@ -548,6 +586,31 @@ class PresentationNumberTests(unittest.TestCase):
         power = [f['key'] for f in section_order(fields.values()) if f['key'].startswith('connector_')]
         self.assertEqual(power[-2:], CONNECTOR_SUM)
         self.assertTrue(all(shunt_scaled(fields[k]) for k in CONNECTOR_SUM))
+
+    def test_cable_sense_profiles_note_the_top_level_and_the_input_current(self):
+        from nvidia_vbios.gui.presentation import sense_profile_notes, unsupported_notes
+        from nvidia_vbios.rom import from_bytes, inspect_image
+        from test_ada_fields import sense_profiles
+        report = inspect_image(from_bytes(sense_profiles(synthetic_rom(copies=2, policies=True))))
+        fields = {f['key']: f for f in report['fields']}
+        self.assertEqual(unsupported_notes(report), {})
+        self.assertEqual(sense_profile_notes(fields['power_max_w'], report['fields']), [
+            'This ROM sets its power limits from the 16-pin cable sense pins. This value applies at the top level, '
+            'most likely a 600 W cable (inferred, not tested). Lower levels keep their own limits.',
+            'Going past 600 W is more than that cable is rated for. That is your call.',
+            'The 12 V input current threshold (rated 30 A, about 360 W at 12 V) may limit first. Raise it too, under '
+            'Show advanced XOC-style fields.'])
+        self.assertEqual(sense_profile_notes(fields['power_default_w'], report['fields'], 'es'), [
+            'Esta ROM fija sus límites de potencia según los pines de detección del cable de 16 pines. Este valor se '
+            'aplica en el nivel más alto, probablemente un cable de 600 W (deducido, sin probar). Los niveles más '
+            'bajos mantienen sus propios límites.'])
+        # Without the 12 V input threshold field the ceiling keeps the first two notes; other fields and ROMs
+        # without sense profiles have none.
+        partial = [f for f in report['fields'] if f['key'] != 'input_current_rated_ma']
+        self.assertEqual(len(sense_profile_notes(fields['power_max_w'], partial, 'es')), 2)
+        self.assertEqual(sense_profile_notes(fields['power_min_w'], report['fields']), [])
+        plain = {f['key']: f for f in inspect_image(from_bytes(synthetic_rom(copies=2, policies=True)))['fields']}
+        self.assertEqual(sense_profile_notes(plain['power_max_w'], list(plain.values())), [])
 
     def test_a_failed_resolver_leaves_one_note_in_its_section(self):
         from nvidia_vbios.gui.i18n import Messages

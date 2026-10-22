@@ -14,7 +14,8 @@ No board serial, complete-file size, table-address, or source-hash pins.
 import copy
 import hashlib
 import math
-from .structure import dram_points, fan_curve, gpc_curve_slot, scan_images, image_chains, parse_bit, read, vfe_range
+from .structure import (dram_points, fan_curve, gpc_curve_slot, scan_images, image_chains, parse_bit, read,
+                        vfe_free_slot, vfe_range, vfe_referrers)
 from .errors import FormatError
 
 SOURCE = 'https://github.com/OE4T/linux-nvgpu/blob/patches-rel-36/drivers/gpu/nvgpu/include/nvgpu/bios.h'
@@ -48,6 +49,29 @@ ADA_POLICIES = {
                        '93d3c5c1448196872068413a3c76d5d6a981e70d1f8383b02b75dea5970daaba'),
                       NVVDD_CURRENT_CHANNEL, 'mA'),
 }
+# Power override profile table (P+0xF4), version 0x10, parsed for Ada and GB20x by the same GSP-RM
+# 615.78.08 code (0x17cd67c, gsp_ga10x.bin): a 10-byte header, four 0x3d-byte selection rows (5-byte
+# header {u8 type, u32 param}, eight 7-byte entries {u8 flags, u8 profile, u32 value, u8 param}) and
+# sixteen 0x49-byte profiles (u8 flag, eight 9-byte entries {u8 kind, u32 selector, u32 value}).
+# A selector names a power policy row (bits 0..7) and a limit (bits 8..9: 0 maximum, 1 rated,
+# 2 minimum). The profile apply (0x17bc69c) passes the value to the policy through vtable +0x2d0,
+# the wrapper 0x17b2340, which calls the limit setter 0x177fd2c (client 0xfe) and then a notify
+# method. The policy constructor (0x178aa44) seeds the same limits from the row with the same client
+# 0xfe, so a selected profile value replaces the row value (it does not clamp it). Field 2 has no
+# corpus example and is refused.
+PROFILE_HEADER = bytes.fromhex('10 0a 05 04 07 08 01 10 09 08')
+PROFILE_BYTES = 0xFE + 16 * 0x49
+ADA_PROFILE_FIELDS = {0: 'maximum', 1: 'default'}
+# The reviewed Ada selection chain (MSI RTX 4090 Suprim, 95.02.3C.40.EA). Row 0 (type 1, param 8:
+# GPIO set 0, votes into row 1, no presence gate; evaluated by 0x17c72a0) reads two sense inputs
+# into a code (bit 0 | bit 1 << 1) and votes the value of the entry holding that code (0: no vote).
+# Row 1 (type 2, param 0; 0x17bc09c) applies the profile of the last entry whose threshold is at or
+# below the vote. Rows 2 and 3 are off. Unused entries hold 00 ff 00 00 00 00 00.
+ADA_SELECTION_HEADERS = (bytes.fromhex('01 08 00 00 00'), bytes.fromhex('02 00 00 00 00'))
+SELECTION_UNUSED = bytes.fromhex('00 ff 00 00 00 00 00')
+# The code read with both sense inputs asserted, the top level. That it is the 600 W state of a
+# 12V-2x6 cable is inferred: the RTX PRO 6000 Max-Q images map codes 0..3 to 150/300/450/600 W.
+TOP_SENSE_CODE = 3
 ADA_RAIL_HEADER = bytes.fromhex('20 05 1f 01 00')
 ADA_VFE_PREFIX = bytes.fromhex('30 0b 19 32 19')
 # V20 rail row selectors (u8, 0xff = absent). REL/ALT/OV follow the nvgpu 1x prefix;
@@ -56,6 +80,8 @@ ADA_ROLE_OFFSETS = (('REL', 4), ('ALT', 5), ('OV', 6), ('VMIN', 11))
 # Byte 7 selects the equation of the evaluated VMIN: on the RTX 2000 Ada a new clamp
 # there moved the driver's VMIN, a new byte-11 equation did not (hardware tests).
 ADA_VMIN_OFFSET = 7
+# Bytes 0..3 of the V20 row hold the boot voltage; bytes 4..0x1e may select VFE equations.
+ADA_ROW_SELECTOR_BYTES = range(4, 0x1F)
 # Clocks table (BIT C+8) v0x40 with the GV HAL (header byte 6 = 3). nvgpu fixes the
 # GV row order; each row is also gated by its usage (0 fixed, 1 master), the low
 # byte of its ordering word and its rail sub-entry type. NVD is named VID as on GB20x.
@@ -73,8 +99,43 @@ ADA_FAN_TABLES = {
     'speed': (0xE0, bytes((0x10, 4, 6, 2)), 4, 6, 2),
 }
 ADA_FAN_CHANNELS = 2
+# Thermal policy table (P+0x50), version 0x10: (header size, entry size) per family. GSP-RM 615.78.08
+# reads the header as 7b1w1b (10 bytes: Turing, Ampere) or 7b1w2b (11 bytes: Ada) and each 40-byte
+# entry as 2b3w8d: byte 0 is the policy class (0 skips the entry, 1 is read), byte 1 the thermal
+# channel, bytes 2..7 three temperatures in 1/32 C. Header bytes 4, 5, 6 and 9 name policy entries
+# by role (0xff: none); byte 9 names the maximum operating temperature policy (THERMAL_MAX_TEMP_BYTE).
+THERMAL_POLICY_LAYOUTS = {'turing': (0x0A, 0x28), 'ampere': (0x0A, 0x28), 'ada': (0x0B, 0x28)}
+THERMAL_ROLE_BYTES = (4, 5, 6, 9)
+THERMAL_MAX_TEMP_BYTE = 9
+# Factory clock record (P+0x98): version 0x10, then array A and array B, two {u8 flag, u32 kHz}
+# entries each. Turing stores the 6-byte header GSP-RM reads as 6b; Ampere and Ada the 7-byte header
+# it reads as 7b, whose byte 6 it keeps as a clock flag (1 on three Ada images, 0 elsewhere).
+FACTORY_CLOCK_HEADERS = {'turing': (bytes.fromhex('10 06 05 02 05 02'),),
+                         'ampere': (bytes.fromhex('10 07 05 02 05 02 00'),),
+                         'ada': (bytes.fromhex('10 07 05 02 05 02 00'), bytes.fromhex('10 07 05 02 05 02 01'))}
+FACTORY_CLOCK_ENTRY = 5
+# PERF_CF controller table (P+0xa8), version 0x10, 6-byte header. GSP-RM 615.78.08 (gsp_ga10x.bin and
+# gsp_tu10x.bin) unpacks each entry by its size: 23 bytes as 3b5d, 24..27 as 3b5d1b, 28..31 as 3b5d1b1d,
+# 32..40 as 3b5d1b2d, 41..53 as 3b5d1b2d1b2d (54 and more as on GB20x), so bytes 0..22 (type, target, jump
+# threshold, gains, clock domain, hysteresis counts) sit at the same place in every size. Reviewed entry
+# sizes: Turing 24 and 28, Ampere 24, 32 and 49, Ada 49. The policy table (P+0xac) is the GB20x one:
+# version 0x10, a 5-byte header whose byte 4 is 0, 10-byte entries.
+LEGACY_PERF_CF_CONTROLLERS = (0x10, 6, (24, 28, 32, 49))
+LEGACY_PERF_CF_POLICIES = (0x10, 5, 10)
+# LPWR feature tables (version 0x10): name -> (BIT P offset, header size, entry size, format of the entry's
+# enable word, whose bit 0 enables the entry). GSP-RM reads MSCG entries of 15 bytes as 1d2w1b3w, a 9-byte
+# GR rail gating header as 5b2w and DIFR entries of 17 bytes as 1d1b6w. Turing has GR power gating and MSCG
+# (its P token ends before the other pointers), Ampere adds GR rail gating and Ada DIFR.
+LEGACY_LPWR_TABLES = {
+    'gr_pg': (0x80, 10, 5, '<I'),      # GR power gating
+    'ms': (0x84, 7, 15, '<I'),         # memory system clock gating (MSCG)
+    'gr_rg': (0xD4, 9, 1, '<B'),       # GR rail gating
+    'difr': (0xE8, 11, 17, '<I'),      # DIFR
+}
+ADVANCED_TABLES = (('P', 0xA8), ('P', 0xAC)) + tuple(('P', t[0]) for t in LEGACY_LPWR_TABLES.values())
 # Tables the Ada and Ampere fields write; their data images must end with a reviewed checksum tail (checksum_tail).
-ADA_EDITED_TABLES = (('P', 0x2C), ('P', 0x20), ('C', 8)) + tuple(('P', t[0]) for t in ADA_FAN_TABLES.values())
+ADA_EDITED_TABLES = ((('P', 0x2C), ('P', 0x20), ('C', 8)) + tuple(('P', t[0]) for t in ADA_FAN_TABLES.values()) +
+                     (('P', 0x50), ('P', 0x98)) + ADVANCED_TABLES)
 # Reviewed tails before the checksum byte that ends an image (the PCI image length counts
 # 512-byte blocks, so the bytes after the last table are 0xff fill up to that byte).
 # 15 0xff bytes: the padding of every family. On every Ampere and Ada corpus image the power
@@ -141,10 +202,12 @@ TURING_FAN_TABLES = {
 }
 TURING_CURVE_SHIFT = 3
 TURING_POLICY_BYTES = bytes.fromhex('23 2b 0a 01 00 02 80 00')
-# Tables the Turing fields write: power policy, VFE and fans, all in the second data
-# image. The clock table sits in the legacy image, which lacks the padding on one RTX
-# 2080 image; the clock fields check it themselves (padded), so power stays editable.
-TURING_EDITED_TABLES = (('P', 0x2C), ('P', 0x20), ('P', 0x58), ('P', 0x5C), ('P', 0x64))
+# Tables the Turing fields write: power policy, VFE, fans, the thermal policy table, the
+# factory clock record and the PERF_CF and LPWR tables, all in the second data image. The clock
+# table sits in the legacy image, which lacks the padding on one RTX 2080 image; the clock
+# fields check it themselves (padded), so power stays editable.
+TURING_EDITED_TABLES = ((('P', 0x2C), ('P', 0x20), ('P', 0x58), ('P', 0x5C), ('P', 0x64), ('P', 0x50), ('P', 0x98)) +
+                        ADVANCED_TABLES)
 
 
 def checksum_tail(blob, end, family):
@@ -166,6 +229,11 @@ def checksum_tail(blob, end, family):
     if fill < len(CHECKSUM_PADDING) and blob[header:end - 1 - fill] == EMPTY_TABLE_TAIL:
         return len(EMPTY_TABLE_TAIL) + fill
     return None
+
+
+# A profile of the Ada override table that no cable sense code selects still bounds a power edit, relaxed by
+# this factor (owner's choice): half its value as a lower bound, twice it as an upper one.
+UNREACHED_PROFILE_FACTOR = 2
 
 
 class TableRom:
@@ -480,18 +548,169 @@ class TableRom:
         return self.pointer('P', 0xF4)
 
     def power_profiles(self):
+        """Enabled override profiles of the power table (P+0xF4), decoded on Ada only (see PROFILE_HEADER).
+
+        Each profile is {index, offset, entries}; an entry is {policy, field ('maximum' or
+        'default'), value_raw, value_offset} (primary chain). An Ada image with enabled
+        profiles must also hold the reviewed selection chain (profile_selection). Shapes
+        are strict: flag 1, contiguous {01, selector, value} entries, fields 0/1, a policy
+        row of the table, no duplicate, disabled profiles and unused entries all zero.
+        Anything else, and nonempty profiles on Ampere or Turing, raise FormatError.
+        """
         at = self.profile_table()
         if at is None:
             return []
-        if self.blob[at:at + 10] != bytes.fromhex('10 0a 05 04 07 08 01 10 09 08'):
+        if self.blob[at:at + 10] != PROFILE_HEADER:
             raise FormatError('unvalidated power profile header')
-        self.owner(at, 0xFE + 16 * 0x49)
-        if any(self.blob[at + 0xFE:at + 0xFE + 16 * 0x49]):
-            raise FormatError('nonempty Ada override profiles require additional evidence')
-        return []
+        self.owner(at, PROFILE_BYTES)
+        if not any(self.blob[at + 0xFE:at + PROFILE_BYTES]):
+            return []
+        if self.family != 'ada':
+            raise FormatError('nonempty override profiles are reviewed on Ada only')
+        count = len(self.power_rows())
+        profiles = []
+        for i in range(16):
+            row = at + 0xFE + i * 0x49
+            if not any(self.blob[row:row + 0x49]):
+                continue
+            if self.blob[row] != 1:
+                raise FormatError('unsupported Ada override profile flag')
+            entries, seen, ended = [], set(), False
+            for j in range(8):
+                entry = row + 1 + j * 9
+                if not any(self.blob[entry:entry + 9]):
+                    ended = True
+                    continue
+                selector, value = read(self.blob, '<II', entry + 1)
+                policy, field = selector & 0xFF, selector >> 8
+                # The firmware stops at the first unused entry and rejects a used one after it.
+                if ended or self.blob[entry] != 1 or field not in ADA_PROFILE_FIELDS or policy >= count:
+                    raise FormatError('unsupported Ada override profile entry')
+                if (policy, field) in seen:
+                    raise FormatError('duplicate Ada override profile entry')
+                seen.add((policy, field))
+                entries.append(dict(policy=policy, field=ADA_PROFILE_FIELDS[field], value_raw=value,
+                                    value_offset=entry + 5))
+            if not entries:
+                raise FormatError('Ada override profile without entries')
+            profiles.append(dict(index=i, offset=row, entries=entries))
+        self.profile_selection(profiles)
+        return profiles
+
+    def profile_selection(self, profiles=None):
+        """{sense code: profile index or None} through the reviewed Ada selection chain (ADA_SELECTION_HEADERS).
+
+        None means no vote (the firmware then fails the power manager setup) or no
+        threshold reached. Raises FormatError for any other selection layout: other row
+        headers, a used row 2 or 3, codes other than exactly 0..3, a profile byte on a
+        sense entry, a threshold param other than 0xff, thresholds not strictly
+        ascending or naming a disabled profile.
+        """
+        at, b = self.profile_table(), self.blob
+        profiles = self.power_profiles() if profiles is None else profiles
+        starts = [at + 0x0A + 0x3D * k for k in range(4)]
+        if (any(b[s:s + 5] != header for s, header in zip(starts, ADA_SELECTION_HEADERS)) or
+                any(b[s:s + 0x3D] != bytes(5) + SELECTION_UNUSED * 8 for s in starts[2:])):
+            raise FormatError('unrecognized Ada override profile selection rows')
+
+        def entries(row):
+            out, ended = [], False
+            for j in range(8):
+                e = b[row + 5 + 7 * j:row + 12 + 7 * j]
+                if e == SELECTION_UNUSED:
+                    ended = True
+                    continue
+                if ended or e[0] != 1:
+                    raise FormatError('unrecognized Ada override profile selection entry')
+                out.append((e[1], read(e, '<I', 2)[0], e[6]))
+            return out
+        sense, thresholds = entries(starts[0]), entries(starts[1])
+        if (sorted(code for _, _, code in sense) != [0, 1, 2, 3] or any(p != 0xFF for p, _, _ in sense) or
+                any(param != 0xFF for _, _, param in thresholds)):
+            raise FormatError('unrecognized Ada override profile selection entry')
+        values, enabled = [value for _, value, _ in thresholds], {p['index'] for p in profiles}
+        if not values or values != sorted(set(values)) or any(p not in enabled for p, _, _ in thresholds):
+            raise FormatError('Ada override profile thresholds are not ascending or name a disabled profile')
+        levels = {}
+        for _, vote, code in sense:
+            reached = [p for p, value, _ in thresholds if value <= vote] if vote else []
+            levels[code] = reached[-1] if reached else None
+        return levels
+
+    def top_power_profile(self):
+        """The enabled profile the top sense code selects (TOP_SENSE_CODE), with selection_code and
+        selection_power_raw (that code's vote), or None (no profiles, or no profile at that level)."""
+        profiles = self.power_profiles()
+        if not profiles:
+            return None
+        index = self.profile_selection(profiles)[TOP_SENSE_CODE]
+        if index is None:
+            return None
+        at = self.profile_table() + 0x0A + 5
+        vote = next(read(self.blob, '<I', at + 7 * j + 2)[0] for j in range(8)
+                    if self.blob[at + 7 * j + 6] == TOP_SENSE_CODE)
+        return dict(next(p for p in profiles if p['index'] == index), selection_code=TOP_SENSE_CODE,
+                    selection_power_raw=vote)
 
     def matching_power_profiles(self):
-        return self.power_profiles()
+        """The profiles written together with the base table: on Ada, the top-level profile when every
+        entry equals the base value it replaces. The other profiles replace the base at their own
+        sense level whatever their values, so they are never written with it."""
+        top = self.top_power_profile()
+        if top is None:
+            return []
+        rows = self.power_rows()
+        return [top] if all(e['value_raw'] == rows[e['policy']][e['field'] + '_raw'] for e in top['entries']) else []
+
+    def profile_binding(self, policies):
+        """How the Ada override profiles bind the power rows policies for an edit of their base values.
+
+        None when the image has no enabled profile. Raises FormatError unless the top
+        sense level selects a profile equal to the base table (matching_power_profiles).
+        tied: {'maximum'|'default': value offsets, every duplicate chain} of the top
+        profile's entries on these rows, written with the base. The other profiles'
+        entries on these rows bound an edit: values (lower bounds) for the ceiling to
+        stay at or above, defaults (their rated values) for the rated value, ceilings
+        (upper bounds) for the floor to stay at or below. A profile no sense code
+        reaches (UNREACHED_PROFILE_FACTOR) bounds it with half its value as a lower
+        bound and twice it as an upper one; a profile a code reaches, with its value.
+        entries: the stored values, per field, as (profile index, value). outside: the
+        other profiles whose bound the stored base row breaks (its floor above an upper
+        bound, its ceiling or rated value below a lower one), where the stored values
+        could not be requested again. unreached: the profiles no sense code selects.
+        """
+        profiles = self.power_profiles()
+        if not profiles:
+            return None
+        matching = self.matching_power_profiles()
+        if not matching:
+            raise FormatError('the top sense level of the Ada override profiles selects no profile equal to the '
+                              'base table')
+        top, rows = matching[0], self.power_rows()
+        tied, values, defaults, ceilings, outside = {'maximum': [], 'default': []}, [], [], [], set()
+        entries = {'maximum': [], 'default': []}
+        reached = {index for index in self.profile_selection(profiles).values() if index is not None}
+        for p in profiles:
+            for e in p['entries']:
+                if e['policy'] not in policies:
+                    continue
+                if p['index'] == top['index']:
+                    tied[e['field']].extend(self.copy_offsets(e['value_offset'], 4))
+                    continue
+                row, value = rows[e['policy']], e['value_raw']
+                factor = 1 if p['index'] in reached else UNREACHED_PROFILE_FACTOR
+                values.append(value // factor)
+                ceilings.append(value * factor)
+                entries[e['field']].append((p['index'], value))
+                if e['field'] == 'default':
+                    defaults.append(value // factor)
+                # The stored base values must satisfy the same bounds, so they can be requested again.
+                if (row['minimum_raw'] > value * factor or row['maximum_raw'] < value // factor or
+                        e['field'] == 'default' and row['default_raw'] < value // factor):
+                    outside.add(p['index'])
+        return dict(top=top['index'], tied=tied, values=values, defaults=defaults, ceilings=ceilings,
+                    entries=entries, outside=sorted(outside), unreached=sorted(
+                        {p['index'] for p in profiles if p['index'] not in reached and p['index'] != top['index']}))
 
     def clock_ranges(self):
         at = self.pointer('C', 8)
@@ -575,6 +794,24 @@ class TableRom:
         base = vfe + b[vfe + 1] + b[vfe + 2] * b[vfe + 3]
         self.owner(vfe, base - vfe + esize * vcount)
         return gpc_curve_slot(b, base, esize, width, vcount, root)
+
+    def clock_programming_vfe(self):
+        """Ada: {entry: VFE equation index} of every clock programming entry (C+0x0c, version 0x40).
+
+        The 15-byte Ada entries name an equation in byte 3 | byte 13 << 8 (0xffff on unused
+        entries), as gpc_curve reads the GPC root; FormatError for any other layout.
+        """
+        if self.family != 'ada':
+            raise FormatError('clock programming VFE indices are reviewed on Ada only')
+        b, at = self.blob, self.pointer('C', 0x0C)
+        if at + 8 > len(b):
+            raise FormatError('clock programming table header exceeds the image')
+        hs, size, count, c1, s1, c2, s2 = b[at + 1:at + 8]
+        if b[at] != 0x40 or hs != 8 or size != 15:
+            raise FormatError('unreviewed Ada clock programming table')
+        stride = size + c1 * s1 + c2 * s2
+        self.owner(at, hs + stride * count)
+        return {i: b[e + 3] | b[e + 13] << 8 for i in range(count) for e in (at + hs + stride * i,)}
 
     def _turing_clock_ranges(self, at):
         """Rows of the Turing clocks table v0x35, gated by usage, ordering byte and fixed bytes.
@@ -850,6 +1087,90 @@ class TableRom:
                 result.append(item)
         return result
 
+    def _vmin_clone(self, row, base, count, selector):
+        """Ada: the constant equation that shares the evaluated VMIN equation (selector), or None.
+
+        The RTX 4090 95.02.3C images fill the first unused VFE slot of the 95.02.18 image with
+        a pinned 15 mV voltage constant R whose next link is the row byte 7 equation V, and the
+        clock programming entries of the memory clocks from 810 MHz up name R: their voltage floor
+        is VMIN + 15 mV + the VMIN chain. A VMIN edit first copies V into an unused slot S and
+        links R to the copy ('decoupled'), so R keeps its stock value; the stock VMIN value
+        restores R's link and the unused slot ('coupled'). Recognized in exactly this shape:
+
+        - coupled: only the next link of R references V; R is a voltage equation (type 1, unit 2)
+          with minimum = maximum = constant and zero slopes that no equation references; S is the
+          first unused slot and holds the clean unused pattern;
+        - decoupled: no equation references V and exactly one such R links an equation S that
+          only R references and that holds V's bytes except its clamp, which pins a whole uV
+          value (the stock VMIN);
+        - in both: S is referenced by nothing else, no other rail row byte selects V, R or S, no
+          clock programming entry names V or S, and the memory clock entries (the clocks table
+          DRAM row) name R except exactly one lower entry, the idle clock.
+
+        Returns the state, R and S (index and offset), the stock VMIN (uV), the clone bytes, R's
+        constant (uV), the memory clocks (MHz) whose entries name R and the idle memory clock.
+        """
+        if self.family != 'ada':
+            return None
+        b, size, none = self.blob, 25, 0xFFFF
+        try:
+            who = vfe_referrers(b, base, size, 2, count)
+            named = self.clock_programming_vfe()
+            memory = self.dram_points()['points']
+        except FormatError:
+            return None
+
+        def equation(i):
+            return bytes(b[base + size * i:base + size * i + size])
+
+        def constant(i):
+            e = equation(i)
+            lo, hi, c0, c1, c2 = read(b, '<5f', base + size * i + 3)
+            return (e[0] == 1 and e[23] & 15 == 2 and math.isfinite(c0) and lo == hi == c0 and c1 == 0 and c2 == 0
+                    and not who.get(i))
+        vmin = equation(selector)
+        users = who.get(selector, [])
+        if len(users) == 1 and users[0][1] == 'next':
+            referrer = users[0][0]
+            ref = equation(referrer)
+            if referrer == selector or not constant(referrer) or ref[2] | ref[24] << 8 != selector:
+                return None
+            slot = next((i for i in range(count) if not b[base + size * i]), None)
+            if slot is None or slot >= none or equation(slot) != vfe_free_slot(size):
+                return None
+            state, clone, stock = 'coupled', vmin, read(b, '<f', base + size * selector + 3)[0]
+        elif not users:
+            found = []
+            for i in range(count):
+                if b[base + size * i] != 1 or not constant(i):
+                    continue
+                e = equation(i)
+                slot = e[2] | e[24] << 8
+                if slot in (none, selector, i) or slot >= count or who.get(slot) != [(i, 'next')]:
+                    continue
+                copy = equation(slot)
+                lo, hi = read(b, '<ff', base + size * slot + 3)
+                if copy[:3] + copy[11:] == vmin[:3] + vmin[11:] and math.isfinite(lo) and lo == hi == int(lo):
+                    found.append((i, slot, copy, lo))
+            if len(found) != 1:
+                return None
+            (referrer, slot, clone, stock), state = found[0], 'decoupled'
+        else:
+            return None
+        rows = {b[row + k] for k in ADA_ROW_SELECTOR_BYTES if k != ADA_VMIN_OFFSET}
+        if who.get(slot, []) not in ([], [(referrer, 'next')]) or {selector, referrer, slot} & rows or \
+                {selector, slot} & set(named.values()):
+            return None
+        # The memory clock entries that name R; exactly one lower entry (the idle clock) names another equation.
+        kept = [p['mhz'] for p in memory if named.get(p['index']) == referrer]
+        other = [p['mhz'] for p in memory if named.get(p['index']) != referrer]
+        if not kept or len(other) != 1 or other[0] >= min(kept):
+            return None
+        return dict(state=state, referrer=referrer, referrer_offset=base + size * referrer, slot=slot,
+                    slot_offset=base + size * slot, stock_uv=stock, clone=clone,
+                    constant_uv=read(b, '<f', base + size * referrer + 11)[0], memory_mhz=kept,
+                    idle_memory_mhz=other[0])
+
     def rail_vmin(self):
         """Per rail, the equation of the evaluated VMIN (row byte 7; Turing byte 9) and whether its clamp pins it.
 
@@ -861,7 +1182,9 @@ class TableRom:
         reported VMIN 90 mV above this value, at both the stock and an edited
         clamp, inside the 70..162 mV its chain adds. Turing byte 9 is the nvgpu 1x
         vmin_limit_vfe_equ_idx. rel_lowest_uv is the lowest value of the REL
-        equation list (vfe_range).
+        equation list (vfe_range). On Ada, an equation that only the constant of
+        _vmin_clone references pins its value too; the item then carries 'clone'
+        (also when that constant already links a copy).
         """
         rails, vfe, base, count = self._rails()
         refs = self._ada_references(base, count)
@@ -889,14 +1212,18 @@ class TableRom:
             selected = ([r for r in roles if r['equation_offset'] == at] or
                         [r for _, _, r, _ in rails if r != row and self.blob[r + offset] == selector] or
                         (turing and self.blob[row + TURING_BOOT_OFFSET] == selector))
-            if self.blob[at] != 1 or self.blob[at + 23] & 15 != 2:
+            voltage = self.blob[at] == 1 and self.blob[at + 23] & 15 == 2
+            pins = math.isfinite(lo) and lo == hi
+            clone = self._vmin_clone(row, base, count, selector) if voltage and pins and refs is not None else None
+            if not voltage:
                 diagnostic = 'is not a float voltage output'
-            elif not (math.isfinite(lo) and lo == hi):
+            elif not pins:
                 diagnostic = 'has a clamp that does not pin its value'
-            elif refs is None or selector in refs or selected:
+            elif refs is None or selector in refs and clone is None or selected:
                 diagnostic = 'is used by another equation or role'
             else:
-                item.update(value_uv=lo, pinned=True, minimum_offset=at + 3, maximum_offset=at + 7)
+                item.update(value_uv=lo, pinned=True, minimum_offset=at + 3, maximum_offset=at + 7,
+                            **({'clone': clone} if clone else {}))
                 diagnostic = None
             if diagnostic:
                 item['diagnostic'] = diagnostic
@@ -1152,6 +1479,125 @@ class TableRom:
                 raise FormatError('unrecognized Turing fan policy entry layout')
         return dict(offset=at, policy_offset=tables['policy'](0) - 6, mapping_offset=tables['mapping'](0) - 4,
                     control_offset=None, speed_offset=None, channels=listed, rows=rows, extra_curves=[])
+
+    def thermal_policies(self):
+        """Thermal policy table (P+0x50), version 0x10, or None when no table is referenced.
+
+        Layout per family in THERMAL_POLICY_LAYOUTS (at most 16 entries, as GSP-RM 615.78.08
+        accepts). Entries carry their class (byte 0), channel (byte 1) and three temperatures in
+        1/32 C (bytes 2..7). max_temp_index is header byte 9, the entry GSP-RM keeps as the maximum
+        operating temperature policy (0xff: none); role_indices are header bytes 4, 5, 6 and 9.
+        """
+        try:
+            at = self.pointer('P', 0x50)
+        except FormatError:
+            return None  # no thermal policy table referenced
+        b = self.blob
+        version, header_size, entry_size, count = b[at:at + 4]
+        if (version, header_size, entry_size) != (0x10, *THERMAL_POLICY_LAYOUTS[self.family]) or not 0 < count <= 16:
+            raise FormatError('unsupported thermal policy table')
+        size = header_size + entry_size * count
+        self.owner(at, size)
+        entries = []
+        for i in range(count):
+            entry = at + header_size + entry_size * i
+            entries.append(dict(index=i, offset=entry, policy_class=b[entry], byte1=b[entry + 1],
+                                temperature_offset=entry + 2, temperatures_raw=read(b, '<3h', entry + 2)))
+        return dict(offset=at, header_size=header_size, size=size, entries=entries,
+                    max_temp_index=b[at + THERMAL_MAX_TEMP_BYTE], role_indices=[b[at + k] for k in THERMAL_ROLE_BYTES])
+
+    def factory_clocks(self):
+        """Factory clock record (P+0x98), or None when no record is referenced.
+
+        Same entries as BlackwellRom.factory_clocks: array A (A0 GPC, A1 memory clock) as signed kHz
+        and array B (B1 the rated boost) as unsigned kHz, each with its flag. reviewed is False for a
+        header outside FACTORY_CLOCK_HEADERS (no entry is decoded then) or a flag other than 0 or 1,
+        which GSP-RM refuses.
+        """
+        try:
+            at = self.pointer('P', 0x98)
+        except FormatError:
+            return None  # no factory clock record referenced
+        b = self.blob
+        header_size = b[at + 1]
+        header = bytes(b[at:at + min(header_size, 16)])
+        if header not in FACTORY_CLOCK_HEADERS[self.family]:
+            return dict(offset=at, size=None, reviewed=False, header=header, offsets=[], clocks=[])
+        size = header_size + 4 * FACTORY_CLOCK_ENTRY
+        self.owner(at, size)
+
+        def entries(start, fmt):
+            return [dict(index=i, offset=start + FACTORY_CLOCK_ENTRY * i, flag=b[start + FACTORY_CLOCK_ENTRY * i],
+                         value_offset=start + FACTORY_CLOCK_ENTRY * i + 1,
+                         khz=read(b, fmt, start + FACTORY_CLOCK_ENTRY * i + 1)[0]) for i in range(2)]
+        offsets, clocks = entries(at + header_size, '<i'), entries(at + header_size + 2 * FACTORY_CLOCK_ENTRY, '<I')
+        return dict(offset=at, size=size, reviewed=all(e['flag'] in (0, 1) for e in offsets + clocks), header=header,
+                    offsets=offsets, clocks=clocks)
+
+    def perf_cf(self):
+        """PERF_CF controller (P+0xa8) and policy (P+0xac) tables, or None when either is not referenced.
+
+        Same entries and keys as BlackwellRom.perf_cf, read from the controller sizes in
+        LEGACY_PERF_CF_CONTROLLERS: the type nibble (byte 0), the target and jump threshold
+        (FXP20.12 at bytes 3 and 7), the clock domain (byte 19: on every reviewed image the row of
+        the clocks table C+8 that names it, GPC 0, DRAM 2 and VID 5 in the GV HAL order), the
+        increase and decrease hysteresis counts (bytes 20 and 21); policy entries as on GB20x.
+        """
+        try:
+            controllers_at, policies_at = self.pointer('P', 0xA8), self.pointer('P', 0xAC)
+        except FormatError:
+            return None  # no PERF_CF tables referenced
+        b = self.blob
+        version, header_size, entry_size, count = b[controllers_at:controllers_at + 4]
+        expected_version, expected_header, entry_sizes = LEGACY_PERF_CF_CONTROLLERS
+        if (version, header_size) != (expected_version, expected_header) or entry_size not in entry_sizes or count < 3:
+            raise FormatError('unsupported PERF_CF controller table')
+        self.owner(controllers_at, header_size + entry_size * count)
+        controllers = []
+        for i in range(count):
+            e = controllers_at + header_size + entry_size * i
+            target, jump = read(b, '<II', e + 3)
+            controllers.append(dict(index=i, offset=e, type=b[e] & 0x0F, target_raw=target, jump_raw=jump,
+                                    domain=b[e + 19], hysteresis_up=b[e + 20], hysteresis_down=b[e + 21],
+                                    target_offset=e + 3, jump_offset=e + 7, hysteresis_up_offset=e + 20,
+                                    hysteresis_down_offset=e + 21))
+        version, header_size, entry_size, p_count = b[policies_at:policies_at + 4]
+        if (version, header_size, entry_size) != LEGACY_PERF_CF_POLICIES or not p_count or b[policies_at + 4]:
+            raise FormatError('unsupported PERF_CF policy table')
+        self.owner(policies_at, header_size + entry_size * p_count)
+        policies = []
+        for i in range(p_count):
+            e = policies_at + header_size + entry_size * i
+            conflicts, members = read(b, '<II', e + 2)
+            policies.append(dict(index=i, offset=e, flags=b[e], kind=b[e] & 0x0F, active=bool(b[e] & 0x80),
+                                 conflicts=conflicts, controllers=members))
+        return dict(controllers=dict(offset=controllers_at, header_size=b[controllers_at + 1],
+                                     entry_size=b[controllers_at + 2], entries=controllers),
+                    policies=dict(offset=policies_at, header_size=header_size, entries=policies))
+
+    def lpwr_table(self, name):
+        """One LPWR feature table (LEGACY_LPWR_TABLES), or None when this family has none or it is not referenced.
+
+        Same keys as BlackwellRom.lpwr_table (object_id None): GSP-RM 615.78.08 checks the version
+        (0x10), reads the header and entry sizes the table states and skips every entry whose enable
+        word has bit 0 clear.
+        """
+        if name not in LEGACY_LPWR_TABLES:
+            return None
+        pointer, header_size, entry_size, fmt = LEGACY_LPWR_TABLES[name]
+        try:
+            at = self.pointer('P', pointer)
+        except FormatError:
+            return None  # no table referenced (or past the BIT P token)
+        b = self.blob
+        version, hs, es, count = b[at:at + 4]
+        if (version, hs, es) != (0x10, header_size, entry_size) or not 0 < count <= 5:
+            raise FormatError(f'unsupported LPWR {name} table')
+        self.owner(at, hs + es * count)
+        entries = [dict(index=i, offset=at + hs + es * i, value=read(b, fmt, at + hs + es * i)[0])
+                   for i in range(count)]
+        return dict(name=name, offset=at, header_size=hs, entry_size=es, format=fmt, object_id=None,
+                    entries=entries)
 
     def copy_offsets(self, at, size):
         self.owner(at, size)

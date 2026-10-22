@@ -18,12 +18,12 @@ from .file_pickers import show_builtin_picker, show_path_dialog
 from .controller import (Controller, compare_memory, controls, import_from, loader_messages, memory_view,
                          open_document, reset_document, save_document, stage_document)
 from .presentation import (ADVANCED_SECTION, advanced_group, classify_number, dependency_reason, display_units,
-                           fan_curve_hint, field_label, field_section, import_summary,
+                           fan_curve_hint, field_label, field_section, import_summary, linux_value,
                            number, memory_columns, memory_comparison, memory_configuration, memory_raw_text,
                            MEMORY_TIMINGS, opt_in_field_keys, parse_number,
                            primary_preview, read_only_reason, row_title, SECTION_NAMES, section_order, shunt_real,
-                           shunt_scaled, summed_cap_notes, technical_field_keys, to_display, to_stored,
-                           unsupported_notes, value_text, windows_value)
+                           sense_profile_notes, shunt_scaled, summed_cap_notes, technical_field_keys, to_display,
+                           to_stored, unsupported_notes, value_text, vmin_clone_notes, windows_value)
 
 # Typing pauses this long before the copy is rebuilt and verified.
 LIVE_DELAY_MS = 350
@@ -803,8 +803,13 @@ class EditorWindow(Gtk.ApplicationWindow):
         hint = windows_value(field, field['current'])
         if hint is not None:
             sub.append(self.text('windows_equivalent', value=hint))
+        linux = linux_value(field, field['current'])
+        if linux is not None:
+            sub.append(self.text('linux_equivalent', value=linux))
         left.append(label(' · '.join(sub), wrap=True, css=('vb-note',)))
-        for note in summed_cap_notes(field, self.controller.document.report.get('fields', []), self.language):
+        fields = self.controller.document.report.get('fields', [])
+        for note in (summed_cap_notes(field, fields, self.language) + sense_profile_notes(field, fields, self.language) +
+                     vmin_clone_notes(field, self.language)):
             left.append(label(note, wrap=True, css=('vb-note',)))
         top.append(left)
         if field['units'] == 'flag':
@@ -1398,6 +1403,12 @@ class EditorWindow(Gtk.ApplicationWindow):
                 hint = windows_value(field, amount)
                 if hint is not None:
                     message += ' · ' + self.text('windows_short', value=hint)
+                linux = linux_value(field, amount)
+                if linux is not None:
+                    message += ' · ' + self.text('linux_short', value=linux)
+                if field.get('stored_flag') == 0 and amount != 0:
+                    # A factory offset whose entry is off in this ROM: a value other than 0 turns it on.
+                    message += ' · ' + self.text('factory_offset_on')
             if key in invalid:
                 row.add_css_class('invalid')
                 delta.add_css_class('vb-error')

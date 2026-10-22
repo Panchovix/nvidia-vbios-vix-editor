@@ -63,15 +63,19 @@ funcionando sin las dependencias gráficas.
    combinado. Los valores de corriente de entrada de 12 V son valores guardados de
    la política, no corrientes seguras garantizadas; los límites del conector, del
    slot y de los cables siguen aplicando. **Temperatura máxima de funcionamiento**
-   (Blackwell, en la tarjeta Potencia; experimental, sin probar en hardware) es el
-   límite de temperatura que el driver informa como temperatura máxima de
-   funcionamiento de la GPU (en `nvidia-smi`, la temperatura actual más T.Limit): baja
-   hasta 40 °C y sube hasta 3 °C sobre el valor de fábrica del producto (90 °C en una
-   RTX 5090, 88 °C en una RTX 5080), en pasos de 1/32 °C, y es de solo lectura en las
-   ROM estilo XOC, donde ese límite está desactivado. Un valor más bajo debería hacer que
-   el driver baje los clocks antes, y uno más alto deja menos margen térmico. La ROM de la
-   RTX 5080 Laptop GPU guarda además un segundo límite del mismo tipo (87 °C) cuyo papel no
-   se rastreó, así que ahí subir el valor puede no tener efecto. **Mostrar campos avanzados (estilo XOC)**
+   (Blackwell, Ada, Ampere y Turing, en la tarjeta Potencia; experimental, sin probar en
+   hardware) es el límite de temperatura que el driver informa como temperatura máxima de
+   funcionamiento de la GPU (en `nvidia-smi`, la temperatura actual más T.Limit, según lo
+   comprobado en tarjetas de escritorio): baja hasta 40 °C y sube hasta 3 °C sobre el
+   valor de fábrica del producto (90 °C en una RTX 5090 o RTX 4090, 93 °C en una RTX
+   3090, 89 °C en una RTX 2080 Ti), en pasos de
+   1/32 °C, y es de solo lectura en las ROM estilo XOC, donde ese límite está desactivado
+   o no existe. Un valor más bajo debería hacer que el driver baje los clocks antes, y uno
+   más alto deja menos margen térmico. La ROM de la RTX 5080 Laptop GPU guarda además un
+   segundo límite del mismo tipo (87 °C) cuyo papel no se rastreó, así que ahí subir el
+   valor puede no tener efecto. En las ROM de portátil Ampere y Ada es de solo lectura:
+   guardan un límite más bajo del mismo tipo (89 °C) y no se sabe cuál alcanza primero la
+   GPU. **Mostrar campos avanzados (estilo XOC)**
    (desmarcada por defecto) muestra campos opcionales como la potencia nominal de
    las políticas fijas 2/7, los umbrales de hardware (corriente del slot; en
    Ampere y Turing la corriente de los conectores; en Ada la potencia de salida
@@ -108,7 +112,16 @@ funcionando sin las dependencias gráficas.
    de las filas2/7; los perfiles reconocidos sólo reemplazan máximo y default.
    Ada/Ampere utilizan el índice TGP de la cabecera en cada cadena duplicada
    validada. Son límites guardados en la ROM; la aceptación por firmware y el
-   mínimo aplicado en runtime siguen siendo desconocidos.
+   mínimo aplicado en runtime siguen siendo desconocidos. Algunas ROM Ada (una
+   imagen MSI RTX 4090) eligen sus límites de potencia según los pines de
+   detección del cable de 16 pines. Ahí el techo de potencia de la placa y la
+   potencia por defecto al arrancar también escriben el perfil del nivel más alto,
+   y los niveles más bajos mantienen sus propios límites y fijan los valores
+   mínimos aceptados (experimental, sin probar en hardware). Las notas bajo las
+   filas dicen que el nivel más alto probablemente es un cable de 600 W
+   (deducido), que pasar de 600 W es decisión tuya y que el umbral de corriente de
+   entrada de 12 V (unos 576 W a 12 V en esa ROM, un campo avanzado) puede limitar
+   antes, así que conviene subirlo también.
 3. La vista previa es en vivo. Al escribir, la fila se marca y muestra original →
    nuevo valor, y la barra inferior lista los cambios al instante. Tras una pausa
    de 350 ms la copia se genera en memoria y se verifica en segundo plano; los
@@ -129,14 +142,23 @@ Los offsets de memoria Blackwell reconocidos se editan en **MHz** en la escala
 NVML/Linux, que es el doble del valor guardado en la tabla. Cada fila de memoria
 muestra también el valor que ven las herramientas de Windows como MSI Afterburner
 (la mitad); el offset del núcleo es igual en ambas. El **Offset GPC de fábrica
-(overclock del fabricante)** (Blackwell; experimental, sin probar en hardware; se muestra
-sin los campos avanzados) es el overclock de fábrica que el fabricante de la placa guarda
-en la ROM (de +30 a +195 MHz en las ROM con OC de fábrica revisadas); acepta de -500 a +500
-MHz en MHz enteros, solo en las ROM que lo guardan, y es de solo lectura en las demás (ROM
-Founders Edition, de referencia, de portátil y RTX PRO). Un valor negativo baja el clock,
-valores lejos del de fábrica pueden volver inestable la tarjeta, y no se comprobó si el
-offset GPC de una herramienta se suma a este o lo reemplaza. El **Clock boost nominal de
-fábrica**, en la lista de solo lectura, queda como está guardado. Con los campos avanzados,
+(overclock del fabricante)** y el **Offset de memoria de fábrica (overclock del
+fabricante)** (Blackwell, Ada, Ampere y Turing; experimentales, sin probar en hardware; se
+muestran sin los campos avanzados) son el overclock de fábrica que el fabricante de la placa
+guarda en la ROM (de +15 a +195 MHz en el núcleo en las ROM con OC de fábrica revisadas; un
+offset de memoria solo en dos ROM de RTX 20). El offset GPC acepta de -500 a +500 MHz y el de
+memoria de -5000 a +5000 MHz, en MHz enteros. El offset de memoria está en el clock de memoria
+que muestran `nvidia-smi` y MSI Afterburner (7000 MHz en GDDR6 de 14 Gbps); nvidia-settings, que
+muestra la tasa de transferencia, y las filas de techo y piso del offset de memoria usan el doble
+de ese número, que la fila también muestra (de -5000 a +5000 MHz aquí son de -10000 a +10000 MHz
+allí). En una ROM que no guarda overclock de fábrica (ROM Founders Edition, de referencia, de
+estación de trabajo y de portátil) el campo muestra 0, y un valor distinto de 0 lo activa, algo
+que no se probó en esas ROM (la fila lo indica); 0 apaga el offset como lo guardan esas ROM, así
+que devuelve sus bytes originales, incluso desde una copia guardada.
+Un valor negativo baja el clock, valores lejos del de fábrica pueden volver inestable
+la tarjeta o impedir que arranque, y no se comprobó si el offset de una herramienta se suma al
+de fábrica o lo reemplaza. El **Clock boost nominal de fábrica**, en la lista de solo lectura,
+queda como está guardado. Con los campos avanzados,
 el **Offset de la curva GPC** (Blackwell, Ada y Ampere; experimental, sin probar en
 hardware; de -500 a +500 MHz) debería desplazar la curva VF de fábrica del núcleo esa
 cantidad de MHz en todos los voltajes, en cada arranque y debajo del offset de
@@ -175,8 +197,18 @@ ecuación que el driver evalúa como VMIN; en Ada el driver le suma sus término
 encadenados (+90 mV en una RTX 2000 Ada), así que el valor llega hasta el REL más
 bajo menos lo máximo que esos términos pueden sumar (753 mV en esa placa). El
 techo de solo lectura del "slot VMIN de la info del riel" es otra ecuación y no
-fija el VMIN. En las imágenes Ada cuyo REL o ALT es una constante (la imagen más
-nueva de la RTX 4090, 4080, RTX 4000 Ada; ALT en la 4080 SUPER, 4070 Ti SUPER y 4060),
+fija el VMIN. En las ROM 95.02.3C de la RTX 4090 una constante de 15 mV que fija el
+piso de voltaje del reloj de memoria enlaza la ecuación de VMIN; ahí un VMIN nuevo
+primero copia esa ecuación a un slot VFE libre, así el piso de la memoria mantiene su
+valor de fábrica y un VMIN más bajo solo se nota con la memoria en reposo a 405 MHz;
+uno más alto se nota con cualquier reloj de memoria solo por encima de 826 mV
+(deducido, sin medir). Sus notas lo dicen, y también que ninguna tarjeta Ada ha usado
+una ecuación agregada por el editor: el override podría no cargar o el driver podría
+no iniciar, y quitar el override devuelve la tarjeta a como estaba. El valor de
+fábrica restaura los bytes originales. Ahí el VMIN y el offset de la curva GPC se
+guardan en copias separadas, porque ambos usan ese slot. En las imágenes Ada cuyo
+REL o ALT es una constante (la imagen más nueva de la RTX 4090, 4080, RTX 4000 Ada;
+ALT en la 4080 SUPER, 4070 Ti SUPER y 4060),
 **Voltaje fijo REL/ALT de NVVDD** (experimental) fija ese valor, desde su mínimo de
 clamp hasta el valor de OV (1200 mV), con REL como máximo igual a ALT: cambia ambos
 juntos para subir REL por encima de ALT. Bajar REL por debajo de un VMIN subido
@@ -194,16 +226,16 @@ Atajos: `Ctrl+O` abre, `Ctrl+Enter` verifica al momento, `Ctrl+S` guarda una
 copia, `Ctrl+R` restablece, `Ctrl+I` importa desde otra ROM y `Ctrl+Q` cierra. La
 ventana (760×920 por defecto) es
 de una sola columna: tarjeta del dispositivo, luego Potencia, Voltaje, Offsets de
-reloj, Corriente y protección, y Ventiladores, en Blackwell la sección plegada **Avanzado**, y
+reloj, Corriente y protección, y Ventiladores, la sección plegada **Avanzado**, y
 al final los campos de solo lectura en una sección plegada. Si una parte de la imagen usa una disposición que el editor aún no
 admite (por ejemplo, las tablas de ventiladores de algunas imágenes), la tarjeta
 correspondiente avisa que algunos de sus campos no se muestran; el título aparece aunque
 no quede ningún campo. La barra de cambios queda siempre visible. Tab recorre los controles. Los errores muestran códigos
 estables del backend; los hashes y mensajes se pueden seleccionar y copiar.
 
-**Avanzado: controladores de rendimiento y ahorro en reposo** (Blackwell; plegada, después
-de Ventiladores y antes de los campos de solo lectura; todos los campos son experimentales y
-sin probar en hardware) tiene dos grupos, cada uno en su tarjeta. En **Controladores de
+**Avanzado: controladores de rendimiento y ahorro en reposo** (Blackwell, Ada, Ampere y
+Turing; plegada, después de Ventiladores y antes de los campos de solo lectura; todos los
+campos son experimentales y sin probar en hardware) tiene dos grupos, cada uno en su tarjeta. En **Controladores de
 clocks**, el interruptor **Política de clocks por utilización** y, para los clocks GPC, DRAM
 y VID, el **objetivo de utilización** y el **umbral de salto** (porcentaje entero; de 10 %
 hasta 1 % bajo el umbral de salto, y del objetivo + 1 % hasta 100 %; para subir el objetivo
@@ -211,13 +243,18 @@ hasta o por encima del umbral guardado, sube también el umbral en la misma edic
 **histéresis de bajada** y **de subida** (en muestras, la de bajada de 0,5x a 4x la de
 fábrica y la de subida de 1 a 4). Ajustan cómo el driver sube y baja los clocks según la
 carga: un objetivo más bajo sube el clock antes con carga parcial, con más consumo y calor.
-No está probado que el driver use esta tabla en Blackwell. En **Ahorro en reposo**, los
-interruptores **Power gating de GR**, **Clock gating del sistema de memoria, MSCG**, **Power
-gating de NVDEC/NVENC/OFA/NVJPG**, **Ahorro de energía con imagen fija, DIFR** y, en la RTX
-PRO 4000 SFF y la RTX 5080 Laptop GPU, **Rail gating de GR**, cada uno en **De fábrica**
-(como viene) o **Desactivado**, y los **tiempos de reposo de DIFR** y **del rail gating de
-GR** (ms o µs, el rail gating de GR en pasos de 10 µs, de 0,5x a 4x los de fábrica). Se
-espera que solo actúen en reposo o con carga ligera (es una inferencia). Desactivado gasta un
+No está probado que el driver use esta tabla en ninguna de estas tarjetas. En **Ahorro en
+reposo**, los interruptores que tiene la ROM, cada uno en **De fábrica** (como viene) o
+**Desactivado**: **Power gating de GR** y **Clock gating del sistema de memoria, MSCG** en
+todas las familias, **Power gating de NVDEC/NVENC/OFA/NVJPG** en Blackwell, **Ahorro de
+energía con imagen fija, DIFR** en Blackwell y en las Ada que lo traen activado, y **Rail
+gating de GR** solo donde viene activado (la RTX PRO 4000 SFF, la RTX 5080 Laptop GPU y las
+GA102 RTX 3080/3090, RTX A4500..A6000 y A40); y los **tiempos de reposo de DIFR** y **del rail
+gating de GR** (ms o µs, el rail gating de GR en pasos de 10 µs, de 0,5x a 4x los de
+fábrica). En un producto Turing, Ampere o Ada que el editor no revisó, un interruptor cuyas
+entradas se ven iguales vengan apagadas de fábrica o apagadas después se muestra de solo
+lectura, con el motivo. Se espera que
+solo actúen en reposo o con carga ligera (es una inferencia). Desactivado gasta un
 poco más en reposo y puede evitar tirones o parpadeos en reposo; tiempos de reposo muy cortos
 pueden causar tirones o, rara vez, pantalla negra en reposo. Un valor que depende de un
 interruptor (los valores de los controladores de la política de utilización, un tiempo de
@@ -254,7 +291,7 @@ cambios, y la comparación no toca la ROM abierta, la lista de cambios ni el gua
 **Importar desde ROM…** (en la barra de cambios) copia valores de otra ROM de la misma familia
 a la ROM abierta, por ejemplo los ajustes de ventiladores de otra placa: elige la ROM, marca las
 secciones (Potencia, Voltaje, Offsets de reloj, Corriente y protección, Ventiladores; nunca la
-sección Avanzado de Blackwell) y, si quieres, los campos avanzados estilo XOC (desmarcados por
+sección Avanzado) y, si quieres, los campos avanzados estilo XOC (desmarcados por
 defecto). La otra ROM se lee en
 segundo plano. Cada valor distinto que esta ROM puede tomar se escribe en su fila como si lo
 hubieras escrito tú: aparece en la lista de cambios, se verifica como cualquier otro valor, y
@@ -275,11 +312,11 @@ ecuación de voltaje, como REL y ALT que siguen a OV), está fuera del rango de 
 campo avanzado no incluido, se retiene junto con campos relacionados, o el editor lo rechazó.
 Los campos de solo lectura en ambas ROM solo se listan cuando retienen campos relacionados. La
 cantidad de canales de ventilador describe los ventiladores de la placa y nunca se copia, y
-tampoco se copia la **Temperatura máxima de funcionamiento** de Blackwell (cada producto tiene la
-suya); un valor que escribiste en ella se mantiene. El **Offset GPC de fábrica** de Blackwell
-viene con los Offsets de reloj cuando ambas ROM guardan uno. Si la otra ROM no guarda ninguno
-(por ejemplo, una ROM Founders Edition), esta ROM conserva el suyo, y una ROM que no guarda
-ninguno nunca recibe uno. Una
+tampoco se copia la **Temperatura máxima de funcionamiento** (cada producto tiene la suya); un
+valor que escribiste en ella se mantiene. El **Offset GPC de fábrica** y el **Offset de memoria
+de fábrica** vienen con los Offsets de reloj. Si la otra ROM no guarda ninguno (por ejemplo, una
+ROM Founders Edition), esta ROM recibe 0 MHz, y una ROM que no guarda ninguno toma el valor de la
+otra ROM. Una
 ROM de otra familia de GPU o de otro formato (por ejemplo un `.bin` del loader) se rechaza; otro producto de la misma familia (otro ID de dispositivo
 PCI) se permite con un aviso. `nvbios import` hace lo mismo desde la línea de comandos (ver la
 [API del editor](editor-api.md)).
@@ -288,7 +325,8 @@ PCI) se permite con un aviso. `nvbios import` hace lo mismo desde la línea de c
 velocidad de los ventiladores, los de potencia o corriente y los de voltaje de otra placa pueden
 superar lo que soporta el hardware de esta placa, por ejemplo ventiladores para una velocidad
 menor o un solo conector 12V-2x6 donde la otra placa tiene más conectores de alimentación o etapas
-de potencia más robustas. Un offset GPC de fábrica de otra placa puede no ser estable en esta.
+de potencia más robustas. Un offset GPC o de memoria de fábrica de otra placa puede no ser estable
+en esta.
 Revisa cada valor importado en la lista de cambios antes de guardar.
 
 Consulta la [API del editor](editor-api.md) y los [campos ampliados](extended-fields.md)
