@@ -7,6 +7,7 @@ import re
 from ..editor.sections import (ADVANCED_SECTION, SECTION_NAMES, SECTIONS, field_section,  # noqa: F401
                                opt_in_field_keys, technical_field_keys)
 from ..editor.registry import (FACTORY_BOOST_REASON, FACTORY_OFFSET_FRACTION_REASON, FACTORY_UNREVIEWED_REASON,
+                               FAN_ZERO_RPM_MIXED_REASON, FAN_ZERO_RPM_NO_BLOCK_REASON, FAN_ZERO_RPM_TEMPS_OFF_REASON,
                                LPWR_GR_RG_UNRECOGNIZED_REASON, LPWR_GR_RG_UNREVIEWED_REASON, LPWR_MIXED_REASON,
                                LPWR_STOCK_UNRECOGNIZED_REASON, LPWR_STOCK_UNREVIEWED_REASON, LPWR_TIME_SWITCH_REASON,
                                MAX_TEMP_DISABLED_REASON, MAX_TEMP_LOWER_LIMIT_REASON, MAX_TEMP_NO_POLICY_REASON,
@@ -82,6 +83,9 @@ REASON_KEYS = {
     LPWR_STOCK_UNREVIEWED_REASON: 'reason.lpwr_stock_unreviewed',
     LPWR_STOCK_UNRECOGNIZED_REASON: 'reason.lpwr_stock_unrecognized',
     LPWR_TIME_SWITCH_REASON: 'reason.lpwr_time_switch',
+    FAN_ZERO_RPM_MIXED_REASON: 'reason.fan_zero_rpm_mixed',
+    FAN_ZERO_RPM_NO_BLOCK_REASON: 'reason.fan_zero_rpm_no_block',
+    FAN_ZERO_RPM_TEMPS_OFF_REASON: 'reason.fan_zero_rpm_temps_off',
 }
 
 
@@ -103,6 +107,9 @@ def field_label(field, language='en'):
             return text('field.output_ocp_rated' + advanced, rail=rail.upper())
         if key == f'{rail}_vmin_mv':
             return text('field.vmin', rail=rail.upper())
+        if key == f'{rail}_vmin_fixed':
+            # On while the VMIN value fixes the clamp of a tree root or per-chip equation (vmin_tree).
+            return text('field.vmin_fixed', rail=rail.upper())
         if key == f'{rail}_vmin_equation_max_mv':
             # The rail INFO VMIN slot; the evaluated VMIN is {rail}_vmin_mv.
             return text('field.vmin_slot', rail=rail.upper())
@@ -149,6 +156,8 @@ def read_only_reason(field, language='en'):
     reason = field.get('reason')
     if reason in REASON_KEYS:
         return text(REASON_KEYS[reason])
+    if field.get('units') == 'flag' and (field.get('vmin_tree') or {}).get('state') == 'stock':
+        return text('reason.vmin_fixed_stock')
     # Unmapped evidence stays in English (the JSON manifest keeps it). Avoid pretending
     # to translate an arbitrary extension's backend explanation.
     return reason if language == 'en' and reason else text('reason.generic')
@@ -217,6 +226,32 @@ def sense_profile_notes(field, fields, language='en'):
     return notes
 
 
+def per_chip(field):
+    """True for a VMIN field whose stock value is set per chip (vmin_tree in its stock state): the ROM stores no
+    number for it, so its row starts empty and its original value reads 'per chip'."""
+    return field.get('current') is None and (field.get('vmin_tree') or {}).get('state') == 'stock'
+
+
+def vmin_tree_notes(field, family, language='en'):
+    """Notes of an editable VMIN field on a tree root or per-chip equation (vmin_tree), and of its switch: how the
+    stock value is set, what a value fixes (and on GB20x the driver's 5 mV step), the risk, and how the switch goes
+    back to the stock bytes."""
+    tree = field.get('vmin_tree')
+    if not tree or not field.get('editable'):
+        return []
+    text = Messages(language)
+    if field.get('units') == 'flag':
+        return [text('vmin_tree.switch')]
+    if tree['kind'] == 'per-chip' and tree.get('stock_clamp_mv'):
+        low, high = tree['stock_clamp_mv']
+        shape = text('vmin_tree.per_chip', low=number(low), high=number(high))
+    else:
+        shape = text('vmin_tree.tree')
+    if family == 'blackwell-gb20x':
+        shape += ' ' + text('vmin_tree.step')
+    return [shape, text('vmin_tree.risk')]
+
+
 def vmin_clone_notes(field, language='en'):
     """Notes of the VMIN field on an Ada ROM where a constant shares the VMIN equation (vfe_clone): the memory
     clock voltage floor keeps its stock value, so a lower VMIN shows only at the idle memory clock and a higher
@@ -229,6 +264,38 @@ def vmin_clone_notes(field, language='en'):
     floor = Decimal(str(clone['stock_mv'])) + Decimal(str(clone['constant_mv']))
     return [text('vmin_clone.memory', mhz=number(clone['idle_memory_mhz']), floor=number(floor),
                  constant=number(clone['constant_mv'])), text('vmin_clone.risk')]
+
+
+def fan_stop_notes(field, family, language='en'):
+    """Notes of an editable fan_zero_rpm switch: on a blower board without stored fan-stop values the
+    values it writes (fan_stop_template) and the blower risks; where the ROM ships with zero RPM off
+    otherwise, the risks on a blower card; where the channel entries keep bit 4 clear
+    (channel_bit4_clear), that no shipped ROM runs zero RPM with that flag form; each entry without
+    hysteresis (zero_rpm_flat_pairs); on Ada and Ampere that it is not hardware-tested there; and on
+    every board that a fan tool holding manual control keeps the fans running."""
+    if field.get('key') != 'fan_zero_rpm' or not field.get('editable'):
+        return []
+    text, notes = Messages(language), []
+    template = field.get('fan_stop_template')
+    if template:
+        pairs = ', '.join(f"{number(e['low_c'])}/{number(e['high_c'])}" for e in template['entries'])
+        notes += [text('fan_stop.template', donor=template['donor'], pairs=pairs), text('fan_stop.blower')]
+    elif field.get('current') == 0:
+        notes.append(text('fan_stop.off'))
+    if field.get('channel_bit4_clear'):
+        notes.append(text('fan_stop.bit4'))
+    notes += [text('fan_stop.flat', field=row_title({'key': flat['field']}, language)[0], value=number(flat['temp_c']))
+              for flat in field.get('zero_rpm_flat_pairs', ())]
+    if not template and family in ('ada', 'ampere'):
+        notes.append(text('fan_stop.untested'))
+    return notes + [text('fan_stop.manual')]
+
+
+def zero_rpm_channels_hint(channel_count):
+    """The hint key for a fan channel count refused by the start temperature rule (details channel_count of
+    ZERO_RPM_ABOVE_CURVE): 'separate-edits' (zero RPM off, then the count, then zero RPM on with the upper
+    lowered) or 'none' (the count cannot be raised on this ROM); None for any other refusal."""
+    return {'separate-edits': 'zero_rpm_channels_hint', 'none': 'zero_rpm_channels_locked_hint'}.get(channel_count)
 
 
 def fan_curve_hint(field, fields, values, language='en'):
@@ -362,8 +429,10 @@ def number(value):
 
 
 def value_text(field, value, language='en'):
-    """Row text of a display value: On/Off for a 0/1 flag field (Stock/Off for a stock-off switch), else
-    number(value)."""
+    """Row text of a display value: On/Off for a 0/1 flag field (Stock/Off for a stock-off switch), Mixed for a
+    flag whose entries disagree (flag_state 'mixed', no value), else number(value)."""
+    if field.get('units') == 'flag' and value is None and field.get('flag_state') == 'mixed':
+        return Messages(language)('flag_mixed')
     if field.get('units') == 'flag' and value is not None and value in (0, 1):
         on = 'flag_stock' if field.get('switch') == 'stock-off' else 'flag_on'
         return Messages(language)(on if value else 'flag_off')

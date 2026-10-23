@@ -158,6 +158,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'import.reason.absent_in_donor': 'no está en la otra ROM',
  'import.reason.absent_in_target': 'no está en esta ROM',
  'import.reason.read_only_in_donor': 'de solo lectura en la otra ROM',
+ 'import.reason.per_chip_in_donor': 'en la otra ROM se fija por chip, no se guarda como número',
  'import.reason.read_only_in_target': 'de solo lectura en esta ROM',
  'import.reason.read_only': 'de solo lectura en ambas ROM',
  'import.reason.opt_in': 'campo avanzado, no incluido',
@@ -180,6 +181,17 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'order_hint_voltage': 'Rompe el orden VMIN < REL ≤ ALT; cambia estos valores juntos',
  'order_hint_fan': ('Los límites y puntos de las curvas deben quedar dentro de sus rangos permitidos; '
                      'cambia los valores relacionados juntos'),
+ 'zero_rpm_hint': ('Con la parada en reposo activada, el umbral superior no puede quedar por encima del punto 1 '
+                   'de la misma curva; cámbialos juntos'),
+ 'zero_rpm_lower_hint': ('Este umbral inferior está en el punto 1 de su curva o por encima; bájalo por debajo del '
+                         'umbral superior en la misma edición'),
+ 'zero_rpm_channels_hint': ('Una cantidad mayor activa un ventilador guardado cuyo umbral superior de parada en reposo '
+                            'está por encima del punto 1 de su curva. Desactiva la parada en reposo y guarda; en esa '
+                            'copia cambia la cantidad y guarda; luego activa la parada en reposo con ese umbral más '
+                            'bajo'),
+ 'zero_rpm_channels_locked_hint': ('Una cantidad mayor activa un ventilador guardado cuyo umbral superior de parada en '
+                                   'reposo está por encima del punto 1 de su curva, y la parada en reposo es de solo '
+                                   'lectura en esta ROM, así que la cantidad no se puede subir'),
  'fan_curve_min_hint': ('Las curvas tienen puntos por debajo de este mínimo (bajan hasta {value} {units}). '
                         'Sube esos puntos en la misma edición: {points}.'),
  'fan_curve_max_hint': ('Las curvas tienen puntos por encima de este máximo (llegan hasta {value} {units}). '
@@ -252,6 +264,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'unknown': 'Desconocido',
  'flag_on': 'Activado',
  'flag_off': 'Desactivado',
+ 'flag_mixed': 'Mixto (activado en algunas entradas de ventilador)',
  'flag_stock': 'De fábrica',
  'unknown_version': 'desconocida',
  'unrecognized': 'no reconocido',
@@ -316,9 +329,49 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                       'bajo solo se nota mientras la memoria va a su reloj más bajo ({mhz} MHz, reposo con un monitor). '
                       'Un VMIN más alto se nota con cualquier reloj de memoria solo por encima de {floor} mV (VMIN de '
                       'fábrica + {constant} mV). Hasta ahí también se nota solo en ese reloj más bajo.',
+ 'vmin_tree.tree': 'El VMIN de fábrica de esta ROM se fija por chip a partir de valores de fusibles y cambia con la '
+                   'temperatura, así que la ROM no guarda un valor único. Un valor aquí fija el VMIN en ese valor '
+                   'para todo chip y temperatura.',
+ 'vmin_tree.step': 'Los drivers de Blackwell redondean el VMIN hacia arriba a pasos de 5 mV.',
+ 'vmin_tree.per_chip': 'El valor base de fábrica de este VMIN se fija por chip a partir de un valor de fusibles ({low} '
+                       'a {high} mV), así que la ROM no guarda un valor único. Un valor aquí fija ese valor base. Los '
+                       'términos encadenados después siguen sumando su parte según el chip y la temperatura.',
+ 'vmin_tree.risk': 'Sin probar en hardware. Un valor por debajo del VMIN de fábrica de este chip puede volver '
+                   'inestables el reposo y las cargas ligeras, y uno más alto sube el voltaje y el consumo en reposo. '
+                   'También puede que el driver mantenga el VMIN de fábrica. Quitar el override devuelve la tarjeta a '
+                   'como estaba, y desactivar "VMIN fijo" en una copia guardada escribe de vuelta los bytes de '
+                   'fábrica.',
+ 'vmin_tree.switch': 'Activado mientras el valor de arriba fija el VMIN. Desactivado escribe de vuelta los bytes de '
+                     'fábrica, así el VMIN vuelve a seguir al chip. Guarda este cambio y un VMIN nuevo en copias '
+                     'separadas.',
+ 'reason.vmin_fixed_stock': 'Desactivado: el VMIN es el de fábrica de cada chip. Escribe un valor en la fila del '
+                            'voltaje mínimo para fijarlo.',
+ 'original_per_chip': 'Original: por chip (no está guardado en la ROM)',
+ 'per_chip_value': 'por chip',
  'vmin_clone.risk': 'Sin probar en hardware. Un VMIN distinto del de fábrica agrega una ecuación VFE a la ROM, y '
                     'ninguna tarjeta Ada ha usado todavía una ecuación agregada por el editor. El override podría no '
                     'cargar o el driver podría no iniciar. Quitar el override devuelve la tarjeta a como estaba.',
+ 'fan_stop.template': ('Esta tarjeta blower no guarda valores de parada. Activado escribe además los valores que '
+                       'NVIDIA guarda en la ROM {donor} (umbrales de parada {pairs} °C); Desactivado en esa copia '
+                       'escribe de vuelta los bytes de fábrica.'),
+ 'fan_stop.blower': ('Ninguna tarjeta blower sale de fábrica con la parada activada. Lo más probable es que un blower '
+                     'parado no mueva aire por la tarjeta, incluidas la memoria y las etapas de potencia, hasta que '
+                     'la tarjeta pase el umbral superior. Rearrancar un blower desde 0 RPM no está probado, y en '
+                     'equipos con varias GPU juntas puede acumularse calor y el ventilador puede pararse y arrancar '
+                     'en ciclos. Sin probar en hardware en esta tarjeta.'),
+ 'fan_stop.off': ('Esta ROM viene de fábrica con la parada en reposo desactivada. Si la tarjeta tiene un ventilador '
+                  'blower, lo más probable es que un ventilador parado no mueva aire por la tarjeta, incluidas la '
+                  'memoria y las etapas de potencia, hasta que pase el umbral superior. Rearrancar un blower desde 0 '
+                  'RPM no está probado, y en equipos con varias GPU juntas puede acumularse calor y el ventilador '
+                  'puede pararse y arrancar en ciclos.'),
+ 'fan_stop.bit4': ('Con la parada en reposo activada, las entradas de los canales de ventilador de esta ROM quedan con '
+                   'los bits 1 y 2 activos y el bit 4 apagado, una forma de flags con la que ninguna ROM de fábrica '
+                   'usa la parada en reposo; no está probado si los ventiladores se detienen.'),
+ 'fan_stop.flat': ('"{field}" es igual al umbral superior ({value} °C): con la parada en reposo activada no hay '
+                   'histéresis, así que los ventiladores pueden pararse y arrancar a menudo cerca de esa temperatura. '
+                   'Bájalo unos grados.'),
+ 'fan_stop.untested': 'Sin probar en hardware en tarjetas Ada ni Ampere.',
+ 'fan_stop.manual': 'Una herramienta de ventiladores que mantiene el control manual deja los ventiladores girando.',
  'field.connector_current_threshold_rated': ('Umbral de corriente del canal de conector {connector}, nominal '
                                              '(avanzado, experimental)'),
  'field.connector_current_threshold_max': ('Techo del umbral de corriente del canal de conector {connector} '
@@ -333,6 +386,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'shunt_real': 'Unos {value} {units} reales con un shunt x{factor}',
  'field.equation': 'Techo de ecuación {role} de {rail}',
  'field.vmin': 'Voltaje mínimo (VMIN) de {rail} (experimental)',
+ 'field.vmin_fixed': 'VMIN fijo de {rail} (experimental)',
  'field.vmin_slot': 'Techo de la ecuación del slot VMIN de la info del riel {rail} (no es el VMIN evaluado)',
  'field.fixed': 'Voltaje fijo {role} de {rail} (experimental)',
  'field.fixed_advanced': 'Voltaje fijo {role} de {rail} (avanzado, experimental)',
@@ -398,6 +452,14 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                                   'se ve igual que una apagada.'),
  'reason.lpwr_stock_unrecognized': 'Una entrada de esta función en esta ROM no guarda un valor revisado.',
  'reason.lpwr_time_switch': 'El interruptor de este tiempo de reposo es de solo lectura en esta ROM.',
+ 'reason.fan_zero_rpm_mixed': ('La parada en reposo está activada en algunas entradas de ventilador de esta ROM '
+                               'y desactivada en otras (el bit 2 de su byte de flags difiere), así que ni '
+                               'Activado ni Desactivado la describen, y el editor no cambia ninguno.'),
+ 'reason.fan_zero_rpm_no_block': ('Una entrada de ventilador de esta ROM no guarda valores de parada que el '
+                                  'driver acepte (la tercera entrada de la RTX A2000 guarda ceros) y no hay una '
+                                  'plantilla revisada, así que la parada en reposo no se puede activar.'),
+ 'reason.fan_zero_rpm_temps_off': ('La parada en reposo es de solo lectura en esta ROM, así que sus umbrales '
+                                   'quedan como están guardados.'),
  'reason.generic': 'Edición no disponible para este campo.',
  'error.INVALID_IMAGE': 'Abre una ROM primero',
  'error.INVALID_CHANGES': 'Prepare una vista previa verificada antes de guardar',
@@ -421,11 +483,15 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                            'la misma familia'),
  'error.DEPENDENT_FIELD_DISABLED': ('Este valor depende de un interruptor que está apagado; activa el interruptor '
                                     'para cambiarlo'),
+ 'error.ZERO_RPM_ABOVE_CURVE': ('Con la parada en reposo activada, un umbral superior no puede quedar por encima '
+                                'del punto 1 de su curva de ventilador; baja el umbral, con el umbral inferior por '
+                                'debajo de él si hace falta, o mantén el punto por encima, en la misma edición'),
  'error.SEPARATE_EDIT_REQUIRED': ('Guarda estos cambios en copias separadas. La cantidad de canales de ventilador '
                                   'va antes que los límites, las curvas o la parada en reposo de los ventiladores, y '
                                   'el ajuste REL/ALT siguen a OV antes que los voltajes. En algunas ROM de RTX 4090 el '
-                                  'VMIN y el offset de la curva GPC también se guardan por separado. Guarda uno y '
-                                  'luego abre la copia para cambiar el resto'),
+                                  'VMIN y el offset de la curva GPC también se guardan por separado, y lo mismo '
+                                  'desactivar la parada en reposo y cambiar sus umbrales en una copia donde la parada '
+                                  'escribió valores de parada. Guarda uno y luego abre la copia para cambiar el resto'),
  'cli_usage': 'uso: ',
  'cli_positionals': 'argumentos posicionales',
  'cli_options': 'opciones',

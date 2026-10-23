@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.1.30
+
+- **VMIN set per chip (experimental; Ampere, Ada and Blackwell).** On many ROMs the minimum voltage is not one
+  stored value: each chip computes its own from fused values and the temperature, so VMIN was read-only there. It now
+  shows "per chip" and can be fixed to one value, from 450 mV up to the lowest REL value of that rail (450 to 875 mV
+  on the RTX PRO 6000 Max-Q, whose chips get 640 to 715 mV). A new **Fixed VMIN** switch goes back to the per-chip
+  value with the original bytes, also from a saved copy; the value and the switch are saved in separate edits.
+  Covered: both rails of the RTX PRO 6000 Max-Q, the RTX PRO 4000 SFF and the RTX 5080 Laptop GPU, NVVDD of the RTX
+  PRO 6000 Workstation and RTX 5060 Ti, MSVDD of the RTX 5090; the RTX 3050, 3060, 3060 Ti and 3070, RTX A2000 and
+  A4000 and the RTX 3070 and 3080 Laptop GPUs; the RTX 4060, 4060 Ti, RTX 4000 and 5000 Ada and the RTX 4050 and 4080
+  Laptop GPUs. Turing ROMs already store a fixed VMIN. It stays read-only where something else in the ROM uses the
+  same equation (RTX 6000 Ada, RTX 4070 Laptop GPU) or the original bytes could not be written back (RTX 4060 Laptop
+  GPU). The fixed VMIN of the RTX 4070 Ti SUPER becomes editable too (400 to 836 mV). Import from ROM… copies a fixed
+  VMIN only between ROMs that set it the same way. That the driver applies the fixed value on these ROMs is inferred
+  from the firmware. Not tested on hardware.
+- **Fan zero RPM on Ada and Ampere, and on blower workstation cards (experimental).** The **Fan zero RPM** switch,
+  so far on Blackwell, now works on Ada and Ampere ROMs: GeForce desktop ROMs and the RTX 4000, 4000 SFF, 4500 and
+  2000 Ada, which store the fan-stop values with the feature off. Blower cards that store no fan-stop
+  values take the ones NVIDIA stores on a related card: the RTX PRO 6000 Max-Q from the RTX PRO 6000 Workstation,
+  the RTX 5000 and 6000 Ada from the RTX 4000/4500/2000 Ada, the RTX A1000 to A6000 from the RTX 3080 Ti Founders
+  Edition. Turning it off writes the original bytes back. No blower card ships with fan stop on. A stopped blower
+  most likely moves no air through the card, memory and power stages included, until the card passes the start
+  temperature, a blower starting again from 0 RPM was not tested, and dense multi-GPU builds may see heat soak. A
+  fan tool that holds manual control keeps the fans running. The window lists these notes on each card, and on the
+  RTX 3060 8GB, which stores the same stop and start temperature (40 °C), suggests a lower stop temperature. It
+  stays read-only on the RTX A2000 and on one RTX 3060 whose fan entries disagree. Turing ROMs can stop their fans
+  through the fan curve instead (minimum and point 1 at 0 RPM), as some of them ship. Not tested on hardware on Ada,
+  Ampere or the Max-Q.
+- **Zero RPM start temperature follows the fan curve (Ampere, Ada and Blackwell).** With zero RPM on, the
+  temperature at which the fans start again can be at most the first point of the same fan curve. Every edit that
+  changes either value, turns zero RPM on, imports a curve or raises the fan channel count is checked, and the
+  refusal names the fields to change. ROMs that ship a higher start temperature keep it while it and the curve stay
+  as they are. On a card with zero RPM on, lowering the first curve point now needs the start temperature lowered in
+  the same edit, and the stop temperature too where it sits at or above that point, as on some ROMs. A higher fan
+  channel count that brings in a stored fan whose start temperature is above its curve goes in steps: zero RPM off,
+  the count, then zero RPM on with that start temperature lowered. On the RTX 3060 whose fan entries disagree, the
+  count can no longer be raised. On Ada and Ampere the zero RPM temperatures are editable while zero RPM is off, so
+  both can change in one edit.
+- **Smaller changes.** On Blackwell, zero RPM is offered only where the ROM stores a fan-stop block the driver
+  accepts, as on Ada and Ampere. No zero RPM temperature shows a minimum above its maximum. For API users: VMIN
+  fields carry `vmin_tree` and a `*_vmin_fixed` switch, imports may list `per_chip_in_donor`, `fan_zero_rpm` may
+  carry a `fan_stop_template`, a mixed `flag_state`, `channel_bit4_clear` and `zero_rpm_flat_pairs`, and the start
+  temperature rule refuses with `ZERO_RPM_ABOVE_CURVE`, with `details.channel_count` when the fan channel count is
+  the cause (`docs/editor-api.md`). An extension binding over the fan-stop bytes is now refused also next to a
+  `fan_zero_rpm` request.
+
 ## 0.1.29
 
 - **Factory GPC and memory offsets on every ROM (experimental; Turing, Ampere, Ada and Blackwell).** The vendor

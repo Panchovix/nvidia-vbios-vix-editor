@@ -18,12 +18,13 @@ from .file_pickers import show_builtin_picker, show_path_dialog
 from .controller import (Controller, compare_memory, controls, import_from, loader_messages, memory_view,
                          open_document, reset_document, save_document, stage_document)
 from .presentation import (ADVANCED_SECTION, advanced_group, classify_number, dependency_reason, display_units,
-                           fan_curve_hint, field_label, field_section, import_summary, linux_value,
+                           fan_curve_hint, fan_stop_notes, field_label, field_section, import_summary, linux_value,
                            number, memory_columns, memory_comparison, memory_configuration, memory_raw_text,
-                           MEMORY_TIMINGS, opt_in_field_keys, parse_number,
+                           MEMORY_TIMINGS, opt_in_field_keys, parse_number, per_chip,
                            primary_preview, read_only_reason, row_title, SECTION_NAMES, section_order, shunt_real,
                            sense_profile_notes, shunt_scaled, summed_cap_notes, technical_field_keys, to_display,
-                           to_stored, unsupported_notes, value_text, vmin_clone_notes, windows_value)
+                           to_stored, unsupported_notes, value_text, vmin_clone_notes, vmin_tree_notes, windows_value,
+                           zero_rpm_channels_hint)
 
 # Typing pauses this long before the copy is rebuilt and verified.
 LIVE_DELAY_MS = 350
@@ -568,8 +569,12 @@ class EditorWindow(Gtk.ApplicationWindow):
         values.update({key: to_stored(fields[key], text) if key in fields else text
                        for key, text in self.hidden_text.items()})
         values.update({key: to_stored(self.rows[key]['field'], entry.get_text().strip())
-                       for key, entry in self.entries.items()})
+                       for key, entry in self.entries.items() if not self._unset(key)})
         return values
+
+    def _unset(self, key):
+        """True for an empty row whose original value is set per chip (per_chip): no number, so no change."""
+        return per_chip(self.rows[key]['field']) and not self.entries[key].get_text().strip()
 
     def _input_changed(self, *_):
         if self.syncing:
@@ -607,7 +612,8 @@ class EditorWindow(Gtk.ApplicationWindow):
             self.verifying = False
             self.spinner.stop()
             return GLib.SOURCE_REMOVE
-        if any(parse_number(entry.get_text()) is None for entry in self.entries.values()):
+        if any(parse_number(entry.get_text()) is None
+               for key, entry in self.entries.items() if not self._unset(key)):
             # The rows already say what to fix; the backend is not asked.
             self.verifying = False
             self.spinner.stop()
@@ -636,12 +642,16 @@ class EditorWindow(Gtk.ApplicationWindow):
         self.spinner.stop()
         quiet, self.quiet_verify = self.quiet_verify, False
         if error is not None:
+            details = getattr(error, 'details', {}) or {}
+            # A larger fan channel count that enables a stored entry against the start temperature rule: what works.
+            channels = (zero_rpm_channels_hint(details.get('channel_count'))
+                        if getattr(error, 'code', None) == 'ZERO_RPM_ABOVE_CURVE' else None)
             if not quiet:
                 self._status_error(True)
                 code = getattr(error, 'code', type(error).__name__)
                 message = self.text('error.' + code) if 'error.' + code in self.text.catalog else str(error)
-                self.status.set_text(self.text('live_failure', message=message, code=code))
-            details = getattr(error, 'details', {}) or {}
+                self.status.set_text(self.text('live_failure', message=self.text(channels) if channels else message,
+                                               code=code))
             owner = details.get('field') if isinstance(details.get('field'), str) else None
             invalid = {owner} if owner else set()
             # joint_fields lists every requested group; only partners in the
@@ -650,8 +660,11 @@ class EditorWindow(Gtk.ApplicationWindow):
             if group:
                 invalid |= {key for key in details.get('joint_fields') or ()
                             if key in self.rows and self.rows[key]['field'].get('ordering_group') == group}
+            if getattr(error, 'code', None) == 'ZERO_RPM_ABOVE_CURVE':
+                # The zero RPM switch, uppers and curve points named by the start temperature rule.
+                invalid |= {key for key in details.get('joint_fields') or () if key in self.rows}
             self._mark_rows(invalid=invalid, owner=owner, bounds=details.get('bounds'),
-                            error_code=getattr(error, 'code', None))
+                            error_code=getattr(error, 'code', None), channels=channels)
             self._show_changes(self._typed_changes())
         else:
             self.controller.document = document
@@ -798,7 +811,8 @@ class EditorWindow(Gtk.ApplicationWindow):
             badge.set_valign(Gtk.Align.CENTER)
             title_line.append(badge)
         left.append(title_line)
-        sub = [self.text('original', value=value_text(field, to_display(field, field['current']), self.language),
+        sub = [self.text('original_per_chip') if per_chip(field) else
+               self.text('original', value=value_text(field, to_display(field, field['current']), self.language),
                          units=units).rstrip()]
         hint = windows_value(field, field['current'])
         if hint is not None:
@@ -807,9 +821,12 @@ class EditorWindow(Gtk.ApplicationWindow):
         if linux is not None:
             sub.append(self.text('linux_equivalent', value=linux))
         left.append(label(' · '.join(sub), wrap=True, css=('vb-note',)))
-        fields = self.controller.document.report.get('fields', [])
+        report = self.controller.document.report
+        fields = report.get('fields', [])
+        family = (report.get('architecture') or {}).get('family')
         for note in (summed_cap_notes(field, fields, self.language) + sense_profile_notes(field, fields, self.language) +
-                     vmin_clone_notes(field, self.language)):
+                     vmin_clone_notes(field, self.language) + vmin_tree_notes(field, family, self.language) +
+                     fan_stop_notes(field, family, self.language)):
             left.append(label(note, wrap=True, css=('vb-note',)))
         top.append(left)
         if field['units'] == 'flag':
@@ -857,10 +874,11 @@ class EditorWindow(Gtk.ApplicationWindow):
         name = label(title, wrap=True, css=('vb-title',))
         name.set_hexpand(True)
         top.append(name)
-        value = (value_text(field, to_display(field, field['current']), self.language)
-                 if field['current'] is not None else None)
+        # A flag whose entries disagree has no value but reads Mixed (value_text).
+        value = value_text(field, to_display(field, field['current']), self.language)
         units = display_units(field) if value is not None and field['units'] not in ('unknown', 'index') else ''
-        top.append(label(f"{value if value is not None else self.text('unknown')} {units}".strip(), css=('vb-note',)))
+        missing = self.text('per_chip_value' if per_chip(field) else 'unknown')
+        top.append(label(f"{value if value is not None else missing} {units}".strip(), css=('vb-note',)))
         row.append(top)
         row.append(label(read_only_reason(field, self.language), wrap=True, css=('vb-note',)))
         self._shunt_note(row, field)
@@ -924,7 +942,7 @@ class EditorWindow(Gtk.ApplicationWindow):
                     card.append(separator)
                 staged = doc.changes.get(field['key'], field['current'])
                 text = pending.get(field['key'], number(to_display(field, staged)))
-                card.append(self._editable_row(field, text))
+                card.append(self._editable_row(field, '' if text is None else text))
         readonly = [f for f in visible if not f['editable']]
         if readonly:
             expander = Gtk.Expander(label=self.text('section.readonly', count=len(readonly)))
@@ -1308,7 +1326,9 @@ class EditorWindow(Gtk.ApplicationWindow):
             self._show_changes([])
 
     def _shown(self, field, amount):
-        """A display value for the change list, On/Off for a flag field."""
+        """A display value for the change list, On/Off for a flag field, 'per chip' for a VMIN set per chip."""
+        if amount is None and per_chip(field):
+            return self.text('per_chip_value')
         return value_text(field, amount, self.language) if field['units'] == 'flag' else amount
 
     def _typed_changes(self):
@@ -1377,7 +1397,7 @@ class EditorWindow(Gtk.ApplicationWindow):
             note.set_text(blocked.get(key, ''))
             note.set_visible(off)
 
-    def _mark_rows(self, invalid=(), owner=None, bounds=None, error_code=None):
+    def _mark_rows(self, invalid=(), owner=None, bounds=None, error_code=None, channels=None):
         self._sync_dependencies()
         curve_errors = bool(invalid) and error_code == 'OUT_OF_BOUNDS'
         values = self._values() if curve_errors else {}
@@ -1390,10 +1410,16 @@ class EditorWindow(Gtk.ApplicationWindow):
             row.remove_css_class('invalid')
             delta.remove_css_class('vb-error')
             message = ''
-            if amount is None or current is None:
+            if self._unset(key):
+                pass                    # an empty row set per chip: no change
+            elif amount is None or current is None and not per_chip(field):
                 row.add_css_class('invalid')
                 delta.add_css_class('vb-error')
                 message = self.text(problem or 'out_of_range')
+            elif current is None:
+                # A value fixes a VMIN set per chip: there is no number to compare with.
+                row.add_css_class('changed')
+                message = f"{self._shown(field, current)} → {number(amount)} {display_units(field)}"
             elif amount != current:
                 row.add_css_class('changed')
                 change = amount - current
@@ -1413,7 +1439,12 @@ class EditorWindow(Gtk.ApplicationWindow):
                 row.add_css_class('invalid')
                 delta.add_css_class('vb-error')
                 # Bounds belong to the failing field only; partners get the order hint.
-                hint_key = ('order_hint_voltage' if field.get('units') == 'mV' else
+                # The start temperature rule: the fan channel count, a lower threshold at or above point 1 that
+                # has to go below the upper one, or an upper threshold and point 1.
+                hint_key = ((channels if key == 'fan_channels' and channels else
+                             'zero_rpm_lower_hint' if key.endswith('_zero_rpm_low_temp_c') else 'zero_rpm_hint')
+                            if error_code == 'ZERO_RPM_ABOVE_CURVE' else
+                            'order_hint_voltage' if field.get('units') == 'mV' else
                             'order_hint_fan' if (field.get('ordering_group') or '').startswith('fan-') else 'order_hint')
                 message = self.text(hint_key)
                 if key == owner and isinstance(bounds, dict):

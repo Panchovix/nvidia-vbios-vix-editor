@@ -151,6 +151,7 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'import.reason.absent_in_donor': 'not in the other ROM',
  'import.reason.absent_in_target': 'not in this ROM',
  'import.reason.read_only_in_donor': 'read-only in the other ROM',
+ 'import.reason.per_chip_in_donor': 'set per chip in the other ROM, not stored as a number',
  'import.reason.read_only_in_target': 'read-only in this ROM',
  'import.reason.read_only': 'read-only in both ROMs',
  'import.reason.opt_in': 'advanced field, not included',
@@ -172,6 +173,16 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'order_hint': 'Breaks the floor ≤ rated ≤ ceiling order of its group',
  'order_hint_voltage': 'Breaks the VMIN < REL ≤ ALT order; change these values together',
  'order_hint_fan': 'Fan limits and curve points must stay within their allowed ranges; change related values together',
+ 'zero_rpm_hint': ('With zero RPM on, the upper threshold may not be above point 1 of the same fan curve; '
+                   'change them together'),
+ 'zero_rpm_lower_hint': ('This lower threshold is at or above point 1 of its fan curve; set it below the upper '
+                         'threshold in the same edit'),
+ 'zero_rpm_channels_hint': ('A larger count turns on a stored fan whose zero RPM upper threshold is above point 1 of '
+                            'its curve. Turn zero RPM off and save; on that copy change the count and save; then '
+                            'turn zero RPM on with that threshold lowered'),
+ 'zero_rpm_channels_locked_hint': ('A larger count turns on a stored fan whose zero RPM upper threshold is above point '
+                                   '1 of its curve, and zero RPM is read-only in this ROM, so the count cannot be '
+                                   'raised'),
  'fan_curve_min_hint': ('Fan curves have points below this minimum (down to {value} {units}). '
                         'Raise those points in the same edit: {points}.'),
  'fan_curve_max_hint': ('Fan curves have points above this maximum (up to {value} {units}). '
@@ -242,6 +253,7 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'unknown': 'Unknown',
  'flag_on': 'On',
  'flag_off': 'Off',
+ 'flag_mixed': 'Mixed (on for some fan entries)',
  'flag_stock': 'Stock',
  'unknown_version': 'unknown',
  'unrecognized': 'unrecognized',
@@ -306,9 +318,43 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
                       'the memory runs at its lowest clock ({mhz} MHz, single-monitor idle). A higher VMIN shows at '
                       'every memory clock only above {floor} mV (stock VMIN + {constant} mV). Up to that it also '
                       'shows only at that lowest clock.',
+ 'vmin_tree.tree': 'The stock VMIN of this ROM is set per chip from fused values and changes with temperature, so '
+                   'the ROM stores no single value. A value here fixes VMIN at that value for every chip and '
+                   'temperature.',
+ 'vmin_tree.step': 'Blackwell drivers round VMIN up to a 5 mV step.',
+ 'vmin_tree.per_chip': 'The stock base value of this VMIN is set per chip from a fused value ({low} to {high} mV), so '
+                       'the ROM stores no single value. A value here fixes that base value. The terms chained after '
+                       'it still add their part for each chip and temperature.',
+ 'vmin_tree.risk': 'Not tested on hardware. A value below the stock VMIN of this chip can make idle and light-load '
+                   'states unstable, and a higher one raises the idle voltage and power. The driver might also keep '
+                   'the stock VMIN. Removing the override brings the card back, and turning "Fixed VMIN" off on a '
+                   'saved copy writes the stock bytes back.',
+ 'vmin_tree.switch': 'On while the value above fixes VMIN. Off writes the stock bytes back, so VMIN follows the chip '
+                     'again. Save this change and a new VMIN value in separate copies.',
+ 'reason.vmin_fixed_stock': 'Off: VMIN is the stock value of each chip. Type a value in the minimum voltage row to fix '
+                            'it.',
+ 'original_per_chip': 'Original: per chip (not stored in the ROM)',
+ 'per_chip_value': 'per chip',
  'vmin_clone.risk': 'Not tested on hardware. A VMIN other than the stock value adds a VFE equation to the ROM, and '
                     'no Ada card has run an equation added by the editor yet. The override might not load or the '
                     'driver might fail to start. Removing the override brings the card back.',
+ 'fan_stop.template': ('This blower board stores no fan-stop values. On also writes the values NVIDIA stores on '
+                       'the {donor} ROM (zero RPM thresholds {pairs} °C); Off on such a copy writes the stock bytes '
+                       'back.'),
+ 'fan_stop.blower': ('No blower card ships with fan stop on. A stopped blower most likely moves no air through the '
+                     'card, memory and power stages included, until the card passes the upper threshold. Restarting '
+                     'a blower from 0 RPM is untested, and dense multi-GPU builds can see heat soak and stop/start '
+                     'cycling. Not tested on hardware on this board.'),
+ 'fan_stop.off': ('This ROM ships with zero RPM off. If the card has a blower fan, a stopped fan most likely moves no '
+                  'air through the card, memory and power stages included, until it passes the upper threshold. '
+                  'Restarting a blower from 0 RPM is untested, and dense multi-GPU builds can see heat soak and '
+                  'stop/start cycling.'),
+ 'fan_stop.bit4': ('With zero RPM on, the fan channel entries of this ROM hold bits 1 and 2 with bit 4 clear, a flag '
+                   'form no shipped ROM runs zero RPM with; whether the fans stop is untested.'),
+ 'fan_stop.flat': ('"{field}" equals the upper threshold ({value} °C): with zero RPM on there is no hysteresis, so '
+                   'the fans may stop and start often around that temperature. Set it a few degrees lower.'),
+ 'fan_stop.untested': 'Not tested on hardware on Ada or Ampere cards.',
+ 'fan_stop.manual': 'A fan tool that holds manual control keeps the fans running.',
  'field.connector_current_threshold_rated': 'Connector channel {connector} current threshold, rated (advanced, '
                                             'experimental)',
  'field.connector_current_threshold_max': 'Connector channel {connector} current threshold ceiling (advanced, '
@@ -321,6 +367,7 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'shunt_real': 'About {value} {units} real with a x{factor} shunt',
  'field.equation': '{rail} {role} equation ceiling',
  'field.vmin': '{rail} minimum voltage (VMIN, experimental)',
+ 'field.vmin_fixed': '{rail} fixed VMIN (experimental)',
  'field.vmin_slot': '{rail} rail INFO VMIN-slot equation ceiling (not the evaluated VMIN)',
  'field.fixed': '{rail} {role} fixed voltage (experimental)',
  'field.fixed_advanced': '{rail} {role} fixed voltage (advanced, experimental)',
@@ -381,6 +428,13 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
                                   'one turned off.'),
  'reason.lpwr_stock_unrecognized': 'An entry of this feature in this ROM does not store a reviewed value.',
  'reason.lpwr_time_switch': 'The switch of this idle time is read-only in this ROM.',
+ 'reason.fan_zero_rpm_mixed': ('Zero RPM is on for some fan entries of this ROM and off for others (bit 2 of '
+                               'their flag byte differs), so neither On nor Off describes it, and the editor '
+                               'changes neither.'),
+ 'reason.fan_zero_rpm_no_block': ('A fan entry of this ROM stores no fan-stop values the driver accepts (the '
+                                  'third entry of the RTX A2000 stores zeros) and no reviewed template applies, '
+                                  'so zero RPM cannot be turned on.'),
+ 'reason.fan_zero_rpm_temps_off': 'Zero RPM is read-only in this ROM, so its thresholds stay as stored.',
  'reason.generic': 'Editing unavailable for this field.',
  'error.INVALID_IMAGE': 'Open a ROM first',
  'error.INVALID_CHANGES': 'Stage a verified preview before saving',
@@ -402,10 +456,14 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'error.UNSUPPORTED_FORMAT': 'This format supports inspection only',
  'error.FAMILY_MISMATCH': 'The other ROM is of another GPU family or format; import needs one of the same family',
  'error.DEPENDENT_FIELD_DISABLED': 'This value depends on a switch that is off; turn the switch on to change it',
+ 'error.ZERO_RPM_ABOVE_CURVE': ('With zero RPM on, a zero RPM upper threshold may not be above point 1 of its fan '
+                                'curve; lower the threshold, with the lower threshold below it where needed, or keep '
+                                'the point above it, in the same edit'),
  'error.SEPARATE_EDIT_REQUIRED': ('Save these changes in separate copies. The fan channel count goes before the '
                                   'fan limits, curves or zero RPM, and the REL/ALT follow OV setting before the '
                                   'voltages. On some RTX 4090 ROMs VMIN and the GPC curve offset also need separate '
-                                  'saves. Save one, then open the copy to change the rest'),
+                                  'saves, and so do zero RPM off and its thresholds on a copy where zero RPM wrote '
+                                  'fan-stop values. Save one, then open the copy to change the rest'),
  'cli_usage': 'usage: ',
  'cli_positionals': 'positional arguments',
  'cli_options': 'options',

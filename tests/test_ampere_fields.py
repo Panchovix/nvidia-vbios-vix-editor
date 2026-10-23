@@ -13,7 +13,7 @@ from nvidia_vbios.rom import VbiosError, from_bytes, inspect_image, load
 from nvidia_vbios.rom.image import backend
 from test_ada_fields import (GV_HAL, checked_elsewhere, dram_points, fan_curves, fan_limits, messages, patched,
                             zero_rpm_temps)
-from test_extended_fields import changed_bytes_within, curve_step, descriptors
+from test_extended_fields import changed_bytes_within, curve_step, descriptors, fan_stop_refusals
 from test_rom_formats import synthetic_rom
 
 POWER = ['power_max_w', 'power_default_w', 'power_min_w']

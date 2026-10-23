@@ -12,7 +12,7 @@ from nvidia_vbios.editor.registry import registry
 from nvidia_vbios.rom import VbiosError, from_bytes, inspect_image, load
 from nvidia_vbios.rom.image import backend
 from nvidia_vbios.rom.tables import PROFILE_BYTES
-from test_extended_fields import changed_bytes_within, curve_step, custom_registry, descriptors
+from test_extended_fields import changed_bytes_within, curve_step, custom_registry, descriptors, fan_stop_refusals
 from test_rom_formats import synthetic_blackwell, synthetic_rom
 
 # The maximum operating temperature and the factory offsets: test_thermal_factory_fields checks their editability
@@ -559,22 +559,42 @@ class AdaClockTests(unittest.TestCase):
                 self.assertTrue(any('GV HAL' in m or 'clock table variant' in m for m in messages(image)))
 
 
-def with_zero_rpm(blob, flags=(0x17, 0x07), pairs=((40, 50), (40, 50), (53, 63), (60, 70)), entries=None):
-    """A two-channel image with the zero RPM flag bytes (channel entries, extra curves) and temperature
-    pairs (C) on the enabled policy entries 0..3, in every chain, as the GeForce Ada images store them."""
+# The fan-stop block past the temperature pair that the RTX 3080 Ti Founders Edition and the RTX 4000, 4000 SFF, 4500
+# and 2000 Ada images store: dwords 30000/100000, words 61/5000, byte 46 = 0.
+REFERENCE_BLOCK = bytes.fromhex('30750000a08601003d00881300')
+
+
+def with_zero_rpm(blob, flags=(0x17, 0x07), pairs=((40, 50), (40, 50), (53, 63), (60, 70)), entries=None,
+                  block=REFERENCE_BLOCK):
+    """A two-channel image with the zero RPM flag bytes (channel entries, extra curves) and fan-stop blocks
+    (temperature pairs in C, then block) on the enabled policy entries 0..3, in every chain, as the GeForce
+    Ada images store them. block=b'' keeps zeros past the pair, a block GSP-RM refuses (word 44 = 0)."""
     t = backend(from_bytes(blob)).fan_coolers()
     covered = [r for r in t['rows'] if r['active']] + t['extra_curves']
     for k, e in enumerate(covered):
         if entries is not None and e['index'] not in entries:
             continue
         low, high = pairs[k]
-        blob = patched(blob, e['policy_offset'] + 30, struct.pack('<HH', low * 32, high * 32))
+        blob = patched(blob, e['policy_offset'] + 30, struct.pack('<HH', low * 32, high * 32) + block)
         blob = patched(blob, e['policy_offset'] + 0x32, bytes((flags[e['index'] >= len(t['rows'])],)))
     return blob
 
 
+def template_board(device=0x2230):
+    """A one-channel Ampere image shaped like the RTX A-series blower boards (device 0x2230 is the RTX A6000):
+    entries 0, 2 and 3 enabled with bytes 0..1 = 01 00 / 01 01 / 01 09, zeros and 0xff in bytes 30..46 and
+    flag bytes 0x01, in both chains."""
+    blob = synthetic_rom(family='ampere', copies=2, fans=1, device=device)
+    t = backend(from_bytes(blob)).fan_coolers()
+    for e, role in zip([t['rows'][0]] + t['extra_curves'], (0, 1, 9)):
+        blob = patched(blob, e['policy_offset'] + 1, bytes((role,)))
+        blob = patched(blob, e['policy_offset'] + 30, bytes(16) + b'\xff')
+        blob = patched(blob, e['policy_offset'] + 0x32, b'\x01')
+    return blob
+
+
 class AdaFanTests(unittest.TestCase):
-    def test_zero_rpm_temperatures_write_every_chain_where_the_bits_are_set(self):
+    def test_zero_rpm_temperatures_write_every_chain(self):
         for family in ('ada', 'ampere'):
             with self.subTest(family=family):
                 image = from_bytes(with_zero_rpm(synthetic_rom(family=family, copies=2, fans=2)))
@@ -583,9 +603,11 @@ class AdaFanTests(unittest.TestCase):
                 keys = ['fan_1', 'fan_2', 'fan_extra_1', 'fan_extra_2']
                 self.assertEqual(sorted(k for k in fields if '_zero_rpm_' in k),
                                  sorted(f'{p}_zero_rpm_{s}_temp_c' for p in keys for s in ('low', 'high')))
+                # The upper stays at most point 1 of its own curve: 55 C on this image's channel curves.
                 high = fields['fan_1_zero_rpm_high_temp_c']
                 self.assertEqual((high['current'], high['editable'], high['opt_in'], high['bounds']['minimum'],
-                                  high['bounds']['maximum']), (50.0, True, True, 40.03125, 110.0))
+                                  high['bounds']['maximum']), (50.0, True, True, 40.03125, 55.0))
+                self.assertEqual(fields['fan_extra_2_zero_rpm_high_temp_c']['bounds']['maximum'], 92.0)
                 self.assertEqual([e['kind'] for e in high['evidence']],
                                  ['static-firmware-analysis', 'static-firmware-analysis', 'structural-table'])
                 self.assertEqual(high['evidence'][2]['source'], f'{family.capitalize()} VBIOS corpus')
@@ -595,10 +617,10 @@ class AdaFanTests(unittest.TestCase):
                 offsets = binding['fan_1_zero_rpm_high_temp_c'].offsets
                 self.assertEqual(sorted(offsets), parser.copy_offsets(pair + 2, 2))
                 self.assertEqual(len(offsets), 2)
-                result = edit(image, {'fan_1_zero_rpm_high_temp_c': 60})
+                result = edit(image, {'fan_1_zero_rpm_high_temp_c': 52})
                 self.assertTrue(result.manifest['integrity']['valid'])
                 changed_bytes_within(self, image, result, offsets, width=2)
-                self.assertEqual({struct.unpack_from('<H', result.blob, at)[0] for at in offsets}, {60 * 32})
+                self.assertEqual({struct.unpack_from('<H', result.blob, at)[0] for at in offsets}, {52 * 32})
                 self.assertEqual(edit(result.image, {'fan_1_zero_rpm_high_temp_c': 50}).blob, image.blob)
                 both = edit(image, {'fan_extra_2_zero_rpm_low_temp_c': 75, 'fan_extra_2_zero_rpm_high_temp_c': 80})
                 extra = parser.fan_coolers()['extra_curves'][1]['policy_offset'] + 30
@@ -607,24 +629,186 @@ class AdaFanTests(unittest.TestCase):
                     edit(image, {'fan_1_zero_rpm_low_temp_c': 50})
                 self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
 
-    def test_zero_rpm_temperatures_read_only_unless_every_entry_sets_both_bits(self):
+    def test_zero_rpm_temperatures_follow_the_zero_rpm_flag(self):
+        from nvidia_vbios.editor.registry import FAN_ZERO_RPM_MIXED_REASON, FAN_ZERO_RPM_NO_BLOCK_REASON
         blob = synthetic_rom(copies=2, fans=2)
-        # RTX PRO-style bytes (bits clear), bit 1 alone (some Ampere boards) and one entry that differs.
-        for name, image in (('bits clear', with_zero_rpm(blob, flags=(0x11, 0x01))),
-                            ('bit 1 alone', with_zero_rpm(blob, flags=(0x13, 0x03))),
-                            ('one entry clear', with_zero_rpm(with_zero_rpm(blob), flags=(0x11, 0x01), entries=(2,)))):
+        # Editable wherever fan_zero_rpm is offered and the entry stores a block GSP-RM accepts, whatever the
+        # bits: RTX PRO-style bytes (bits clear) and bit 1 alone (some Ampere boards) too.
+        for name, image, state in (('both bits', with_zero_rpm(blob), 1),
+                                   ('bits clear', with_zero_rpm(blob, flags=(0x11, 0x01)), 0),
+                                   ('bit 1 alone', with_zero_rpm(blob, flags=(0x13, 0x03)), 0)):
             with self.subTest(case=name):
                 fields = descriptors(from_bytes(image))
                 temps = {k: f for k, f in fields.items() if '_zero_rpm_' in k}
                 self.assertEqual(len(temps), 8)
+                self.assertTrue(all(f['editable'] for f in temps.values()))
+                self.assertEqual((fields['fan_zero_rpm']['current'], fields['fan_zero_rpm']['editable']), (state, True))
+        # Read-only flag, read-only pairs: entries that disagree about bit 1, bit 2 on some entries only (mixed)
+        # and a block GSP-RM would refuse (word 44 = 0).
+        for name, image, current, reason in (
+                ('one entry clear', with_zero_rpm(with_zero_rpm(blob), flags=(0x11, 0x01), entries=(2,)), None,
+                 'disagree about bit 1'),
+                ('mixed', with_zero_rpm(with_zero_rpm(blob, flags=(0x13, 0x03)), flags=(0x17, 0x07), entries=(2,)),
+                 None, FAN_ZERO_RPM_MIXED_REASON),
+                ('word 44 zero', with_zero_rpm(blob, flags=(0x11, 0x01), block=b''), 0, FAN_ZERO_RPM_NO_BLOCK_REASON)):
+            with self.subTest(case=name):
+                fields = descriptors(from_bytes(image))
+                flag = fields['fan_zero_rpm']
+                self.assertEqual((flag['current'], flag['editable']), (current, False))
+                self.assertIn(reason, flag['reason'])
+                self.assertEqual(flag.get('flag_state'), 'mixed' if name == 'mixed' else None)
+                temps = {k: f for k, f in fields.items() if '_zero_rpm_' in k}
+                self.assertEqual(len(temps), 8)
                 self.assertFalse(any(f['editable'] for f in temps.values()))
-                self.assertIn('not both set on every enabled fan policy entry',
-                              temps['fan_1_zero_rpm_low_temp_c']['reason'])
                 with self.assertRaises(VbiosError) as exc:
-                    edit(from_bytes(image), {'fan_1_zero_rpm_high_temp_c': 60})
+                    edit(from_bytes(image), {'fan_1_zero_rpm_high_temp_c': 52})
                 self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
-        # Zeros (RTX 5000/6000 Ada, RTX A-series) give no field at all.
-        self.assertFalse([k for k in descriptors(from_bytes(blob)) if '_zero_rpm_' in k])
+        # Zeros (RTX 5000/6000 Ada, RTX A-series) give no pair at all, and no flag without a template.
+        fields = descriptors(from_bytes(blob))
+        self.assertFalse([k for k in fields if '_zero_rpm_' in k])
+        self.assertEqual((fields['fan_zero_rpm']['current'], fields['fan_zero_rpm']['editable']), (0, False))
+
+    def test_zero_rpm_flag_sets_and_clears_bits_1_and_2_in_every_chain(self):
+        for family in ('ada', 'ampere'):
+            for flags, state in (((0x17, 0x07), 1), ((0x11, 0x01), 0), ((0x13, 0x03), 0)):
+                with self.subTest(family=family, flags=flags):
+                    image = from_bytes(with_zero_rpm(synthetic_rom(family=family, copies=2, fans=2), flags=flags))
+                    parser = backend(image)
+                    field = descriptors(image)['fan_zero_rpm']
+                    self.assertEqual((field['current'], field['editable'], field['experimental'], field['opt_in'],
+                                      field['fan_entries']), (state, True, True, True, [0, 1, 2, 3]))
+                    self.assertEqual([e['kind'] for e in field['evidence']],
+                                     ['static-firmware-analysis', 'structural-table'])
+                    self.assertIn('not hardware-tested on Ada or Ampere', field['reason'])
+                    self.assertIn('a fan tool that holds manual control keeps the fans running', field['reason'])
+                    t = parser.fan_coolers()
+                    offsets = [c for e in t['rows'] + t['extra_curves']
+                               for c in parser.copy_offsets(e['policy_offset'] + 0x32, 1)]
+                    # Asking for the stored value changes nothing.
+                    self.assertEqual(edit(image, {'fan_zero_rpm': state}).manifest['changed_bytes'], 0)
+                    other = edit(image, {'fan_zero_rpm': 1 - state})
+                    self.assertTrue(other.manifest['integrity']['valid'])
+                    self.assertEqual(fan_stop_refusals(other.image), [])
+                    changed_bytes_within(self, image, other, offsets, width=1)
+                    expected = [b | 0x06 if state == 0 else b & 0xF9 for b in (image.blob[at] for at in offsets)]
+                    self.assertEqual([other.blob[at] for at in offsets], expected)
+                    self.assertEqual(descriptors(other.image)['fan_zero_rpm']['current'], 1 - state)
+                    back = edit(other.image, {'fan_zero_rpm': state})
+                    if flags == (0x13, 0x03):
+                        # Saved at 1, a board that stores bit 1 alone comes back with both bits clear.
+                        self.assertEqual([back.blob[at] for at in offsets], [image.blob[at] & 0xFD for at in offsets])
+                    else:
+                        self.assertEqual(back.blob, image.blob)
+
+    def test_zero_rpm_upper_stays_at_most_curve_point_1(self):
+        # Channel pairs 40/60 under point 1 at 55 C, zero RPM off: turning it on needs the uppers lowered too.
+        image = from_bytes(with_zero_rpm(synthetic_rom(family='ampere', copies=2, fans=2), flags=(0x11, 0x01),
+                                         pairs=((40, 60), (40, 60), (53, 63), (60, 70))))
+        upper = descriptors(image)['fan_1_zero_rpm_high_temp_c']
+        self.assertEqual((upper['current'], upper['bounds']['maximum'], upper['editable']), (60.0, 55.0, True))
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_zero_rpm': 1})
+        self.assertEqual((exc.exception.code, exc.exception.details['field'], exc.exception.details['bounds']),
+                         ('ZERO_RPM_ABOVE_CURVE', 'fan_1_zero_rpm_high_temp_c', {'minimum': 40.03125, 'maximum': 55.0}))
+        self.assertEqual(exc.exception.details['fan_policies'], [0, 1])
+        on = edit(image, {'fan_zero_rpm': 1, 'fan_1_zero_rpm_high_temp_c': 55, 'fan_2_zero_rpm_high_temp_c': 55})
+        self.assertEqual(fan_stop_refusals(on.image), [])
+        parser = backend(on.image)
+        first = parser.fan_coolers()['rows'][0]['policy_offset']
+        self.assertEqual({struct.unpack_from('<H', on.blob, at)[0] for at in parser.copy_offsets(first + 32, 2)},
+                         {55 * 32})
+        # With zero RPM on, point 1 goes below the upper only with it.
+        with self.assertRaises(VbiosError) as exc:
+            edit(on.image, {'fan_1_curve_1_temp_c': 50})
+        self.assertEqual((exc.exception.code, exc.exception.details['field']),
+                         ('ZERO_RPM_ABOVE_CURVE', 'fan_1_curve_1_temp_c'))
+        self.assertTrue(edit(on.image, {'fan_1_curve_1_temp_c': 50, 'fan_1_zero_rpm_high_temp_c': 50})
+                        .manifest['integrity']['valid'])
+
+    def test_zero_rpm_template_on_a_blower_board(self):
+        from nvidia_vbios.editor.registry import AMPERE_FE_FAN_STOP, FAN_STOP_UNSET
+        image = from_bytes(template_board())
+        parser = backend(image)
+        t = parser.fan_coolers()
+        entries = [t['rows'][0]] + t['extra_curves']
+        blocks = [(c, AMPERE_FE_FAN_STOP[e['index']][1]) for e in entries
+                  for c in parser.copy_offsets(e['policy_offset'] + 30, 17)]
+        flags = [c for e in entries for c in parser.copy_offsets(e['policy_offset'] + 0x32, 1)]
+        field = descriptors(image)['fan_zero_rpm']
+        self.assertEqual((field['current'], field['editable'], field['fan_entries']), (0, True, [0, 2, 3]))
+        self.assertEqual(field['fan_stop_template'],
+                         {'donor': 'RTX 3080 Ti Founders Edition', 'state': 'stock',
+                          'entries': [{'entry': 0, 'low_c': 38.875, 'high_c': 60.0},
+                                      {'entry': 2, 'low_c': 50.0, 'high_c': 72.0},
+                                      {'entry': 3, 'low_c': 60.0, 'high_c': 70.0}]})
+        self.assertEqual(field['evidence'][-1]['kind'], 'reference-image-template')
+        for text in ('the blocks NVIDIA stores on the RTX 3080 Ti Founders Edition', 'no blower ships with fan stop on',
+                     'memory and power stages included', 'a restart of a blower from 0 RPM is untested',
+                     'bits 1 and 2 with bit 4 clear', 'not hardware-tested on this board'):
+            self.assertIn(text, field['reason'])
+        self.assertNotIn('clamshell', field['reason'])
+        # Its channel entry keeps bit 4 clear (0x01 -> 0x07), a form no shipped image runs zero RPM with.
+        self.assertTrue(field['channel_bit4_clear'])
+        # Its curve starts at 55 C, below the template's 60 C upper: the switch goes with point 1 raised to it.
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_zero_rpm': 1})
+        details = exc.exception.details
+        self.assertEqual((exc.exception.code, details['field'], details['bounds'], details['joint_fields']),
+                         ('ZERO_RPM_ABOVE_CURVE', 'fan_zero_rpm', None, ['fan_1_curve_1_temp_c']))
+        self.assertIn('(60 C, written by fan_zero_rpm)', str(exc.exception))
+        self.assertIn('keep fan_1_curve_1_temp_c at 60 C or more in this edit', str(exc.exception))
+        on = edit(image, {'fan_zero_rpm': 1, 'fan_1_curve_1_temp_c': 60})
+        self.assertTrue(on.manifest['integrity']['valid'])
+        self.assertEqual(fan_stop_refusals(on.image), [])
+        first = parser.copy_offsets(t['rows'][0]['policy_offset'] + 18, 2)
+        allowed = ({at for c, _ in blocks for at in range(c, c + 17)} | set(flags) |
+                   {at for c in first for at in range(c, c + 2)} | {r['offset'] for r in on.manifest['integrity_repairs']})
+        self.assertLessEqual({i for i, (a, b) in enumerate(zip(image.blob, on.blob)) if a != b}, allowed)
+        self.assertEqual([on.blob[c:c + 17] for c, _ in blocks], [block for _, block in blocks])
+        self.assertEqual([on.blob[c] for c in flags], [0x07] * len(flags))
+        copy = descriptors(on.image)
+        self.assertEqual((copy['fan_zero_rpm']['current'], copy['fan_zero_rpm']['fan_stop_template']['state']),
+                         (1, 'copy'))
+        self.assertEqual([copy[f'{p}_zero_rpm_high_temp_c']['current'] for p in ('fan_1', 'fan_extra_1', 'fan_extra_2')],
+                         [60.0, 72.0, 70.0])
+        # 0 writes the stock zeros and 0xff back, also after a temperature edit, and with point 1 in the same edit.
+        warmer = edit(on.image, {'fan_1_zero_rpm_high_temp_c': 58})
+        stock = edit(warmer.image, {'fan_zero_rpm': 0, 'fan_1_curve_1_temp_c': 55})
+        self.assertEqual(stock.blob, image.blob)
+        self.assertTrue(all(stock.blob[c:c + 17] == FAN_STOP_UNSET for c, _ in blocks))
+        # It writes over the zero RPM pairs too, so 0 and a zero RPM temperature are separate edits.
+        for key in ('fan_1_zero_rpm_low_temp_c', 'fan_extra_2_zero_rpm_high_temp_c'):
+            with self.subTest(key=key), self.assertRaises(VbiosError) as exc:
+                edit(warmer.image, {'fan_zero_rpm': 0, key: copy[key]['current'] - 1})
+            self.assertEqual((exc.exception.code, exc.exception.details['fields']),
+                             ('SEPARATE_EDIT_REQUIRED', ['fan_zero_rpm', key]))
+        # Another device with the same bytes gets no template: the block would fail the GSP-RM check.
+        other = descriptors(from_bytes(template_board(device=0x2204)))['fan_zero_rpm']
+        self.assertEqual((other['current'], other['editable']), (0, False))
+        self.assertNotIn('fan_stop_template', other)
+
+    def test_extension_bindings_cannot_write_the_template_blocks(self):
+        # The probes of the review: a binding over a fan-stop block next to a fan_zero_rpm request that leaves the
+        # field as it is, and next to one that writes the template over the same bytes.
+        from nvidia_vbios.editor.registry import fan_zero_rpm, fans
+        image = from_bytes(template_board())
+        parser = backend(image)
+        entry = parser.fan_coolers()['rows'][0]['policy_offset']
+        copy = edit(image, {'fan_zero_rpm': 1, 'fan_1_curve_1_temp_c': 60}).image
+        for label, source, offset, encoding, request, code in (
+                ('stock, dword 34', image, 34, '<I', {'probe': 12345}, 'PRESERVED_FIELD_CHANGED'),
+                ('stock, dword 34 next to a no-op 0', image, 34, '<I', {'probe': 12345, 'fan_zero_rpm': 0},
+                 'PRESERVED_FIELD_CHANGED'),
+                ('copy, word 44 = 0 next to a no-op 1', copy, 44, '<H', {'probe': 0, 'fan_zero_rpm': 1},
+                 'PRESERVED_FIELD_CHANGED'),
+                ('stock, word 44 = 0 next to 1', image, 44, '<H',
+                 {'probe': 0, 'fan_zero_rpm': 1, 'fan_1_curve_1_temp_c': 60}, 'CONFLICTING_FIELDS')):
+            probe = custom_registry('probe', tuple(parser.copy_offsets(entry + offset, struct.calcsize(encoding))),
+                                    encoding=encoding, scale=1, bounds={'minimum': 0, 'maximum': 100000},
+                                    include=(fan_zero_rpm, fans))
+            with self.subTest(probe=label), self.assertRaises(VbiosError) as exc:
+                edit(source, request, field_registry=probe)
+            self.assertEqual(exc.exception.code, code)
 
     def test_two_channels_round_trip_in_both_chains(self):
         image = from_bytes(synthetic_rom(copies=2, fans=2))

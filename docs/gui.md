@@ -87,15 +87,45 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    current, labelled "threshold"), the Turing NVVDD output current limit and
    fixed REL/ALT voltages and, on Blackwell and Ada, **NVVDD REL and ALT follow
    OV** (a switch: on gives the flat XOC-style voltage limit; save it on its own,
-   and keep the original image to go back) and, on Blackwell, **Fan zero RPM** (a
-   switch for the flag bits that let the fans stand still at idle, hardware-tested
-   on one RTX 5090; experimental) and, on Blackwell, Ada and Ampere, the **zero RPM
-   lower and upper thresholds** of each fan and extra curve (the two temperatures
-   stored with those bits; idle fans most likely stop below the lower one and start
-   above the upper one; on one RTX 5080 a raised upper threshold kept the fans
-   stopped below it; on Ada and Ampere editable only where zero RPM is on, and not
-   hardware-tested there; experimental); values typed before ticking it are kept. Read-only 0/1 fields
-   show On or Off. **Shunt multiplier (x)** (1 = off, up to 10) is display only:
+   and keep the original image to go back) and, on Blackwell, Ada and Ampere, **Fan
+   zero RPM** (a switch for the flag bits that let the fans stand still at idle,
+   hardware-tested on one RTX 5090, not on Ada, Ampere or the RTX PRO 6000 Max-Q;
+   experimental). On blower boards that store no fan-stop values (RTX PRO 6000
+   Max-Q, RTX 5000 and 6000 Ada, RTX A-series) the switch also writes the values
+   NVIDIA stores on another of its boards, and off on such a copy writes the stock
+   bytes back; notes under the switch name that board and the risks: no blower card
+   ships with fan stop on, a stopped blower most likely moves no air through the card,
+   memory and power stages included, until the card passes the upper threshold,
+   restarting a blower from 0 RPM is untested, and dense multi-GPU builds can see heat
+   soak and stop/start cycling. On any other ROM that ships with zero RPM off (every
+   RTX PRO and RTX A-series board, some GeForce Ampere ones) a note gives the same
+   risks for a card with a blower fan. Where the switch would leave the fan channel
+   entries with bit 4 of their flag byte clear (the RTX PRO 6000 Workstation and Max-Q
+   and the blower boards above), a note says that no shipped ROM runs zero
+   RPM with that flag form and that whether the fans stop is untested. Where an entry
+   stores the same lower and upper threshold (the RTX 3060 8GB, 40 °C), a note says
+   there is no hysteresis, so the fans may stop and start often around it, and to set
+   that lower threshold a few degrees below. A fan tool that holds manual control keeps
+   the fans running whatever the switch says. A ROM whose fan entries disagree (one
+   RTX 3060) shows the field read-only as Mixed. On a copy where the switch wrote
+   fan-stop values, turning it off and changing its thresholds are separate saves. The
+   **zero RPM lower and upper thresholds** of each fan and extra curve (Blackwell, Ada
+   and Ampere) are the two temperatures stored with those bits: idle fans most likely
+   stop below the lower one and start above the upper one, and on one RTX 5080 a
+   raised upper threshold kept the fans stopped below it. The upper threshold goes up
+   to point 1 of the same fan curve. With zero RPM on, a point 1 below the upper
+   threshold, or zero RPM turned on with an upper threshold above point 1, is refused
+   and the row to change says its allowed range; change them together (on an RTX 3090,
+   turning zero RPM on needs both upper thresholds lowered to 51.90625 °C, their point
+   1, or less). Where the lower threshold is at or above point 1 (an RTX 3080's extra
+   curves, the RTX 3050, some RTX 4090 ROMs) its row is marked too: set it below the
+   upper threshold in the same edit. A larger **Fan channels** count that turns on a
+   stored fan whose upper threshold is above its point 1 with zero RPM on is refused:
+   turn zero RPM off and save, change the count on that copy, then turn zero RPM on
+   with that threshold lowered (on the RTX 3060 whose entries disagree the count cannot
+   be raised). On Ada and Ampere the thresholds are editable wherever the switch is,
+   and not hardware-tested there; experimental. Values typed before ticking **Show
+   advanced XOC-style fields** are kept. Read-only 0/1 fields show On or Off. **Shunt multiplier (x)** (1 = off, up to 10) is display only:
    for board power, PCIe slot power/current, connector power/current and 12 V
    input current rows it adds a note with the real limit on a shunt-modded card, about
    the stored value times the multiplier, assuming the same factor on every 12 V
@@ -180,7 +210,15 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    evaluates as VMIN; on Ada the driver adds its chained terms (+90 mV on an RTX
    2000 Ada), so the value goes up to the lowest REL value less the most those terms
    can add (753 mV on that board). The read-only "rail INFO VMIN-slot" ceiling
-   is a different equation and does not set VMIN. On the RTX 4090 95.02.3C ROMs a
+   is a different equation and does not set VMIN. Where each chip sets its own VMIN
+   (a tree of equations on fused values and the temperature: RTX PRO 6000 and PRO 4000,
+   RTX 5060 Ti, RTX 5080 Laptop GPU, RTX 5090 MSVDD and several Ampere and Ada boards)
+   the row starts empty and reads "Original: per chip"; a value fixes VMIN at it for
+   every chip and temperature (on Ada the terms chained after it still add theirs).
+   Experimental and not tested on hardware: a value below the chip's stock VMIN can make
+   idle and light-load states unstable, and the driver might keep its stock VMIN. On a
+   copy saved that way **Fixed VMIN** shows as a switch, and turning it off writes the
+   stock bytes back; save that change and a new value in separate copies. On the RTX 4090 95.02.3C ROMs a
    15 mV constant that sets the memory clock voltage floor links the VMIN equation;
    a new VMIN there first copies that equation into an unused VFE slot, so the
    memory floor keeps its stock value and a lower VMIN shows only at the 405 MHz idle

@@ -861,14 +861,16 @@ class TuringFanTests(unittest.TestCase):
             edit(self.image, {'fan_channels': 1})
         self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
 
-    def test_no_zero_rpm_temperatures_on_turing(self):
-        # Turing images store zeros and 0xff where the pair would sit; a planted pair still gives no field.
+    def test_no_zero_rpm_fields_on_turing(self):
+        # Turing images store zeros and 0xff where the pair would sit and leave the flag bits clear; a planted pair
+        # and flag still give no field (fans stop through the curve there).
         blob = self.image.blob
         for row in self.parser.fan_coolers()['rows']:
             blob = patched(blob, row['policy_offset'] + 30, struct.pack('<HH', 43 * 32, 50 * 32))
             blob = patched(blob, row['policy_offset'] + 46, b'\x00')
             blob = patched(blob, row['policy_offset'] - 2, b'\x07')
-        self.assertFalse([k for k in descriptors(from_bytes(blob)) if '_zero_rpm_' in k])
+        self.assertFalse([k for k in descriptors(from_bytes(blob)) if 'zero_rpm' in k])
+        self.assertFalse([k for k in descriptors(self.image) if 'zero_rpm' in k])
 
     def test_tables_that_disagree_are_refused(self):
         cases = (('policy list', 0x5C, 5, b'\xff', 'policy channel list disagrees with the cooler list'),

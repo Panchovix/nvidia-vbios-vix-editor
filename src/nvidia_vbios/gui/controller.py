@@ -84,7 +84,8 @@ def stage_document(document, changes):
             raise editor.VbiosError('INVALID_VALUE', f'{key} requires a finite number.') from exc
         if not amount.is_finite() or (field['type'] == 'integer' and amount != amount.to_integral_value()):
             raise editor.VbiosError('INVALID_VALUE', f'{key} requires a finite {field["type"]}.')
-        if amount != Decimal(str(field['current'])):
+        # A VMIN set per chip (vmin_tree) has no current number: any value fixes it.
+        if field['current'] is None or amount != Decimal(str(field['current'])):
             requested[key] = str(amount)
     proposal = editor.plan(document.original, requested)
     return replace(document, changes=requested, proposal=proposal, last_saved=None)

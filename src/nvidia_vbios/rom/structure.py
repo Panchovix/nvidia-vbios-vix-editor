@@ -5,6 +5,12 @@ from .errors import FormatError
 
 # Quadratic coefficients below this are float residue (corpus: at most 5e-9; real slopes are 35 and up).
 VFE_RESIDUE = 1e-6
+# Bit 4 of a compare equation's output byte (23): the criterion is the value of the equation named by
+# bytes 11/12 (u16), not the float there (GSP-RM 615.78.08 VFE parser 0x119dd48, for every entry size).
+VFE_CRITERION_EQUATION = 0x10
+# Output clamp (bytes 3..10) of a VFE equation that clamps nothing: -FLT_MAX, +FLT_MAX. Every min/max
+# and compare root of a VMIN tree in the corpus stores it; a fixed VMIN writes minimum = maximum there.
+VFE_UNCLAMPED = bytes.fromhex('ffff7fffffff7f7f')
 
 
 def read(blob, fmt, at, *, end=None):
@@ -68,10 +74,14 @@ def vfe_constant_mhz(size, var, value):
 
 
 def vfe_referrers(blob, base, size, width, count):
-    """Equation index -> [(referrer index, 'next' or 'child')]: who links each equation.
+    """Equation index -> [(referrer index, 'next', 'child' or 'criterion')]: who links each equation.
 
     Kinds 1, 4 and 7 link only their next equation; min/max (2) and compare (3) also link
-    two children (bytes 11/12 and 15/16, u16 high bytes 4 further on).
+    two children (bytes 11/12 and 15/16, u16 high bytes 4 further on). A compare whose
+    output byte (23) has bit 4 set compares its variable with the value of the equation
+    named by bytes 11/12 (GSP-RM 615.78.08 VFE parser 0x119dd48 keeps those 16 bits instead
+    of the float criterion, for every entry size; the GB20x VMIN trees use it for their
+    fused bin), so that equation is linked too ('criterion').
     """
     none, result = (1 << 8 * width) - 1, {}
     high = (lambda e, k: e[k + 4] << 8) if width == 2 else (lambda e, k: 0)
@@ -86,10 +96,73 @@ def vfe_referrers(blob, base, size, width, count):
             links += [(e[11] | high(e, 11), 'child'), (e[12] | high(e, 12), 'child')]
         elif e[0] == 3:
             links += [(e[15] | high(e, 15), 'child'), (e[16] | high(e, 16), 'child')]
+            if e[23] & VFE_CRITERION_EQUATION:
+                links.append((e[11] | e[12] << 8, 'criterion'))
         for x, kind in links:
             if x != none:
                 result.setdefault(x, []).append((i, kind))
     return result
+
+
+def vfe_tree(blob, base, size, width, count, root):
+    """Indices of the equations the VFE equation `root` evaluates: itself and everything its next links,
+    children and criterion equations reach (vfe_referrers' links), in walk order; FormatError on an
+    index outside the table."""
+    none, high = (1 << 8 * width) - 1, (lambda e, k: e[k + 4] << 8) if width == 2 else (lambda e, k: 0)
+    order, seen, pending = [], set(), [root]
+    while pending:
+        i = pending.pop()
+        if i in seen:
+            continue
+        if not 0 <= i < count:
+            raise FormatError("VFE tree link outside the equation table")
+        seen.add(i)
+        order.append(i)
+        e = blob[base + size * i:base + size * i + size]
+        links = [e[2] | ((e[24] << 8) if width == 2 else 0)] if e[0] else []
+        if e[0] == 2:
+            links += [e[11] | high(e, 11), e[12] | high(e, 12)]
+        elif e[0] == 3:
+            links += [e[15] | high(e, 15), e[16] | high(e, 16)]
+            if e[23] & VFE_CRITERION_EQUATION:
+                links.append(e[11] | e[12] << 8)
+        pending.extend(reversed([x for x in links if x != none]))
+    return order
+
+
+def vfe_clamp_state(blob, at):
+    """('unclamped', None) for a VFE equation at `at` whose output clamp is VFE_UNCLAMPED, ('pinned', uV)
+    for a finite clamp whose minimum equals its maximum and is a whole uV, else (None, None)."""
+    if blob[at + 3:at + 11] == VFE_UNCLAMPED:
+        return 'unclamped', None
+    lo, hi = struct.unpack_from('<ff', blob, at + 3)
+    if math.isfinite(lo) and lo == hi and lo == int(lo):
+        return 'pinned', lo
+    return None, None
+
+
+def quadratic_span(blob, at, variables, variable_size):
+    """(lowest, highest) float32 value of the quadratic VFE equation at `at` over its variable's stored range,
+    or None.
+
+    The quadratic is constant + slope x + curvature x^2 (floats at bytes 11, 15 and 19) on the variable
+    named by byte 1, whose entry at variables + variable_size x index stores its range as floats at bytes
+    1 and 5. The extremes (the range ends and an inner vertex) are computed in double precision and
+    rounded to float32, so equal results give equal stored bytes.
+    """
+    c0, c1, c2 = struct.unpack_from('<fff', blob, at + 11)
+    entry = variables + variable_size * blob[at + 1]
+    if entry + 9 > len(blob):
+        return None
+    lo, hi = struct.unpack_from('<ff', blob, entry + 1)
+    if not all(math.isfinite(x) and abs(x) < 1e30 for x in (c0, c1, c2, lo, hi)) or lo > hi:
+        return None
+    points = [lo, hi] + ([-c1 / (2 * c2)] if c2 and lo < -c1 / (2 * c2) < hi else [])
+    exact = [c0 + c1 * x + c2 * x * x for x in points]
+    if not all(abs(v) < 1e30 for v in exact):
+        return None
+    values = [struct.unpack('<f', struct.pack('<f', v))[0] for v in exact]
+    return min(values), max(values)
 
 
 def vfe_reference_counts(blob, base, size, width, count):
@@ -142,7 +215,7 @@ def fan_curve(blob, at):
                 curve_points=tuple(read(blob, '<HH', at + 18 + 4 * k) for k in range(3)))
 
 
-def vfe_range(blob, base, size, width, count, index, seen=frozenset()):
+def vfe_range(blob, base, size, width, count, index, seen=frozenset(), *, clamped_children=False):
     """(lowest, highest) uV of the VFE equation list at index, or None when it is not bounded.
 
     Each equation is clamped to its own float bounds (bytes 3/7) and its next link
@@ -151,9 +224,19 @@ def vfe_range(blob, base, size, width, count, index, seen=frozenset()):
     residue is its constant (byte 11); otherwise a quadratic or the GB20x type 7
     polynomial is bounded by its clamp alone. Min/max (2) and compare (3) span
     their two children (bytes 11/12 and 15/16, u16 high bytes 4 further on).
-    Other kinds or output units, indices outside the table and cycles give None;
-    a missing link (index 0xff/0xffff) is an empty list, (0, 0).
+    Other kinds or output units, indices outside the table and cycles give None,
+    and so does a list that no clamp bounds; a missing link (index 0xff/0xffff) is
+    an empty list, (0, 0). A child that nothing bounds leaves its min/max or compare
+    unbounded too, unless clamped_children: then that node's own clamp bounds it
+    (the VMIN bounds use it, for the compare REL of the RTX 4060 family and the
+    RTX 4070 Ti SUPER, clamped to 1015..1090 mV over a chain with an unclamped slope).
     """
+    span = _vfe_span(blob, base, size, width, count, index, seen, clamped_children)
+    return span if span is not None and all(math.isfinite(v) for v in span) else None
+
+
+def _vfe_span(blob, base, size, width, count, index, seen, clamped_children):
+    """vfe_range with -inf/+inf for the unbounded ends; None for a list it cannot read."""
     none = (1 << 8 * width) - 1
     low = high = 0.0
     while index != none:
@@ -168,17 +251,16 @@ def vfe_range(blob, base, size, width, count, index, seen=frozenset()):
             constant = e[0] == 1 and abs(c1) < VFE_RESIDUE and abs(c2) < VFE_RESIDUE
             span = (c0, c0) if constant else (-math.inf, math.inf)
         elif e[0] in (2, 3):
-            children = [vfe_range(blob, base, size, width, count, e[k] | (e[k + 4] << 8 if width == 2 else 0), seen)
-                        for k in ((11, 12) if e[0] == 2 else (15, 16))]
-            if None in children:
+            children = [_vfe_span(blob, base, size, width, count, e[k] | (e[k + 4] << 8 if width == 2 else 0), seen,
+                                  clamped_children) for k in ((11, 12) if e[0] == 2 else (15, 16))]
+            if None in children or not clamped_children and not all(math.isfinite(v) for c in children for v in c):
                 return None
             span = (min(c[0] for c in children), max(c[1] for c in children))
         else:
             return None
-        value = (min(max(span[0], lo), hi), max(min(span[1], hi), lo))
-        if not all(abs(v) < 1e30 for v in value):  # a +-FLT_MAX clamp bounds nothing
-            return None
-        low, high = low + value[0], high + value[1]
+        # A +-FLT_MAX clamp bounds nothing.
+        lo, hi = (v if abs(v) < 1e30 else math.copysign(math.inf, v) for v in (lo, hi))
+        low, high = low + min(max(span[0], lo), hi), high + max(min(span[1], hi), lo)
         index = e[2] | (e[24] << 8 if width == 2 else 0)
     return low, high
 

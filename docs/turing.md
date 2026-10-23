@@ -49,7 +49,10 @@ XOC-style fields**.
   checked). It goes from 40 °C up to 3 °C above the product's stock value, and is read-only on the two XOC images,
   which name no such limit.
 - **Fans**: `fan_pwm_frequency_hz`, the speed (RPM) and level (%, advanced) limits of each fan and the points of
-  its fan curve.
+  its fan curve. There is no zero RPM switch: Turing fans stop through the curve. Seven images ship that way (the
+  RTX 2060 SUPER stores 0 RPM at point 1 but keeps a 10 % level floor), and on the others but the MSI GTX 1650,
+  whose curve is read-only, one edit sets it up: the minimum speed and level and point 1's speed and level at 0,
+  point 2 at the fan's lowest running speed where it should start (no hysteresis; see `extended-fields.md`).
 - **Advanced section** (its own collapsed section, not behind the advanced toggle): the utilization clock policy and
   the targets, jump thresholds and hysteresis of its GPC, DRAM and VID controllers, and Stock/Off switches for GR
   power gating and MSCG (idle power saving) on the products whose stock entries were reviewed (every Turing image

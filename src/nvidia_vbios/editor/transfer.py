@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from ..rom import VbiosError
 from .api import edit
+from .registry import VMIN_FIXED_SEMANTICS
 from .sections import IMPORT_SECTION_NAMES, field_section, technical_field_keys
 
 # The sections one ROM can give another: 'other' holds no editable field, and the Advanced section
@@ -25,6 +26,9 @@ BOARD_KEYS = frozenset(('fan_channels',))
 PRODUCT_KEYS = frozenset(('max_operating_temp_c',))
 # One fan curve: the fan limits and each point's temperature, speed and level (three ordering groups in the editor).
 FAN_CURVE = re.compile(r'fan_(\d+_(min|max)_(rpm|pct)|(\d+|extra_\d+)_curve_\d+_(temp_c|rpm|pct))')
+# The zero RPM temperature pair of one fan policy entry. The editor checks every fan temperature as one ordering
+# group (the upper stays at most point 1 of its curve), but each pair still comes whole from one ROM on its own.
+ZERO_RPM_PAIR = re.compile(r'(fan_(\d+|extra_\d+))_zero_rpm_(low|high)_temp_c')
 # Copies of one limit that the editor keeps as separate fields.
 LINKED = {'input_current_policy7_limit_ma': 'input-current-12v'}
 # Reasons that leave a value of this ROM that differs from the donor's: the rest of its set stays too.
@@ -33,10 +37,14 @@ HOLDING = frozenset(('opt_in', 'read_only', 'read_only_in_donor', 'read_only_in_
 
 
 def _set(field):
-    """The dependent set whose values come whole from one ROM: the fan curve, an ordering group (a minimum, rated
-    value and maximum) or a linked copy; None for an independent field."""
+    """The dependent set whose values come whole from one ROM: the fan curve, the zero RPM pair of a fan policy
+    entry, an ordering group (a minimum, rated value and maximum) or a linked copy; None for an independent
+    field."""
     if FAN_CURVE.fullmatch(field['key']):
         return 'fan-curve'
+    pair = ZERO_RPM_PAIR.fullmatch(field['key'])
+    if pair:
+        return f'fan-zero-rpm-{pair.group(1)}'
     return LINKED.get(field['key']) or field.get('ordering_group')
 
 
@@ -81,6 +89,20 @@ def _kind(identity):
 
 def _amount(field):
     return None if field is None or field.get('current') is None else Decimal(str(field['current']))
+
+
+def _stock_tree(field):
+    """True for a field of a VMIN tree root or per-chip VMIN equation in its stock state (vmin_tree): its value has
+    no single number and its switch (*_vmin_fixed) is read-only at 0. From such a donor the target's switch takes 0,
+    its own stock clamp, and its value field is left out ('per_chip_in_donor')."""
+    return field is not None and (field.get('vmin_tree') or {}).get('state') == 'stock'
+
+
+def _tree_kind(field):
+    """The shape of a VMIN tree root or per-chip equation (vmin_tree kind), None for any other field. A VMIN that a
+    plain clamp fixes and one set per chip are other quantities, also where both equations have the same type (a
+    quadratic on Ada)."""
+    return (field.get('vmin_tree') or {}).get('kind')
 
 
 def import_fields(target, donor, sections, *, include_opt_in=False, dry_run=False):
@@ -130,13 +152,15 @@ def import_fields(target, donor, sections, *, include_opt_in=False, dry_run=Fals
         editable = [f is not None and f['editable'] for f in (mine, other)]
         both = mine is not None and other is not None
         same = both and (all(mine.get(name) == other.get(name) for name in IDENTITY) and
-                         equations[0].get(key) == equations[1].get(key))
+                         equations[0].get(key) == equations[1].get(key) and _tree_kind(mine) == _tree_kind(other))
         if both and _amount(mine) == _amount(other):
             if same and editable[0] and not opted_out and key not in PRODUCT_KEYS:
                 unchanged.append(key)
             continue
         if (opted_out or not any(editable)) and not both:
             continue                    # an advanced or read-only field one ROM lacks
+        if both and other.get('value_semantics') == VMIN_FIXED_SEMANTICS and _stock_tree(mine):
+            continue                    # a fixed donor VMIN comes with its value (*_vmin_mv)
         entries[key] = dict(field=key, section=section, label=field.get('label', key), units=field['units'],
                             target=mine and mine['current'], donor=other and other['current'])
         if opted_out:
@@ -151,7 +175,9 @@ def import_fields(target, donor, sections, *, include_opt_in=False, dry_run=Fals
             reason = 'board_specific'
         elif key in PRODUCT_KEYS:
             reason = 'product_specific'
-        elif not editable[1] or other['current'] is None:
+        elif _stock_tree(other) and other['current'] is None:
+            reason = 'per_chip_in_donor' if same else 'different_meaning'
+        elif not (editable[1] or _stock_tree(other)) or other['current'] is None:
             reason = 'read_only_in_donor'
         elif not editable[0]:
             reason = 'read_only_in_target'

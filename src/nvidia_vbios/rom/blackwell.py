@@ -11,7 +11,8 @@ import math
 import re
 import struct
 from .errors import FormatError
-from .structure import dram_points, fan_curve, gpc_curve_slot, scan_images, parse_bit, vfe_range
+from .structure import (VFE_CRITERION_EQUATION, VFE_UNCLAMPED, dram_points, fan_curve, gpc_curve_slot, scan_images,
+                        parse_bit, vfe_clamp_state, vfe_range, vfe_tree)
 
 def unpack(blob, fmt, at):
     size = struct.calcsize(fmt)
@@ -50,6 +51,9 @@ NOTEBOOK_IDS = (0x2C59,)
 # 4000 SFF, RTX 5060 Ti and notebook rows). +0x1B is the boot voltage's high half.
 RAIL_SELECTORS = (0x0D, 0x0F, 0x11, 0x13, 0x15, 0x17, 0x1D, 0x1F, 0x21, 0x23) + tuple(range(0x29, 0x41, 2))
 VMIN_SELECTOR = 0x13
+# Entry types (byte 0) of the reviewed P+0x104 table (object 0xa7), whose entries hold VFE equation
+# indices at bytes 5..8 (BlackwellRom.equation_index_names).
+P104_ENTRY_TYPES = (0, 1, 3)
 # Per-fan-channel tables: name -> (BIT P offset, header, header size, entry size, entries, object).
 FAN_TABLES = {
     'cooler': (0x58, bytes((0x10, 9, 0x1A, 4)), 9, 0x1A, 4, 0x1D),
@@ -996,8 +1000,10 @@ class BlackwellRom:
 
         Every kind links its next equation (bytes 2 | 24 << 8, 0xffff = none);
         min/max (2) children are bytes 11/12 | 15/16 << 8 and compare (3)
-        children bytes 15/16 | 19/20 << 8. Quadratic (1) and the type 7 REL
-        polynomial have no other equation link (type 7 terms name variables).
+        children bytes 15/16 | 19/20 << 8; a compare whose output byte 23 has
+        bit 4 set also names its criterion equation (u16 at bytes 11..12).
+        Quadratic (1) and the type 7 REL polynomial have no other equation link
+        (type 7 terms name variables).
         """
         b, refs = self.blob, set()
         for i in range(count):
@@ -1009,8 +1015,78 @@ class BlackwellRom:
                 links += [e[11] | e[15] << 8, e[12] | e[16] << 8]
             elif e[0] == 3:
                 links += [e[15] | e[19] << 8, e[16] | e[20] << 8]
+                if e[23] & VFE_CRITERION_EQUATION:
+                    links.append(e[11] | e[12] << 8)
             refs.update(x for x in links if x != 0xFFFF)
         return refs
+
+    def equation_index_names(self):
+        """VFE equation index -> [table] for the tables outside the VFE and rail tables that name equations.
+
+        Read at their reviewed layouts, each as a superset where the index bytes are not pinned
+        down: every u16 at any byte offset of each clock programming entry with its sub-entries
+        (C+0x0c v0x50, object 4: the VF curve equations), of each FLL entry (C+0x10 v0x20, 13-byte
+        entries, object 5: the u16 at entry byte 7 names an equation on every image) and its header
+        bytes 5..6, and of each voltage policy entry after its type byte (P+0x70 v0x20, 5-byte
+        entries, legacy image: nvgpu reads split-rail delta equations there); and the u16 at bytes
+        5 and 7 of each P+0x104 entry (v0x10, 21-byte entries, object 0xa7, which GSP-RM copies raw
+        to another firmware; types P104_ENTRY_TYPES). Bytes 1..2 of a P+0x104 entry are not read:
+        they hold the same small values on images whose equations at those indices differ (5 and 9
+        on the RTX 5090, RTX 5080 and RTX PRO 6000 Workstation images, 3, 7 and 11 on others), and
+        -58 on the RTX PRO 4000 SFF. An absent table names nothing; FormatError when a table is not
+        at its reviewed layout.
+        """
+        b, names = self.blob, {}
+
+        def name(at, table):
+            names.setdefault(unpack(b, '<H', at)[0], []).append(table)
+        at = self.optional_pointer('C', 0x0C)
+        if at is not None:
+            hs, size, count, c1, s1, c2, s2 = b[at + 1:at + 8]
+            stride = size + c1 * s1 + c2 * s2
+            if b[at] != 0x50 or hs != 8 or self.object_for(at)['id'] != 4:
+                raise FormatError('the clock programming table (C+0x0c) has an unreviewed layout')
+            self.object_for(at, hs + stride * count)
+            for i in range(count):
+                for k in range(stride - 1):
+                    name(at + hs + stride * i + k, 'clock programming')
+        at = self.optional_pointer('C', 0x10)
+        if at is not None:
+            if b[at:at + 3] != bytes((0x20, 7, 13)) or self.object_for(at)['id'] != 5:
+                raise FormatError('the FLL table (C+0x10) has an unreviewed layout')
+            self.object_for(at, 7 + 13 * b[at + 3])
+            name(at + 5, 'FLL')
+            for i in range(b[at + 3]):
+                for k in range(12):
+                    name(at + 7 + 13 * i + k, 'FLL')
+        at = self.optional_pointer('P', 0x70)
+        if at is not None:
+            if b[at:at + 3] != bytes((0x20, 4, 5)) or not (self.legacy['start'] <= at and
+                                                            at + 4 + 5 * b[at + 3] <= self.legacy['end']):
+                raise FormatError('the voltage policy table (P+0x70) has an unreviewed layout')
+            for i in range(b[at + 3]):
+                for k in range(1, 4):
+                    name(at + 4 + 5 * i + k, 'voltage policy')
+        at = self.optional_pointer('P', 0x104)
+        if at is not None:
+            if b[at:at + 3] != bytes((0x10, 5, 21)) or self.object_for(at)['id'] != 0xA7:
+                raise FormatError('the table at P+0x104 has an unreviewed layout')
+            self.object_for(at, 5 + 21 * b[at + 3])
+            for i in range(b[at + 3]):
+                entry = at + 5 + 21 * i
+                if b[entry] not in P104_ENTRY_TYPES:
+                    raise FormatError('the table at P+0x104 has an unreviewed entry type')
+                for k in (5, 7):
+                    name(entry + k, 'P+0x104')
+        return names
+
+    def optional_pointer(self, token, byte_offset):
+        """pointer(), or None when the token is absent, too short for the offset or holds a zero pointer."""
+        entry = self.tokens.get(token)
+        if (entry is None or byte_offset + 4 > entry["size"] or
+                not unpack(self.blob, "<I", entry["data"] + byte_offset)[0]):
+            return None
+        return self.pointer(token, byte_offset)
 
     def rail_vmin(self):
         """Per rail, the equation selected at row +0x13, which gives the driver's evaluated VMIN.
@@ -1019,9 +1095,13 @@ class BlackwellRom:
         (min/max trees) the driver's rail status VMIN equals this equation, not the
         rail INFO VMIN slot (+0x21). A constant equation (constant_equation) that no
         other equation references and no other rail row word (RAIL_SELECTORS) selects
-        can take a new value; other shapes are reported only. rel_lowest_uv is the
-        lowest value of the REL equation list (vfe_range); a constant adds no
-        chained equations (added_uv 0, 0).
+        can take a new value. A min/max or compare root (vmin_tree) that no other
+        equation, rail row word or table (equation_index_names) names carries
+        tree=dict(state, kind, pinned_uv, nodes, stock_clamp): 'stock' while its output
+        clamp is VFE_UNCLAMPED, 'pinned' once a value set minimum = maximum; pinned
+        and value_uv follow that clamp. Other shapes are reported only. rel_lowest_uv
+        is the lowest value of the REL equation list (vfe_range); a constant or a root
+        adds no chained equations (added_uv 0, 0).
         """
         b = self.blob
         rail, vfe = self.pointer("P", 0x68), self.pointer("P", 0x20)
@@ -1034,12 +1114,12 @@ class BlackwellRom:
         refs = self.equation_references(equations, count)
         rows = [rail + 5 + 65 * i for i in range(rows)]
         selected = [unpack(b, "<H", row + offset)[0] for row in rows for offset in RAIL_SELECTORS]
-        result = []
+        result, names = [], None
         for i, (label, row) in enumerate(zip(("NVVDD", "MSVDD"), rows)):
             if b[row:row + 2] != bytes((1, i + 1)):
                 raise FormatError("unvalidated rail logical identity")
             selector, rel = unpack(b, "<H", row + VMIN_SELECTOR)[0], unpack(b, "<H", row + 0x0D)[0]
-            rel = None if rel == 0xFFFF else vfe_range(b, equations, 25, 2, count, rel)
+            rel = None if rel == 0xFFFF else vfe_range(b, equations, 25, 2, count, rel, clamped_children=True)
             item = dict(logical_rail_id=label, rail_index=i, rail_entry=row, selector_offset=row + VMIN_SELECTOR,
                         selector_raw=selector, equation_offset=None, equation_size=25, equation_type=None,
                         value_uv=None, pinned=False, rel_lowest_uv=rel and rel[0], added_uv=(0.0, 0.0))
@@ -1049,16 +1129,71 @@ class BlackwellRom:
             at = equations + 25 * selector
             item.update(equation_offset=at, equation_type=b[at])
             value = self.constant_equation(at)
-            if value is None:
-                item["diagnostic"] = ("is a min/max equation tree" if b[at] == 2 else
-                                      "is not a constant voltage equation in object 0x14")
-            elif refs is None or selector in refs or selected.count(selector) > 1:
+            shared = refs is None or selector in refs or selected.count(selector) > 1
+            if value is None and b[at] in (2, 3):
+                tree = self.vmin_tree(at, equations, count)
+                kind = "a min/max" if b[at] == 2 else "a compare"
+                if isinstance(tree, str):
+                    item["diagnostic"] = tree
+                elif shared:
+                    item["diagnostic"] = f"is {kind} equation tree that another equation or rail selector uses"
+                else:
+                    if names is None:
+                        try:
+                            names = self.equation_index_names()
+                        except FormatError as exc:
+                            names = str(exc)
+                    if isinstance(names, str):
+                        item["diagnostic"] = (f"is {kind} equation tree, but {names}, so another user of it "
+                                              "cannot be ruled out")
+                    elif selector in names:
+                        item["diagnostic"] = (f"is {kind} equation tree that the {names[selector][0]} table also "
+                                              "names")
+                    else:
+                        item.update(tree=tree, minimum_offset=at + 3, maximum_offset=at + 7)
+                        if tree["state"] == "pinned":
+                            item.update(value_uv=tree["pinned_uv"], pinned=True)
+            elif value is None:
+                item["diagnostic"] = "is not a constant voltage equation in object 0x14"
+            elif shared:
                 item["diagnostic"] = "is used by another equation or rail selector"
             else:
                 item.update(value_uv=value, pinned=True, minimum_offset=at + 3, maximum_offset=at + 7,
                             value_offset=at + 11)
             result.append(item)
         return result
+
+    def vmin_tree(self, at, equations, count):
+        """Clamp state of the min/max or compare root of a VMIN tree at `at`, or a diagnostic string.
+
+        The rail row +0x13 roots of the RTX PRO 6000 (Workstation, Max-Q), RTX PRO 4000 SFF,
+        RTX 5060 Ti, notebook and RTX 5090 MSVDD rows are min/max equations (type 2, output byte
+        2, no next link) over a per-chip tree: fixed floors, a table indexed by a fused bin
+        chosen by temperature band, and temperature and speedo terms. GSP-RM 615.78.08 reads
+        the output clamp (bytes 3..10) of every kind into the common equation fields before its
+        per-kind switch (VFE parser 0x119dd48) and exports it with every kind (min/max export
+        0x16c4f7c calls the common export 0x16c4de0). 'stock' is the unclamped root
+        (VFE_UNCLAMPED, as on every corpus image), 'pinned' a finite clamp whose minimum equals
+        its maximum and is a whole uV: the root then evaluates to that value (inferred for a
+        min/max node: the evaluator is not in the GSP-RM image). A compare root (type 3, output
+        byte 2 or 0x12) is read the same way. Returns state, kind, pinned_uv, nodes (the
+        equations the tree evaluates) and stock_clamp (the bytes the stock state stores).
+        """
+        b = self.blob
+        try:
+            if self.object_for(at, 25)["id"] != 0x14:
+                raise FormatError("outside object 0x14")
+            nodes = vfe_tree(b, equations, 25, 2, count, (at - equations) // 25)
+        except FormatError:
+            return "is a min/max or compare equation tree outside object 0x14 or the equation table"
+        outputs = (2,) if b[at] == 2 else (2, 2 | VFE_CRITERION_EQUATION)
+        if b[at + 23] not in outputs or (b[at + 2] | b[at + 24] << 8) != 0xFFFF:
+            return "is an equation tree without a plain voltage output or with a next equation"
+        state, value = vfe_clamp_state(b, at)
+        if state is None:
+            return "is an equation tree whose root has an unreviewed output clamp"
+        return dict(state="stock" if state == "unclamped" else "pinned", kind="min-max" if b[at] == 2 else "compare",
+                    pinned_uv=value, nodes=len(nodes), stock_clamp=VFE_UNCLAMPED)
 
     def rail_limits(self):
         b = self.blob

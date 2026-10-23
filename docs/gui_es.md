@@ -83,18 +83,53 @@ funcionando sin las dependencias gráficas.
    corriente de salida NVVDD y los voltajes fijos REL/ALT de Turing y, en
    Blackwell y Ada, **REL y ALT de NVVDD siguen a OV** (un interruptor: activado
    da el límite de voltaje plano estilo XOC; guárdalo solo y conserva la imagen
-   original para volver atrás) y, en Blackwell, **Parada de ventiladores en
-   reposo** (un interruptor para los bits que permiten que los ventiladores se
-   detengan en reposo, probado en hardware en una RTX 5090; experimental) y, en
-   Blackwell, Ada y Ampere, los **umbrales inferior y superior de la parada en
-   reposo** de cada ventilador y curva adicional (las dos temperaturas guardadas
-   junto a esos bits; lo más probable es que los ventiladores se detengan bajo el
-   inferior y arranquen sobre el superior; en una RTX 5080, subir el superior los
-   mantuvo detenidos por debajo; en Ada y Ampere solo se pueden editar donde la
-   parada en reposo está activa, y ahí no están probados en hardware;
-   experimental); los valores ya escritos se
-   conservan al marcarla. Los campos 0/1 de solo lectura muestran Activado o
-   Desactivado. **Multiplicador
+   original para volver atrás) y, en Blackwell, Ada y Ampere, **Parada de
+   ventiladores en reposo** (un interruptor para los bits que permiten que los
+   ventiladores se detengan en reposo, probado en hardware en una RTX 5090, no en Ada,
+   Ampere ni en la RTX PRO 6000 Max-Q; experimental). En las tarjetas blower que no
+   guardan valores de parada (RTX PRO 6000 Max-Q, RTX 5000 y 6000 Ada, serie RTX A) el
+   interruptor escribe además los valores que NVIDIA guarda en otra de sus tarjetas, y
+   desactivarlo en esa copia escribe de vuelta los bytes de fábrica; unas notas bajo el
+   interruptor nombran esa tarjeta y los riesgos: ninguna tarjeta blower sale de
+   fábrica con la parada activada, lo más probable es que un blower parado no mueva
+   aire por la tarjeta, incluidas la memoria y las etapas de potencia, hasta que la
+   tarjeta pase el umbral superior, rearrancar un blower desde 0 RPM no está probado,
+   y en equipos con varias GPU juntas puede acumularse calor y el ventilador puede
+   pararse y arrancar en ciclos. En cualquier otra ROM que viene de fábrica con la
+   parada desactivada (todas las RTX PRO y las de la serie RTX A, algunas GeForce
+   Ampere) una nota da los mismos riesgos para una tarjeta con ventilador blower.
+   Donde el interruptor dejaría las entradas de los canales de ventilador con el bit 4
+   de su byte de flags apagado (la RTX PRO 6000 Workstation y Max-Q y las tarjetas
+   blower de arriba), una nota dice que ninguna ROM de fábrica usa la parada con
+   esa forma de flags y que no está probado si los ventiladores se detienen. Donde una
+   entrada guarda el mismo umbral inferior y superior (la RTX 3060 8GB, 40 °C), una
+   nota dice que no hay histéresis, así que los ventiladores pueden pararse y arrancar
+   a menudo cerca de esa temperatura, y que bajes ese umbral inferior unos grados. Una
+   herramienta de ventiladores que mantiene el control manual deja los ventiladores
+   girando diga lo que diga el interruptor. Una ROM cuyas entradas de ventilador no
+   coinciden (una RTX 3060) muestra el campo de solo lectura como Mixto. En una copia
+   donde el interruptor escribió valores de parada, desactivarlo y cambiar sus
+   umbrales se guardan por separado. Los **umbrales inferior y superior de la parada
+   en reposo** de cada ventilador y curva adicional (Blackwell, Ada y Ampere) son las
+   dos temperaturas guardadas junto a esos bits: lo más probable es que los
+   ventiladores se detengan bajo el inferior y arranquen sobre el superior, y en una
+   RTX 5080 subir el superior los mantuvo detenidos por debajo. El umbral superior
+   llega como mucho al punto 1 de la misma curva de ventilador. Con la parada
+   activada, un punto 1 por debajo del umbral superior, o activar la parada con un
+   umbral superior por encima del punto 1, se rechaza y la fila que hay que cambiar
+   indica su rango permitido; cámbialos juntos (en una RTX 3090, activar la parada
+   requiere bajar ambos umbrales superiores a 51,90625 °C, su punto 1, o menos). Donde
+   el umbral inferior está en el punto 1 o por encima (las curvas adicionales de una
+   RTX 3080, la RTX 3050, algunas ROM de RTX 4090) su fila también se marca: bájalo por
+   debajo del umbral superior en la misma edición. Una cantidad mayor de **Canales de
+   ventilador** que activa un ventilador guardado cuyo umbral superior está por encima
+   de su punto 1 con la parada activada se rechaza: desactiva la parada y guarda,
+   cambia la cantidad en esa copia y luego activa la parada con ese umbral más bajo
+   (en la RTX 3060 cuyas entradas no coinciden la cantidad no se puede subir). En Ada y
+   Ampere los umbrales se pueden editar donde se puede el interruptor, y ahí no están
+   probados en hardware; experimental.
+   Los valores ya escritos se conservan al marcar **Mostrar campos avanzados (estilo
+   XOC)**. Los campos 0/1 de solo lectura muestran Activado o Desactivado. **Multiplicador
    de shunt (x)** (1 = desactivado, hasta 10) es solo informativo: en las filas de
    potencia de la tarjeta, potencia/corriente del slot PCIe, potencia/corriente de
    los conectores y corriente de entrada de 12 V agrega una nota con el límite real en una tarjeta con shunt mod,
@@ -197,7 +232,16 @@ ecuación que el driver evalúa como VMIN; en Ada el driver le suma sus término
 encadenados (+90 mV en una RTX 2000 Ada), así que el valor llega hasta el REL más
 bajo menos lo máximo que esos términos pueden sumar (753 mV en esa placa). El
 techo de solo lectura del "slot VMIN de la info del riel" es otra ecuación y no
-fija el VMIN. En las ROM 95.02.3C de la RTX 4090 una constante de 15 mV que fija el
+fija el VMIN. Donde cada chip fija su propio VMIN (un árbol de ecuaciones sobre valores
+de fusibles y la temperatura: RTX PRO 6000 y PRO 4000, RTX 5060 Ti, RTX 5080 Laptop GPU,
+MSVDD de la RTX 5090 y varias tarjetas Ampere y Ada) la fila empieza vacía y dice
+"Original: por chip"; un valor fija el VMIN en ese valor para todo chip y temperatura (en
+Ada los términos encadenados después siguen sumando lo suyo). Es experimental y no está
+probado en hardware: un valor por debajo del VMIN de fábrica del chip puede volver
+inestables el reposo y las cargas ligeras, y el driver podría mantener su VMIN de
+fábrica. En una copia guardada así aparece el interruptor **VMIN fijo**, y desactivarlo
+escribe de vuelta los bytes de fábrica; guarda ese cambio y un valor nuevo en copias
+separadas. En las ROM 95.02.3C de la RTX 4090 una constante de 15 mV que fija el
 piso de voltaje del reloj de memoria enlaza la ecuación de VMIN; ahí un VMIN nuevo
 primero copia esa ecuación a un slot VFE libre, así el piso de la memoria mantiene su
 valor de fábrica y un VMIN más bajo solo se nota con la memoria en reposo a 405 MHz;

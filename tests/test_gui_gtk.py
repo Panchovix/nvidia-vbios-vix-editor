@@ -5,6 +5,7 @@ Does not use reference ROMs or access GPUs.
 """
 import os
 from pathlib import Path
+import struct
 import tempfile
 import time
 import unittest
@@ -209,6 +210,73 @@ class GtkSmokeTests(unittest.TestCase):
                         self.assertEqual(window.controller.document.changes, {'nvvdd_vmin_mv': '600'})
                     finally:
                         window.close()
+
+    def test_per_chip_vmin_row_and_its_switch_in_both_languages(self):
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gio, GLib, Gtk
+        from nvidia_vbios.editor import edit, load
+        from nvidia_vbios.gui.app import EditorWindow, texts
+        from test_rail_vmin import blackwell_tree
+        app = Gtk.Application(application_id='org.nvidia_vbios.VminTreeSmoke', flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.assertTrue(app.register(None))
+        context = GLib.MainContext.default()
+
+        def until(condition):
+            deadline = time.monotonic() + 15
+            while not condition():
+                while context.pending():
+                    context.iteration(False)
+                if time.monotonic() >= deadline:
+                    self.fail('GTK operation did not complete')
+                time.sleep(.01)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            stock, pinned = Path(tmp) / 'tree.rom', Path(tmp) / 'pinned.rom'
+            stock.write_bytes(blackwell_tree())
+            pinned.write_bytes(edit(load(stock), {'msvdd_vmin_mv': 665}).blob)
+            for language, original, note in (('en', 'Original: per chip (not stored in the ROM)', 'set per chip'),
+                                             ('es', 'Original: por chip (no está guardado en la ROM)', 'por chip')):
+                with self.subTest(language=language):
+                    window = EditorWindow(app, stock, language)
+                    window.present()
+                    chip = window.text('per_chip_value')
+                    try:
+                        until(lambda: not window.busy and window.controller.document is not None)
+                        row = window.rows['msvdd_vmin_mv']
+                        lines = '\n'.join(texts(row['row']))
+                        self.assertIn(original, lines)
+                        self.assertIn(note, lines)
+                        entry = window.entries['msvdd_vmin_mv']
+                        self.assertEqual(entry.get_text(), '')
+                        self.assertNotIn('invalid', row['row'].get_css_classes())
+                        # The stock switch is a read-only row.
+                        self.assertIn(window.text('reason.vmin_fixed_stock'),
+                                      texts(window.readonly_rows['msvdd_vmin_fixed']))
+                        entry.set_text('665')
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual(window.controller.document.changes, {'msvdd_vmin_mv': '665'})
+                        self.assertIn('changed', row['row'].get_css_classes())
+                        self.assertEqual(row['delta'].get_text(), f'{chip} → 665 mV')
+                        self.assertIn(f'{chip} → 665 mV', window.preview_text())
+                        entry.set_text('')
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual(window.controller.document.changes, {})
+                        # The pinned copy: the value is a number and the switch turns it back to stock.
+                        window.open_path(pinned)
+                        until(lambda: not window.busy and window.controller.document.original.name == str(pinned))
+                        self.assertEqual(window.entries['msvdd_vmin_mv'].get_text(), '665')
+                        switch = window.entries['msvdd_vmin_fixed']
+                        self.assertIsInstance(switch, Gtk.Switch)
+                        self.assertTrue(switch.get_active())
+                        switch.set_active(False)
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual(window.controller.document.changes, {'msvdd_vmin_fixed': '0'})
+                        self.assertIn(f'665 → {chip}', window.preview_text())
+                    finally:
+                        window.close()
+                        while context.pending():
+                            context.iteration(False)
 
     def test_max_temperature_and_factory_offset_rows_stage_in_both_languages(self):
         import gi
@@ -865,6 +933,110 @@ class GtkSmokeTests(unittest.TestCase):
                     follow.set_active(False)
                     until(lambda: not window.verifying and not window.dirty)
                     self.assertEqual(window.controller.document.changes, {})
+                finally:
+                    window.close()
+                    while context.pending():
+                        context.iteration(False)
+
+    def test_zero_rpm_rows_show_mixed_state_template_notes_and_the_start_rule(self):
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gio, GLib, Gtk
+        from nvidia_vbios.gui.app import EditorWindow, texts
+        from nvidia_vbios.rom import from_bytes
+        from nvidia_vbios.rom.image import backend
+        from test_ada_fields import REFERENCE_BLOCK, patched, template_board, with_zero_rpm
+        from test_rom_formats import synthetic_rom
+        app = Gtk.Application(application_id='org.nvidia_vbios.ZeroRpmSmoke', flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.assertTrue(app.register(None))
+        context = GLib.MainContext.default()
+
+        def until(condition):
+            deadline = time.monotonic() + 15
+            while not condition():
+                while context.pending():
+                    context.iteration(False)
+                if time.monotonic() >= deadline:
+                    self.fail('GTK operation did not complete')
+                time.sleep(.01)
+
+        blob = synthetic_rom(copies=2, fans=2)
+        # One active channel and a stored second one with 40/60 C over its 55 C point 1, zero RPM on.
+        one = synthetic_rom(family='ampere', copies=2, fans=3)
+        second = backend(from_bytes(one)).fan_coolers()['rows'][1]['policy_offset']
+        one = with_zero_rpm(one, pairs=((40, 50), (53, 63), (60, 70), (60, 70)))
+        one = patched(patched(one, second + 30, struct.pack('<HH', 40 * 32, 60 * 32) + REFERENCE_BLOCK), second + 0x32,
+                      b'\x17')
+        with tempfile.TemporaryDirectory() as tmp:
+            mixed, blower, stuck, later = (Path(tmp) / f'{name}.rom' for name in ('mixed', 'blower', 'stuck', 'later'))
+            mixed.write_bytes(with_zero_rpm(with_zero_rpm(blob, flags=(0x13, 0x03)), flags=(0x17, 0x07), entries=(2,)))
+            blower.write_bytes(template_board())
+            # Zero RPM off, channel lowers at 56 C over point 1 at 55 C (as an RTX 3050 stores them).
+            stuck.write_bytes(with_zero_rpm(synthetic_rom(family='ampere', copies=2, fans=2), flags=(0x11, 0x01),
+                                            pairs=((56, 60), (56, 60), (53, 63), (60, 70))))
+            later.write_bytes(one)
+            for language in ('en', 'es'):
+                window = EditorWindow(app, mixed, language)
+                window.present()
+                try:
+                    until(lambda: not window.busy and window.controller.document is not None)
+                    window.advanced_toggle.set_active(True)
+                    # Bit 2 on some entries only: a read-only row that reads Mixed, never None.
+                    shown = texts(window.readonly_rows['fan_zero_rpm'])
+                    self.assertIn(window.text('flag_mixed'), shown)
+                    self.assertIn(window.text('reason.fan_zero_rpm_mixed'), shown)
+                    self.assertFalse([text for row in window.readonly_rows.values() for text in texts(row)
+                                      if 'None' in text])
+                    # A blower board without fan-stop values: the switch notes the values it writes, the risks and
+                    # the flag form with bit 4 clear.
+                    window.open_path(blower)
+                    until(lambda: not window.busy and window.controller.document.original.name == str(blower))
+                    notes = texts(window.rows['fan_zero_rpm']['row'])
+                    self.assertTrue(any(window.text('fan_stop.blower') == note for note in notes))
+                    self.assertTrue(any(note.startswith(window.text('fan_stop.template', donor='X', pairs='Y')[:30])
+                                        for note in notes))
+                    self.assertIn(window.text('fan_stop.bit4'), notes)
+                    self.assertIn(window.text('fan_stop.manual'), notes)
+                    self.assertNotIn(window.text('fan_stop.off'), notes)
+                    # Its curve starts at 55 C, below the 60 C the template's values start at: the switch and
+                    # point 1 are marked.
+                    window.entries['fan_zero_rpm'].set_active(True)
+                    until(lambda: not window.verifying)
+                    self.assertIn(window.text('error.ZERO_RPM_ABOVE_CURVE'), window.status.get_text())
+                    for key in ('fan_zero_rpm', 'fan_1_curve_1_temp_c'):
+                        self.assertIn('invalid', window.rows[key]['row'].get_css_classes())
+                        self.assertEqual(window.rows[key]['delta'].get_text(), window.text('zero_rpm_hint'))
+                    window.entries['fan_1_curve_1_temp_c'].set_text('60')
+                    until(lambda: not window.verifying and not window.dirty)
+                    self.assertEqual(window.controller.document.changes,
+                                     {'fan_zero_rpm': '1', 'fan_1_curve_1_temp_c': '60'})
+                    # Lowers at or above point 1: turning zero RPM on marks them with their own hint, and the upper
+                    # shows the range an edit with the lower allows.
+                    window.open_path(stuck)
+                    until(lambda: not window.busy and window.controller.document.original.name == str(stuck))
+                    self.assertIn(window.text('fan_stop.off'), texts(window.rows['fan_zero_rpm']['row']))
+                    window.entries['fan_zero_rpm'].set_active(True)
+                    until(lambda: not window.verifying)
+                    self.assertIn(window.text('error.ZERO_RPM_ABOVE_CURVE'), window.status.get_text())
+                    for key in ('fan_1_zero_rpm_low_temp_c', 'fan_2_zero_rpm_low_temp_c'):
+                        self.assertIn('invalid', window.rows[key]['row'].get_css_classes())
+                        self.assertEqual(window.rows[key]['delta'].get_text(), window.text('zero_rpm_lower_hint'))
+                    self.assertEqual(window.rows['fan_1_zero_rpm_high_temp_c']['delta'].get_text(),
+                                     window.text('range_hint', minimum='0.0625', maximum='55', units='°C'))
+                    for key, value in (('fan_1_zero_rpm_high_temp_c', '55'), ('fan_1_zero_rpm_low_temp_c', '50'),
+                                       ('fan_2_zero_rpm_high_temp_c', '55'), ('fan_2_zero_rpm_low_temp_c', '50')):
+                        window.entries[key].set_text(value)
+                    until(lambda: not window.verifying and not window.dirty)
+                    self.assertEqual(window.controller.document.changes['fan_zero_rpm'], '1')
+                    # A larger channel count that enables a stored fan above its curve with zero RPM on: what works.
+                    window.open_path(later)
+                    until(lambda: not window.busy and window.controller.document.original.name == str(later))
+                    window.entries['fan_channels'].set_text('2')
+                    until(lambda: not window.verifying)
+                    self.assertIn(window.text('zero_rpm_channels_hint'), window.status.get_text())
+                    self.assertIn('invalid', window.rows['fan_channels']['row'].get_css_classes())
+                    self.assertEqual(window.rows['fan_channels']['delta'].get_text(),
+                                     window.text('zero_rpm_channels_hint'))
                 finally:
                     window.close()
                     while context.pending():

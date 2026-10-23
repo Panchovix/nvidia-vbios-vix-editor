@@ -30,8 +30,9 @@ def repair_fixture(blob):
     return bytes(blob)
 
 
-def extended_fixture(*, absent_alt=False, shared=False, high_index=False, unknown_equation=False):
-    blob = bytearray(synthetic_blackwell())
+def extended_fixture(*, absent_alt=False, shared=False, high_index=False, unknown_equation=False,
+                     index_tables=False):
+    blob = bytearray(synthetic_blackwell(index_tables=index_tables))
     original = backend(from_bytes(blob))
     if high_index:
         # Extend actual image/object boundaries, without a fixed-size parser pin.
@@ -161,6 +162,39 @@ def custom_registry(key, offsets, *, encoding='<I', scale=1000, bounds=None, inc
 
 def descriptors(image):
     return {f['key']: f for f in inspect_image(image)['fields']}
+
+
+def fan_stop_refusals(image):
+    """The fan policy entries of a GB20x, Ada or Ampere image that the GSP-RM 615.78.08 policy validator
+    (0x1b20c44) refuses: every entry it decodes (byte 0 = 1), in every image chain, with bit 2 of its
+    flag byte (0x32) set without bit 1, or with bit 1 set and an upper below the lower (signed words at
+    bytes 30..33), word 44 = 0 or, unless byte 46 is 0xff, dword 38 below dword 34 or word 42 = 0.
+    [(policy table offset, entry index, rule)], empty when every entry passes. The table is found at P+0x5c
+    whether or not the editor decodes the other fan tables."""
+    from nvidia_vbios.rom.errors import FormatError
+    from nvidia_vbios.rom.tables import TableRom
+    parser, blob = backend(image), image.blob
+    try:
+        at = parser.pointer('P', 0x5C)
+    except FormatError:
+        return []
+    if blob[at] != 0x20:
+        return []  # Turing's 0x10 table, no fan policy table
+    header, size, count = blob[at + 1:at + 4]
+    refused = []
+    for start in parser.copy_offsets(at, header + size * count) if isinstance(parser, TableRom) else [at]:
+        for index in range(count):
+            entry = start + header + size * index
+            flag = blob[entry + 0x32]
+            if blob[entry] != 1 or not flag & 6:
+                continue
+            low, high, d34, d38, w42, w44 = struct.unpack_from('<hhIIHH', blob, entry + 30)
+            rules = [('bit 2 without bit 1', not flag & 2), ('upper below lower', flag & 2 and high < low),
+                     ('word 44 = 0', flag & 2 and w44 == 0),
+                     ('dword 38 below dword 34 or word 42 = 0',
+                      flag & 2 and blob[entry + 46] != 0xFF and not (d38 >= d34 and w42 != 0))]
+            refused += [(start, index, rule) for rule, broken in rules if broken]
+    return refused
 
 
 def curve_step(field):
@@ -1620,6 +1654,35 @@ class FanCoolerTests(unittest.TestCase):
         off = edit(stopped, {'fan_zero_rpm': 0})
         self.assertEqual(descriptors(off.image)['fan_zero_rpm']['editable'], False)
 
+    def test_zero_rpm_one_needs_a_block_the_validator_accepts(self):
+        # GSP-RM refuses bit 1 without word 44 and, with byte 46 other than 0xff, without word 42 or with dword 38
+        # below dword 34. The fixture stores the RTX 5080 block (bits clear): 1 is offered and passes the validator.
+        image = from_bytes(synthetic_blackwell(fans=True))
+        self.assertTrue(descriptors(image)['fan_zero_rpm']['editable'])
+        self.assertEqual(fan_stop_refusals(edit(image, {'fan_zero_rpm': 1}).image), [])
+        t = self.table(image.blob)
+        for name, offset, encoding, value in (('word 44 = 0', 44, '<H', 0), ('word 42 = 0', 42, '<H', 0),
+                                              ('dword 38 below dword 34', 38, '<I', 1)):
+            for entries in (t['rows'][:2] + t['extra_curves'], t['extra_curves'][1:]):
+                blob = bytearray(image.blob)
+                for e in entries:
+                    struct.pack_into(encoding, blob, e['policy_offset'] + offset, value)
+                broken = from_bytes(repair_fixture(blob))
+                with self.subTest(block=name, entries=[e['index'] for e in entries]):
+                    fields = descriptors(broken)
+                    field = fields['fan_zero_rpm']
+                    self.assertEqual((field['current'], field['editable']), (0, False))
+                    self.assertIn('in a block GSP-RM accepts with bit 1 set', field['reason'])
+                    with self.assertRaises(VbiosError) as exc:
+                        edit(broken, {'fan_zero_rpm': 1})
+                    self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
+                    # The pairs of those entries are read-only too; the other entries keep theirs.
+                    keys = {f'{p}_zero_rpm_{side}_temp_c' for p in (['fan_extra_2'] if len(entries) == 1 else self.TEMPS)
+                            for side in ('low', 'high')}
+                    self.assertEqual({k for k, f in fields.items() if '_zero_rpm_' in k and k.endswith('_temp_c') and
+                                      not f['editable']}, keys)
+                    self.assertTrue(all('GSP-RM would refuse with bit 1 set' in fields[k]['reason'] for k in keys))
+
     def test_channel_count_and_zero_rpm_are_separate_edits(self):
         image = from_bytes(synthetic_blackwell(fans=True))
         with self.assertRaises(VbiosError) as exc:
@@ -1693,10 +1756,12 @@ class FanCoolerTests(unittest.TestCase):
         self.assertEqual((low['current'], low['bounds']['minimum'], low['bounds']['maximum'], low['units'],
                           low['editable'], low['experimental'], low['opt_in'], low['fan_policy'], low['fan_channel']),
                          (43.0, 0.03125, 49.96875, 'C', True, True, True, 0, 0))
+        # The upper stays at most point 1 of the same entry's curve (50 C here), whatever the zero RPM bits.
         self.assertEqual((high['current'], high['bounds']['minimum'], high['bounds']['maximum']),
-                         (50.0, 43.03125, 110.0))
-        self.assertEqual(low['ordering_group'], high['ordering_group'])
-        self.assertNotEqual(low['ordering_group'], fields['fan_2_zero_rpm_low_temp_c']['ordering_group'])
+                         (50.0, 43.03125, 50.0))
+        self.assertEqual(fields['fan_extra_2_zero_rpm_high_temp_c']['bounds']['maximum'], 93.0)
+        # Every zero RPM and curve temperature is in one ordering group: a pair and point 1 move together.
+        self.assertEqual({fields[k]['ordering_group'] for k in fields if k.endswith('_temp_c')}, {'fan-temperature'})
         extra = fields['fan_extra_2_zero_rpm_low_temp_c']
         self.assertEqual((extra['fan_policy'], extra['fan_rows']), (5, [0, 1]))
         self.assertNotIn('fan_channel', extra)
@@ -1704,20 +1769,22 @@ class FanCoolerTests(unittest.TestCase):
                          ['static-firmware-analysis', 'structural-table', 'hardware-test'])
         # One word per field, in 1/32 C; the other bytes of the entry (flags, byte 46, curves) stay.
         pair = t['rows'][0]['policy_offset'] + 30
-        result = edit(image, {'fan_1_zero_rpm_high_temp_c': 60})
+        result = edit(image, {'fan_1_zero_rpm_high_temp_c': 48})
         self.assertTrue(result.manifest['integrity']['valid'])
         changed_bytes_within(self, image, result, [pair + 2], width=2)
-        self.assertEqual(struct.unpack_from('<HH', result.blob, pair), (43 * 32, 60 * 32))
-        self.assertEqual(descriptors(result.image)['fan_1_zero_rpm_low_temp_c']['bounds']['maximum'], 59.96875)
+        self.assertEqual(struct.unpack_from('<HH', result.blob, pair), (43 * 32, 48 * 32))
+        self.assertEqual(descriptors(result.image)['fan_1_zero_rpm_low_temp_c']['bounds']['maximum'], 47.96875)
         self.assertEqual(edit(result.image, {'fan_1_zero_rpm_high_temp_c': 50}).blob, image.blob)
         exact = edit(image, {'fan_1_zero_rpm_low_temp_c': '43.03125'})
         self.assertEqual(struct.unpack_from('<H', exact.blob, pair)[0], 43 * 32 + 1)
-        # Both words of the pair move together past the stored values; the curves 4/5 alone, too.
-        both = edit(image, {'fan_1_zero_rpm_low_temp_c': 55, 'fan_1_zero_rpm_high_temp_c': 60})
-        changed_bytes_within(self, image, both, [pair], width=4)
-        self.assertEqual(struct.unpack_from('<HH', both.blob, pair), (55 * 32, 60 * 32))
-        self.assertEqual(edit(both.image, {'fan_1_zero_rpm_low_temp_c': 43, 'fan_1_zero_rpm_high_temp_c': 50}).blob,
-                         image.blob)
+        # Both words of the pair move together past the stored values, above the stored point 1 with it.
+        first = t['rows'][0]['policy_offset'] + 18
+        both = edit(image, {'fan_1_zero_rpm_low_temp_c': 52, 'fan_1_zero_rpm_high_temp_c': 54,
+                            'fan_1_curve_1_temp_c': 54})
+        changed_bytes_within(self, image, both, [pair, first], width=4)
+        self.assertEqual(struct.unpack_from('<HH', both.blob, pair), (52 * 32, 54 * 32))
+        self.assertEqual(edit(both.image, {'fan_1_zero_rpm_low_temp_c': 43, 'fan_1_zero_rpm_high_temp_c': 50,
+                                           'fan_1_curve_1_temp_c': 50}).blob, image.blob)
         curve = t['extra_curves'][1]['policy_offset'] + 30
         extras = edit(image, {'fan_extra_2_zero_rpm_low_temp_c': 65, 'fan_extra_2_zero_rpm_high_temp_c': 75})
         changed_bytes_within(self, image, extras, [curve], width=4)
@@ -1726,6 +1793,8 @@ class FanCoolerTests(unittest.TestCase):
                               ({'fan_1_zero_rpm_low_temp_c': 55}, 'OUT_OF_BOUNDS'),
                               ({'fan_1_zero_rpm_high_temp_c': 43}, 'OUT_OF_BOUNDS'),
                               ({'fan_1_zero_rpm_high_temp_c': '110.03125'}, 'OUT_OF_BOUNDS'),
+                              ({'fan_1_zero_rpm_high_temp_c': '50.03125'}, 'OUT_OF_BOUNDS'),
+                              ({'fan_1_zero_rpm_high_temp_c': 54, 'fan_1_curve_1_temp_c': 53}, 'OUT_OF_BOUNDS'),
                               ({'fan_1_zero_rpm_low_temp_c': 50, 'fan_1_zero_rpm_high_temp_c': 50}, 'OUT_OF_BOUNDS'),
                               ({'fan_1_zero_rpm_low_temp_c': 60, 'fan_1_zero_rpm_high_temp_c': 55}, 'OUT_OF_BOUNDS'),
                               ({'fan_1_zero_rpm_low_temp_c': 0, 'fan_1_zero_rpm_high_temp_c': 50}, 'OUT_OF_BOUNDS'),
@@ -1740,13 +1809,13 @@ class FanCoolerTests(unittest.TestCase):
             with self.subTest(flags=flags):
                 image = self.zero_rpm_fixture(flags)
                 state = descriptors(image)['fan_zero_rpm']['current']
-                result = edit(image, {'fan_2_zero_rpm_high_temp_c': 60})
+                result = edit(image, {'fan_2_zero_rpm_high_temp_c': 48})
                 offsets = self.zero_rpm_offsets(image.blob)
                 self.assertEqual([result.blob[at] for at in offsets], [image.blob[at] for at in offsets])
                 self.assertEqual(descriptors(result.image)['fan_zero_rpm']['current'], state)
         # Bits that disagree leave the flag read-only; the pairs stay editable and the bits are not normalized.
         mixed = self.zero_rpm_fixture((0x07, 0x07), entries=(0,))
-        result = edit(mixed, {'fan_1_zero_rpm_high_temp_c': 60})
+        result = edit(mixed, {'fan_1_zero_rpm_high_temp_c': 48})
         offsets = self.zero_rpm_offsets(mixed.blob)
         self.assertEqual([result.blob[at] for at in offsets], [mixed.blob[at] for at in offsets])
 
@@ -1758,7 +1827,6 @@ class FanCoolerTests(unittest.TestCase):
         t = self.table(blob)
         extra = t['extra_curves'][0]['policy_offset']
         for name, at, value in (('temperatures zero', extra + 30, bytes(4)),
-                                ('temperatures equal', extra + 30, struct.pack('<HH', 50 * 32, 50 * 32)),
                                 ('temperatures falling', extra + 30, struct.pack('<HH', 50 * 32, 43 * 32)),
                                 ('byte 46', extra + 46, b'\xff')):
             with self.subTest(case=name):
@@ -1769,6 +1837,29 @@ class FanCoolerTests(unittest.TestCase):
                 with self.assertRaises(VbiosError) as exc:
                     edit(image, {'fan_extra_1_zero_rpm_low_temp_c': 40})
                 self.assertEqual(exc.exception.code, 'UNKNOWN_FIELD')
+        # The same lower and upper (the RTX 3060 8GB stores 40/40 C) pass the validator: the pair shows as stored,
+        # the lower above its range and the upper below it. The lower comes down, and no edit stores such a pair.
+        at = extra + 30
+        flat = from_bytes(repair_fixture(bytearray(blob[:at] + struct.pack('<HH', 50 * 32, 50 * 32) + blob[at + 4:])))
+        fields = descriptors(flat)
+        low, high = fields['fan_extra_1_zero_rpm_low_temp_c'], fields['fan_extra_1_zero_rpm_high_temp_c']
+        self.assertEqual([(f['current'], f['bounds']['minimum'], f['bounds']['maximum'], f['editable']) for f in (low, high)],
+                         [(50.0, 0.03125, 49.96875, True), (50.0, 50.03125, 93.0, True)])
+        self.assertIn('no hysteresis', low['reason'])
+        lowered = edit(flat, {'fan_extra_1_zero_rpm_low_temp_c': 47})
+        changed_bytes_within(self, flat, lowered, [at], width=2)
+        self.assertEqual(fan_stop_refusals(edit(lowered.image, {'fan_zero_rpm': 1}).image), [])
+        for request in ({'fan_extra_1_zero_rpm_low_temp_c': 50}, {'fan_extra_1_zero_rpm_high_temp_c': 50},
+                        {'fan_extra_1_zero_rpm_low_temp_c': 52, 'fan_extra_1_zero_rpm_high_temp_c': 52}):
+            with self.subTest(request=request), self.assertRaises(VbiosError) as exc:
+                edit(flat, request)
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        # The switch says so, and names the lower to set below it.
+        switch = fields['fan_zero_rpm']
+        self.assertEqual(switch['zero_rpm_flat_pairs'], [{'field': 'fan_extra_1_zero_rpm_low_temp_c', 'temp_c': 50.0}])
+        self.assertIn('the extra curve 1 fan policy entry stores the same lower and upper temperature (50 C)',
+                      switch['reason'])
+        self.assertIn('set fan_extra_1_zero_rpm_low_temp_c a few degrees below', switch['reason'])
         # An upper temperature above 110 C keeps the pair visible but read-only.
         at = t['rows'][0]['policy_offset'] + 32
         hot = from_bytes(repair_fixture(bytearray(blob[:at] + struct.pack('<H', 111 * 32) + blob[at + 2:])))
@@ -1796,7 +1887,7 @@ class FanCoolerTests(unittest.TestCase):
         fields = descriptors(three.image)
         self.assertEqual((fields['fan_3_zero_rpm_low_temp_c']['current'],
                           fields['fan_3_zero_rpm_high_temp_c']['current']), (43.0, 50.0))
-        edited = edit(three.image, {'fan_3_zero_rpm_high_temp_c': 60})
+        edited = edit(three.image, {'fan_3_zero_rpm_high_temp_c': 48})
         pair = self.table(three.blob)['rows'][2]['policy_offset'] + 30
         changed_bytes_within(self, three.image, edited, [pair + 2], width=2)
 
@@ -1815,7 +1906,7 @@ class FanCoolerTests(unittest.TestCase):
             self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
         # The reviewed key over another entry's bytes is not canonical, so its bytes are refused.
         with self.assertRaises(VbiosError) as exc:
-            edit(image, {'fan_1_zero_rpm_high_temp_c': 60}, field_registry=custom_registry(
+            edit(image, {'fan_1_zero_rpm_high_temp_c': 48}, field_registry=custom_registry(
                 'fan_1_zero_rpm_high_temp_c', (t['rows'][1]['policy_offset'] + 32,), encoding='<H', scale=32,
                 bounds={'minimum': 0, 'maximum': 110}))
         self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
@@ -1825,8 +1916,145 @@ class FanCoolerTests(unittest.TestCase):
         both.register(custom_registry('probe', (t['rows'][0]['policy_offset'] + 46,), encoding='<B', scale=1,
                                       bounds={'minimum': 0, 'maximum': 255})._resolvers[0])
         with self.assertRaises(VbiosError) as exc:
-            edit(image, {'fan_1_zero_rpm_high_temp_c': 60, 'probe': 1}, field_registry=both)
+            edit(image, {'fan_1_zero_rpm_high_temp_c': 48, 'probe': 1}, field_registry=both)
         self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+
+    def test_zero_rpm_upper_stays_at_most_curve_point_1(self):
+        # Start temperature rule: with zero RPM on, an entry's upper stays at most point 1 of its own curve.
+        on = self.zero_rpm_fixture((0x17, 0x07))
+        first = self.table(on.blob)['rows'][0]['policy_offset'] + 18
+        with self.assertRaises(VbiosError) as exc:
+            edit(on, {'fan_1_curve_1_temp_c': 45})
+        self.assertEqual(exc.exception.code, 'ZERO_RPM_ABOVE_CURVE')
+        details = exc.exception.details
+        self.assertEqual((details['field'], details['bounds']['minimum'], details['fan_policies'],
+                          details['joint_fields']),
+                         ('fan_1_curve_1_temp_c', 50.0, [0], ['fan_1_curve_1_temp_c', 'fan_1_zero_rpm_high_temp_c']))
+        self.assertIn('set fan_1_zero_rpm_high_temp_c to 45 C or less in the same edit', str(exc.exception))
+        lowered = edit(on, {'fan_1_curve_1_temp_c': 45, 'fan_1_zero_rpm_high_temp_c': 45})
+        self.assertEqual(struct.unpack_from('<H', lowered.blob, first)[0], 45 * 32)
+        # Point 1 above the upper moves alone; the upper alone stays inside its bounds (point 1).
+        self.assertTrue(edit(on, {'fan_1_curve_1_temp_c': 52}).manifest['integrity']['valid'])
+        with self.assertRaises(VbiosError) as exc:
+            edit(on, {'fan_1_zero_rpm_high_temp_c': '50.03125'})
+        self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        # Zero RPM off: point 1 may go below the upper, but turning it on then needs the upper lowered too.
+        off = self.zero_rpm_fixture((0x11, 0x01))
+        early = edit(off, {'fan_1_curve_1_temp_c': 45})
+        with self.assertRaises(VbiosError) as exc:
+            edit(early.image, {'fan_zero_rpm': 1})
+        self.assertEqual((exc.exception.code, exc.exception.details['field'], exc.exception.details['bounds']),
+                         ('ZERO_RPM_ABOVE_CURVE', 'fan_1_zero_rpm_high_temp_c', {'minimum': 43.03125, 'maximum': 45.0}))
+        both = edit(early.image, {'fan_zero_rpm': 1, 'fan_1_zero_rpm_high_temp_c': 45})
+        self.assertEqual(descriptors(both.image)['fan_zero_rpm']['current'], 1)
+        # A stored upper above point 1 with zero RPM on (shipped that way) is left alone: other edits pass, and
+        # the entry has to come within the rule only when its upper or point 1 change.
+        at = self.table(on.blob)['rows'][0]['policy_offset'] + 32
+        shipped = from_bytes(repair_fixture(bytearray(on.blob[:at] + struct.pack('<H', 55 * 32) + on.blob[at + 2:])))
+        upper = descriptors(shipped)['fan_1_zero_rpm_high_temp_c']
+        self.assertEqual((upper['current'], upper['bounds']['maximum'], upper['editable']), (55.0, 50.0, True))
+        self.assertTrue(edit(shipped, {'fan_2_curve_1_temp_c': 51, 'fan_pwm_frequency_hz': 25000}).manifest['integrity']['valid'])
+        self.assertTrue(edit(shipped, {'fan_zero_rpm': 0}).manifest['integrity']['valid'])
+        for request, code in (({'fan_1_curve_1_temp_c': 52}, 'ZERO_RPM_ABOVE_CURVE'),
+                              ({'fan_1_zero_rpm_high_temp_c': 52}, 'OUT_OF_BOUNDS')):
+            with self.subTest(request=request), self.assertRaises(VbiosError) as exc:
+                edit(shipped, request)
+            self.assertEqual(exc.exception.code, code)
+        self.assertTrue(edit(shipped, {'fan_1_zero_rpm_high_temp_c': 50}).manifest['integrity']['valid'])
+        # A copy saved with zero RPM off has no stored exemption left.
+        with self.assertRaises(VbiosError) as exc:
+            edit(edit(shipped, {'fan_zero_rpm': 0}).image, {'fan_zero_rpm': 1})
+        self.assertEqual(exc.exception.code, 'ZERO_RPM_ABOVE_CURVE')
+
+    def pairs_fixture(self, flags, pairs):
+        """zero_rpm_fixture(flags) with zero RPM pairs (C) on policy entries: {entry index: (lower, upper)}."""
+        blob = bytearray(self.zero_rpm_fixture(flags).blob)
+        t = self.table(blob)
+        for e in t['rows'] + t['extra_curves']:
+            if e['index'] in pairs:
+                struct.pack_into('<HH', blob, e['policy_offset'] + 30, *(int(v * 32) for v in pairs[e['index']]))
+        return from_bytes(repair_fixture(blob))
+
+    def test_zero_rpm_upper_moves_with_a_lower_at_or_above_point_1(self):
+        # Channel pairs 52/55 C over point 1 at 50 C, as an RTX 3050 stores them: no upper is both above the lower
+        # and at most point 1, so the upper's range starts at what an edit that lowers the lower too allows.
+        off = self.pairs_fixture((0x11, 0x01), {0: (52, 55), 1: (52, 55)})
+        fields = descriptors(off)
+        high, low = fields['fan_1_zero_rpm_high_temp_c'], fields['fan_1_zero_rpm_low_temp_c']
+        self.assertEqual([(f['current'], f['bounds']['minimum'], f['bounds']['maximum'], f['editable']) for f in (low, high)],
+                         [(52.0, 0.03125, 54.96875, True), (55.0, 0.0625, 50.0, True)])
+        self.assertIn('the stored lower is at or above point 1', high['reason'])
+        # The upper alone, or with a lower that is not below it, names the lower and its range.
+        for request, maximum in (({'fan_1_zero_rpm_high_temp_c': 50}, 49.96875),
+                                 ({'fan_1_zero_rpm_high_temp_c': 48, 'fan_1_zero_rpm_low_temp_c': 48}, 47.96875)):
+            with self.subTest(request=request), self.assertRaises(VbiosError) as exc:
+                edit(off, request)
+            self.assertEqual((exc.exception.code, exc.exception.details['field'], exc.exception.details['bounds'],
+                              exc.exception.details['joint_fields']),
+                             ('OUT_OF_BOUNDS', 'fan_1_zero_rpm_low_temp_c', {'minimum': 0.03125, 'maximum': maximum},
+                              ['fan_1_zero_rpm_high_temp_c', 'fan_1_zero_rpm_low_temp_c']))
+            self.assertIn(f'set fan_1_zero_rpm_low_temp_c to {Decimal(str(maximum))} C or less', str(exc.exception))
+        lowered = edit(off, {'fan_1_zero_rpm_high_temp_c': 50, 'fan_1_zero_rpm_low_temp_c': 45})
+        self.assertEqual(descriptors(lowered.image)['fan_1_zero_rpm_high_temp_c']['bounds']['minimum'], 45.03125)
+        # Zero RPM on names the upper with that range and the lower too; following the message passes.
+        with self.assertRaises(VbiosError) as exc:
+            edit(off, {'fan_zero_rpm': 1})
+        details = exc.exception.details
+        self.assertEqual((exc.exception.code, details['field'], details['bounds'], details['joint_fields']),
+                         ('ZERO_RPM_ABOVE_CURVE', 'fan_1_zero_rpm_high_temp_c', {'minimum': 0.0625, 'maximum': 50.0},
+                          [f'fan_{n}_{k}' for n in (1, 2) for k in ('curve_1_temp_c', 'zero_rpm_high_temp_c',
+                                                                    'zero_rpm_low_temp_c')]))
+        self.assertIn('set fan_1_zero_rpm_high_temp_c to 50 C or less and fan_1_zero_rpm_low_temp_c below it in the '
+                      'same edit', str(exc.exception))
+        on = edit(off, {'fan_zero_rpm': 1, 'fan_1_zero_rpm_high_temp_c': 50, 'fan_1_zero_rpm_low_temp_c': 45,
+                        'fan_2_zero_rpm_high_temp_c': 50, 'fan_2_zero_rpm_low_temp_c': 45})
+        self.assertEqual(fan_stop_refusals(on.image), [])
+        # Shipped with zero RPM on, upper 55 C at point 2 and the lower on point 1: point 1 lowered names point 1,
+        # with point 2 above it, or the upper with the lower below it. Either passes.
+        shipped = self.pairs_fixture((0x17, 0x07), {0: (50, 55)})
+        with self.assertRaises(VbiosError) as exc:
+            edit(shipped, {'fan_1_curve_1_temp_c': 49})
+        self.assertEqual((exc.exception.details['field'], exc.exception.details['bounds']),
+                         ('fan_1_curve_1_temp_c', {'minimum': 55.0, 'maximum': 110.0}))
+        self.assertIn('keep fan_1_curve_1_temp_c at 55 C or more with fan_1_curve_2_temp_c above it, or set '
+                      'fan_1_zero_rpm_high_temp_c to 49 C or less and fan_1_zero_rpm_low_temp_c below it',
+                      str(exc.exception))
+        for request in ({'fan_1_curve_1_temp_c': 55, 'fan_1_curve_2_temp_c': 56},
+                        {'fan_1_curve_1_temp_c': 49, 'fan_1_zero_rpm_high_temp_c': 49, 'fan_1_zero_rpm_low_temp_c': 45}):
+            with self.subTest(request=request):
+                self.assertEqual(fan_stop_refusals(edit(shipped, request).image), [])
+
+    def test_a_larger_channel_count_meets_the_start_rule(self):
+        # The stored third channel holds 43/55 C over its point 1 at 50 C. With zero RPM on, the count that enables
+        # it is refused: zero RPM off first, then the count, then zero RPM on with its upper lowered.
+        on = self.pairs_fixture((0x17, 0x07), {2: (43, 55)})
+        with self.assertRaises(VbiosError) as exc:
+            edit(on, {'fan_channels': 3})
+        self.assertEqual((exc.exception.code, exc.exception.details['field'], exc.exception.details['bounds'],
+                          exc.exception.details['joint_fields'], exc.exception.details['channel_count']),
+                         ('ZERO_RPM_ABOVE_CURVE', 'fan_channels', None, ['fan_channels'], 'separate-edits'))
+        self.assertIn('turn fan_zero_rpm off first, raise fan_channels on that copy, then turn fan_zero_rpm on with '
+                      'fan_3_zero_rpm_high_temp_c at 50 C or less, each in its own edit', str(exc.exception))
+        three = edit(edit(on, {'fan_zero_rpm': 0}).image, {'fan_channels': 3}).image
+        with self.assertRaises(VbiosError) as exc:
+            edit(three, {'fan_zero_rpm': 1})
+        self.assertEqual(exc.exception.details['field'], 'fan_3_zero_rpm_high_temp_c')
+        self.assertEqual(fan_stop_refusals(edit(three, {'fan_zero_rpm': 1, 'fan_3_zero_rpm_high_temp_c': 50}).image),
+                         [])
+        # With zero RPM off the count comes first, as before; the stored channel's upper then comes down with 1.
+        off = self.pairs_fixture((0x11, 0x01), {2: (43, 55)})
+        raised = edit(off, {'fan_channels': 3}).image
+        self.assertEqual(fan_stop_refusals(edit(raised, {'fan_zero_rpm': 1, 'fan_3_zero_rpm_high_temp_c': 50}).image),
+                         [])
+        # A switch that cannot change (an extra curve with bit 1 alone): the count cannot be raised.
+        blob = bytearray(on.blob)
+        blob[self.table(blob)['extra_curves'][1]['flag_offset']] = 0x03
+        locked = from_bytes(repair_fixture(blob))
+        self.assertFalse(descriptors(locked)['fan_zero_rpm']['editable'])
+        with self.assertRaises(VbiosError) as exc:
+            edit(locked, {'fan_channels': 3})
+        self.assertEqual((exc.exception.details['field'], exc.exception.details['channel_count']), ('fan_channels', 'none'))
+        self.assertIn('fan_zero_rpm is read-only on this image, so fan_channels cannot be raised', str(exc.exception))
 
     def test_channel_count_writes_all_three_tables_and_round_trips(self):
         image = from_bytes(synthetic_blackwell(fans=True))

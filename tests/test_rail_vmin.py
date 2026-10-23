@@ -12,7 +12,7 @@ from nvidia_vbios.editor import edit
 from nvidia_vbios.rom import VbiosError, ada_general, from_bytes, inspect_image, load, normalize
 from nvidia_vbios.rom.blackwell import BlackwellRom
 from nvidia_vbios.rom.image import backend
-from nvidia_vbios.rom.structure import vfe_free_slot
+from nvidia_vbios.rom.structure import VFE_UNCLAMPED, vfe_free_slot
 from test_ada_fields import messages, patched
 from test_extended_fields import changed_bytes_within, custom_registry, descriptors, extended_fixture, repair_fixture
 from test_rom_formats import synthetic_rom
@@ -31,16 +31,19 @@ def vfe_base(parsed):
     return vfe, vfe + parsed.blob[vfe + 1] + parsed.blob[vfe + 2] * parsed.blob[vfe + 3]
 
 
-def blackwell_vmin(*, shared_slot=None, linked=False, own_link=False, rel_drop=0, legacy=False, absent_alt=False):
-    """extended_fixture with 16 equations, NVVDD +0x13 -> constant 800 mV (eq 8), MSVDD +0x13 -> min/max (eq 9).
+def blackwell_vmin(*, shared_slot=None, linked=False, own_link=False, rel_drop=0, legacy=False, absent_alt=False,
+                   index_tables=False):
+    """extended_fixture with 16 equations, NVVDD +0x13 -> constant 800 mV (eq 8), MSVDD +0x13 -> an unclamped
+    min/max (eq 9) over eq 5 and 6, the shape of the GB20x VMIN tree roots.
 
     OV (eq 2) becomes a constant 1200 mV equation; REL (eq 0) is clamped to 900..1000 mV.
     shared_slot: another NVVDD row word (offset) also selects eq 8; linked: eq 10 links to
     eq 8; own_link: eq 8 links to eq 11; rel_drop: REL links to a constant -rel_drop uV.
     legacy adds a legacy-image object directory: 0xfa, 0xbd (PCIR moved behind it), 0x21
-    over the rail table, 0x35 around it.
+    over the rail table, 0x35 around it. index_tables adds the tables that name VFE
+    equations outside the VFE and rail tables (synthetic_blackwell).
     """
-    blob = bytearray(extended_fixture(absent_alt=absent_alt))
+    blob = bytearray(extended_fixture(absent_alt=absent_alt, index_tables=index_tables))
     parsed = backend(from_bytes(bytes(blob)))
     rail, (vfe, base) = parsed.pointer('P', 0x68), vfe_base(parsed)
     blob[vfe + 5], blob[vfe + 10] = 16, 0
@@ -50,7 +53,8 @@ def blackwell_vmin(*, shared_slot=None, linked=False, own_link=False, rel_drop=0
     constant(blob, base + 25 * 11, 0)
     blob[base + 25 * 9:base + 25 * 9 + 25] = bytes(25)
     blob[base + 25 * 9:base + 25 * 9 + 3] = bytes((2, 0, 0xFF))
-    blob[base + 25 * 9 + 11:base + 25 * 9 + 13] = bytes((5, 6))
+    blob[base + 25 * 9 + 3:base + 25 * 9 + 11] = VFE_UNCLAMPED
+    blob[base + 25 * 9 + 11:base + 25 * 9 + 14] = bytes((5, 6, 1))
     blob[base + 25 * 9 + 23:base + 25 * 9 + 25] = bytes((2, 0xFF))
     constant(blob, base + 25 * 2, 1200000)
     for i, eq in enumerate((8, 9)):
@@ -96,10 +100,9 @@ class BlackwellVminTests(unittest.TestCase):
         self.assertIn('RTX 5080', field['reason'])
         self.assertEqual(field['selector'], {'raw': 8, 'width_bits': 16, 'offset': field['selector']['offset'],
                                              'absent': False})
+        # MSVDD selects an unclamped min/max root: its VMIN is set per chip (BlackwellVminTreeTests).
         msvdd = fields['msvdd_vmin_mv']
-        self.assertFalse(msvdd['editable'])
-        self.assertIsNone(msvdd['current'])
-        self.assertIn('min/max equation tree', msvdd['reason'])
+        self.assertEqual((msvdd['current'], msvdd['editable'], msvdd['vmin_tree']['state']), (None, True, 'stock'))
         result = edit(image, {'nvvdd_vmin_mv': 850})
         at = field['equation_offset']
         self.assertEqual([e['offset'] for e in result.manifest['edits']], [at + 3, at + 7, at + 11])
@@ -160,6 +163,158 @@ class BlackwellVminTests(unittest.TestCase):
         with self.assertRaises(VbiosError) as exc:
             edit(image, {'nvvdd_vmin_mv': 850}, field_registry=alias)
         self.assertEqual(exc.exception.code, 'INVALID_FIELD_EVIDENCE')
+
+
+TREE_ROOT = 9  # the MSVDD VMIN root of blackwell_vmin()
+
+
+def blackwell_tree(*, kind=2, clamp=VFE_UNCLAMPED, link=0xFFFF, output=2, referrer=None, named=None, unreviewed=None):
+    """blackwell_vmin(index_tables=True) with the MSVDD VMIN root (eq 9, over eq 5 and 6) reshaped.
+
+    kind 2 (min/max) or 3 (compare: eq 9 >= 0 picks eq 5, else eq 6); clamp: its 8 clamp bytes; link: its
+    next equation; output: its byte 23. referrer: eq 10 links eq 9 as its 'next', 'child' (a min/max) or
+    'criterion' (a compare with output byte 23 bit 4). named: a table that also names eq 9 ('clock
+    programming', 'FLL', 'voltage policy', 'P+0x104', or 'P+0x104 id' for bytes 1..2 of a P+0x104 entry,
+    which are not equation indices); unreviewed: a table whose version byte is changed.
+    """
+    blob = bytearray(blackwell_vmin(index_tables=True))
+    parsed = backend(from_bytes(bytes(blob)))
+    base = vfe_base(parsed)[1]
+    root = base + 25 * TREE_ROOT
+    blob[root] = kind
+    blob[root + 3:root + 11] = clamp
+    blob[root + 2], blob[root + 24] = link & 0xFF, link >> 8
+    blob[root + 23] = output
+    if kind == 3:
+        blob[root + 1] = 14
+        blob[root + 11:root + 25] = struct.pack('<f', 0) + bytes((5, 6, 1, 0, 0, 0, 0, 0, output, link >> 8))
+    other = base + 25 * 10
+    if referrer:
+        blob[other:other + 25] = bytes(25)
+        blob[other:other + 3] = bytes((3 if referrer == 'criterion' else 2 if referrer == 'child' else 1, 14, 0xFF))
+        blob[other + 23:other + 25] = bytes((2, 0xFF))
+        if referrer == 'next':
+            blob[other + 2], blob[other + 24] = TREE_ROOT, 0
+        elif referrer == 'child':
+            blob[other + 11:other + 17] = bytes((TREE_ROOT, 5, 0, 0, 0, 0))
+        else:
+            blob[other + 11:other + 13] = struct.pack('<H', TREE_ROOT)
+            blob[other + 15:other + 21] = bytes((5, 6, 1, 0, 0, 0))
+            blob[other + 23] = 0x12
+    tables = {'clock programming': ('C', 0x0C, 8 + 5), 'FLL': ('C', 0x10, 7 + 7), 'voltage policy': ('P', 0x70, 4 + 3),
+              'P+0x104': ('P', 0x104, 5 + 5), 'P+0x104 id': ('P', 0x104, 5 + 1)}
+    if named:
+        token, pointer, at = tables[named]
+        struct.pack_into('<H', blob, parsed.pointer(token, pointer) + at, TREE_ROOT)
+    if unreviewed:
+        token, pointer, _ = tables[unreviewed]
+        blob[parsed.pointer(token, pointer)] ^= 1
+    return repair_legacy(repair_fixture(blob))
+
+
+def repair_legacy(blob):
+    """Repair the legacy image checksum of a synthetic GB20x image (repair_fixture leaves it: no PCI image ends
+    there)."""
+    blob = bytearray(blob)
+    legacy = backend(from_bytes(bytes(blob))).legacy
+    blob[legacy['end'] - 1] = (blob[legacy['end'] - 1] - sum(blob[legacy['start']:legacy['end']])) & 255
+    return bytes(blob)
+
+
+class BlackwellVminTreeTests(unittest.TestCase):
+    """GB20x VMIN tree roots (BlackwellRom.vmin_tree): a value pins the root's output clamp, *_vmin_fixed 0 writes the
+    unclamped bytes back."""
+
+    def test_stock_root_takes_a_value_and_the_switch_restores_it(self):
+        image = from_bytes(blackwell_tree())
+        fields = descriptors(image)
+        field, switch = fields['msvdd_vmin_mv'], fields['msvdd_vmin_fixed']
+        self.assertEqual((field['current'], field['editable'], field['experimental']), (None, True, True))
+        self.assertEqual((field['bounds']['minimum'], field['bounds']['maximum']), (450, 900))
+        self.assertEqual(field['vmin_tree'], dict(state='stock', kind='min-max', root=TREE_ROOT, equations=3,
+                                                  stock_clamp_mv=None))
+        for text in ('min/max tree of 3 equations', 'each chip has its own stock VMIN', 'rounds VMIN up to a 5 mV step',
+                     'idle and light-load states unstable', 'not hardware-tested', 'might keep the stock VMIN'):
+            self.assertIn(text, field['reason'])
+        self.assertEqual((switch['current'], switch['editable'], switch['units']), (0, False, 'flag'))
+        self.assertIn('read-only at 0', switch['reason'])
+        at = field['equation_offset']
+        result = edit(image, {'msvdd_vmin_mv': 665})
+        self.assertEqual(result.manifest['changed_object_ids'], [0x14])
+        changed_bytes_within(self, image, result, [at + 3, at + 7])
+        self.assertEqual(struct.unpack_from('<ff', result.blob, at + 3), (665000, 665000))
+        after = descriptors(result.image)
+        self.assertEqual((after['msvdd_vmin_mv']['current'], after['msvdd_vmin_mv']['vmin_tree']['state']),
+                         (665, 'pinned'))
+        self.assertIn('the clamp is fixed at 665 mV', after['msvdd_vmin_mv']['reason'])
+        self.assertEqual((after['msvdd_vmin_fixed']['current'], after['msvdd_vmin_fixed']['editable']), (1, True))
+        self.assertEqual(edit(result.image, {'msvdd_vmin_fixed': 0}).blob, image.blob)
+        again = edit(result.image, {'msvdd_vmin_mv': 700})
+        changed_bytes_within(self, result.image, again, [at + 3, at + 7])
+        self.assertEqual(edit(again.image, {'msvdd_vmin_fixed': 0}).blob, image.blob)
+        # The NVVDD constant keeps its field and has no switch.
+        self.assertNotIn('nvvdd_vmin_fixed', after)
+
+    def test_refusals(self):
+        image = from_bytes(blackwell_tree())
+        pinned = edit(image, {'msvdd_vmin_mv': 665}).image
+        for source, changes, code in (
+                (pinned, {'msvdd_vmin_fixed': 0, 'msvdd_vmin_mv': 700}, 'SEPARATE_EDIT_REQUIRED'),
+                (image, {'msvdd_vmin_fixed': 1}, 'FIELD_READ_ONLY'),
+                (image, {'msvdd_vmin_mv': 449}, 'OUT_OF_BOUNDS'), (image, {'msvdd_vmin_mv': 901}, 'OUT_OF_BOUNDS'),
+                (image, {'msvdd_vmin_mv': '665.0001'}, 'UNREPRESENTABLE_VALUE'),
+                (pinned, {'msvdd_vmin_fixed': 2}, 'OUT_OF_BOUNDS')):
+            with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
+                edit(source, changes)
+            self.assertEqual(exc.exception.code, code)
+        at = descriptors(image)['msvdd_vmin_mv']['equation_offset']
+        # Only the canonical bindings write the root: another binding over its bytes, or the same key with
+        # other offsets, is refused.
+        for offset in (at + 3, at + 11, at + 23):
+            probe = custom_registry('probe', [offset], encoding='<f', scale=1, bounds={'minimum': 0, 'maximum': 10})
+            with self.subTest(offset=offset - at), self.assertRaises(VbiosError) as exc:
+                edit(image, {'probe': 1}, field_registry=probe)
+            self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+        alias = custom_registry('msvdd_vmin_mv', [at + 3], encoding='<f', bounds={'minimum': 0, 'maximum': 2000})
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'msvdd_vmin_mv': 665}, field_registry=alias)
+        self.assertEqual(exc.exception.code, 'INVALID_FIELD_EVIDENCE')
+
+    def test_compare_root_takes_a_value_too(self):
+        image = from_bytes(blackwell_tree(kind=3))
+        field = descriptors(image)['msvdd_vmin_mv']
+        self.assertEqual((field['editable'], field['vmin_tree']['kind']), (True, 'compare'))
+        result = edit(image, {'msvdd_vmin_mv': 650})
+        self.assertEqual(descriptors(result.image)['msvdd_vmin_mv']['current'], 650)
+        self.assertEqual(edit(result.image, {'msvdd_vmin_fixed': 0}).blob, image.blob)
+
+    def test_other_shapes_users_and_unreviewed_tables_keep_it_read_only(self):
+        cases = ((dict(clamp=struct.pack('<ff', 0, 1000000)), 'unreviewed output clamp'),
+                 (dict(clamp=struct.pack('<ff', 665000.5, 665000.5)), 'unreviewed output clamp'),
+                 (dict(link=11), 'with a next equation'), (dict(output=1), 'without a plain voltage output'),
+                 (dict(referrer='next'), 'another equation or rail selector uses'),
+                 (dict(referrer='child'), 'another equation or rail selector uses'),
+                 (dict(referrer='criterion'), 'another equation or rail selector uses'),
+                 (dict(named='clock programming'), 'the clock programming table also names'),
+                 (dict(named='FLL'), 'the FLL table also names'),
+                 (dict(named='voltage policy'), 'the voltage policy table also names'),
+                 (dict(named='P+0x104'), 'the P+0x104 table also names'),
+                 (dict(unreviewed='FLL'), 'the FLL table (C+0x10) has an unreviewed layout'),
+                 (dict(unreviewed='P+0x104'), 'the table at P+0x104 has an unreviewed layout'))
+        for options, text in cases:
+            with self.subTest(**options):
+                fields = descriptors(from_bytes(blackwell_tree(**options)))
+                field = fields['msvdd_vmin_mv']
+                self.assertEqual((field['editable'], field['current']), (False, None))
+                self.assertIn(text, field['reason'])
+                self.assertNotIn('msvdd_vmin_fixed', fields)
+        # Bytes 1..2 of a P+0x104 entry are not an equation index.
+        self.assertTrue(descriptors(from_bytes(blackwell_tree(named='P+0x104 id')))['msvdd_vmin_mv']['editable'])
+        # A pinned root whose value is outside the range stays pinned, and only its switch is editable.
+        fields = descriptors(from_bytes(blackwell_tree(clamp=struct.pack('<ff', 950000, 950000))))
+        self.assertEqual((fields['msvdd_vmin_mv']['current'], fields['msvdd_vmin_mv']['editable']), (950, False))
+        self.assertIn('outside 450 mV up to 900 mV', fields['msvdd_vmin_mv']['reason'])
+        self.assertTrue(fields['msvdd_vmin_fixed']['editable'])
 
 
 def ada_vmin(*, family='ada', pinned=True, value=560000, bounded=True):
@@ -254,6 +409,161 @@ class AdaVminTests(unittest.TestCase):
         self.assertFalse(fields['nvvdd_rel_max_mv']['editable'])
         self.assertEqual(fields['nvvdd_rel_equation_max_mv']['equation_kind'], 'shared')
         self.assertTrue(descriptors(from_bytes(blob))['nvvdd_rel_max_mv']['editable'])
+
+
+def ada_per_chip(*, clamp=(545000, 560000), fuse=(1, 2)):
+    """ada_vmin() (two chains) with the row byte 7 equation (eq 6, 575000 - 15000 x, next eq 7) on a fused input:
+    variable 1 is a fuse (type 4) whose stored range is `fuse`, so the quadratic spans 545..560 mV, and eq 6's clamp
+    is `clamp`: the stock per-chip shape of ten Ada images."""
+    blob = ada_vmin(pinned=False)
+    vfe, base = vfe_base(backend(from_bytes(blob)))
+    variable = bytearray(25)
+    variable[0] = 4
+    struct.pack_into('<ff', variable, 1, *fuse)
+    blob = patched(blob, vfe + blob[vfe + 1] + blob[vfe + 2], bytes(variable))
+    return patched(blob, base + 6 * 25 + 3, struct.pack('<ff', *clamp))
+
+
+def ampere_tree(*, clamp=VFE_UNCLAMPED):
+    """A two-rail Ampere image whose rail 0 row byte 7 selects an unclamped compare root (eq 8): variable 10 >= 1
+    picks the 650 mV constant eq 9, else the 700 mV constant eq 10; no next link, the shape of the GA104/GA106
+    VMIN roots."""
+    blob = synthetic_rom(family='ampere')
+    parsed = backend(from_bytes(blob))
+    rail, (vfe, base) = parsed.pointer('P', 0x68), vfe_base(parsed)
+    blob = patched(blob, vfe + 5, bytes((11,)))
+    root = bytearray(24)
+    root[0:3] = bytes((3, 0x0A, 0xFF))
+    root[3:11] = clamp
+    struct.pack_into('<f', root, 11, 1)
+    root[15:18] = bytes((9, 10, 1))
+    root[23] = 2
+    blob = patched(blob, base + 8 * 24, bytes(root))
+    for index, value in ((9, 650000), (10, 700000)):
+        eq = bytearray(24)
+        eq[0:3] = bytes((1, 0x0A, 0xFF))
+        struct.pack_into('<fffff', eq, 3, value, value, value, 0, 0)
+        eq[23] = 2
+        blob = patched(blob, base + index * 24, bytes(eq))
+    return patched(blob, rail + 5 + 7, bytes((8,)))
+
+
+def with_index_tables(blob, family, *, programming=0xFF, fll=0xFF, policy=(1, 0, 0, 0, 0), version=None):
+    """Add the tables that name VFE equations (TableRom.equation_index_names) to a synthetic Ada or Ampere image:
+    a clock programming table (C+0x0c v0x40) of two entries, the first naming `programming` (byte 3, Ada | byte
+    13 << 8), an FLL table (C+0x10 v0x10) of one entry naming `fll` (byte 9) and a voltage policy table (P+0x70
+    v0x10) of one entry (`policy`: type and param0 bytes). version sets the clock programming version byte."""
+    ada = family == 'ada'
+    parsed = backend(from_bytes(blob))
+    start = parsed.legacy['start']
+    bit = blob.find(b'\xff\xb8BIT\x00', start)
+    programming_at, fll_at, policy_at = start + 9200, start + 9400, start + 9500
+    size, header, entry = (15, 8, 16) if ada else (13, 7, 15)
+    table = bytearray(bytes((version or 0x40, 8, size, 2, 0, 0, 1, 1)) + bytes((size + 1) * 2))
+    for i, index in enumerate((programming, 0xFFFF if ada else 0xFF)):
+        e = 8 + (size + 1) * i
+        table[e:e + 5] = bytes((3, 0x2A, 3, index & 0xFF, 0xFF))
+        if ada:
+            table[e + 13:e + 15] = bytes((index >> 8, 0xFF))
+        table[e + size] = 0xFF
+    fll_table = bytearray(bytes((0x10, header, entry, 1, 0, 0, 0xFF)) + bytes(header - 7) + bytes(entry))
+    fll_table[header:header + 10] = bytes((3, 0, 3, 0x28, 0, 2, 0xFF, 0x1B, 0, fll & 0xFF))
+    policy_table = bytes((0x10, 5, 19 if ada else 17, 1, 0)) + bytes(policy) + bytes((19 if ada else 17) - 5)
+    for at, data in ((bit + 18 + 2, struct.pack('<H', 0x14)),
+                     (parsed.tokens['C']['data'] + 0x0C, struct.pack('<II', 9200 - 512, 9400 - 512)),
+                     (parsed.tokens['P']['data'] + 0x70, struct.pack('<I', 9500 - 512)),
+                     (programming_at, bytes(table)), (fll_at, bytes(fll_table)), (policy_at, policy_table)):
+        blob = patched(blob, at, data)
+    return blob
+
+
+class TableVminTreeTests(unittest.TestCase):
+    """Ada per-chip VMIN equations and Ampere compare roots (TableRom._vmin_tree): a value pins the clamp in every
+    chain, *_vmin_fixed 0 writes the stock clamp back."""
+
+    def test_ada_per_chip_equation_takes_a_value_in_both_chains(self):
+        image = from_bytes(ada_per_chip())
+        parser = backend(image)
+        fields = descriptors(image)
+        field, switch = fields['nvvdd_vmin_mv'], fields['nvvdd_vmin_fixed']
+        self.assertEqual((field['current'], field['editable'], field['experimental']), (None, True, True))
+        # REL is at least 915 mV and equation 7 adds up to 75 mV after the clamp.
+        self.assertEqual((field['bounds']['minimum'], field['bounds']['maximum']), (450, 840))
+        self.assertEqual(field['vmin_tree'], dict(state='stock', kind='per-chip', root=6, equations=2,
+                                                  stock_clamp_mv=[545, 560]))
+        for text in ('quadratic on a fused input', '545 to 560 mV', 'adds 0 to 75 mV', 'plus 90 mV',
+                     'idle and light-load states unstable', 'not hardware-tested on this board'):
+            self.assertIn(text, field['reason'])
+        self.assertEqual((switch['current'], switch['editable']), (0, False))
+        at = field['equation_offset']
+        clamp = parser.copy_offsets(at + 3, 4) + parser.copy_offsets(at + 7, 4)
+        self.assertEqual(len(clamp), 4)
+        result = edit(image, {'nvvdd_vmin_mv': 600})
+        changed_bytes_within(self, image, result, clamp)
+        for copy in parser.copy_offsets(at, 25):
+            self.assertEqual(struct.unpack_from('<fffff', result.blob, copy + 3), (600000, 600000, 575000, -15000, 0))
+        after = descriptors(result.image)
+        self.assertEqual((after['nvvdd_vmin_mv']['current'], after['nvvdd_vmin_mv']['vmin_tree']['state']),
+                         (600, 'pinned'))
+        self.assertIn('545 to 560 mV', after['nvvdd_vmin_fixed']['reason'])
+        self.assertEqual(edit(result.image, {'nvvdd_vmin_fixed': 0}).blob, image.blob)
+        with self.assertRaises(VbiosError) as exc:
+            edit(result.image, {'nvvdd_vmin_fixed': 0, 'nvvdd_vmin_mv': 650})
+        self.assertEqual(exc.exception.code, 'SEPARATE_EDIT_REQUIRED')
+
+    def test_ada_other_clamps_keep_their_fields(self):
+        # A clamp narrower than the equation's own range could not be set back after a value.
+        field = descriptors(from_bytes(ada_per_chip(clamp=(550000, 560000))))['nvvdd_vmin_mv']
+        self.assertFalse(field['editable'])
+        self.assertIn('(550 to 560 mV) is not its own range over that input (545 to 560 mV)', field['reason'])
+        # A single fused value (the RTX 2000 Ada shape): a pinned clamp is the stock value, edited without a switch.
+        fields = descriptors(from_bytes(ada_per_chip(clamp=(560000, 560000), fuse=(1, 1))))
+        self.assertEqual((fields['nvvdd_vmin_mv']['current'], fields['nvvdd_vmin_mv']['editable']), (560, True))
+        self.assertNotIn('nvvdd_vmin_fixed', fields)
+        self.assertNotIn('vmin_tree', fields['nvvdd_vmin_mv'])
+
+    def test_ampere_compare_root_takes_a_value(self):
+        image = from_bytes(ampere_tree())
+        fields = descriptors(image)
+        field = fields['nvvdd_vmin_mv']
+        self.assertEqual((field['current'], field['editable'], field['bounds']['maximum']), (None, True, 1081.25))
+        self.assertEqual((field['vmin_tree']['kind'], field['vmin_tree']['equations']), ('compare', 3))
+        self.assertIn('not hardware-tested on Ampere', field['reason'])
+        result = edit(image, {'nvvdd_vmin_mv': 650})
+        at = field['equation_offset']
+        self.assertEqual(struct.unpack_from('<ff', result.blob, at + 3), (650000, 650000))
+        self.assertEqual(descriptors(result.image)['nvvdd_vmin_fixed']['current'], 1)
+        self.assertEqual(edit(result.image, {'nvvdd_vmin_fixed': 0}).blob, image.blob)
+
+    def test_tables_and_row_bytes_that_name_the_equation_keep_it_read_only(self):
+        cases = (('ada', dict(programming=6), 'the clock programming table also names'),
+                 ('ada', dict(fll=6), 'the FLL table also names'),
+                 ('ada', dict(policy=(2, 0, 0, 6, 0)), 'the voltage policy table also names'),
+                 ('ada', dict(version=0x41), 'the clock programming table (C+0xc) has an unreviewed layout'),
+                 ('ampere', dict(programming=8), 'the clock programming table also names'),
+                 ('ampere', dict(fll=8), 'the FLL table also names'),
+                 ('ampere', dict(policy=(3, 8, 0, 0, 0)), 'the voltage policy table also names'))
+        for family, options, text in cases:
+            with self.subTest(family=family, **options):
+                blob = ada_per_chip() if family == 'ada' else ampere_tree()
+                field = descriptors(from_bytes(with_index_tables(blob, family, **options)))['nvvdd_vmin_mv']
+                self.assertFalse(field['editable'])
+                self.assertIn(text, field['reason'])
+        # The tables at their reviewed layouts naming other equations, and a single-rail voltage policy whose
+        # param0 holds the index (a voltage domain), leave it editable.
+        for family, options in (('ada', {}), ('ada', dict(policy=(1, 6, 0, 0, 0))), ('ampere', {})):
+            with self.subTest(family=family, **options):
+                blob = ada_per_chip() if family == 'ada' else ampere_tree()
+                self.assertTrue(descriptors(from_bytes(with_index_tables(blob, family, **options)))['nvvdd_vmin_mv']
+                                ['editable'])
+        # Another byte of the rail row holding its index; another equation linking it.
+        parsed = backend(from_bytes(ada_per_chip()))
+        row, base = parsed.pointer('P', 0x68) + 5, vfe_base(parsed)[1]
+        field = descriptors(from_bytes(patched(ada_per_chip(), row + 12, bytes((6,)))))['nvvdd_vmin_mv']
+        self.assertIn('rail row byte 12 also holds its index (6)', field['reason'])
+        linked = patched(patched(ada_per_chip(), base + 4 * 25 + 2, bytes((6,))), base + 4 * 25 + 24, bytes((0,)))
+        field = descriptors(from_bytes(linked))['nvvdd_vmin_mv']
+        self.assertIn('another equation uses', field['reason'])
 
 
 # The synthetic shape of the RTX 4090 95.02.3C VMIN (TableRom._vmin_clone): the VMIN equation, the 15 mV constant

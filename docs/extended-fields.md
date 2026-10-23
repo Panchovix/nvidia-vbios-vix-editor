@@ -72,11 +72,12 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `*_alt_equation_max_mv` | VFE output clamp maximum addressed by ALT selector | Reviewed Blackwell when present; Ada temperature-derated ALT (experimental) |
 | `*_ov_equation_max_mv` | VFE output clamp maximum addressed by OV selector | Reviewed Blackwell |
 | `*_vmin_equation_max_mv` | VFE output clamp maximum addressed by the rail INFO VMIN slot (GB20x row+`0x21`, Ada/Ampere row byte 11); **not** the evaluated VMIN | Read-only |
-| `*_vmin_mv` | Evaluated minimum voltage (VMIN): the equation at GB20x row+`0x13`, Ada/Ampere row byte 7, Turing row byte 9 | Experimental, constant (GB20x) or clamp-pinned (Ada/Ampere/Turing) equations only, kept below the lowest REL value; on the RTX 4090 95.02.3C images through a copy of the shared equation |
+| `*_vmin_mv` | Evaluated minimum voltage (VMIN): the equation at GB20x row+`0x13`, Ada/Ampere row byte 7, Turing row byte 9 | Experimental, constant (GB20x) or clamp-pinned (Ada/Ampere/Turing) equations, kept below the lowest REL value; on the RTX 4090 95.02.3C images through a copy of the shared equation; a tree root (GB20x, Ampere) or per-chip equation (Ada) that nothing else names takes a value in its clamp, `current` `null` while stock |
+| `*_vmin_fixed` | 1 while `*_vmin_mv` pins the clamp of a VMIN tree root or per-chip equation, 0 for its stock clamp (VMIN set per chip) | Experimental, GB20x, Ada and Ampere where `*_vmin_mv` is a tree root or per-chip equation; only 1 -> 0, which writes the stock clamp back byte for byte |
 | `nvvdd_rel_alt_follow_ov` | 1 when the NVVDD REL and ALT selectors (REL alone without ALT) point at the OV equation (XOC-style) | Experimental, opt-in, GB20x and Ada; only 0 -> 1 |
 | `nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv` | Value of a constant NVVDD REL or ALT equation: its constant and clamp maximum | Experimental, Ada and Turing (opt-in); from the clamp minimum up to the OV value, REL <= ALT; on Turing also at least the boot voltage and the highest VMIN |
-| `fan_zero_rpm` | Bits 1\|2 of byte `0x32` of every enabled fan policy entry: 1 both set, 0 both clear (inferred meaning: the fans may stand still at low temperature) | Experimental, opt-in, GB20x; 1 only where the entries store fan-stop parameters; read-only when an entry sets one bit alone or the entries disagree |
-| `fan_N_zero_rpm_low_temp_c`, `fan_N_zero_rpm_high_temp_c`, `fan_extra_M_zero_rpm_*_temp_c` | The two temperatures at bytes 30..33 (1/32 °C) of a channel's or an extra curve's fan policy entry, read with the zero RPM bits (inferred meaning: idle fans stop below the lower and start above the upper) | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); only where the entry stores a rising nonzero pair and byte 46 is not 0xff; on Ada and Ampere editable only where every enabled entry sets both zero RPM bits; lower > 0, lower < upper <= 110 °C |
+| `fan_zero_rpm` | Bits 1\|2 of byte `0x32` of every enabled fan policy entry: 1 both set, 0 bit 2 clear (inferred meaning: the fans may stand still at low temperature) | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); 1 only where the entries store a fan-stop block the firmware accepts or a reviewed template supplies one (RTX PRO 6000 Max-Q, RTX 5000/6000 Ada, RTX A1000-A6000); read-only when the entries disagree, an entry sets bit 2 alone, or no block or template applies (RTX A2000) |
+| `fan_N_zero_rpm_low_temp_c`, `fan_N_zero_rpm_high_temp_c`, `fan_extra_M_zero_rpm_*_temp_c` | The two temperatures at bytes 30..33 (1/32 °C) of a channel's or an extra curve's fan policy entry, read with the zero RPM bits (inferred meaning: idle fans stop below the lower and start above the upper) | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); only where the entry stores a nonzero pair (the upper at least the lower) and byte 46 is not 0xff; editable where the entry's block passes the firmware validator, on Ada and Ampere where `fan_zero_rpm` is offered; an edit keeps lower > 0, lower < upper <= point 1 of the same curve and 110 °C; with zero RPM on, an edit may not leave the upper above point 1 (`ZERO_RPM_ABOVE_CURVE`) |
 | `*_rel/alt/ov/vmin_selector_index` | Full stored selector index | Read-only |
 | `*_boot_voltage_uv` | Stored boot voltage | Read-only, preserved |
 | `*_output_ocp_max_ma` | Reviewed output-OCP policy maximum (client ceiling) | Reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images; Turing NVVDD row 13 (class 10, experimental, opt-in) |
@@ -165,34 +166,157 @@ it is read-only and labelled as such:
   Max-Q, RTX PRO 4000 SFF, RTX 5060 Ti and notebook rows). The edit writes the same
   float to its minimum, maximum and value. Corpus: NVVDD of the RTX 5080, 5070 Ti,
   5070 and the RTX 5090 images (FE, ASUS, XOC, Lightning). The other rails hold
-  min/max trees, and the RTX 5080/5070 Ti MSVDD constant (800 mV) lies above the
-  lowest MSVDD REL value (760.2 mV, see below): all read-only.
+  min/max trees (see [VMIN set per chip](#vmin-set-per-chip-tree-roots-and-per-chip-equations-_vmin_fixed)),
+  and the RTX 5080/5070 Ti MSVDD constant (800 mV) lies above the lowest MSVDD REL value
+  (760.2 mV, see below), so it stays read-only.
 - Ada and Ampere: a float voltage equation whose clamp minimum equals its maximum,
   which no other equation references and no other role selects. The edit writes the
-  clamp minimum and maximum in every chain. Corpus: 8 of the 21 parseable Ada images
-  (RTX 2000 Ada, RTX 4090 95.02.18, both 4080 images, 4080 SUPER, 4070, 4070 SUPER, RTX 4500 Ada;
-  a compare REL on fused inputs gives no bound on the 4070 Ti SUPER) and 21 of the 35
+  clamp minimum and maximum in every chain. Corpus: 9 of the 21 parseable Ada images
+  (RTX 2000 Ada, RTX 4090 95.02.18, both 4080 images, 4080 SUPER, 4070, 4070 SUPER, RTX 4500 Ada
+  and 4070 Ti SUPER, whose compare REL its own clamp bounds) and 21 of the 35
   Ampere images, both rails on nine two-rail GA102 images. The A40 stores
   668088.3125 uV, which an edit in whole uV could not write back, so it stays
   read-only. On the RTX 4090 95.02.3C images another equation links the VMIN
   equation as its next equation; the edit then goes through a copy, see
   [Shared VMIN equation on RTX 4090 95.02.3C](#shared-vmin-equation-on-rtx-4090-95023c).
+- GB20x, Ada and Ampere: a tree root or per-chip equation whose VMIN each chip sets
+  for itself, through the clamp of that equation; see
+  [VMIN set per chip](#vmin-set-per-chip-tree-roots-and-per-chip-equations-_vmin_fixed).
 
-The value goes from 450 mV (GB20x) or 400 mV (Ada, Ampere; no voltage device
-minimum is decoded) up to the lowest value the rail's REL equation list can take,
+The value goes from 450 mV (GB20x, and any tree root or per-chip equation) or 400 mV
+(Ada, Ampere; no voltage device minimum is decoded) up to the lowest value the rail's
+REL equation list can take,
 less the most the equations chained after the VMIN equation can add, so the
 evaluated VMIN never crosses REL. Each equation of a list is clamped to its own
 bounds and its next link is added (the RTX 2000 Ada result above); a quadratic
 whose slopes are float residue (below 1e-6; the corpus has at most 5e-9) counts
 as its constant, other quadratics and the GB20x type 7 REL count as their clamp,
-and min/max or compare equations span their children. A list with an unclamped
-slope, another kind or a cycle has no bound and keeps the field read-only. On the
+and min/max or compare equations span their children, their own clamp bounding a
+child that nothing else bounds (the compare REL of the RTX 4060, 4060 Ti, 4050 Laptop
+GPU and 4070 Ti SUPER, clamped to 1015..1090 mV over a chain with an unclamped slope).
+A list with an unclamped slope that no clamp bounds, another kind or a cycle has no
+bound and keeps the field read-only. On the
 RTX 2000 Ada REL is at least 915 mV and the chain after the VMIN clamp adds 70 to
 162 mV (the driver showed +90), so VMIN goes up to 753 mV; on the RTX 4080 REL is
 1075 mV and the chain adds 146 to 261 mV, so up to 814 mV. On the RTX 5080 and 5070
 Ti the MSVDD REL links a compare that can add -139.8 mV, so MSVDD REL can drop to
 760.2 mV. The edit guard allows exactly the declared floats of that one equation,
 and only through this canonical binding.
+
+### VMIN set per chip: tree roots and per-chip equations (`*_vmin_fixed`)
+
+On many images the evaluated VMIN equation has no single stored value. It is
+computed for each chip from fused values (speedo, bin) and changes with the GPU
+temperature:
+
+- **GB20x min/max tree roots.** Row+`0x13` selects a min/max equation (type 2,
+  output byte 2, no next link) whose output clamp is unclamped (-FLT_MAX, +FLT_MAX)
+  over a tree of 106 to 202 equations: fixed floors, a table of values indexed by a
+  fused bin chosen by temperature band, and temperature and speedo terms. Corpus: both
+  rails of the RTX PRO 6000 Max-Q images (Max-Q, Q325W), the RTX PRO 4000 SFF images and
+  the RTX 5080 Laptop GPU image, NVVDD of the RTX PRO 6000 Workstation and RTX 5060 Ti
+  images, and MSVDD of every RTX 5090 image. Evaluated with each chip's fuses (saved
+  captures, no live access), these trees give the VMIN the driver reported, rounded up to
+  5 mV, on all seven tree rails measured: 690/715, 675/690 and 640/640 mV on three RTX
+  PRO 6000 Max-Q, 630/655 mV on an RTX PRO 4000 SFF and 880 mV MSVDD on an RTX 5090. On
+  the Max-Q the tree gives about 35 to 50 mV less NVVDD and 53 to 69 mV less MSVDD
+  above 60 °C than below. A compare root (type 3) is read the same way; no GB20x image
+  has one.
+- **Ampere compare roots.** Row byte 7 of 13 GA104/GA106 images (desktop RTX 3050,
+  3060, 3060 Ti and 3070, RTX A2000 and A4000, and laptop images) selects an unclamped
+  compare equation (no next link) that picks one chain per fused bin, each a base value
+  plus fuse and temperature terms.
+- **Ada per-chip equations.** Row byte 7 of ten Ada images (RTX 5000 Ada, RTX 4000 Ada
+  and 4000 Ada SFF, RTX 4060 Ti, 4060, RTX 4050, 4070 and 4080 Laptop GPU) selects the
+  quadratic of the RTX 2000 Ada shape (a base value minus a step per fused bin), but its
+  fused input spans several bins and its clamp is the quadratic's own range over that
+  input (545 to 560 mV, 640 to 780 mV, 680 to 725 mV...). The equations chained after it
+  add their per-chip and temperature terms. All but the RTX 4070 Laptop GPU take a
+  value (see the gates below). On the RTX 2000 Ada and the other images whose input
+  holds a single value, the clamp pins the stock value and the plain `*_vmin_mv` above
+  applies.
+
+On these rails `*_vmin_mv` is offered with `current: null` while stock (the GUI shows
+"per chip"). A value pins the output clamp of that equation: minimum = maximum = the
+value, in every chain, so VMIN no longer follows the chip or its temperature (on Ada the
+base value no longer does; the chained terms still add theirs). Values go from 450 mV
+up to the lowest REL value, less what the chained equations can add on Ada. A value
+below the chip's own stock VMIN can make idle and light-load states unstable; a higher
+one raises the idle voltage and power. That is the user's call. The driver rounds VMIN
+up to a 5 mV step on GB20x (a typed 662 shows as 665).
+
+`*_vmin_fixed` (a 0/1 switch, experimental) sits next to it: 1 while the clamp is
+pinned, 0 = stock. Only 1 -> 0 is offered: it writes the stock clamp bytes back
+(unclamped for a tree root, the quadratic's own range for an Ada per-chip equation), so
+the copy matches the stock image at those bytes. The value and the switch write the
+same bytes and are changed in separate edits (`SEPARATE_EDIT_REQUIRED`). At 0 the switch
+is read-only: a value in `*_vmin_mv` sets it. Both descriptors carry `vmin_tree`
+(`state` stock or pinned, `kind` min-max, compare or per-chip, `root` index,
+`equations` in the tree, `stock_clamp_mv` or `null` when unclamped).
+
+**Gates.** The equation must be in the reviewed shape above, and nothing else may name
+it, because a pinned clamp would also change that other use:
+
+- no VFE equation links it as a next equation, a min/max or compare child, or a
+  compare criterion (output byte 23 bit 4 set: the u16 at bytes 11..12 names the
+  equation whose value is compared; GSP-RM reads it for every entry size);
+- no other equation selector of the rail rows holds its index: on GB20x the words at
+  +`0x0d` to +`0x17`, +`0x1d` to +`0x23` and +`0x29` to +`0x3f` of both rows (the other
+  words are not read), on Ada and Ampere every byte from byte 4 on;
+- no table that names VFE equations does, read as a superset where the index bytes are
+  not pinned down: the clock programming entries and sub-entries (C+`0x0c`), the FLL
+  table (C+`0x10`: every GB20x entry names an equation at byte 7; Ada and Ampere at byte
+  9 and the header margin), the voltage policy entries (P+`0x70`, split-rail delta
+  equations in nvgpu) and on GB20x the table at P+`0x104` (object 0xa7, which GSP-RM copies
+  raw to another firmware: bytes 5..8 name equations on every image; bytes 1..2 hold the
+  same small values on images whose equations at those indices differ, 5 and 9 on the RTX
+  5090, 5080 and PRO 6000 Workstation, and -58 on the RTX PRO 4000 SFF, so they are not
+  read as indices, though no firmware code proves it either way). An absent table names
+  nothing; a table at another layout keeps the field read-only. On four enabled images
+  bytes 1..2 of a P+`0x104` entry equal the index of their own VMIN root: the RTX PRO 6000
+  Workstation (6, in a disabled type 0 entry), the RTX 5080 Laptop GPU (6) and both RTX
+  5060 Ti images (7); if those bytes were an index after all, a fixed VMIN would also
+  reach that entry there.
+
+Only the canonical bindings write the equation, and after the edit it must still be the
+same shape (stock or a pinned whole-uV clamp). A pinned clamp on such an equation is read
+as a value this edit set: an image that shipped one pinned would get a switch that
+writes the unclamped bytes (or the quadratic's own range) instead of its own. No image
+of the corpus ships a pinned min/max or compare root, nor a pinned quadratic whose input
+spans several values.
+
+**Evidence and what is not proven.** GSP-RM 615.78.08 reads the clamp of every equation
+kind into the common equation fields before the per-kind switch (VFE parser 0x119dd48),
+copies it unchecked (constructor 0x1bfa140) and exports it with every kind: the min/max
+(0x16c4f7c), compare (0x16c4ea8), quadratic (0x16c5040) and polynomial (0x16c5104)
+exports all call the common export 0x16c4de0, which writes the minimum and maximum for
+the evaluator. The evaluator runs in the PMU,
+whose code is not readable, so that it applies the clamp of a min/max or compare node is
+inferred. NVIDIA ships finite clamps on quadratic, polynomial and compare equations (the
+GPC curve roots, Ada compare REL) and none on a min/max equation. The per-chip match
+above checks the tree decode (next links, criterion links, variable ranges), not any
+output clamp. The only hardware result is the RTX 2000 Ada quadratic: its clamp moved the
+driver VMIN. If the evaluator ignores a root's clamp, VMIN simply stays at the stock
+per-chip value; removing the override brings the card back. Not hardware-tested on any
+tree root or Ada per-chip equation. To check it on a card, read the driver's VMIN at
+idle with the stock image and with the copy, at a similar temperature (the stock value
+drops above 60 °C on GB20x): a copy that still shows the stock value means the clamp is
+ignored.
+
+**Left read-only, with their reason:** the RTX 6000 Ada (row byte 7 selects a MHz
+equation that another equation uses), the RTX 4070 Laptop GPU (row byte 12 holds 16 on
+every Ada image, the index of its VMIN equation here; its meaning is unknown), the RTX
+4060 Laptop GPU (its clamp, 545 to 560 mV, is narrower than its own range, 530 to 560
+mV, so the stock clamp could not be written back after a value) and the A40 (a pinned
+668088.3125 uV, not a whole uV). Every Turing image already pins its VMIN equation with
+its clamp (the plain `*_vmin_mv`); none has a tree root or per-chip equation.
+
+**Import.** From a donor whose VMIN is fixed, the value is imported (pinning the
+target). From a donor whose VMIN is set per chip, a fixed target gets `*_vmin_fixed` 0,
+its own stock bytes, and `*_vmin_mv` is listed as `per_chip_in_donor`. A constant VMIN
+and a tree root are other quantities (`different_meaning`), and so are a VMIN that a
+plain clamp fixes and one set per chip, also on Ada where both are quadratics (an RTX
+2000 Ada and an RTX 5000 Ada).
 
 ### Shared VMIN equation on RTX 4090 95.02.3C
 
@@ -912,7 +1036,9 @@ group; the two input-current fields form `input-current-12v`; each output-OCP ra
 rated and maximum fields form `nvvdd-output-ocp` or `msvdd-output-ocp`; the slot
 power fields form `slot-power`; and the fan fields form `fan-speed` (every RPM limit and
 curve speed), `fan-level` (every % limit and curve level) and `fan-temperature` (every
-curve temperature), across channels, because the extra curves serve every channel. A
+curve temperature and zero RPM temperature), across channels, because the extra curves
+serve every channel and an upper zero RPM temperature stays at most point 1 of its own
+curve. A
 single-field request
 is checked against the static bounds in its descriptor, which hold the partners'
 current values. When partners are requested together, each value is first checked
@@ -1024,7 +1150,8 @@ with `runtime_get: false`:
 
 The rail and VFE tables are the split-rail ones, so the NVVDD and MSVDD voltage
 fields work unchanged (REL 1025 mV, OV 1200 mV, rail INFO VMIN slot 700 mV on both
-rails; the evaluated VMIN equations are min/max trees, read-only). The
+rails; the evaluated VMIN equations are min/max trees that take a value through their
+clamp, see [VMIN set per chip](#vmin-set-per-chip-tree-roots-and-per-chip-equations-_vmin_fixed)). The
 power policy table keeps the v0x40 format but places its rows differently:
 
 - **TGP in row 2.** Every desktop and Max-Q source has policy header bytes 21..23 =
@@ -1219,14 +1346,38 @@ Byte `0x32`, the last byte of each 51-byte policy entry, is a flag byte.
   by bit: bits 1 and 2 become two separate booleans, kept with the temperature pair at
   bytes 30..33 (1/32 °C) and byte 46 of the same entry. The contribution that proposed
   the field reports the same decode in the Windows driver (nvlddmkm.sys 617.42,
-  booleans at structure offsets +0x80 and +0x81).
-- **Corpus.** In the corpus, every GeForce GB20x image sets both bits on every
-  enabled entry: 0x17 on the channel entries and 0x07 on the extra curves, or
-  0x16/0x06 (bit 0 clear) on the ASUS XOC and MSI Lightning images. Every RTX PRO
-  image clears both: 0x11/0x01 on the PRO 4000 SFF, 0x01 on the PRO 6000
-  Workstation and Max-Q. No image sets one bit alone. Bytes 30..33 hold two rising temperatures (43/50, 50/55 or 50/60 °C on the
-  channel entries) and byte 46 holds 0, except on the RTX PRO 6000 Max-Q, which stores
-  zeros and 0xff there.
+  booleans at structure offsets +0x80 and +0x81). With bit 1 set, the policy validator
+  (0x1b20c44) also checks the fan-stop block at bytes 30..46: a per-chip capability
+  byte, upper >= lower, word 44..45 nonzero and, unless byte 46 is 0xff, dword 38..41
+  >= dword 34..37 and word 42..43 nonzero; bit 2 without bit 1 is refused. The policy
+  control reads and writes bit 2 only, so bit 1 most likely marks the entry as
+  supporting fan stop and bit 2 sets whether it is on by default (inferred). Bytes
+  34..46 most likely gate fan stop on a power reading (byte 46 an object index with
+  0xff for none, the dwords in mW, word 44 a hold time in ms), but the comparison runs
+  in the fan controller, outside GSP-RM, so the editor never exposes them: it keeps
+  them, or copies a reviewed block whole (templates, below).
+- **Ada and Ampere.** Their policy tables have the same version (0x20) and 51-byte
+  entries. The version byte selects the parser with no chip check above it, so Ada and
+  Ampere tables take the same parser and validator, and the GA102-GA107 and AD102-AD107
+  initializers set the capability byte as the GB202-GB207 one does. That these boards
+  run fan stop the same way is inferred from the shared code.
+- **Corpus.** Every GeForce GB20x image sets both bits on every enabled entry: 0x17
+  on the channel entries and 0x07 on the extra curves, or 0x16/0x06 (bit 0 clear) on
+  the ASUS XOC and MSI Lightning images. Every RTX PRO GB20x image clears both:
+  0x11/0x01 on the PRO 4000 SFF, 0x01 on the PRO 6000 Workstation and Max-Q. Bytes
+  30..33 hold two rising temperatures (43/50, 50/55 or 50/60 °C on the channel
+  entries) and byte 46 holds 0, except on the RTX PRO 6000 Max-Q, which stores zeros
+  and 0xff there. On Ada, every GeForce image sets both bits; the RTX 4000, 4000 SFF,
+  4500 and 2000 Ada store blocks the validator accepts with both bits clear
+  (0x11/0x01), and the RTX 5000 and 6000 Ada store zeros and 0xff (0x01). On Ampere,
+  most GeForce images set both bits; an RTX 3080, an RTX 3060 Ti and the RTX 3050
+  store accepted blocks with both bits clear; an RTX 3090, an RTX 3070 and the RTX
+  3060 8GB set bit 1 alone (0x13/0x03), so GSP-RM checks their blocks at every boot
+  (the channel entry of the RTX 3060 8GB stores 40/40 °C, an upper equal to its lower,
+  which the validator accepts); one RTX 3060 stores 0x13 on its channel entry and 0x07
+  on its extra curve; the RTX A2000 stores no usable block on its third entry (zeros,
+  word 44 = 0); the RTX A1000, A4000, A4500, A5000, A5500 and A6000 store zeros and
+  0xff (0x01). No blower board ships with fan stop on.
 - **Owner reports.** The contribution came with owner reports for images outside the
   reviewed corpus: the fans stand still at idle on the Palit GameRock RTX 5090, the
   ASUS TUF RTX 5090 and the ASUS TUF RTX 5070 Ti (0x17/0x07), and keep turning at
@@ -1238,26 +1389,106 @@ Byte `0x32`, the last byte of each 51-byte policy entry, is a flag byte.
   through the Windows loader: all three fans stood still at idle, started under load
   and stopped again after cooling down. Its entries store the same fan-stop
   temperatures as the RTX 5090 Founders Edition image (43/50 °C on the channel
-  entries).
-- **Field.** `fan_zero_rpm` is 1 when both bits are set on every enabled entry (the
-  active channels' entries and the enabled curves past the cooler rows) and 0 when
-  both are clear. A write sets or clears both bits on all of them at once, the only
-  forms the images store, and keeps the other bits of each flag byte; the manifest
-  lists the flag bytes as layout bytes. Like the PWM frequency, a write also covers
-  the stored channel entries a larger `fan_channels` count may enable (the third
-  channel of the ASUS XOC and MSI Lightning images, whose bits already match), so the
-  count and the flag can change in either order. The field is read-only when an entry
-  sets only one of the two bits (some Ampere images store 0x13/0x03, and the firmware
-  reads the bits separately), when the enabled entries disagree or when such a stored
-  channel entry differs from them. The value 1 is offered only when every written
-  entry stores two rising nonzero temperatures at bytes 30..33 and a byte 46 other
-  than 0xff, so the Max-Q stays read-only at 0. An image that sets the bits without
-  those parameters (none in the corpus) still offers 0, but the copy is then read-only
-  at 0, so that change cannot be undone in the editor. The window shows the field,
-  like the other 0/1 fields, as a switch behind the advanced toggle.
+  entries). Ada, Ampere and the Max-Q template are not hardware-tested.
+- **Field.** `fan_zero_rpm` covers the active channels' entries and the enabled curves
+  past the cooler rows, in every duplicate image chain (Ada, Ampere). Like the PWM
+  frequency, a write also covers the stored channel entries a larger `fan_channels`
+  count may enable (the third channel of the ASUS XOC and MSI Lightning images, whose
+  bits already match), so the count and the flag can change in either order. It
+  changes only bits 1 and 2 of each flag byte; every other bit stays as stored,
+  bit 4 included. The manifest lists the flag bytes as layout bytes.
+  - It reads 1 when every entry sets both bits. On GB20x it reads 0 when every entry
+    clears both; on Ada and Ampere when none sets bit 2 and bit 1 is the same on all
+    of them (both clear, or bit 1 alone).
+  - 1 sets both bits. 0 clears both on an image that reads 1, and only bit 2
+    otherwise, so asking for the stored value never changes a byte and a stock image
+    comes back byte for byte. A copy saved at 1 of a board that stores bit 1 alone
+    (the RTX 3090, RTX 3070 and RTX 3060 8GB above) comes back at 0 with both bits
+    clear (0x11/0x01 instead of 0x13/0x03), which loses only bit 1; keep the original
+    image to return to its exact bytes.
+  - The value 1 is offered only when every written entry already sets bit 1 (Ada,
+    Ampere), stores a block the validator accepts (on GB20x, Ada and Ampere: two
+    nonzero temperatures with the upper at least the lower, byte 46 other than 0xff,
+    word 44 nonzero, dword 38 >= dword 34 and word 42 nonzero), or a reviewed template
+    supplies one (below). An image that sets the bits without such a block (none in the
+    corpus) still offers 0, but the copy is then read-only at 0, so that change cannot
+    be undone in the editor.
+  - Read-only: an entry with bit 2 alone (on GB20x, with either bit alone), entries
+    that disagree about bit 1 (on GB20x, about either bit), chains that disagree, a
+    stored channel entry whose bits differ from the enabled ones, and an entry without
+    an accepted block where no template applies (the RTX A2000, whose third entry
+    stores zeros). The RTX 3060
+    that stores 0x13 and 0x07 is read-only too: zero RPM is on for one entry and off
+    for the other, so the field has no value (`current` `null`, `flag_state`
+    `mixed`); the GUI shows it as Mixed.
+  - The window shows the field, like the other 0/1 fields, as a switch behind the
+    advanced toggle.
+- **Templates for blower boards that store no block.** The RTX PRO 6000 Max-Q and
+  Q325W (0x2BB4), the RTX 5000 and 6000 Ada (0x26B2, 0x26B1) and the RTX A1000, A4000,
+  A4500, A5000, A5500 and A6000 (0x25B0, 0x24B0, 0x2232, 0x2231, 0x2233, 0x2230) store
+  zeros and 0xff in bytes 30..46 of their enabled entries, so the flag bits alone would
+  fail the validator (word 44 = 0). There, 1 also writes the blocks NVIDIA stores on
+  another board (the donor below), entry for entry and in every chain, and 0 on such a
+  copy writes the stock zeros and 0xff back, so the copy returns byte for byte, also
+  after a zero RPM temperature edit. The template applies only to the stock entries (the same enabled
+  entries and bytes 0..1, bytes 47..49 = 0); the copy is recognized by both bits set
+  and the template's bytes 34..46 (the pair may have been edited). The descriptor
+  carries `fan_stop_template` (`donor`, `state` `stock` or `copy`, and each entry's
+  pair), and the evidence names the donor.
+
+  | Boards | Donor (NVIDIA's own blocks) | Pairs written (°C) |
+  | --- | --- | --- |
+  | RTX PRO 6000 Max-Q, Q325W (entries 0, 4, 5) | RTX PRO 6000 Workstation (same GB202 chip; the RTX 5090 Founders Edition runs the same blocks with both bits set) | 43/50, 63/70, 60/70 |
+  | RTX 5000 Ada, RTX 6000 Ada (entries 0, 2, 3) | RTX 4000, 4000 SFF, 4500 and 2000 Ada (the same three blocks on each, stored with both bits clear) | 40/50, 50/72, 60/70 |
+  | RTX A1000, A4000, A4500, A5000, A5500, A6000 (entries 0, 2, 3) | RTX 3080 Ti Founders Edition (both bits set) | 38.875/60, 50/72, 60/70 |
+
+  Every block also holds dwords 30000 and 100000, words 61 and 5000 and byte 46 = 0, as
+  the RTX 3080 Ti Founders Edition, the RTX 4000, 4000 SFF, 4500 and 2000 Ada, the RTX
+  4070 SUPER, the RTX PRO 6000 Workstation and the RTX 5090 Founders Edition images
+  store them (other boards store other dwords, for example 50000/100000 on an RTX 4080
+  and 30000/50000 on an RTX 4090), and each passes the validator. The donor entries
+  have the same bytes 0..1 (enable and thermal channel role), and the thermal channel
+  entries those roles name are the same on donor and target. Power channel 0, which
+  byte 46 = 0 most likely names, is the same on the Max-Q, the Workstation and the RTX
+  5090 Founders Edition; on Ada and Ampere it is the total board power channel of
+  every image, with board-specific inputs. The RTX A6000 is a PG133 board like its
+  donor and the A4500, A5000 and A5500 share its GA102 chip; the A4000 (GA104) and
+  A1000 (GA107) share neither, so their template rests on the boards named above
+  storing the same parameters. The template keeps bit 4 clear, as the Workstation copy
+  already does (flags 0x01 -> 0x07): no shipped image stores bits 1 and 2 with bit 4
+  clear on a channel entry, and no hardware test covered that form. Its temperature
+  fields appear once a copy with the template is saved.
+- **Risks.** No blower card ships with fan stop on. A stopped blower most likely moves
+  no air through the card, memory and power stages included, until the card passes the
+  upper temperature. A restart of a blower from 0 RPM is untested, and dense multi-GPU
+  builds may see heat soak into the neighbours and stop/start cycling. A power
+  criterion that never lets an idle card stop and what the fan does after a driver
+  unload while stopped were not tested either. A fan tool that holds manual control
+  keeps the fans running whatever the field says. Not hardware-tested on Ada, Ampere
+  or the Max-Q.
+- **Notes.** The reason of the field and the window, under the switch, add:
+  - on a template board, the values it writes and the blower risks above;
+  - on any other ROM that ships with zero RPM off (every RTX PRO and RTX A-series
+    board, some GeForce Ampere ones), the same risks for a card with a blower fan;
+  - where a written channel entry keeps bit 4 clear (the RTX PRO 6000 Workstation and
+    Max-Q and the template boards), that with zero RPM on it holds bits 1 and 2 with
+    bit 4 clear, a form no shipped ROM runs zero RPM with, so whether the fans stop
+    is untested (descriptor `channel_bit4_clear`);
+  - on an enabled entry that stores the same lower and upper temperature (the RTX
+    3060 8GB channel entry, 40/40 °C), that zero RPM has no hysteresis there, so the
+    fans may stop and start often around that temperature, and to set the lower a few
+    degrees below (descriptor `zero_rpm_flat_pairs`: the lower field and the
+    temperature of each such entry);
+  - on Ada and Ampere, that it is not hardware-tested there, and on every board that a
+    fan tool that holds manual control keeps the fans running.
+- **Extension bindings.** An extension binding cannot write a fan-stop block, not even
+  next to a `fan_zero_rpm` request: the fan table guard admits only the set the
+  requested value writes, only when the request changes the field, and only with those
+  exact bytes in the result, so another binding over the same bytes is refused
+  (`PRESERVED_FIELD_CHANGED`, or `CONFLICTING_FIELDS` when both write them).
 
 The other policy entry bytes are preserved. Setting 1 is hardware-tested on that one
-board; other boards and setting 0 are not.
+HP Omen RTX 5090; other boards and setting 0 are not.
 
 ### Zero RPM temperatures (`fan_N_zero_rpm_low_temp_c`, `fan_N_zero_rpm_high_temp_c`, opt-in)
 
@@ -1285,19 +1516,96 @@ Bytes 30..33 of a policy entry hold two `<H` temperatures in 1/32 °C, the lower
   "stop below the lower" is still inferred.
 - **Fields.** Each active channel (`fan_N_...`) and each enabled extra curve
   (`fan_extra_M_...`, numbered as in the curve fields) gets a lower and an upper
-  field, only where the entry stores a rising nonzero pair and byte 46 is not 0xff:
-  nothing is offered or synthesized for the Max-Q's zeros. Stored channels that a
-  larger `fan_channels` count enables keep their bytes and get their fields once
-  enabled. Values are exact in 1/32 °C. The lower stays above 0 °C and below the
-  upper; the upper at most 110 °C, an editor limit as for the curve temperatures, not
-  a tested firmware limit (a stored upper above it leaves the pair read-only). The
-  two fields of an entry form one ordering group, so both can move past the stored
-  values in one edit. No pair is copied to another channel or curve. The fields do
-  not depend on `fan_zero_rpm`: they stay editable with the bits clear or mixed, and
-  an edit leaves the flag byte, byte 46, the curves and every other byte as they are.
+  field, only where the entry stores a nonzero pair whose upper is at least its lower
+  and byte 46 is not 0xff: nothing is offered or synthesized for zeros (a stock
+  template board gets its fields once a copy with the template is saved). Stored
+  channels that a larger `fan_channels` count enables keep their bytes and get their
+  fields once enabled. Values are exact in 1/32 °C. An edit keeps the lower above 0 °C
+  and below the upper. The upper stays at most point 1 of the same entry's fan curve
+  (bytes 18..19) and at most 110 °C, an editor limit as for the curve temperatures,
+  not a tested firmware limit (a stored upper above 110 °C leaves the pair read-only).
+  That bound holds with zero RPM on or off, so turning zero RPM on later never meets an
+  upper the editor let through. A stored upper above point 1 shows as stored and can
+  only come down to it.
+  - Where the stored lower is at or above point 1, no upper is both above the lower
+    and at most point 1: the extra curves of an RTX 3080 (100/105 °C under 95 and
+    97 °C), the RTX 3050 (50/55 °C under 43 °C) and three RTX 4090 partner images
+    (60/70 °C on 60 °C). There the upper's range starts at what an edit that also
+    lowers the lower allows, 0.0625 °C, so no field shows a minimum above its maximum
+    (a read-only pair shows its range the same way, as on the RTX 3060 that mixes the
+    bits), and the upper moves only with the lower. An upper requested at or below its lower,
+    alone or together with it, is refused (`OUT_OF_BOUNDS`) with the lower as
+    `details.field`, its range in `details.bounds` and both in
+    `details.joint_fields`; the message says to set the lower below the upper.
+  - The channel entry of the RTX 3060 8GB stores 40/40 °C, the same lower and upper,
+    which the validator accepts. Its fields show the pair as stored (the lower above
+    its range, the upper below its range): the lower can come down and the upper go
+    up, and no edit stores such a pair.
+  - The pair and every curve temperature form the `fan-temperature` ordering group,
+    so a pair and point 1 can move past the stored values in one edit (for example,
+    point 1 and the upper raised together). No pair is copied to another channel or
+    curve. An edit leaves the flag byte, byte 46, the curves and every other byte as
+    they are.
+  - The fields are editable only where the entry's block passes the validator (word 44
+    nonzero, dword 38 >= dword 34 and word 42 nonzero), and read-only otherwise. On
+    GB20x they do not depend on `fan_zero_rpm`: they stay editable with the bits clear
+    or mixed.
+  - On Ada and Ampere a pair is editable where the entry stores a block the validator
+    accepts and `fan_zero_rpm` is offered on the image, whatever the bits, so an
+    upper can be lowered in the same edit that turns zero RPM on (an RTX 3090:
+    55 °C above point 1 at 51.90625 °C; an RTX 3060 Ti: 60 °C above 43 °C). Where
+    `fan_zero_rpm` is read-only (the RTX A2000 and the RTX 3060 with mixed bits) the
+    pairs are read-only too. Writes go to every duplicate image chain.
+- **Start temperature rule.** With zero RPM on, the upper (start) temperature of an
+  enabled entry may be at most point 1 of the same entry's fan curve, so idle fans
+  never stay stopped past the temperature where their curve starts them. `edit`
+  checks it on the result against the source, on GB20x, Ada and Ampere, for every
+  enabled entry with both bits set after the edit, whatever wrote the bytes: an upper,
+  point 1, `fan_zero_rpm` turning the bits on (with or without a template) or an
+  import. An entry that GSP-RM ran in the source (an active channel's entry or an
+  enabled curve past them) with both bits set, and whose upper and point 1 are
+  unchanged, is exempt, so stock images that ship the upper above point 1 keep every
+  other edit: three RTX 4090 partner images (70 °C over 60 °C) and an MSI RTX 3090
+  (60 °C over 59 °C). Their point 1 moves only with the upper brought down to it, and
+  a copy of them saved with zero RPM off turns it on again only with the upper
+  lowered, since nothing stored exempts it any more.
+  - A refusal is `ZERO_RPM_ABOVE_CURVE`; the message names the upper and point 1 of
+    each entry, their values and the highest allowed upper, and `details.field` is the
+    field to change, with the range it may take in this edit in `details.bounds`: the
+    upper where it is editable and the request moves it or turns zero RPM on (an RTX
+    3090 turned on alone names `fan_1_zero_rpm_high_temp_c`, at most 51.90625 °C),
+    point 1 where the upper stays (a GeForce point 1 lowered under its upper), and
+    `fan_zero_rpm` where the switch brings a template's upper that no field holds yet
+    (a template board whose point 1 is under the template's upper: point 1 goes back
+    up with the switch, and both can move lower together on the saved copy).
+  - Where the lower of such an entry is at or above point 1, the message also says to
+    set the lower below the new upper in the same edit, `details.joint_fields` lists
+    the lower, and the upper's range starts at 0.0625 °C: turning zero RPM on with an
+    RTX 3080's extra curves at 95 and 97 °C and their lowers below, or the RTX 3050's
+    uppers at 43 °C with their lowers below, passes. The window marks the lower too.
+  - Entries the firmware does not run (disabled channel entries) are not checked until
+    a larger `fan_channels` count enables one with its stored bytes; it is then
+    checked like any other entry, and nothing it stores counts as shipped. A count that
+    enables such an entry with zero RPM on and its upper above point 1 is refused with
+    `details.field` `fan_channels` and `details.channel_count`: `separate-edits` where
+    what works is turning zero RPM off, raising the count on that copy and turning zero
+    RPM on again with the entry's upper lowered (each in its own edit, the message
+    names the field and its value), `none` where that cannot be done and the count
+    cannot be raised on that image. On the RTX 3060 8GB, whose stored second channel
+    holds 40/60 °C under a 49.90625 °C point 1, a copy with zero RPM on is not raised
+    to two channels; with zero RPM off first, or the count raised before zero RPM is
+    turned on, zero RPM goes on with `fan_2_zero_rpm_high_temp_c` at 49.90625 °C or
+    less. The RTX 3060 that mixes 0x13 and 0x07 stores its second channel entry with
+    zero RPM on and 61 °C over a 45 °C point 1, and its `fan_zero_rpm` is read-only, so
+    its count cannot be raised (`none`). On the RTX 4090 partner images and the MSI
+    RTX 3090, a count lowered and raised again with zero RPM on is refused too: the
+    entry it enables again is not one GSP-RM ran in the source.
+  - Turing has no zero RPM fields and no image sets the bits there, so the rule does
+    not apply.
 - **Effect.** Setting a higher upper value does not promise that the fans start at
   exactly that temperature: other fan policies, the extra curves and sensors may
-  still decide. Hardware-tested on that one RTX 5080 only.
+  still decide. Hardware-tested on that one RTX 5080 only; not hardware-tested on Ada
+  or Ampere.
 - **Ada and Ampere.** Their policy tables have the same version (0x20) and 51-byte
   entries as GB20x, and the version byte is what selects the entry parser, both in
   GSP-RM (`gsp_ga10x.bin` is built for GA10x, AD10x and GB20x) and in the Windows
@@ -1305,18 +1613,28 @@ Bytes 30..33 of a policy entry hold two `<H` temperatures in 1/32 °C, the lower
   found above that dispatch, so that these boards run the parser is inferred. In the
   corpus, every GeForce Ada image and most GeForce Ampere images store rising pairs
   with both zero RPM bits set (0x17/0x07): 40/50 to 60/70 °C on the Ada channel
-  entries, 38.875-55/55-60 °C on the Ampere ones. The RTX 4000, 4000 SFF, 4500 and 2000
-  Ada, an RTX 3080, an RTX 3060 Ti, the RTX 3050 and the RTX A2000 store pairs with
-  both bits clear; an RTX 3090, an RTX 3070 and the RTX 3060 8GB set bit 1 alone, and
-  one RTX 3060 mixes 0x13 and 0x07. The RTX 5000/6000 Ada and the RTX A1000, A4000,
-  A4500, A5000, A5500 and A6000 store zeros and 0xff. The editor has no zero RPM flag field on these families, so a
-  pair is editable only where every enabled entry of the image sets both bits, and is
-  read-only otherwise. Writes go to every duplicate image chain. Not hardware-tested
-  on Ada or Ampere.
+  entries, 38.875-55/55-60 °C on the Ampere ones. The other boards store their pairs
+  as listed under the zero RPM field above.
 - **Turing.** Its 54-byte entries hold the same block three bytes later (the pair at
-  entry bytes 33..36, byte 49 for byte 46, the flags in byte 1), but every Turing
-  image in the corpus stores zeros and 0xff there, so there is nothing to edit and
-  no field is offered.
+  entry bytes 33..36, byte 49 for byte 46, the flags in byte 1), the same validator
+  checks it, but every Turing image in the corpus stores zeros and 0xff there with
+  the bits clear, so the fan controller never ran it on Turing. No template is
+  offered: no Turing image provides a block to copy, and on TU102-TU116 power channel 0
+  is not the total board power channel (the TGP row reads channel 9), so byte 46 = 0
+  would most likely name another quantity. No zero RPM field is offered. Turing fans
+  stop through the curve instead, with the existing fields: 7 of the 18 Turing images
+  with fan fields ship that way (the row minimum at 0 RPM and 0 %, point 1 at 0 RPM
+  and 0 %, and point 2 between a fraction of a degree and 2 °C above it at the lowest
+  running speed). The RTX 2060 SUPER also stores point 1 at 0 RPM but keeps a 10 %
+  level floor (30 % at point 1). On the other images with fan fields, one joint edit
+  sets it up: `fan_N_min_rpm`, `fan_N_min_pct`, `fan_N_curve_1_rpm` and
+  `fan_N_curve_1_pct` to 0, and point 2 at the fan's lowest running speed (the row
+  minimum it had, or its own speed where that minimum is already 0) at the temperature
+  where the fan should start. The editor accepts that edit on the other 10 images with
+  fan fields, the RTX 2060 SUPER among them. The MSI GTX 1650 stores RPM limits of 0,
+  so its RPM fields and curve points are read-only and it cannot be set up that way.
+  Below point 1 the fans stand still, and they start at point 2, with no hysteresis
+  between the two: the same temperature stops and starts them.
 
 ## Advanced section: performance controllers and idle power
 
@@ -1697,7 +2015,10 @@ on most images), and are written to both chains. Every active channel gets edita
 and every curve point is editable, except on the RTX 4080 Super: its second channel's
 3000 RPM maximum is below the extra curves' 3200 RPM, so that maximum and the extra
 curves' top speeds are read-only (out of shape), and so is the channel count (one
-channel could not be raised back to two).
+channel could not be raised back to two). `fan_zero_rpm` and the zero RPM pairs are
+offered as described under [Zero RPM](#zero-rpm-fan_zero_rpm-opt-in): on every GeForce
+image (on), the RTX 4000, 4000 SFF, 4500 and 2000 Ada (off, flag bits alone) and the RTX
+5000 and 6000 Ada (off, with a reviewed template).
 
 **Thermal policy table (P+0x50) and factory clock record (P+0x98).** Both sit in the
 data image of the power and fan tables and are written in both chains. See [Maximum
@@ -1809,7 +2130,10 @@ holds the maximum only where the speed table is enabled. Boards that stop the fa
 3080, 3090, GA104 3060 Ti, 3070, GA106 3050 and 3060 8GB) store 0 % and 0 RPM as
 minimum and curve start: those minimums rise only together with the first curve
 points, which stay editable. The GA103 3060 Ti, A4000 and A2000 curves top out below
-100 % (97, 81 and 95 %), so their level maximum also moves alone.
+100 % (97, 81 and 95 %), so their level maximum also moves alone. `fan_zero_rpm` and the
+zero RPM pairs: see [Zero RPM](#zero-rpm-fan_zero_rpm-opt-in) (on most GeForce images,
+off with flag bits alone or a reviewed template elsewhere, read-only on the RTX A2000 and
+the RTX 3060 with mixed bits).
 
 **Thermal policy table (P+0x50) and factory clock record (P+0x98).** As on Ada, except
 that the thermal policy header is 10 bytes (11 on Ada); see [Maximum operating
@@ -1953,6 +2277,8 @@ percent limits are offered. The disabled entries hold bytes unlike the active on
 there is no control or speed table, so `fan_channels` is read-only. The Max-Q and
 laptop images list no channel and enable none (no fan field); the GTX 1650 SUPER
 disables its fan 0 mapping entry while the other tables list it and keeps no fan field.
+There is no zero RPM field: Turing fans stop through the curve (see the Turing note
+under [Zero RPM temperatures](#zero-rpm-temperatures-fan_n_zero_rpm_low_temp_c-fan_n_zero_rpm_high_temp_c-opt-in)).
 
 **Checksum padding.** The checksum padding is checked on the images of the edited
 tables in the second E0 image (power, VFE, fans: padded on all 25 images). The clock
@@ -2037,6 +2363,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_advanced_fields.py
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_ada_fields.py'
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_ampere_fields.py'
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_turing.py'
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_rail_vmin.py'
 ```
 
 They cover full u16 selectors, both output-OCP ceilings, exact allowed byte ranges,

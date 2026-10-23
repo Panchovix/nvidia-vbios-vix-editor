@@ -899,12 +899,17 @@ def equation_roles(image, parser):
 
 
 VMIN_SEMANTICS = 'stored-evaluated-vmin'
+# The switch beside a VMIN tree root or per-chip VMIN equation: 1 while *_vmin_mv fixes its clamp, 0 = stock.
+VMIN_FIXED_SEMANTICS = 'stored-vmin-fixed-switch'
 FOLLOW_OV_SEMANTICS = 'stored-rail-selector-layout'
 FIXED_SEMANTICS = 'stored-fixed-equation-value'
 # The fixed REL and ALT fields, and on Turing the evaluated VMIN, are checked together on a joint result.
 FIXED_GROUP = 'nvvdd-rel-alt'
 # Lowest VMIN offered: no voltage device minimum is decoded, so a fixed reviewed floor.
 VMIN_FLOOR_MV = {'gb20x': 450, 'ada': 400, 'ampere': 400, 'turing': 400}
+# Lowest fixed value of a VMIN tree root or per-chip VMIN equation, on every family (the GB20x floor; it matches
+# the range of the GB20x VFE voltage variable, 450 to 1250 mV).
+VMIN_TREE_FLOOR_MV = 450
 GB20X_VMIN_EVIDENCE = [
     {'kind': 'read-only-rail-status-correlation', 'source': 'read-only driver rail status', 'set_tested': False,
      'format': 'GB20x rail row +0x13 (u16) selects the VFE equation of the evaluated VMIN',
@@ -923,6 +928,53 @@ ADA_VMIN_EVIDENCE = [
      'observed': 'that equation pins 560 mV with its clamp; driver VMIN 650 mV; with the clamp at 700 mV in both '
                  'chains the driver reported 790 mV, the clamp value plus 90 mV both times; a new row byte 11 '
                  'equation did not change the driver VMIN'}]
+# GB20x VMIN tree roots (BlackwellRom.vmin_tree).
+GB20X_VMIN_TREE_EVIDENCE = {
+    'kind': 'firmware-static-analysis',
+    'source': 'GSP-RM 615.78.08 (gsp_ga10x.bin): VFE equation parser 0x119dd48, common constructor 0x1bfa140, '
+              'min/max export 0x16c4f7c, compare export 0x16c4ea8 and common export 0x16c4de0; GB20x VBIOS corpus; '
+              'saved read-only driver rail status and VFE variable captures',
+    'format': 'GB20x VFE equation (25 bytes): the output clamp floats (bytes 3 and 7), the variable and the next '
+              'link (bytes 2 | 24 << 8) are read into the common equation fields for every kind, before the '
+              'per-kind switch; min/max (2): children bytes 11/12 | 15/16 << 8, maximum when byte 13 bit 0 is set; '
+              'compare (3): function byte 17 (0 ==, 1 >=, 2 >), children bytes 15/16 | 19/20 << 8, criterion float '
+              'at byte 11 or, with output byte 23 bit 4 set, the value of the equation named by the u16 at bytes '
+              '11..12',
+    'observation': 'the rail row +0x13 roots of the RTX PRO 6000 (Workstation, Max-Q), RTX PRO 4000 SFF, RTX 5060 '
+                   'Ti and notebook rows and the RTX 5090 MSVDD row are unclamped min/max trees: fixed floors and a '
+                   'table of values indexed by a fused bin chosen by temperature band (on the RTX PRO 6000 Max-Q '
+                   'below 60 C, 60 to 100 C and from 101 C), with speedo and temperature terms; evaluated with '
+                   'these rules and each chip\'s fuses, the trees give the VMIN the driver reported, rounded up to '
+                   '5 mV, on all seven tree rails measured (three RTX PRO 6000 Max-Q: 690/715, 675/690 and 640/640 '
+                   'mV; RTX PRO 4000 SFF 630/655 mV; RTX 5090 MSVDD 880 mV); this match does not depend on any '
+                   'output clamp; GSP-RM copies the clamp of every equation kind unchecked, and the min/max, '
+                   'compare, quadratic and polynomial exports (0x16c4f7c, 0x16c4ea8, 0x16c5040, 0x16c5104) all call '
+                   'the common export 0x16c4de0, which writes its minimum and maximum for the evaluator; NVIDIA ships '
+                   'finite clamps on quadratic, polynomial and compare equations and on none of the min/max '
+                   'equations',
+    'inferred': 'that the evaluator (not in the GSP-RM image) applies the output clamp of a min/max root as it does '
+                'for the other kinds; no hardware data shows an output clamp applied on any node but a quadratic '
+                '(the RTX 2000 Ada VMIN test)', 'set_tested': False}
+# Ada/Ampere compare roots and per-chip quadratics at row byte 7 (TableRom._vmin_tree).
+TABLE_VMIN_TREE_EVIDENCE = {
+    'kind': 'firmware-static-analysis',
+    'source': 'GSP-RM 615.78.08 (gsp_ga10x.bin): VFE equation parser 0x119dd48, common constructor 0x1bfa140, '
+              'compare export 0x16c4ea8, quadratic export 0x16c5040 and common export 0x16c4de0; Ada and Ampere '
+              'VBIOS corpus',
+    'format': 'Ada (25-byte) and Ampere (24-byte) VFE equations: the output clamp floats (bytes 3 and 7) are read '
+              'into the common equation fields for every kind, and the compare and quadratic exports both call the '
+              'common export, which writes the minimum and maximum for the evaluator; compare (3) children bytes '
+              '15/16 (| 19/20 << 8 on Ada); a fused input is a type 4 VFE variable whose range is stored at bytes 1 '
+              'and 5',
+    'observation': 'the row byte 7 equation of 13 GA104/GA106 images is an unclamped compare root that picks one '
+                   'chain per fused bin, each a base value with fuse and temperature terms; on ten Ada images it '
+                   'is a quadratic on a fused input whose clamp is its own range over that input (for example 640 '
+                   'to 780 mV), followed by chained terms; on the RTX 2000 Ada the same quadratic has a single '
+                   'fused value and its clamp pins it; NVIDIA ships finite clamps on compare equations (the GPC '
+                   'curve roots) and none on a VMIN tree root',
+    'inferred': 'that the evaluator applies the output clamp of a compare root as it does for a quadratic; a '
+                'pinned quadratic clamp moved the driver VMIN on the RTX 2000 Ada (hardware test)',
+    'set_tested': False}
 # The RTX 4090 95.02.3C images: a constant links the VMIN equation (TableRom._vmin_clone).
 ADA_VMIN_CLONE_EVIDENCE = {
     'kind': 'firmware-static-analysis', 'source': 'GSP-RM 615.78.08 (gsp_ga10x.bin), VFE equation parser 0x119dd48; '
@@ -997,6 +1049,11 @@ def evaluated_vmin(image, parser):
     images), the binding also carries companion bytes: a copy of the stock equation
     and the constant's link to it for any value but the stock one, the unused slot
     and the stock link for the stock value (vmin_clone_companion).
+
+    A tree root or per-chip equation (item 'tree': BlackwellRom.vmin_tree, TableRom._vmin_tree)
+    has no single stock value (current None while stock): a value pins its output clamp
+    (minimum = maximum, every chain), from VMIN_TREE_FLOOR_MV up to the same top, and
+    *_vmin_fixed (vmin_fixed) writes the stock clamp back.
     """
     if not isinstance(parser, (BlackwellRom, TableRom)):
         return []
@@ -1004,17 +1061,22 @@ def evaluated_vmin(image, parser):
     result = []
     for item in parser.rail_vmin():
         name = item['logical_rail_id']
-        floor, added = VMIN_FLOOR_MV[family], item['added_uv']
+        tree = item.get('tree')
+        floor, added = VMIN_TREE_FLOOR_MV if tree else VMIN_FLOOR_MV[family], item['added_uv']
         top = (item['rel_lowest_uv'] - added[1]) / 1000 if added and item['rel_lowest_uv'] is not None else None
         current = item['value_uv'] / 1000 if item['pinned'] else None
         clone = item.get('clone')
         reason = None
-        if not item['pinned']:
-            reason = 'read-only: the evaluated VMIN equation ' + item['diagnostic'] + '; only a ' + (
-                'constant equation takes this edit' if family == 'gb20x' else 'clamp that pins the value takes this edit')
+        if not item['pinned'] and not tree:
+            reason = 'read-only: the evaluated VMIN equation ' + item['diagnostic'] + '; only ' + VMIN_SHAPES[family]
         elif top is None:
             reason = ('read-only: the REL equation list or the equations chained to VMIN have no bounded value, so '
                       'VMIN cannot be kept below REL')
+        elif tree and top < floor:
+            reason = (f'read-only: the lowest REL value less what the chained equations can add ({top:g} mV) is '
+                      f'below the {floor} mV floor')
+        elif tree and not item['pinned']:
+            pass  # stock: no single value, any value from the floor up to the top
         elif item['value_uv'] != int(item['value_uv']):
             reason = f"read-only: the stored VMIN ({item['value_uv']} uV) is not a whole uV, so it could not be restored"
         elif not floor <= current <= top:
@@ -1026,10 +1088,13 @@ def evaluated_vmin(image, parser):
         editable = reason is None and can_edit(image, parser)
         offsets, companion = (), ()
         if editable:
-            offsets = ([item['minimum_offset'], item['maximum_offset'], item['value_offset']] if family == 'gb20x' else
+            offsets = ([item['minimum_offset'], item['maximum_offset']] if family == 'gb20x' and tree else
+                       [item['minimum_offset'], item['maximum_offset'], item['value_offset']] if family == 'gb20x' else
                        parser.copy_offsets(item['minimum_offset'], 4) + parser.copy_offsets(item['maximum_offset'], 4))
             companion = vmin_clone_companion(parser, item) if clone else ()
-        if reason is None:
+        if reason is None and tree:
+            reason = vmin_tree_reason(family, item, floor, top)
+        elif reason is None:
             chained = (f'its chained equations add {added[0] / 1000:g} to {added[1] / 1000:g} mV, so the value stays '
                        f'at most the lowest REL value less {added[1] / 1000:g} mV')
             reason = vmin_clone_reason(chained, clone) if clone else {
@@ -1049,13 +1114,13 @@ def evaluated_vmin(image, parser):
                           'equations; the relation to the driver VMIN on Turing is unknown; ' + TURING_UNTESTED}[family]
         selector = {'raw': item['selector_raw'], 'width_bits': 16 if family == 'gb20x' else 8,
                     'offset': item['selector_offset'], 'absent': item['equation_offset'] is None}
+        evidence = (GB20X_VMIN_EVIDENCE + ([GB20X_VMIN_TREE_EVIDENCE] if tree else []) if family == 'gb20x' else
+                    [TURING_VMIN_EVIDENCE, TURING_VOLTAGE_EVIDENCE] + ADA_VMIN_EVIDENCE if family == 'turing' else
+                    ADA_VMIN_EVIDENCE + ([AMPERE_VOLTAGE_EVIDENCE] if family == 'ampere' else []) +
+                    ([ADA_VMIN_CLONE_EVIDENCE] if clone else []) + ([TABLE_VMIN_TREE_EVIDENCE] if tree else []))
         result.append(field(name.lower() + '_vmin_mv', f'{name} minimum voltage (VMIN)', 'mV', current,
                             floor if editable else None, top if editable else None, editable,
-                            [dict(e) for e in (GB20X_VMIN_EVIDENCE if family == 'gb20x' else
-                                               [TURING_VMIN_EVIDENCE, TURING_VOLTAGE_EVIDENCE] + ADA_VMIN_EVIDENCE
-                                               if family == 'turing' else ADA_VMIN_EVIDENCE +
-                                               ([AMPERE_VOLTAGE_EVIDENCE] if family == 'ampere' else []) +
-                                               ([ADA_VMIN_CLONE_EVIDENCE] if clone else []))],
+                            [dict(e) for e in evidence],
                             offsets=offsets, encoding='<f' if editable else '', scale=1000, stored_units='uV',
                             companion=companion,
                             writable_status=None if editable else 'unsupported', experimental=True,
@@ -1068,10 +1133,117 @@ def evaluated_vmin(image, parser):
                                                   constant_mv=clone['constant_uv'] / 1000,
                                                   memory_mhz=list(clone['memory_mhz']),
                                                   idle_memory_mhz=clone['idle_memory_mhz'])} if clone else {}),
+                            # A tree root or per-chip equation: its clamp state; current is None while stock.
+                            **({'vmin_tree': vmin_tree_descriptor(item)} if tree else {}),
                             # Turing: checked with the fixed REL/ALT values on a joint result.
                             **(dict(ordering_group=FIXED_GROUP, encoding_bounds=(floor, 0x7FFFFFFF / 1000))
                                if family == 'turing' and editable else {})))
+        if tree:
+            result.append(vmin_fixed(image, parser, item, family))
     return result
+
+
+# What a VMIN equation needs to take a value, per family (the read-only reason of any other shape).
+VMIN_SHAPES = {
+    'gb20x': 'a constant equation, or a min/max or compare tree root that nothing else uses, takes this edit',
+    'ada': 'a clamp that pins the value, or a tree root or per-chip equation that nothing else uses, takes this edit',
+    'ampere': 'a clamp that pins the value, or a tree root or per-chip equation that nothing else uses, takes this '
+              'edit',
+    'turing': 'a clamp that pins the value takes this edit'}
+
+
+def vmin_tree_descriptor(item):
+    """The vmin_tree attribute of a VMIN field and its switch: clamp state, shape, root index and tree size, and the
+    stock clamp (mV; null where it clamps nothing)."""
+    tree = item['tree']
+    stock = struct.unpack('<ff', tree['stock_clamp'])
+    unclamped = not all(abs(v) < 1e30 for v in stock)
+    return dict(state=tree['state'], kind=tree['kind'], root=item['selector_raw'], equations=tree['nodes'],
+                stock_clamp_mv=None if unclamped else [v / 1000 for v in stock])
+
+
+def vmin_tree_reason(family, item, floor, top):
+    """Reason text of the VMIN field of a tree root or per-chip equation (item 'tree')."""
+    tree, added = item['tree'], item['added_uv']
+    key = item['logical_rail_id'].lower() + '_vmin_fixed'
+    kind = 'min/max' if tree['kind'] == 'min-max' else tree['kind']
+    if tree['kind'] == 'per-chip':
+        lo, hi = (v / 1000 for v in struct.unpack('<ff', tree['stock_clamp']))
+        chained = 'equation' if tree['nodes'] == 2 else f'{tree["nodes"] - 1} equations'
+        shape = (f'the equation selected at rail row byte 7, the evaluated VMIN, is a quadratic on a fused input '
+                 f'whose stock clamp is its own range over that input ({lo:g} to {hi:g} mV), so each chip has its '
+                 f'own base value, which the ROM does not store; the {chained} chained after it '
+                 f'add{"s" if tree["nodes"] == 2 else ""} {added[0] / 1000:g} to {added[1] / 1000:g} mV (per chip and '
+                 'temperature)')
+        fix = ('a value pins that clamp (minimum = maximum = the value) in every chain, so the base value no longer '
+               'follows the chip, and the chained equations still add their terms')
+        limit = f'{floor} mV up to the lowest REL value less {added[1] / 1000:g} mV ({top:g} mV)'
+        known = ('on an RTX 2000 Ada, whose equation has this shape with a single fused value, the driver reported '
+                 'the clamp value plus 90 mV (hardware test)')
+        untested = 'not hardware-tested on this board'
+    else:
+        where = 'rail row +0x13' if family == 'gb20x' else 'rail row byte 7'
+        shape = (f'the equation selected at {where}, the evaluated VMIN, is a {kind} tree of {tree["nodes"]} '
+                 'equations over fused values and the GPU temperature, so each chip has its own stock VMIN, which '
+                 'the ROM does not store')
+        if family == 'gb20x':
+            shape += (' (the driver reported 640 to 690 mV NVVDD and 640 to 715 mV MSVDD on three RTX PRO 6000 '
+                      'Max-Q, 630/655 mV on an RTX PRO 4000 SFF and 880 mV MSVDD on an RTX 5090; on the Max-Q the '
+                      'tree gives about 35 to 50 mV less NVVDD and 53 to 69 mV less MSVDD above 60 C than below)')
+        fix = ('a value pins the output clamp of the tree root (minimum = maximum = the value)' +
+               ('' if family == 'gb20x' else ' in every chain') +
+               ', so VMIN no longer follows the chip or its temperature')
+        limit = f'{floor} mV up to the lowest REL value ({top:g} mV)'
+        if family == 'gb20x':
+            known = 'the driver rounds VMIN up to a 5 mV step'
+            untested = ('not hardware-tested: GSP-RM passes the clamp of a min/max root to the evaluator like that '
+                        'of any other equation, but no board has run a fixed tree root, so the driver might keep '
+                        'the stock VMIN')
+        else:
+            known = 'GB20x drivers round VMIN up to a 5 mV step'
+            untested = (f'not hardware-tested on {family.capitalize()}: GSP-RM passes the clamp of a compare root '
+                        'to the evaluator like that of a quadratic, and on an RTX 2000 Ada a fixed clamp on the '
+                        'quadratic VMIN equation moved the driver VMIN, but no board has run a fixed tree root, so '
+                        'the driver might keep the stock VMIN')
+    state = ('stock: ' + shape if tree['state'] == 'stock' else
+             f"the clamp is fixed at {tree['pinned_uv'] / 1000:g} mV and {key} 0 restores the stock bytes; " + shape)
+    return (f'experimental: {state}; {fix}; {limit}; {known}; a value below the stock VMIN of the chip can make idle '
+            f'and light-load states unstable, and a higher one raises the idle voltage and power; {untested}; '
+            'removing the override brings the card back')
+
+
+def vmin_fixed(image, parser, item, family):
+    """The switch beside a VMIN tree root or per-chip equation: 1 while *_vmin_mv fixes its clamp, 0 = the stock clamp.
+
+    Only 1 -> 0 is offered: it writes the stock clamp bytes back (the unclamped -FLT_MAX, +FLT_MAX of a tree
+    root, the own range of a per-chip equation), in every chain, so the copy equals the stock image again at
+    those bytes; *_vmin_mv fixes the clamp (a separate edit: both write the same bytes).
+    """
+    name, tree = item['logical_rail_id'], item['tree']
+    key = name.lower() + '_vmin_fixed'
+    fixed = tree['state'] == 'pinned'
+    editable = fixed and can_edit(image, parser)
+    stock, at = tree['stock_clamp'], item['minimum_offset']
+    offsets, layout = (), ()
+    if editable:
+        now = parser.blob[at:at + 8]
+        offsets = ((at, at + 4) if family == 'gb20x' else
+                   tuple(parser.copy_offsets(at, 4) + parser.copy_offsets(at + 4, 4)))
+        copies = len(offsets) // 2
+        layout = ((0, (stock[:4],) * copies + (stock[4:],) * copies), (1, (now[:4],) * copies + (now[4:],) * copies))
+    descriptor = vmin_tree_descriptor(item)
+    stock_text = ('the unclamped root' if descriptor['stock_clamp_mv'] is None else
+                  'its own range, {:g} to {:g} mV'.format(*descriptor['stock_clamp_mv']))
+    reason = (f'experimental: 1 while {name.lower()}_vmin_mv fixes VMIN through this clamp; 0 writes back the stock '
+              f'clamp ({stock_text}) in every chain, so VMIN follows the chip again, byte for byte as stock' if fixed
+              else f'read-only at 0: the stock VMIN of each chip; a value in {name.lower()}_vmin_mv fixes it')
+    evidence = [GB20X_VMIN_TREE_EVIDENCE] if family == 'gb20x' else [TABLE_VMIN_TREE_EVIDENCE]
+    return field(key, f'{name} fixed VMIN (clamp of the VMIN tree root or per-chip equation)', 'flag', int(fixed),
+                 0 if editable else None, 1 if editable else None, editable, [dict(e) for e in evidence],
+                 offsets=offsets, encoding='<I' if editable else '', scale=1, layout=layout,
+                 writable_status=None if editable else 'unsupported', experimental=True,
+                 value_semantics=VMIN_FIXED_SEMANTICS, rail_identity=rail_identity(parser, item),
+                 equation_type=item['equation_type'], vmin_tree=descriptor, reason=reason)
 
 
 LEGACY_DIRECTORY_EVIDENCE = {
@@ -2366,11 +2538,190 @@ FAN_ZERO_RPM_HARDWARE = {
 
 
 def fan_stop_parameters(blob, at):
-    """True when the policy entry at `at` stores what GSP-RM decodes next to bits 1|2: two rising
-    nonzero temperatures (1/32 C) at bytes 30..33 and a byte 46 other than 0xff (the RTX PRO 6000
-    Max-Q stores zeros and 0xff there)."""
+    """True when the policy entry at `at` stores what GSP-RM decodes next to bits 1|2: two nonzero
+    temperatures (1/32 C) at bytes 30..33, the upper at least the lower, and a byte 46 other than 0xff
+    (the RTX PRO 6000 Max-Q stores zeros and 0xff there). The channel entry of the RTX 3060 8GB stores
+    40/40 C: the validator accepts an upper equal to the lower, which leaves no hysteresis."""
     low, high = struct.unpack_from('<HH', blob, at + 30)
-    return 0 < low < high and blob[at + 46] != 0xFF
+    return 0 < low <= high and blob[at + 46] != 0xFF
+
+
+# The fan-stop block of a policy entry: bytes 30..46 (the temperature pair, dwords 34 and 38, words 42
+# and 44 and byte 46), and what an entry that stores none holds there.
+FAN_STOP_BLOCK = (30, 17)
+FAN_STOP_UNSET = bytes(16) + b'\xff'
+
+
+def fan_stop_accepted(blob, at):
+    """True when GSP-RM 615.78.08 (validator 0x1b20c44) accepts the block of the policy entry at `at`
+    with bit 1 set, the chip capability aside: upper >= lower (signed), word 44 nonzero and, unless
+    byte 46 is 0xff, dword 38 >= dword 34 and word 42 nonzero."""
+    low, high, d34, d38, w42, w44 = struct.unpack_from('<hhIIHH', blob, at + 30)
+    return high >= low and w44 != 0 and (blob[at + 46] == 0xFF or d38 >= d34 and w42 != 0)
+
+
+# Reviewed fan-stop blocks for boards whose stock image stores none (zeros and 0xff in bytes 30..46 of
+# every enabled entry, so bit 1 alone would fail the GSP-RM check on word 44): entry index -> (entry
+# bytes 0..1, block). Each block is NVIDIA's own, from images of the same family whose entries have the
+# same bytes 0..1 (enable and thermal channel role); the thermal channel entries those roles name are
+# the same on donor and target, and byte 46 = 0 most likely names power channel 0 on both.
+WORKSTATION_FAN_STOP = {  # RTX PRO 6000 Workstation (0x2BB1), bits clear; the RTX 5090 FE runs them set
+    0: (bytes.fromhex('0101'), bytes.fromhex('6005400630750000a08601003d00881300')),
+    4: (bytes.fromhex('0100'), bytes.fromhex('e007c00830750000a08601003d00881300')),
+    5: (bytes.fromhex('0102'), bytes.fromhex('8007c00830750000a08601003d00881300'))}
+ADA_PRO_FAN_STOP = {  # RTX 4000, 4000 SFF, 4500 and 2000 Ada, bits clear
+    0: (bytes.fromhex('0100'), bytes.fromhex('0005400630750000a08601003d00881300')),
+    2: (bytes.fromhex('0101'), bytes.fromhex('4006000930750000a08601003d00881300')),
+    3: (bytes.fromhex('0107'), bytes.fromhex('8007c00830750000a08601003d00881300'))}
+AMPERE_FE_FAN_STOP = {  # RTX 3080 Ti Founders Edition (PG133 SKU 18), bits set
+    0: (bytes.fromhex('0100'), bytes.fromhex('dc04800730750000a08601003d00881300')),
+    2: (bytes.fromhex('0101'), bytes.fromhex('4006000930750000a08601003d00881300')),
+    3: (bytes.fromhex('0109'), bytes.fromhex('8007c00830750000a08601003d00881300'))}
+FAN_STOP_INFERRED = ('bytes 34..46 most likely gate fan stop on a power reading (byte 46 an object index, 0xff '
+                     'none, which turns off the checks on dwords 34/38 and word 42; the dwords in mW; word 44 a '
+                     'hold time in ms); the comparison runs in the fan controller, outside GSP-RM, so their '
+                     'meaning was not traced and the block is copied unchanged')
+FAN_STOP_TEMPLATE_EVIDENCE = {
+    'kind': 'reference-image-template', 'source': 'RTX PRO 6000 Workstation image (0x2BB1, GB202) of the corpus',
+    'observation': 'every RTX PRO 6000 Max-Q and Q325W image (0x2BB4) stores zeros and 0xff in bytes 30..46 of its '
+                   'enabled fan policy entries 0, 4 and 5; the Workstation entries 0, 4 and 5 have the same bytes '
+                   '0..1 and store 43/50, 63/70 and 60/70 C, dwords 30000 and 100000, words 61 and 5000 and byte '
+                   '46 = 0, the blocks the RTX 5090 Founders Edition stores with bits 1 and 2 set; power channel 0 '
+                   'is the same on the Max-Q, the Workstation and the Founders Edition, and the Max-Q thermal '
+                   'channel table differs from the Workstation one only in bytes 6..9 of channel 1; GSP-RM '
+                   '615.78.08 accepts bit 1 only with word 44 nonzero and, with byte 46 other than 0xff, dword 38 '
+                   '>= dword 34 and word 42 nonzero, so the flag bits alone would fail on the Max-Q',
+    'inferred': FAN_STOP_INFERRED, 'set_tested': False}
+ADA_FAN_STOP_TEMPLATE_EVIDENCE = {
+    'kind': 'reference-image-template', 'source': 'RTX 4000, 4000 SFF, 4500 and 2000 Ada images of the corpus',
+    'observation': 'the RTX 5000 and 6000 Ada store zeros and 0xff in bytes 30..46 of their enabled fan policy '
+                   'entries 0, 2 and 3; the RTX 4000, 4000 SFF, 4500 and 2000 Ada store the same three blocks on '
+                   'entries with the same bytes 0..1, with bits 1 and 2 clear: 40/50, 50/72 and 60/70 C, dwords '
+                   '30000 and 100000, words 61 and 5000 and byte 46 = 0 (the RTX 4070 SUPER runs the blocks of '
+                   'entries 2 and 3 with the bits set); the thermal channel entries the roles name (0, 1 and 7) '
+                   'are the same on donor and target, and power channel 0 is the total board power channel (rail '
+                   '0xf5) on every Ada image, with board-specific inputs; GSP-RM 615.78.08 accepts these blocks '
+                   'with bit 1 set',
+    'inferred': FAN_STOP_INFERRED, 'set_tested': False}
+AMPERE_FAN_STOP_TEMPLATE_EVIDENCE = {
+    'kind': 'reference-image-template', 'source': 'RTX 3080 Ti Founders Edition image (PG133 SKU 18) of the corpus',
+    'observation': 'the RTX A1000, A4000, A4500, A5000, A5500 and A6000 store zeros and 0xff in bytes 30..46 of '
+                   'their enabled fan policy entries 0, 2 and 3; the RTX 3080 Ti Founders Edition runs entries with '
+                   'the same bytes 0..1 with bits 1 and 2 set, storing 38.875/60, 50/72 and 60/70 C, dwords 30000 '
+                   'and 100000, words 61 and 5000 and byte 46 = 0, the dwords and words the RTX 4000, 4000 SFF, '
+                   '4500 and 2000 Ada, RTX 4070 SUPER, RTX PRO 6000 Workstation and RTX 5090 Founders Edition '
+                   'images also store; the thermal channel entries the roles name (0, 1 and 9) are the '
+                   'same on donor and target, and power channel 0 is the total board power channel (rail 0xf5) on '
+                   'every Ampere image, with board-specific inputs; the RTX A6000 is a PG133 board like the donor, '
+                   'the A4500, A5000 and A5500 share its GA102 chip, the A4000 (GA104) and A1000 (GA107) neither; '
+                   'GSP-RM 615.78.08 accepts these blocks with bit 1 set',
+    'inferred': FAN_STOP_INFERRED, 'set_tested': False}
+# Device -> (donor image, template, evidence).
+FAN_STOP_TEMPLATES = {
+    0x2BB4: ('RTX PRO 6000 Workstation', WORKSTATION_FAN_STOP, FAN_STOP_TEMPLATE_EVIDENCE),  # Max-Q, Q325W
+    0x26B1: ('RTX 4000, 4000 SFF, 4500 and 2000 Ada', ADA_PRO_FAN_STOP, ADA_FAN_STOP_TEMPLATE_EVIDENCE),  # 6000 Ada
+    0x26B2: ('RTX 4000, 4000 SFF, 4500 and 2000 Ada', ADA_PRO_FAN_STOP, ADA_FAN_STOP_TEMPLATE_EVIDENCE),  # 5000 Ada
+    **{device: ('RTX 3080 Ti Founders Edition', AMPERE_FE_FAN_STOP, AMPERE_FAN_STOP_TEMPLATE_EVIDENCE)
+       for device in (0x2230, 0x2231, 0x2232, 0x2233,  # RTX A6000, A5000, A4500, A5500 (GA102)
+                      0x24B0, 0x25B0)}}                # RTX A4000 (GA104), RTX A1000 (GA107)
+# Appended to the fan_zero_rpm reason of a board where a template applies, where a channel entry keeps
+# bit 4 of its flag byte clear (the RTX PRO and A-series blower boards; GeForce channel entries set it),
+# of an image that stores zero RPM off (without a template), and of one whose enabled entry stores the
+# same lower and upper temperature.
+FAN_STOP_TEMPLATE_NOTE = ('; this blower board stores no fan-stop block, so 1 also writes to {where} the blocks NVIDIA '
+                          'stores on the {donor}: zero RPM temperatures {pairs} C, dwords 30000/100000, words '
+                          '61/5000, byte 46 = 0, and 0 writes the stock zeros and 0xff back; '
+                          'no blower ships with fan stop on: a stopped blower most likely moves no air through the '
+                          'card, memory and power stages included, until the card passes the upper value, a restart '
+                          'of a blower from 0 RPM is untested, and dense multi-GPU builds may see heat soak and '
+                          'stop/start cycling; not hardware-tested on this board')
+FAN_ZERO_RPM_BIT4_NOTE = ('; the channel entries of this image keep bit 4 of their flag byte clear, so with 1 they hold '
+                          'bits 1 and 2 with bit 4 clear: no shipped image runs zero RPM with that form, and whether '
+                          'the fans stop is untested')
+FAN_ZERO_RPM_OFF_NOTE = ('; this image stores zero RPM off: on a blower card a stopped fan most likely moves no air '
+                         'through the card, memory and power stages included, until it passes the upper value, a '
+                         'restart of a blower from 0 RPM is untested, and dense multi-GPU builds may see heat soak and '
+                         'stop/start cycling')
+FAN_ZERO_RPM_FLAT_NOTE = ('; the {owner} fan policy entry stores the same lower and upper temperature ({value} C): with '
+                          'zero RPM on there is no hysteresis, so the fans may stop and start often around it; set '
+                          '{key} a few degrees below')
+FAN_ZERO_RPM_MANUAL_NOTE = '; a fan tool that holds manual control keeps the fans running'
+
+
+def fan_stop_owners(table):
+    """(key prefix, label name, owner, entry, descriptor extras) of each fan policy entry GSP-RM runs: the
+    active channels' entries (fan_N, numbered from 1) and the enabled curves past the cooler rows
+    (fan_extra_M, numbered as in fan_curves)."""
+    active = [r for r in table['rows'] if r['active']]
+    return ([(f'fan_{r["index"] + 1}', 'Fan %d' % (r['index'] + 1), 'channel %d' % (r['index'] + 1), r,
+              dict(fan_channel=r['index'], fan_rows=[r['index']])) for r in active] +
+            [(f'fan_extra_{m}', f'Extra fan curve {m}', f'extra curve {m}', c, dict(fan_rows=[r['index'] for r in active]))
+             for m, c in enumerate(table['extra_curves'], 1)])
+
+
+def fan_zero_rpm_notes(parser, table, rows, state, template_note):
+    """(reason notes, descriptor attributes) of an offered fan_zero_rpm switch, rows being the written channel
+    entries. A channel entry that keeps bit 4 clear gets bits 1 and 2 in a form no shipped image runs
+    (channel_bit4_clear); an image that stores zero RPM off gets the blower risks unless the template's note
+    gives them; an enabled entry whose pair has the same lower and upper temperature has no hysteresis
+    (zero_rpm_flat_pairs: the lower field to set below it, and the temperature)."""
+    b = parser.blob
+    bit4 = any(not b[r['policy_offset'] + FAN_POLICY_FLAG_OFFSET] & 0x10 for r in rows)
+    flat = []
+    for prefix, _, owner, entry, _ in fan_stop_owners(table):
+        low, high = struct.unpack_from('<HH', b, entry['policy_offset'] + 30)
+        if low == high and fan_stop_parameters(b, entry['policy_offset']):
+            flat.append((owner, f'{prefix}_zero_rpm_low_temp_c', low))
+    notes = ((FAN_ZERO_RPM_BIT4_NOTE if bit4 else '') + template_note +
+             (FAN_ZERO_RPM_OFF_NOTE if state == 0 and not template_note else '') +
+             ''.join(FAN_ZERO_RPM_FLAT_NOTE.format(owner=owner, value=Decimal(low) / 32, key=key)
+                     for owner, key, low in flat))
+    return notes, {**({'channel_bit4_clear': True} if bit4 else {}),
+                   **({'zero_rpm_flat_pairs': [dict(field=key, temp_c=low / 32) for _, key, low in flat]}
+                      if flat else {})}
+
+
+def fan_stop_template(parser, entries, state):
+    """Companion sets of fan_zero_rpm on a board in FAN_STOP_TEMPLATES, or None.
+
+    The written entries must be the template's, with its bytes 0..1 and bytes 47..49 = 0. On the stock
+    image (state 0, every block unset) 1 also writes the template block of each entry; on a copy with
+    both bits set and the template's bytes 34..46 (its pair may have been edited) 0 writes the unset
+    block back, which restores the stock bytes. Writes go to every duplicate image chain.
+    """
+    donor, template, _ = FAN_STOP_TEMPLATES.get(parser.legacy['device'], (None, None, None))
+    b = parser.blob
+    if (template is None or sorted(e['index'] for e in entries) != sorted(template) or
+            any(b[e['policy_offset']:e['policy_offset'] + 2] != template[e['index']][0] or
+                b[e['policy_offset'] + 47:e['policy_offset'] + 50] != bytes(3) for e in entries)):
+        return None
+    start, size = FAN_STOP_BLOCK
+    blocks = {e['index']: b[e['policy_offset'] + start:e['policy_offset'] + start + size] for e in entries}
+
+    def writes(block):
+        return tuple((at, block(e['index'])) for e in entries
+                     for at in chain_copies(parser, [e['policy_offset'] + start], size)[0])
+    if state == 0 and all(block == FAN_STOP_UNSET for block in blocks.values()):
+        return ((1, writes(lambda i: template[i][1])),)
+    if state == 1 and all(blocks[e['index']][4:] == template[e['index']][1][4:] and
+                          fan_stop_parameters(b, e['policy_offset']) for e in entries):
+        return ((0, writes(lambda i: FAN_STOP_UNSET)),)
+    return None
+
+
+def fan_stop_template_info(parser, companion):
+    """(reason note, descriptor attribute fan_stop_template) of a template companion; ('', None) without."""
+    if not companion:
+        return '', None
+    donor, template, _ = FAN_STOP_TEMPLATES[parser.legacy['device']]
+    pairs = [struct.unpack('<HH', template[i][1][:4]) for i in sorted(template)]
+    shown = [f'{Decimal(low) / 32}/{Decimal(high) / 32}' for low, high in pairs]
+    where = 'every enabled entry' + (' in every image chain' if isinstance(parser, TableRom) else '')
+    note = FAN_STOP_TEMPLATE_NOTE.format(donor=donor, where=where,
+                                         pairs=', '.join(shown[:-1]) + ' and ' + shown[-1])
+    return note, dict(donor=donor, state='stock' if companion[0][0] == 1 else 'copy',
+                      entries=[dict(entry=i, low_c=low / 32, high_c=high / 32)
+                               for i, (low, high) in zip(sorted(template), pairs)])
 
 
 @registry.register
@@ -2384,9 +2735,14 @@ def fan_zero_rpm(image, parser):
     the bits on the stored channel entries a larger channel count may enable (fan_layouts), as the
     PWM frequency does, so the count and the flag change in either order; such an entry whose bits
     differ leaves the field read-only. The value 1 is offered only when every written entry stores
-    fan-stop parameters (fan_stop_parameters). Each entry keeps its other flag bits. Opt-in; setting 1
-    is hardware-tested on one HP Omen RTX 5090 (FAN_ZERO_RPM_HARDWARE).
+    fan-stop parameters (fan_stop_parameters) in a block GSP-RM accepts (fan_stop_accepted), or a
+    reviewed template supplies them: on the RTX PRO 6000 Max-Q, 1 also writes the Workstation blocks
+    (fan_stop_template) and 0 on such a copy the stock zeros and 0xff. Each entry keeps its other flag
+    bits. Opt-in; setting 1 is hardware-tested on one HP Omen RTX 5090 (FAN_ZERO_RPM_HARDWARE). Ada and
+    Ampere: legacy_fan_zero_rpm.
     """
+    if isinstance(parser, TableRom) and not turing(parser):
+        return legacy_fan_zero_rpm(image, parser)
     if not isinstance(parser, BlackwellRom):
         return []
     table = parser.fan_coolers()
@@ -2412,32 +2768,176 @@ def fan_zero_rpm(image, parser):
     elif any(r['flag_byte'] & FAN_ZERO_RPM_BITS != FAN_ZERO_RPM_BITS * state for r in later):
         reason = ('read-only: a stored fan channel entry that a larger channel count enables differs from the '
                   'enabled entries in bits 1 and 2 of its flag byte (0x32)')
-    elif state == 0 and not all(fan_stop_parameters(parser.blob, e['policy_offset']) for e in entries):
-        reason = ('read-only: a fan policy entry stores no fan-stop parameters (no two rising nonzero temperatures '
-                  'at bytes 30..33, or 0xff at byte 46, as on the RTX PRO 6000 Max-Q), so 1 is not offered')
     else:
         reason = None
+    companion = fan_stop_template(parser, entries, state) if reason is None and not later else None
+    if (reason is None and not companion and state == 0 and
+            not all(fan_stop_parameters(parser.blob, e['policy_offset']) and
+                    fan_stop_accepted(parser.blob, e['policy_offset']) for e in entries)):
+        reason = ('read-only: a fan policy entry stores no fan-stop parameters (two nonzero temperatures at bytes '
+                  '30..33, the upper at least the lower, and byte 46 other than 0xff) in a block GSP-RM accepts with '
+                  'bit 1 set (word 44 nonzero, dword 38 >= dword 34 and word 42 nonzero), and no reviewed template '
+                  'applies (the one for the RTX PRO 6000 Max-Q needs its stock entries), so 1 is not offered')
     editable = reason is None and can_edit(image, parser)
     flags = [e['flag_byte'] for e in entries]
     layout = ((0, tuple(bytes((b & ~FAN_ZERO_RPM_BITS,)) for b in flags)),
               (1, tuple(bytes((b | FAN_ZERO_RPM_BITS,)) for b in flags)))
+    note, template = fan_stop_template_info(parser, companion if editable else None)
+    notes, extra = fan_zero_rpm_notes(parser, table, table['rows'][:most], state, note) if reason is None else ('', {})
     return [field('fan_zero_rpm', 'Fan zero RPM (fans may stand still at low temperature)', 'flag', state,
                   0 if editable else None, 1 if editable else None, editable,
                   [dict(FAN_ZERO_RPM_FIRMWARE_EVIDENCE), dict(FAN_ZERO_RPM_CORPUS_EVIDENCE),
                    dict(FAN_ZERO_RPM_DRIVER_EVIDENCE), dict(FAN_ZERO_RPM_OWNER_EVIDENCE),
-                   dict(FAN_ZERO_RPM_HARDWARE)],
+                   dict(FAN_ZERO_RPM_HARDWARE)] + ([dict(FAN_STOP_TEMPLATE_EVIDENCE)] if template else []),
                   offsets=[e['flag_offset'] for e in entries] if editable else (),
                   encoding='<B' if editable else '', scale=1, layout=layout if editable else (),
+                  companion=companion if editable and companion else (),
                   writable_status=None if editable else 'unsupported', experimental=True, opt_in=True,
                   value_semantics='stored-fan-zero-rpm', fan_entries=[e['index'] for e in entries],
-                  reason=reason or 'experimental, opt-in: bits 1 and 2 of the flag byte (0x32) of every enabled fan '
-                                   'policy entry (the channel entries and the enabled curves past them), both set '
-                                   '(1) or both clear (0); GSP-RM decodes them as two separate booleans; in the '
-                                   'corpus every GeForce GB20x image sets both and every RTX PRO image clears '
-                                   'both; each entry keeps its other flag bits, and the stored channel entries a '
-                                   'larger channel count enables take the same bits; hardware-tested on one HP '
-                                   'Omen RTX 5090: with 1 the fans stood still at idle and started under load; '
-                                   'other boards and setting 0 not hardware-tested')]
+                  **({'fan_stop_template': template} if template else {}), **(extra if editable else {}),
+                  reason=reason or ('experimental, opt-in: bits 1 and 2 of the flag byte (0x32) of every enabled fan '
+                                    'policy entry (the channel entries and the enabled curves past them), both set '
+                                    '(1) or both clear (0); GSP-RM decodes them as two separate booleans; in the '
+                                    'corpus every GeForce GB20x image sets both and every RTX PRO image clears '
+                                    'both; each entry keeps its other flag bits, and the stored channel entries a '
+                                    'larger channel count enables take the same bits; hardware-tested on one HP '
+                                    'Omen RTX 5090: with 1 the fans stood still at idle and started under load; '
+                                    'other boards and setting 0 not hardware-tested' + notes +
+                                    FAN_ZERO_RPM_MANUAL_NOTE))]
+
+
+LEGACY_FAN_ZERO_RPM_FIRMWARE_EVIDENCE = {
+    'kind': 'static-firmware-analysis',
+    'source': 'GSP-RM firmware 615.78.08 (gsp_ga10x.bin): fan policy table dispatch 0x1b0ab80, v0x20 entry parser '
+              '0x11cb000, policy validator 0x1b20c44, policy control GET/SET and the per-chip initializers of the '
+              'fan capability byte',
+    'observation': 'the version byte of the policy table selects the parser, with no chip check above it, so Ada '
+                   'and Ampere v0x20 tables take the GB20x parser: bits 1 and 2 of byte 0x32 become two booleans '
+                   'next to the block at bytes 30..46; the validator accepts bit 1 only with the chip capability '
+                   'byte set (the GA102-GA107 and AD102-AD107 initializers set it, as the GB202-GB207 one does), '
+                   'upper >= lower, word 44 nonzero and, unless byte 46 is 0xff, dword 38 >= dword 34 and word 42 '
+                   'nonzero, and it refuses bit 2 without bit 1; the policy control reads and writes bit 2 only, so '
+                   'bit 1 most likely marks the entry as supporting fan stop and bit 2 sets whether it is on by '
+                   'default', 'set_tested': False}
+ADA_FAN_ZERO_RPM_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'Ada VBIOS corpus',
+    'observation': 'every GeForce image sets both bits on every enabled policy entry (0x17 on the channel entries, '
+                   '0x07 on the extra curves), the same in both image chains; the RTX 4000, 4000 SFF, 4500 and 2000 '
+                   'Ada store blocks GSP-RM accepts with both bits clear (0x11/0x01); the RTX 5000 and 6000 Ada '
+                   'store zeros and 0xff with both bits clear (0x01); no image sets bit 2 alone'}
+AMPERE_FAN_ZERO_RPM_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'Ampere VBIOS corpus',
+    'observation': 'most GeForce images set both bits on every enabled policy entry (0x17/0x07), the same in every '
+                   'image chain; an RTX 3080, an RTX 3060 Ti and the RTX 3050 store blocks GSP-RM accepts with both '
+                   'bits clear (0x11/0x01); an RTX 3090, an RTX 3070 and the RTX 3060 8GB set bit 1 alone '
+                   '(0x13/0x03), so GSP-RM checks their blocks at every boot; one RTX 3060 stores 0x13 on its '
+                   'channel entry and 0x07 on its extra curve; the RTX A2000 stores no usable block on its third '
+                   'entry (zeros, word 44 = 0); the RTX A1000, A4000, A4500, A5000, A5500 and A6000 store zeros and '
+                   '0xff with both bits clear (0x01)'}
+FAN_ZERO_RPM_MIXED_REASON = ('read-only: every enabled fan policy entry sets bit 1 of its flag byte (0x32) but only '
+                             'some set bit 2, so zero RPM is on for some entries and off for others (one RTX 3060 '
+                             'stores 0x13 on its channel entry and 0x07 on its extra curve); neither 0 nor 1 '
+                             'describes that, and the editor changes neither')
+FAN_ZERO_RPM_NO_BLOCK_REASON = ('read-only: a fan policy entry stores no fan-stop block GSP-RM accepts (a nonzero '
+                                'pair at bytes 30..33 with the upper at least the lower, word 44 nonzero and, with '
+                                'byte 46 other than 0xff, dword 38 >= dword 34 and word 42 nonzero; the third entry of '
+                                'the RTX A2000 stores zeros there) and no reviewed template applies, so 1 is not '
+                                'offered')
+
+
+def legacy_fan_stop(parser):
+    """Ada and Ampere: what fan_zero_rpm reads and offers (legacy_fan_zero_rpm), or None without a
+    GPU-driven fan. A dict of the fan `table`, the written `entries` (the enabled ones and the stored
+    channel entries a larger channel count enables, `later`), the written channel entries (`rows`), their
+    `flags`, the `state` (1, 0 or None), `mixed`, the read-only `reason` (None when the field is offered)
+    and the template `companion`."""
+    table = parser.fan_coolers()
+    if table is None:
+        return None
+    active = [r for r in table['rows'] if r['active']]
+    enabled = active + list(table['extra_curves'])
+    if not enabled:
+        return None
+    b = parser.blob
+    shared = len({r['pwm_frequency_hz'] for r in active}) == 1 and all(b[r['offset'] + 13] == 0 for r in active)
+    most = fan_layouts(parser, table)[1] if shared else len(active)
+    later = table['rows'][len(active):most]
+    entries = table['rows'][:most] + list(table['extra_curves'])
+    flag = lambda e: b[e['policy_offset'] + FAN_POLICY_FLAG_OFFSET]
+    forms = {flag(e) & FAN_ZERO_RPM_BITS for e in enabled}
+    state = 1 if forms == {6} else 0 if forms in ({0}, {2}) else None
+    if any(b[at] != flag(e) for e in entries
+           for at in parser.copy_offsets(e['policy_offset'] + FAN_POLICY_FLAG_OFFSET, 1)):
+        reason = 'read-only: the image chains disagree about the fan policy flag bytes (0x32)'
+    elif 4 in forms:
+        reason = ('read-only: an enabled fan policy entry sets bit 2 of its flag byte (0x32) without bit 1, which '
+                  'GSP-RM refuses')
+    elif forms == {2, 6}:
+        reason = FAN_ZERO_RPM_MIXED_REASON
+    elif state is None:
+        reason = 'read-only: the enabled fan policy entries disagree about bit 1 of their flag byte (0x32)'
+    elif any(flag(r) & FAN_ZERO_RPM_BITS not in forms for r in later):
+        reason = ('read-only: a stored fan channel entry that a larger channel count enables differs from the '
+                  'enabled entries in bits 1 and 2 of its flag byte (0x32)')
+    else:
+        reason = None
+    companion = fan_stop_template(parser, entries, state) if reason is None and not later else None
+    # Bit 1 already set means GSP-RM checks the entry's block at every boot.
+    if reason is None and state == 0 and not companion and not all(
+            flag(e) & 2 or fan_stop_parameters(b, e['policy_offset']) and fan_stop_accepted(b, e['policy_offset'])
+            for e in entries):
+        reason = FAN_ZERO_RPM_NO_BLOCK_REASON
+    return dict(table=table, entries=entries, later=later, rows=table['rows'][:most], flags=[flag(e) for e in entries],
+                state=state, mixed=forms == {2, 6}, reason=reason, companion=companion)
+
+
+def legacy_fan_zero_rpm(image, parser):
+    """Ada and Ampere: bits 1|2 of the flag byte (0x32) of every enabled fan policy entry, in every chain.
+
+    GSP-RM 615.78.08 runs the GB20x parser, validator and chip capability on these v0x20 tables
+    (LEGACY_FAN_ZERO_RPM_FIRMWARE_EVIDENCE): bit 1 most likely says the entry supports fan stop, which
+    only the VBIOS sets, and bit 2 its default; GSP-RM refuses bit 2 without bit 1. The field reads 1
+    when every written entry sets both bits and 0 when none sets bit 2 and bit 1 is the same on all of
+    them (both clear, or bit 1 alone as some Ampere boards store it). Entries that set bit 1 everywhere
+    and bit 2 on some only (an RTX 3060) read as mixed: current None with flag_state 'mixed', read-only.
+    So do entries that disagree about bit 1 or set bit 2 alone, and chains that disagree. 1 sets both
+    bits and is offered where every written entry already sets bit 1 (GSP-RM checks its block at every
+    boot), stores a block GSP-RM accepts (fan_stop_accepted) or a reviewed template supplies one
+    (fan_stop_template). 0 clears both bits on an image that reads 1 and bit 2 alone otherwise, so a
+    stock image comes back byte for byte; a copy saved at 1 of a board that stores bit 1 alone comes
+    back with both bits clear. Each entry keeps its other flag bits. Opt-in; not hardware-tested.
+    """
+    info = legacy_fan_stop(parser)
+    if info is None:
+        return []
+    entries, state, reason, companion = info['entries'], info['state'], info['reason'], info['companion']
+    editable = reason is None and can_edit(image, parser)
+    clear = 0xFF ^ (FAN_ZERO_RPM_BITS if state == 1 else 4)
+    layout = ((0, tuple(bytes((f & clear,)) for f in info['flags'])),
+              (1, tuple(bytes((f | FAN_ZERO_RPM_BITS,)) for f in info['flags'])))
+    offsets, layout = chain_copies(parser, [e['policy_offset'] + FAN_POLICY_FLAG_OFFSET for e in entries], 1, layout)
+    note, template = fan_stop_template_info(parser, companion if editable else None)
+    notes, extra = (fan_zero_rpm_notes(parser, info['table'], info['rows'], state, note) if reason is None else
+                    ('', {}))
+    evidence = [LEGACY_FAN_ZERO_RPM_FIRMWARE_EVIDENCE,
+                ADA_FAN_ZERO_RPM_CORPUS_EVIDENCE if ada(parser) else AMPERE_FAN_ZERO_RPM_CORPUS_EVIDENCE]
+    evidence += [FAN_STOP_TEMPLATES[parser.legacy['device']][2]] if template else []
+    return [field('fan_zero_rpm', 'Fan zero RPM (fans may stand still at low temperature)', 'flag', state,
+                  0 if editable else None, 1 if editable else None, editable, [dict(e) for e in evidence],
+                  offsets=offsets if editable else (), encoding='<B' if editable else '', scale=1,
+                  layout=layout if editable else (), companion=companion if editable and companion else (),
+                  writable_status=None if editable else 'unsupported', experimental=True, opt_in=True,
+                  value_semantics='stored-fan-zero-rpm', fan_entries=[e['index'] for e in entries],
+                  **({'flag_state': 'mixed'} if info['mixed'] else {}),
+                  **({'fan_stop_template': template} if template else {}), **(extra if editable else {}),
+                  reason=reason or ('experimental, opt-in: bits 1 and 2 of the flag byte (0x32) of every enabled fan '
+                                    'policy entry (the channel entries and the enabled curves past them), in every '
+                                    'image chain; GSP-RM reads bit 1 as fan stop supported and bit 2 as on by '
+                                    'default (inferred); 1 sets both, 0 clears bit 2, and bit 1 too on an image '
+                                    'where both are set, so a stock image comes back byte for byte (a copy saved '
+                                    'at 1 of a board that stores bit 1 alone comes back with both clear); each '
+                                    'entry keeps its other flag bits; not hardware-tested on Ada or Ampere' + notes +
+                                    FAN_ZERO_RPM_MANUAL_NOTE))]
 
 
 FAN_ZERO_RPM_TEMPS_FIRMWARE_EVIDENCE = {
@@ -2488,6 +2988,9 @@ FAN_ZERO_RPM_TEMPS_HARDWARE = {
                 '60 C the fans stayed at 0 RPM at 59 C during video playback; which entries were edited and whether '
                 'the lower temperature changed were not reported, and a start at 60 C was not observed'}
 FAN_ZERO_RPM_TEMP_CEILING = 110 * 32  # an editor limit, as for the curve temperatures
+FAN_ZERO_RPM_TEMP_FLOOR = 1  # 1/32 C: the lower stays above 0 C, so an upper never goes below 2/32 C
+FAN_ZERO_RPM_TEMPS_OFF_REASON = ('read-only: fan_zero_rpm is read-only on this image (see its reason), so the editor '
+                                 'leaves the zero RPM temperatures as stored')
 
 
 @registry.register
@@ -2499,58 +3002,67 @@ def fan_zero_rpm_temperatures(image, parser):
     start again above the upper one (on one RTX 5080 a raised upper value kept them stopped).
     Each active channel entry and each enabled curve past the cooler rows (the extra curves,
     numbered as in fan_curves) gets its own pair of fields, offered only where it stores
-    parameters (fan_stop_parameters): none is synthesized for zeros (RTX PRO 6000 Max-Q, RTX
-    5000/6000 Ada, most RTX A-series). The pair stays rising, from 1/32 C up to 110 C (an editor
-    limit); its two fields form one ordering group, so they can cross the stored values
-    together. On GB20x the fields do not depend on the flag bits. Ada and Ampere have no flag
-    field, so their pairs are editable only where every enabled entry sets both bits, as the
-    GeForce Ada images and most GeForce Ampere ones do; writes go to every duplicate image
-    chain. Turing images store no pair
-    (zeros and 0xff at the same place in their 54-byte entries) and get no field. Opt-in.
+    parameters (fan_stop_parameters): none is synthesized for zeros (the stock RTX PRO 6000
+    Max-Q, RTX 5000/6000 Ada and RTX A-series; a copy with the fan_zero_rpm template has them).
+    An edit keeps the pair rising, from 1/32 C; the upper stays at most point 1 of the same
+    entry's fan curve (bytes 18..19, the start temperature rule edit() also keeps on every entry
+    with both bits set) and 110 C (an editor limit). Where the stored lower is at or above point 1
+    no upper is both above it and at most point 1, so the upper's minimum is what an edit that
+    also lowers the lower allows (2/32 C) and edit() refuses an upper left at or below the lower.
+    A stored pair with the same lower and upper (the RTX 3060 8GB) shows as stored. Every zero
+    RPM and curve temperature is in one ordering group, so a pair and point 1 can cross the
+    stored values together. The fields are editable where the entry stores a block GSP-RM
+    accepts (fan_stop_accepted): on GB20x whatever the flag bits, on Ada and Ampere where
+    fan_zero_rpm is offered (legacy_fan_stop), whatever the bits, so the upper can move in the
+    edit that turns zero RPM on; writes go to every duplicate image chain. Turing images store no
+    pair (zeros and 0xff at the same place in their 54-byte entries) and get no field. Opt-in.
     """
     if not isinstance(parser, (BlackwellRom, TableRom)) or turing(parser):
         return []
     table = parser.fan_coolers()
     if table is None:
         return []
-    entries = [(f'fan_{r["index"] + 1}', 'Fan %d' % (r['index'] + 1), 'channel %d' % (r['index'] + 1), r,
-                dict(fan_channel=r['index'], fan_rows=[r['index']]))
-               for r in table['rows'] if r['active']]
-    entries += [(f'fan_extra_{m}', f'Extra fan curve {m}', f'extra curve {m}', c,
-                 dict(fan_rows=[r['index'] for r in table['rows'] if r['active']]))
-                for m, c in enumerate(table['extra_curves'], 1)]
-    blackwell = isinstance(parser, BlackwellRom)
-    if blackwell:
+    if isinstance(parser, BlackwellRom):
         evidence = [FAN_ZERO_RPM_TEMPS_FIRMWARE_EVIDENCE, FAN_ZERO_RPM_TEMPS_CORPUS_EVIDENCE,
                     FAN_ZERO_RPM_TEMPS_HARDWARE]
         tested = ('hardware-tested on one RTX 5080: with the upper raised to 60 C the fans stayed stopped at 59 C; '
                   'the lower value and other boards not hardware-tested')
-        flagged = True
+        offered = True
     else:
         evidence = [FAN_ZERO_RPM_TEMPS_V2_EVIDENCE, FAN_ZERO_RPM_TEMPS_FIRMWARE_EVIDENCE,
                     ADA_FAN_ZERO_RPM_TEMPS_CORPUS_EVIDENCE if ada(parser) else AMPERE_FAN_ZERO_RPM_TEMPS_CORPUS_EVIDENCE]
         tested = 'not hardware-tested on Ada or Ampere'
-        flags = [parser.blob[e['policy_offset'] + FAN_POLICY_FLAG_OFFSET] for *_, e, _ in entries]
-        flagged = all(f & FAN_ZERO_RPM_BITS == FAN_ZERO_RPM_BITS for f in flags)
+        switch = legacy_fan_stop(parser)
+        offered = switch is not None and switch['reason'] is None
     writable = can_edit(image, parser)
     result = []
-    for prefix, name, owner, entry, extra in entries:
+    for prefix, name, owner, entry, extra in fan_stop_owners(table):
         at = entry['policy_offset'] + 30
         if not fan_stop_parameters(parser.blob, entry['policy_offset']):
             continue
         low, high = struct.unpack_from('<HH', parser.blob, at)
-        inside = high <= FAN_ZERO_RPM_TEMP_CEILING and flagged
+        first = struct.unpack_from('<H', parser.blob, entry['policy_offset'] + 18)[0]  # curve point 1
+        accepted = fan_stop_accepted(parser.blob, entry['policy_offset'])
+        inside = high <= FAN_ZERO_RPM_TEMP_CEILING and offered and accepted
         editable = inside and writable
+        top = min(first, FAN_ZERO_RPM_TEMP_CEILING)
+        # A lower at or above point 1 leaves the upper no value alone: its minimum is what an edit that also
+        # lowers the lower allows, and edit() keeps the pair rising.
+        stuck = low >= top
+        notes = {'low': '; stored equal to the upper, which leaves no hysteresis: with zero RPM on the fans may stop '
+                        'and start often around it, so set it a few degrees below' if low == high else '',
+                 'high': '; the stored lower is at or above point 1, so the upper comes down to point 1 only with the '
+                         'lower set below it in the same edit' if stuck else ''}
         for side, word, current, lo, hi, offset in (
-                ('low', 'lower', low, 1, high - 1, at), ('high', 'upper', high, low + 1, FAN_ZERO_RPM_TEMP_CEILING,
-                                                           at + 2)):
+                ('low', 'lower', low, FAN_ZERO_RPM_TEMP_FLOOR, high - 1, at),
+                ('high', 'upper', high, FAN_ZERO_RPM_TEMP_FLOOR + 1 if stuck else low + 1, top, at + 2)):
             offsets, _ = chain_copies(parser, [offset], 2)
             result.append(field(
                 f'{prefix}_zero_rpm_{side}_temp_c', f'{name} zero RPM {word} temperature', 'C', current / 32,
                 lo / 32, hi / 32, editable, [dict(e) for e in evidence],
                 offsets=offsets if editable else (), encoding='<H' if editable else '', scale=32,
                 stored_units='1/32 C', experimental=True, opt_in=True,
-                ordering_group=f'fan-zero-rpm-{prefix}' if editable else None,
+                ordering_group='fan-temperature' if editable else None,
                 encoding_bounds=(0, FAN_ZERO_RPM_TEMP_CEILING / 32) if editable else None,
                 writable_status=None if editable else 'unsupported',
                 value_semantics=f'stored-fan-zero-rpm-{word}-temperature', fan_policy=entry['index'], **extra,
@@ -2558,10 +3070,11 @@ def fan_zero_rpm_temperatures(image, parser):
                        'policy entry, which the driver reads with the zero RPM flag bits; idle fans most likely stop '
                        'below the lower and start again above the upper one, and other fan policies and sensors may '
                        'still decide what the fans do; the lower stays above 0 C and below the upper, the upper at '
-                       f'most 110 C (an editor limit); {tested}' if inside else
-                       'read-only: the zero RPM flag bits (1 and 2 of byte 0x32) are not both set on every enabled '
-                       'fan policy entry of this image, so the pair may be unused; the editor does not change those '
-                       'bits on Ada and Ampere' if not flagged else
+                       'most point 1 of the same entry\'s fan curve and 110 C (an editor limit), and with zero RPM on '
+                       f'an edit that leaves the upper above point 1 is refused; {tested}{notes[side]}' if inside else
+                       FAN_ZERO_RPM_TEMPS_OFF_REASON if not offered else
+                       f'read-only: the {owner} fan policy entry stores a fan-stop block GSP-RM would refuse with '
+                       'bit 1 set (word 44 or word 42 zero, or dword 38 below dword 34)' if not accepted else
                        f'read-only: the upper temperature of the {owner} fan policy entry is above 110 C, outside '
                        'the reviewed shape'))
     return result

@@ -187,6 +187,47 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.controller.stage({'nvvdd_vmin_mv': '600', 'gpc_curve_offset_mhz': '0'}).changes,
                          {'nvvdd_vmin_mv': '600'})
 
+    def test_a_per_chip_vmin_stages_a_value_and_its_switch_goes_back(self):
+        from nvidia_vbios.gui.presentation import per_chip, read_only_reason, vmin_tree_notes
+        from test_rail_vmin import blackwell_tree
+        source = self.root / 'tree.rom'
+        source.write_bytes(blackwell_tree())
+        doc = self.controller.open(source)
+        fields = {f['key']: f for f in controls(doc.report)}
+        field, switch = fields['msvdd_vmin_mv'], fields['msvdd_vmin_fixed']
+        self.assertTrue(per_chip(field))
+        self.assertFalse(per_chip(fields['nvvdd_vmin_mv']))
+        notes = vmin_tree_notes(field, 'blackwell-gb20x'), vmin_tree_notes(field, 'blackwell-gb20x', 'es')
+        self.assertIn('set per chip from fused values', notes[0][0])
+        self.assertIn('round VMIN up to a 5 mV step', notes[0][0])
+        self.assertIn('a pasos de 5 mV', notes[1][0])
+        # The 5 mV step is the Blackwell driver's: an Ampere compare root's note leaves it out.
+        self.assertNotIn('5 mV', vmin_tree_notes(field, 'ampere')[0])
+        self.assertIn('idle and light-load states unstable', notes[0][1])
+        self.assertIn('se fija por chip', notes[1][0])
+        self.assertIn('volver inestables el reposo y las cargas ligeras', notes[1][1])
+        self.assertEqual(vmin_tree_notes(switch, 'blackwell-gb20x'), [])
+        self.assertEqual(read_only_reason(switch), 'Off: VMIN is the stock value of each chip. Type a value in the '
+                                                   'minimum voltage row to fix it.')
+        self.assertIn('Desactivado', read_only_reason(switch, 'es'))
+        doc = self.controller.stage({'msvdd_vmin_mv': '665'})
+        self.assertEqual(doc.changes, {'msvdd_vmin_mv': '665'})
+        output = self.root / 'pinned.rom'
+        self.controller.save(output)
+        doc = self.controller.open(output)
+        fields = {f['key']: f for f in controls(doc.report)}
+        self.assertFalse(per_chip(fields['msvdd_vmin_mv']))
+        self.assertEqual(vmin_tree_notes(fields['msvdd_vmin_fixed'], 'blackwell-gb20x')[0][:41],
+                         'On while the value above fixes VMIN. Off ')
+        with self.assertRaises(VbiosError) as exc:
+            self.controller.stage({'msvdd_vmin_mv': '700', 'msvdd_vmin_fixed': '0'})
+        self.assertEqual(exc.exception.code, 'SEPARATE_EDIT_REQUIRED')
+        doc = self.controller.stage({'msvdd_vmin_fixed': '0'})
+        self.assertEqual(doc.proposal.blob, source.read_bytes())
+        from nvidia_vbios.gui.presentation import primary_preview
+        self.assertEqual({(a['key'], a['current'], b['current']) for a, b in primary_preview(doc)},
+                         {('msvdd_vmin_mv', 665, None), ('msvdd_vmin_fixed', 1, 0)})
+
     def test_a_fan_maximum_and_its_curve_points_lower_in_one_copy(self):
         from nvidia_vbios.rom import from_bytes
         from nvidia_vbios.rom.image import backend
@@ -871,6 +912,70 @@ class PresentationNumberTests(unittest.TestCase):
                 self.assertIn(explanation, hint)
                 self.assertIn(row_title(readonly, language)[0], hint)
                 self.assertNotIn(edit_instruction, hint)
+
+    def test_zero_rpm_mixed_state_reasons_and_notes(self):
+        from nvidia_vbios.gui.presentation import fan_stop_notes, read_only_reason, value_text, zero_rpm_channels_hint
+        from test_ada_fields import template_board, with_zero_rpm
+        from test_extended_fields import descriptors
+        from nvidia_vbios.rom import from_bytes
+        blob = synthetic_rom(copies=2, fans=2)
+        # Bit 2 on some entries only: no value, but a state the rows can show, and a translated reason.
+        mixed = descriptors(from_bytes(with_zero_rpm(with_zero_rpm(blob, flags=(0x13, 0x03)), flags=(0x17, 0x07),
+                                                     entries=(2,))))
+        flag, pair = mixed['fan_zero_rpm'], mixed['fan_1_zero_rpm_high_temp_c']
+        self.assertEqual([value_text(flag, None, language) for language in ('en', 'es')],
+                         ['Mixed (on for some fan entries)', 'Mixto (activado en algunas entradas de ventilador)'])
+        self.assertIn('on for some fan entries', read_only_reason(flag))
+        self.assertIn('activada en algunas entradas', read_only_reason(flag, 'es'))
+        self.assertEqual(read_only_reason(pair), 'Zero RPM is read-only in this ROM, so its thresholds stay as stored.')
+        self.assertIn('solo lectura', read_only_reason(pair, 'es'))
+        # A block GSP-RM refuses (the RTX A2000's third entry): translated as well.
+        refused = descriptors(from_bytes(with_zero_rpm(blob, flags=(0x11, 0x01), block=b'')))['fan_zero_rpm']
+        self.assertIn('RTX A2000', read_only_reason(refused))
+        self.assertIn('RTX A2000', read_only_reason(refused, 'es'))
+        # Notes under the switch: the values a template board takes and the blower risks, the flag form with bit 4
+        # clear, the untested note on Ada and Ampere, and the manual fan tool everywhere.
+        template = descriptors(from_bytes(template_board()))['fan_zero_rpm']
+        notes = fan_stop_notes(template, 'ampere')
+        self.assertEqual(len(notes), 4)
+        self.assertIn('the values NVIDIA stores on the RTX 3080 Ti Founders Edition ROM (zero RPM thresholds '
+                      '38.875/60, 50/72, 60/70 °C)', notes[0])
+        self.assertIn('No blower card ships with fan stop on. A stopped blower most likely moves no air', notes[1])
+        self.assertIn('Restarting a blower from 0 RPM is untested', notes[1])
+        self.assertNotIn('clamshell', ' '.join(notes))
+        self.assertIn('no shipped ROM runs zero RPM with; whether the fans stop is untested', notes[2])
+        self.assertEqual(notes[3], 'A fan tool that holds manual control keeps the fans running.')
+        spanish = fan_stop_notes(template, 'ampere', 'es')
+        self.assertIn('Lo más probable es que un blower parado', spanish[1])
+        self.assertIn('no está probado si los ventiladores se detienen', spanish[2])
+        ada = descriptors(from_bytes(with_zero_rpm(blob)))['fan_zero_rpm']
+        self.assertEqual(fan_stop_notes(ada, 'ada'), ['Not tested on hardware on Ada or Ampere cards.',
+                                                      'A fan tool that holds manual control keeps the fans running.'])
+        # A ROM that ships with zero RPM off: the risks on a card with a blower fan.
+        off = descriptors(from_bytes(with_zero_rpm(blob, flags=(0x11, 0x01))))['fan_zero_rpm']
+        notes = fan_stop_notes(off, 'ada')
+        self.assertEqual(len(notes), 3)
+        self.assertTrue(notes[0].startswith('This ROM ships with zero RPM off. If the card has a blower fan, a stopped '
+                                            'fan most likely moves no air through the card, memory and power stages '
+                                            'included'))
+        self.assertTrue(fan_stop_notes(off, 'ada', 'es')[0].startswith('Esta ROM viene de fábrica con la parada en '
+                                                                       'reposo desactivada'))
+        # An entry with the same lower and upper (the RTX 3060 8GB stores 40/40 C): no hysteresis.
+        flat = descriptors(from_bytes(with_zero_rpm(blob, flags=(0x13, 0x03),
+                                                    pairs=((40, 40), (40, 50), (53, 63), (60, 70)))))['fan_zero_rpm']
+        self.assertEqual(flat['zero_rpm_flat_pairs'], [{'field': 'fan_1_zero_rpm_low_temp_c', 'temp_c': 40.0}])
+        self.assertIn('"Fan 1 zero RPM lower threshold (advanced)" equals the upper threshold (40 °C): with zero RPM '
+                      'on there is no hysteresis', fan_stop_notes(flat, 'ampere')[1])
+        self.assertIn('Bájalo unos grados.', fan_stop_notes(flat, 'ampere', 'es')[1])
+        # GB20x: the synthetic image stores flag bytes 0 (zero RPM off, bit 4 clear on its channel entries).
+        blackwell = descriptors(from_bytes(synthetic_blackwell(fans=True)))['fan_zero_rpm']
+        self.assertEqual([note[:30] for note in fan_stop_notes(blackwell, 'blackwell')],
+                         ['This ROM ships with zero RPM o', 'With zero RPM on, the fan chan',
+                          'A fan tool that holds manual c'])
+        self.assertEqual(fan_stop_notes(flag, 'ampere'), [])          # read-only: the reason says it
+        # The hint for a fan channel count the start temperature rule refuses.
+        self.assertEqual([zero_rpm_channels_hint(v) for v in ('separate-edits', 'none', None)],
+                         ['zero_rpm_channels_hint', 'zero_rpm_channels_locked_hint', None])
 
     def test_flag_fields_read_on_and_off(self):
         from decimal import Decimal

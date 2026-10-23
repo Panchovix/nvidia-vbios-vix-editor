@@ -14,8 +14,10 @@ No board serial, complete-file size, table-address, or source-hash pins.
 import copy
 import hashlib
 import math
-from .structure import (dram_points, fan_curve, gpc_curve_slot, scan_images, image_chains, parse_bit, read,
-                        vfe_free_slot, vfe_range, vfe_referrers)
+import struct
+from .structure import (VFE_CRITERION_EQUATION, VFE_UNCLAMPED, dram_points, fan_curve, gpc_curve_slot, scan_images,
+                        image_chains, parse_bit, quadratic_span, read, vfe_clamp_state, vfe_free_slot, vfe_range,
+                        vfe_referrers, vfe_tree)
 from .errors import FormatError
 
 SOURCE = 'https://github.com/OE4T/linux-nvgpu/blob/patches-rel-36/drivers/gpu/nvgpu/include/nvgpu/bios.h'
@@ -82,6 +84,15 @@ ADA_ROLE_OFFSETS = (('REL', 4), ('ALT', 5), ('OV', 6), ('VMIN', 11))
 ADA_VMIN_OFFSET = 7
 # Bytes 0..3 of the V20 row hold the boot voltage; bytes 4..0x1e may select VFE equations.
 ADA_ROW_SELECTOR_BYTES = range(4, 0x1F)
+# VFE variable type of a fused input (nvgpu SINGLE_SENSED_FUSE): the input of a per-chip VMIN equation.
+VFE_FUSE_VARIABLE = 4
+# Ada and Ampere tables outside the VFE and rail tables that name VFE equations (TableRom.equation_index_names):
+# name -> BIT pointer, and per family the reviewed (version, header size, entry size).
+EQUATION_INDEX_POINTERS = {'clock programming': ('C', 0x0C), 'FLL': ('C', 0x10), 'voltage policy': ('P', 0x70)}
+EQUATION_INDEX_LAYOUTS = {
+    'ada': {'clock programming': (0x40, 8, 15), 'FLL': (0x10, 8, 16), 'voltage policy': (0x10, 5, 19)},
+    'ampere': {'clock programming': (0x40, 8, 13), 'FLL': (0x10, 7, 15), 'voltage policy': (0x10, 5, 17)},
+}
 # Clocks table (BIT C+8) v0x40 with the GV HAL (header byte 6 = 3). nvgpu fixes the
 # GV row order; each row is also gated by its usage (0 fixed, 1 master), the low
 # byte of its ordering word and its rail sub-entry type. NVD is named VID as on GB20x.
@@ -957,7 +968,10 @@ class TableRom:
 
         Ada links are u16: next = bytes 2 | 24 << 8 (0xffff = none); compare (3)
         children are bytes 15/16 | 19/20 << 8 and min/max (2) children bytes
-        11/12 | 15/16 << 8. Ampere links are the low bytes alone (0xff = none).
+        11/12 | 15/16 << 8. Ampere links are the low bytes alone (0xff = none). A
+        compare whose output byte 23 has bit 4 set also names its criterion
+        equation (u16 at bytes 11..12, every entry size; no Ada, Ampere or Turing
+        image of the corpus sets it).
         """
         b, refs = self.blob, set()
         size, width = self._equation_layout()
@@ -971,6 +985,8 @@ class TableRom:
             links = [e[2] | high(e, 24)]
             if e[0] == 3:
                 links += [e[15] | high(e, 19), e[16] | high(e, 20)]
+                if e[23] & VFE_CRITERION_EQUATION:
+                    links.append(e[11] | e[12] << 8)
             elif e[0] == 2:
                 links += [e[11] | high(e, 15), e[12] | high(e, 16)]
             refs.update(link for link in links if link != (1 << 8 * width) - 1)
@@ -1171,6 +1187,140 @@ class TableRom:
                     constant_uv=read(b, '<f', base + size * referrer + 11)[0], memory_mhz=kept,
                     idle_memory_mhz=other[0])
 
+    def equation_index_names(self):
+        """Ada and Ampere: VFE equation index -> [table] for the tables outside the VFE and rail tables that name
+        equations, read in the primary chain (integrity requires identical chains) at their reviewed layouts
+        (EQUATION_INDEX_LAYOUTS), each as a superset where the index bytes are not pinned down:
+
+        - clock programming (C+0x0c): entry bytes 3 and 4 (Ada: | bytes 13 and 14 << 8), the VF equation
+          the GPC curve reads and the byte after it, and every byte of the VF sub-entries (the last
+          count x size bytes of an entry), alone and with the next one as u16;
+        - FLL (C+0x10, nvgpu fll_descriptor 1.0): header byte 6, the frequency margin equation (Ada: |
+          byte 7 << 8), and entry byte 9, the minimum frequency equation (Ada: also | byte 10 << 8 and |
+          byte 15 << 8);
+        - voltage policy (P+0x70): the four param0 bytes of every entry but a single-rail one (type 1,
+          which names a voltage domain only), alone and as u16 pairs: nvgpu reads split-rail delta
+          equations there.
+
+        An absent table names nothing; FormatError when a table is not at its reviewed layout.
+        """
+        if self.family not in EQUATION_INDEX_LAYOUTS:
+            raise FormatError('tables naming VFE equations are reviewed on Ada and Ampere only')
+        b, names, ada = self.blob, {}, self.family == 'ada'
+
+        def name(index, table):
+            names.setdefault(index, []).append(table)
+        for table, (token, pointer) in EQUATION_INDEX_POINTERS.items():
+            entry = self.tokens.get(token)
+            if entry is None or pointer + 4 > entry['size'] or not read(b, '<I', entry['data'] + pointer)[0]:
+                continue
+            at = self.pointer(token, pointer)
+            version, header, size = EQUATION_INDEX_LAYOUTS[self.family][table]
+            if tuple(b[at:at + 3]) != (version, header, size):
+                raise FormatError(f'the {table} table ({token}+{pointer:#x}) has an unreviewed layout')
+            count = b[at + 3]
+            stride, vf = size, 0
+            if table == 'clock programming':
+                c1, s1, c2, s2 = b[at + 4:at + 8]
+                stride, vf = size + c1 * s1 + c2 * s2, c2 * s2
+            self.owner(at, header + stride * count)
+            if table == 'FLL':
+                name(b[at + 6] | (b[at + 7] << 8 if ada else 0), table)
+            for i in range(count):
+                e = at + header + stride * i
+                if table == 'clock programming':
+                    for k in (3, 4):
+                        name(b[e + k] | (b[e + k + 10] << 8 if ada else 0), table)
+                    sub = b[e + stride - vf:e + stride]
+                    for k in range(vf):
+                        name(sub[k], table)
+                        if k + 1 < vf:
+                            name(sub[k] | sub[k + 1] << 8, table)
+                elif table == 'FLL':
+                    name(b[e + 9], table)
+                    if ada:
+                        name(b[e + 9] | b[e + 10] << 8, table)
+                        name(b[e + 9] | b[e + 15] << 8, table)
+                elif b[e] != 1:
+                    for k in range(1, 5):
+                        name(b[e + k], table)
+                        if k < 4:
+                            name(b[e + k] | b[e + k + 1] << 8, table)
+        return names
+
+    def _vmin_tree(self, rails, row, base, count, selector, refs):
+        """Ada and Ampere: the clamp state of a VMIN equation (row byte 7) that a fixed value can pin and the stock
+        bytes can restore, a diagnostic string for such an equation that cannot take it, or None for another shape.
+
+        Two shapes, as GB20x BlackwellRom.vmin_tree:
+        - a min/max (2) or compare (3) root with a voltage output (byte 23 = 2, or 0x12 on a compare) and no
+          next link, whose clamp is VFE_UNCLAMPED ('stock') or pins a whole uV ('pinned'); the compare roots
+          of 13 GA104/GA106 images pick one chain per fused bin, each a base value plus fuse, temperature
+          and binning terms;
+        - a quadratic (1) voltage equation on a fused input whose own range over that input's stored range
+          is not a single value (quadratic_span): 'stock' while its clamp is that range (the stock clamp of
+          ten Ada images, per-chip values such as 640 to 780 mV), 'pinned' when the clamp pins a whole uV.
+          The equations chained after it still add their terms (added_uv). Where the input's range is a
+          single value (RTX 2000 Ada, RTX 4080, ...) the clamp is the stock value itself and rail_vmin keeps
+          the pinned-clamp field.
+
+        Pinning the clamp (minimum = maximum = value) fixes the equation's value; the stock bytes
+        (stock_clamp) restore it. The equation must be referenced by no other equation (criterion
+        links included), selected by no other byte of any rail row (bytes 4 on) and named by no
+        table of equation_index_names. Returns state, kind, pinned_uv, nodes and stock_clamp.
+        """
+        b, size, width = self.blob, *self._equation_layout()
+        at = base + size * selector
+        kind, stock = {2: 'min-max', 3: 'compare', 1: 'per-chip'}.get(b[at]), None
+        link = b[at + 2] | (b[at + 24] << 8 if width == 2 else 0)
+        if kind in ('min-max', 'compare'):
+            outputs = (2,) if kind == 'min-max' else (2, 2 | VFE_CRITERION_EQUATION)
+            if b[at + 23] not in outputs:
+                return None
+            if link != (1 << 8 * width) - 1:
+                return 'is an equation tree with a next equation'
+        elif kind == 'per-chip':
+            vfe = self.pointer('P', 0x20)
+            variables, variable_size = vfe + b[vfe + 1], b[vfe + 2]
+            if b[at + 23] != 2 or b[at + 1] >= b[vfe + 3] or b[variables + variable_size * b[at + 1]] != \
+                    VFE_FUSE_VARIABLE:
+                return None
+            span = quadratic_span(b, at, variables, variable_size)
+            if span is None or span[0] >= span[1]:
+                return None
+            stock = struct.pack('<ff', *span)
+        else:
+            return None
+        state, value = vfe_clamp_state(b, at)
+        what = 'equation tree' if kind != 'per-chip' else 'per-chip equation (a quadratic on a fused input)'
+        if kind == 'per-chip' and b[at + 3:at + 11] == stock:
+            state = 'unclamped'
+        elif kind == 'per-chip' and state != 'pinned':
+            lo, hi = read(b, '<ff', at + 3)
+            return (f'is a {what} whose clamp ({lo / 1000:g} to {hi / 1000:g} mV) is not its own range over that '
+                    f'input ({span[0] / 1000:g} to {span[1] / 1000:g} mV), so a fixed value could not be set back '
+                    'to the stock bytes')
+        if state is None:
+            return f'is an {what} whose root has an unreviewed output clamp'
+        width_row = 0x1F if self.family == 'ada' else 0x11
+        others = [k for _, _, r, _ in rails for k in range(4, width_row)
+                  if (r, k) != (row, ADA_VMIN_OFFSET) and b[r + k] == selector]
+        article = 'an' if kind != 'per-chip' else 'a'
+        if refs is None or selector in refs:
+            return f'is {article} {what} that another equation uses'
+        if others:
+            return (f'is {article} {what}, and rail row byte {others[0]} also holds its index ({selector}), so '
+                    'it may select it too')
+        try:
+            names = self.equation_index_names()
+            nodes = vfe_tree(b, base, size, width, count, selector)
+        except FormatError as exc:
+            return f'is {article} {what}, but {exc}, so another user of it cannot be ruled out'
+        if selector in names:
+            return f'is {article} {what} that the {names[selector][0]} table also names'
+        return dict(state='stock' if state == 'unclamped' else 'pinned', kind=kind, pinned_uv=value, nodes=len(nodes),
+                    stock_clamp=stock or VFE_UNCLAMPED)
+
     def rail_vmin(self):
         """Per rail, the equation of the evaluated VMIN (row byte 7; Turing byte 9) and whether its clamp pins it.
 
@@ -1182,9 +1332,12 @@ class TableRom:
         reported VMIN 90 mV above this value, at both the stock and an edited
         clamp, inside the 70..162 mV its chain adds. Turing byte 9 is the nvgpu 1x
         vmin_limit_vfe_equ_idx. rel_lowest_uv is the lowest value of the REL
-        equation list (vfe_range). On Ada, an equation that only the constant of
+        equation list (vfe_range, a min/max or compare clamp bounding its children).
+        On Ada, an equation that only the constant of
         _vmin_clone references pins its value too; the item then carries 'clone'
-        (also when that constant already links a copy).
+        (also when that constant already links a copy). On Ada and Ampere a tree root
+        or a per-chip equation (_vmin_tree) carries 'tree' instead; its clamp takes a
+        fixed value, and pinned and value_uv follow that clamp.
         """
         rails, vfe, base, count = self._rails()
         refs = self._ada_references(base, count)
@@ -1195,7 +1348,8 @@ class TableRom:
         result = []
         for rail_index, name, row, selectors in rails:
             selector = self.blob[row + offset]
-            rel = vfe_range(self.blob, base, size, width, count, selectors['REL'])  # _selectors: REL present
+            rel = vfe_range(self.blob, base, size, width, count, selectors['REL'],  # _selectors: REL present
+                            clamped_children=True)
             item = dict(logical_rail_id=name, rail_index=rail_index, rail_entry=row,
                         selector_offset=row + offset, selector_raw=selector, equation_offset=None,
                         equation_size=size, equation_type=None, value_uv=None, pinned=False,
@@ -1208,14 +1362,24 @@ class TableRom:
             lo, hi = read(self.blob, '<ff', at + 3)
             link = self.blob[at + 2] | (self.blob[at + 24] << 8 if width == 2 else 0)
             item.update(equation_offset=at, equation_type=self.blob[at],
-                        added_uv=vfe_range(self.blob, base, size, width, count, link, frozenset((selector,))))
+                        added_uv=vfe_range(self.blob, base, size, width, count, link, frozenset((selector,)),
+                                           clamped_children=True))
             selected = ([r for r in roles if r['equation_offset'] == at] or
                         [r for _, _, r, _ in rails if r != row and self.blob[r + offset] == selector] or
                         (turing and self.blob[row + TURING_BOOT_OFFSET] == selector))
             voltage = self.blob[at] == 1 and self.blob[at + 23] & 15 == 2
             pins = math.isfinite(lo) and lo == hi
-            clone = self._vmin_clone(row, base, count, selector) if voltage and pins and refs is not None else None
-            if not voltage:
+            tree = None if turing else self._vmin_tree(rails, row, base, count, selector, refs)
+            clone = (self._vmin_clone(row, base, count, selector) if voltage and pins and refs is not None and
+                     tree is None else None)
+            if isinstance(tree, dict):
+                item.update(tree=tree, minimum_offset=at + 3, maximum_offset=at + 7)
+                if tree['state'] == 'pinned':
+                    item.update(value_uv=tree['pinned_uv'], pinned=True)
+                diagnostic = None
+            elif tree is not None:
+                diagnostic = tree
+            elif not voltage:
                 diagnostic = 'is not a float voltage output'
             elif not pins:
                 diagnostic = 'has a clamp that does not pin its value'

@@ -53,7 +53,11 @@ Todos los campos Turing están marcados como experimentales. Los marcados como *
   relación no se comprobó). Va de 40 °C hasta 3 °C sobre el valor de fábrica del producto, y es de solo lectura en
   las dos imágenes XOC, que no indican ese límite.
 - **Ventiladores**: `fan_pwm_frequency_hz`, los límites de velocidad (RPM) y de nivel (%, avanzados) de cada
-  ventilador y los puntos de su curva.
+  ventilador y los puntos de su curva. No hay interruptor de parada en reposo: en Turing los ventiladores se
+  detienen con la curva. Siete imágenes ya vienen así (la RTX 2060 SUPER guarda 0 RPM en el punto 1, pero mantiene
+  un nivel mínimo de 10 %), y en las demás, salvo la MSI GTX 1650, cuya curva es de solo lectura, una sola edición
+  lo configura: la velocidad y el nivel mínimos y la velocidad y el nivel del punto 1 en 0, y el punto 2 en la
+  velocidad más baja a la que gira el ventilador, donde debe arrancar (sin histéresis; ver `extended-fields.md`).
 - **Sección Avanzado** (su propia sección plegada, sin depender del interruptor de campos avanzados): la política
   de clocks por utilización y los objetivos, umbrales de salto e histéresis de sus controladores GPC, DRAM y VID, y
   los interruptores De fábrica/Desactivado del power gating de GR y del MSCG (ahorro en reposo) en los productos

@@ -11,25 +11,30 @@ import struct
 import tempfile
 import time
 from ..rom import BiosImage, VbiosError
-from ..rom.blackwell import BlackwellRom, LPWR_TABLES, PERF_CF_CONTROLLERS as PERF_CF_TABLE, PERF_CF_POLICIES
+from ..rom.blackwell import (BlackwellRom, FAN_POLICY_FLAG_OFFSET, LPWR_TABLES,
+                             PERF_CF_CONTROLLERS as PERF_CF_TABLE, PERF_CF_POLICIES)
 from ..rom.image import backend, inspect_image
 from ..rom.tables import ADVANCED_TABLES, PROFILE_BYTES, TableRom, checksum_tail
 from .registry import (registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
                        fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
                        fixed_voltage, dram_offset_points, gpc_curve_offset, max_operating_temperature,
-                       factory_clocks, perf_cf_controllers, lpwr_features, VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS,
-                       FIXED_SEMANTICS, DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS, MAX_TEMP_SEMANTICS,
-                       FACTORY_SEMANTICS, ADVANCED_SEMANTICS, PERF_CF_CONTROLLERS, fxp_percent)
+                       factory_clocks, perf_cf_controllers, lpwr_features, VMIN_SEMANTICS, VMIN_FIXED_SEMANTICS,
+                       FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS, DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS,
+                       MAX_TEMP_SEMANTICS, FACTORY_SEMANTICS, ADVANCED_SEMANTICS, PERF_CF_CONTROLLERS, fxp_percent,
+                       FAN_ZERO_RPM_BITS, FAN_ZERO_RPM_TEMP_CEILING, FAN_ZERO_RPM_TEMP_FLOOR, fan_stop_accepted,
+                       fan_stop_parameters)
 
+# The value semantics of the two zero RPM temperatures of a fan policy entry: the lower, then the upper.
+ZERO_RPM_PAIR_SEMANTICS = ('stored-fan-zero-rpm-lower-temperature', 'stored-fan-zero-rpm-upper-temperature')
 # Reviewed resolvers whose bindings are canonical for range and joint checks.
 REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
                       fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
                       fixed_voltage, dram_offset_points, gpc_curve_offset, max_operating_temperature, factory_clocks,
                       perf_cf_controllers, lpwr_features)
 # Fields that change otherwise preserved rail bytes, each only through its reviewed binding:
-# the evaluated VMIN equation, the XOC-style NVVDD REL/ALT selectors and the fixed Ada/Turing
-# REL/ALT values.
-RAIL_EXCEPTIONS = (VMIN_SEMANTICS, FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS)
+# the evaluated VMIN equation and the switch that restores a VMIN tree root's stock clamp, the
+# XOC-style NVVDD REL/ALT selectors and the fixed Ada/Turing REL/ALT values.
+RAIL_EXCEPTIONS = (VMIN_SEMANTICS, VMIN_FIXED_SEMANTICS, FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS)
 # Layout fields whose bytes no other check rereads through the canonical parser: only the
 # reviewed complete binding (offsets, encoding, scale and layout) may write them.
 COMPLETE_BINDING_SEMANTICS = (RAIL_EXCEPTIONS + (DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS, MAX_TEMP_SEMANTICS) +
@@ -136,6 +141,120 @@ def _companion_bytes(bindings, semantics):
             for _, writes in binding.companion for start, data in writes for at in range(start, start + len(data))}
 
 
+def _celsius(raw):
+    """A temperature stored in 1/32 C as exact text: 1661 -> '51.90625'."""
+    return str(Decimal(raw) / 32)
+
+
+def _zero_rpm_start(image, output, fans, reviewed, changes, ran):
+    """The start temperature rule, on the edited result of a GB20x, Ada or Ampere image (fans: its fan tables;
+    ran: the fan policy entries GSP-RM ran in the source, its active channels and the curves past them).
+
+    With zero RPM on (bits 1 and 2 of the flag byte both set), the upper (start) zero RPM temperature
+    of an enabled fan policy entry (bytes 32..33) stays at most point 1 of the same entry's fan curve
+    (bytes 18..19, both in 1/32 C), so idle fans never stay stopped past the temperature where their
+    curve starts them. Any write can break it: the upper, point 1, fan_zero_rpm turning the bits on,
+    the template block it writes, or a larger channel count that enables a stored channel entry with
+    its stored bytes. Only an entry GSP-RM ran in the source with both bits set there and the same
+    upper and point 1 is exempt, so stock images that ship the upper above point 1 keep working. The
+    refusal names the field to change, with the range it may take in this edit: the upper where it
+    is editable and the request moves it or turns zero RPM on (with the lower where that is at or
+    above point 1), else point 1; fan_channels where the count enables the entry, with what works.
+    """
+    word = lambda blob, at: struct.unpack_from('<H', blob, at)[0]
+    sides = dict(zip(ZERO_RPM_PAIR_SEMANTICS, ('lower', 'upper')))
+    keys = {}
+    for key, binding in reviewed.items():
+        desc = binding.descriptor
+        if not desc['editable'] or 'fan_policy' not in desc:
+            continue
+        if desc['value_semantics'] in sides:
+            keys.setdefault(desc['fan_policy'], {})[sides[desc['value_semantics']]] = key
+        elif desc['value_semantics'] == 'stored-fan-curve-temperature' and key.endswith('_curve_1_temp_c'):
+            keys.setdefault(desc['fan_policy'], {})['first'] = key
+    switch = reviewed.get('fan_zero_rpm')
+    found = []
+    for entry in [r for r in fans['rows'] if r['active']] + fans['extra_curves']:
+        at = entry['policy_offset']
+        flags = output.blob[at + FAN_POLICY_FLAG_OFFSET], image.blob[at + FAN_POLICY_FLAG_OFFSET]
+        on, was_on = (f & FAN_ZERO_RPM_BITS == FAN_ZERO_RPM_BITS for f in flags)
+        low, upper, first = word(output.blob, at + 30), word(output.blob, at + 32), word(output.blob, at + 18)
+        if not on or upper <= first:
+            continue
+        if entry['index'] not in ran and 'fan_channels' in changes:
+            # A larger channel count enables a stored channel entry with its stored bytes and zero RPM on: the count
+            # goes. A copy with zero RPM off enables it with the bits clear, and zero RPM then goes back on with its
+            # upper lowered, where the switch is editable and the entry stores a pair the editor shows.
+            prefix, count = f"fan_{entry['index'] + 1}", changes['fan_channels']
+            stuck = low >= first
+            if switch is not None and switch.descriptor['editable'] and (
+                    upper <= FAN_ZERO_RPM_TEMP_CEILING and fan_stop_parameters(output.blob, at) and
+                    fan_stop_accepted(output.blob, at)):
+                remedy = 'separate-edits'
+                fix = (f'turn fan_zero_rpm off first, raise fan_channels on that copy, then turn fan_zero_rpm on with '
+                       f'{prefix}_zero_rpm_high_temp_c at {_celsius(first)} C or less' +
+                       (f' and {prefix}_zero_rpm_low_temp_c below it' if stuck else '') + ', each in its own edit')
+            else:
+                remedy = 'none'
+                fix = ('the stored entry would start above its curve, and ' +
+                       ('fan_zero_rpm is read-only on this image' if switch is None or not switch.descriptor['editable']
+                        else 'the editor shows no zero RPM pair for it') +
+                       ', so fan_channels cannot be raised on this image')
+            found.append(dict(field='fan_channels', bounds=None, policy=entry['index'], keys=['fan_channels'],
+                              channel_count=remedy,
+                              message=f"{prefix}: fan_channels {count} enables the stored fan policy entry "
+                                      f"{entry['index']} with zero RPM on and its zero RPM upper (start) temperature "
+                                      f'({_celsius(upper)} C) above point 1 of its fan curve ({_celsius(first)} C); '
+                                      f'{fix}'))
+            continue
+        stored = (word(image.blob, at + 32), word(image.blob, at + 18)) == (upper, first)
+        if was_on and entry['index'] in ran and stored:
+            continue  # shipped that way and left as it is
+        upper_key, first_key, lower_key = (keys.get(entry['index'], {}).get(k) for k in ('upper', 'first', 'lower'))
+        # No upper field but a new block: the template fan_zero_rpm writes on a board that stores none.
+        written = upper_key is None and output.blob[at + 30:at + 47] != image.blob[at + 30:at + 47]
+        # A lower at or above point 1: an upper at most point 1 needs the lower below it in the same edit.
+        stuck = low >= first and lower_key is not None
+        lowered = f'set {upper_key} to {_celsius(first)} C or less' + (f' and {lower_key} below it' if stuck else '')
+        if upper_key and (upper != word(image.blob, at + 32) or not was_on or not first_key):
+            key = upper_key
+            bounds = {'minimum': (FAN_ZERO_RPM_TEMP_FLOOR + 1 if stuck else low + 1) / 32,
+                      'maximum': min(first, FAN_ZERO_RPM_TEMP_CEILING) / 32}
+            fix = f'{lowered} in the same edit'
+        elif first_key and (upper_key or was_on or 'fan_zero_rpm' not in changes):
+            # Point 1 stays below point 2: where the upper is not, point 2 moves up with it.
+            second = word(output.blob, at + 22)
+            key, bounds = first_key, {'minimum': upper / 32,
+                                      'maximum': (min(second - 1, FAN_ZERO_RPM_TEMP_CEILING) if upper < second else
+                                                  FAN_ZERO_RPM_TEMP_CEILING) / 32}
+            fix = (f'keep {first_key} at {_celsius(upper)} C or more' +
+                   ('' if upper < second else f" with {first_key.replace('_curve_1_', '_curve_2_')} above it") +
+                   (f', or {lowered} in the same edit' if upper_key else ''))
+        else:
+            # fan_zero_rpm turns zero RPM on with an upper no field holds yet (the template's): the switch is
+            # what goes, unless point 1 stays at or above that upper in the same edit.
+            key, bounds = ('fan_zero_rpm' if 'fan_zero_rpm' in changes else None), None
+            fix = (f'keep {first_key} at {_celsius(upper)} C or more in this edit (both can move lower together '
+                   'on the saved copy)' if first_key else 'neither temperature of this entry is editable here')
+        name = ((upper_key or first_key or '').split('_zero_rpm_')[0].split('_curve_')[0] or
+                f"fan policy entry {entry['index']}")
+        what = (f'{upper_key}, {_celsius(upper)} C' if upper_key else
+                f'{_celsius(upper)} C, written by fan_zero_rpm' if written else f'{_celsius(upper)} C')
+        point = f'{first_key}, {_celsius(first)} C' if first_key else f'{_celsius(first)} C'
+        found.append(dict(field=key, bounds=bounds, policy=entry['index'],
+                          keys=[k for k in (upper_key, first_key, lower_key if stuck else None) if k],
+                          message=f'{name}: with zero RPM on, the zero RPM upper (start) temperature ({what}) may be '
+                                  f'at most point 1 of the same fan curve ({point}); {fix}'))
+    if found:
+        counts = {f['channel_count'] for f in found if 'channel_count' in f}
+        raise VbiosError('ZERO_RPM_ABOVE_CURVE', '; '.join(f['message'] for f in found),
+                         details={'field': found[0]['field'], 'bounds': found[0]['bounds'],
+                                  'fan_policies': [f['policy'] for f in found],
+                                  'joint_fields': sorted({k for f in found for k in f['keys']}),
+                                  **({'channel_count': 'none' if 'none' in counts else 'separate-edits'}
+                                     if counts else {})})
+
+
 def _profile_pairs(profile):
     values = {(e['policy'], e['field']): e['value_raw'] for e in profile['entries']}
     return {policy: (values[(policy, 'default')], values[(policy, 'maximum')])
@@ -210,6 +329,14 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     if 'nvvdd_rel_alt_follow_ov' in changes and voltages:
         raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change nvvdd_rel_alt_follow_ov and the voltage fields in separate '
                          'edits', details={'fields': ['nvvdd_rel_alt_follow_ov'] + voltages})
+    # A VMIN tree root's value and its fixed switch write the same clamp bytes.
+    pairs = sorted(key for key in changes if key in reviewed and
+                   reviewed[key].descriptor['value_semantics'] == VMIN_FIXED_SEMANTICS and
+                   key[:-len('fixed')] + 'mv' in changes)
+    if pairs:
+        raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change ' + ', '.join(pairs) + ' and the VMIN value in separate '
+                         'edits: both write the clamp of the VMIN equation',
+                         details={'fields': [k for key in pairs for k in (key[:-len('fixed')] + 'mv', key)]})
     # A VMIN that copies its equation into the first unused VFE slot (Ada, a constant shares it) and the GPC
     # curve offset, which takes that slot too.
     cloned = sorted(k for k in changes if k in reviewed and reviewed[k].companion and
@@ -218,6 +345,20 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
         raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change ' + ', '.join(cloned) + ' and gpc_curve_offset_mhz in '
                          'separate edits: on this ROM both use the first unused VFE slot',
                          details={'fields': cloned + ['gpc_curve_offset_mhz']})
+    # On a copy that holds a reviewed fan-stop template, fan_zero_rpm 0 writes the stock zeros and 0xff back over
+    # the fan-stop blocks, zero RPM temperatures included: those change in another edit.
+    switch = reviewed.get('fan_zero_rpm')
+    if 'fan_zero_rpm' in changes and switch is not None and switch.companion:
+        blocks = {at for start, data in dict(switch.companion).get(_amount(changes['fan_zero_rpm'], 'fan_zero_rpm'), ())
+                  for at in range(start, start + len(data))}
+        temperatures = sorted(k for k in changes if k in reviewed and
+                              reviewed[k].descriptor['value_semantics'] in ZERO_RPM_PAIR_SEMANTICS and
+                              blocks & {at for start in reviewed[k].offsets for at in range(start, start + 2)})
+        if temperatures:
+            raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change fan_zero_rpm and ' + ', '.join(temperatures) +
+                             ' in separate edits: on this copy fan_zero_rpm 0 writes the stock zeros and 0xff back '
+                             'over the fan-stop blocks, zero RPM temperatures included',
+                             details={'fields': ['fan_zero_rpm'] + temperatures})
     for key in changes:
         if (key in available and key in reviewed and
                 reviewed[key].descriptor['value_semantics'] in COMPLETE_BINDING_SEMANTICS and key not in canonical):
@@ -397,6 +538,25 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                              'top level: %s' % (source_top['index'], reason), details=details) from None
         if target_top['index'] != source_top['index']:
             raise VbiosError('PRESERVED_FIELD_CHANGED', 'the top-level override profile must stay the same')
+    # A zero RPM pair stays rising. Its lower is bounded by the stored upper, but an upper whose stored lower is at
+    # or above point 1 takes the minimum an edit that also lowers the lower allows, and a pair requested together
+    # is bounded by its encoding alone: a result whose lower is not below its upper names the lower and its range.
+    for key in sorted(changes):
+        binding = canonical.get(key)
+        if binding is None or binding.descriptor['value_semantics'] not in ZERO_RPM_PAIR_SEMANTICS:
+            continue
+        upper = binding.descriptor['value_semantics'] == ZERO_RPM_PAIR_SEMANTICS[1]
+        partner = key.replace('_high_', '_low_') if upper else key.replace('_low_', '_high_')
+        if partner not in reviewed:
+            continue
+        low, high = struct.unpack_from('<HH', output.blob, binding.offsets[0] - (2 if upper else 0))
+        if not low < high:
+            lower, top = (partner, key) if upper else (key, partner)
+            raise VbiosError('OUT_OF_BOUNDS', f'{top} ({_celsius(high)} C) must stay above {lower} ({_celsius(low)} C); '
+                             f'set {lower} to {_celsius(high - 1)} C or less in the same edit',
+                             details={'field': lower, 'bounds': {'minimum': FAN_ZERO_RPM_TEMP_FLOOR / 32,
+                                                                 'maximum': (high - 1) / 32},
+                                      'joint_fields': sorted((key, partner))})
     # A voltage value moves the bounds of the reviewed voltage fields (VMIN below REL, a fixed REL <= ALT), so
     # with a voltage field in the request every requested reviewed voltage field is checked against the result
     # too, and every other one that was editable must stay so: outside its new range it turns read-only.
@@ -628,7 +788,7 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
         raise VbiosError('PRESERVED_FIELD_CHANGED', 'rail table bytes must be preserved')
     # The evaluated VMIN selector stays, and its equation changes only at the floats
     # the canonical *_vmin_mv binding declares (GB20x minimum, maximum and value;
-    # Ada/Ampere clamp minimum and maximum).
+    # Ada/Ampere clamp minimum and maximum) or its *_vmin_fixed switch writes back.
     clone_bytes = _companion_bytes(canonical.values(), VMIN_SEMANTICS)
     try:
         source_vmin = parser.rail_vmin() if hasattr(parser, 'rail_vmin') else None
@@ -639,14 +799,20 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
             target_vmin = rebuilt.rail_vmin()
         except FormatError as exc:
             raise VbiosError('PRESERVED_FIELD_CHANGED', 'edit invalidated the evaluated VMIN selectors') from exc
-        vmin_bytes = {at for binding in canonical.values() if binding.descriptor['value_semantics'] == VMIN_SEMANTICS
+        vmin_bytes = {at for binding in canonical.values()
+                      if binding.descriptor['value_semantics'] in (VMIN_SEMANTICS, VMIN_FIXED_SEMANTICS)
                       for start in binding.offsets for at in range(start, start + 4)}
         for left, right in zip(source_vmin, target_vmin):
-            at = left['equation_offset']
-            if (left['selector_raw'], at) != (right['selector_raw'], right['equation_offset']) or left['pinned'] and any(
-                    image.blob[i] != output.blob[i] and i not in vmin_bytes for i in range(at, at + left['equation_size'])):
+            at, tree = left['equation_offset'], left.get('tree')
+            if (left['selector_raw'], at) != (right['selector_raw'], right['equation_offset']) or (
+                    left['pinned'] or tree) and any(image.blob[i] != output.blob[i] and i not in vmin_bytes
+                                                    for i in range(at, at + left['equation_size'])):
                 raise VbiosError('PRESERVED_FIELD_CHANGED', 'the evaluated VMIN selector and equation bytes must be '
                                  'preserved', details={'rail': left['logical_rail_id']})
+            # A tree root or per-chip VMIN equation keeps its shape: stock or a fixed whole-uV clamp.
+            if tree and (right.get('tree') or {}).get('kind') != tree['kind']:
+                raise VbiosError('PRESERVED_FIELD_CHANGED', 'the evaluated VMIN tree root must keep a reviewed clamp',
+                                 details={'rail': left['logical_rail_id']})
             # Ada, a constant sharing the VMIN equation (TableRom._vmin_clone): the constant, and the copy it
             # links, change only at the companion bytes of the canonical binding, and the shape stays recognized
             # with the same constant (a copy stays in its slot until the stock value frees it).
@@ -681,9 +847,10 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     # and only at the bytes their bindings declare: the PWM frequency bytes,
     # the channel list/enable bytes, the row limits of the active channels,
     # the points of the enabled curves, the policy entry flag bytes (0x32)
-    # fan_zero_rpm covers and the zero RPM temperature pairs (bytes 30..33) of
-    # the enabled entries. They must still decode and agree afterwards. Tables
-    # that do not decode or agree accept no change at all.
+    # fan_zero_rpm covers, the fan-stop blocks its reviewed template writes and
+    # the zero RPM temperature pairs (bytes 30..33) of the enabled entries. They
+    # must still decode and agree afterwards. Tables that do not decode or agree
+    # accept no change at all.
     regions = parser.fan_regions() if hasattr(parser, 'fan_regions') else []
     if regions:
         try:
@@ -704,9 +871,25 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                 if binding is not None and binding.descriptor.get('value_semantics', '').startswith('stored-fan-'):
                     size = struct.calcsize(binding.encoding)
                     fan_allowed.update(at for start in binding.offsets for at in range(start, start + size))
+                    if binding.companion:
+                        # fan_zero_rpm on a board with a reviewed fan-stop template: only the set written for
+                        # the requested value (the template blocks, or the stock zeros and 0xff), only when the
+                        # request changes the field, and only holding exactly those bytes, so no other binding
+                        # can write the blocks, not even with a request that leaves the field as it is.
+                        decoded = _number(changes[key], binding)[1]
+                        sets = dict(binding.companion)
+                        for start, data in (sets.get(decoded, sets.get(None, ()))
+                                            if decoded != binding.descriptor['current'] else ()):
+                            if output.blob[start:start + len(data)] != data:
+                                raise VbiosError('PRESERVED_FIELD_CHANGED', 'fan-stop block bytes must be the ones '
+                                                 f'{key} writes')
+                            fan_allowed.update(range(start, start + len(data)))
         if any(image.blob[at] != output.blob[at] and at not in fan_allowed
                for start, size in regions for at in range(start, start + size)):
             raise VbiosError('PRESERVED_FIELD_CHANGED', 'fan table bytes must be preserved')
+        if source_fans is not None and (isinstance(parser, BlackwellRom) or parser.family in ('ada', 'ampere')):
+            ran = {e['index'] for e in [r for r in source_fans['rows'] if r['active']] + source_fans['extra_curves']}
+            _zero_rpm_start(image, output, target_fans, reviewed, changes, ran)
     # The thermal policy table and the factory clock record change only at the bytes the canonical
     # max_operating_temp_c and factory_gpc/memory_offset_mhz bindings declare, whatever the field
     # registry, decoded or not: on GB20x the whole object holding each (0x1b, 0x26), on Turing,

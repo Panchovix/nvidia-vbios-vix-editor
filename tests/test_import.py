@@ -180,6 +180,26 @@ class ImportTests(unittest.TestCase):
                          [('gpc_offset_max_mhz', 'refused', 'PRESERVED_FIELD_CHANGED')])
         self.assertEqual(values(result.image)['gpc_offset_max_mhz'], 3000)
 
+    def test_a_curve_below_the_zero_rpm_upper_comes_only_with_its_pair(self):
+        # With zero RPM on, an upper stays at most point 1 of its curve: a donor curve that starts lower than this
+        # ROM's upper is refused alone and comes with the donor's pair, an advanced field.
+        from test_extended_fields import repair_fixture
+        blob = bytearray(self.blob)
+        table = backend(from_bytes(bytes(blob))).fan_coolers()
+        for entry in table['rows'][:3] + table['extra_curves']:
+            blob[entry['policy_offset'] + 0x32] = 0x17 if entry['index'] < 4 else 0x07
+        target = from_bytes(repair_fixture(blob), 'board.rom')
+        donor = donor_of(target.blob, {'fan_1_curve_1_temp_c': 45, 'fan_1_zero_rpm_high_temp_c': 45})
+        report, result = import_fields(target, donor, ['fans'])
+        self.assertIsNone(result)
+        refused = next(e for e in report['skipped'] if e['field'] == 'fan_1_curve_1_temp_c')
+        self.assertEqual((refused['reason'], refused['code']), ('refused', 'ZERO_RPM_ABOVE_CURVE'))
+        self.assertIn('fan_1_zero_rpm_high_temp_c', refused['message'])
+        report, result = import_fields(target, donor, ['fans'], include_opt_in=True)
+        self.assertEqual(report['changes'], {'fan_1_curve_1_temp_c': 45.0, 'fan_1_zero_rpm_high_temp_c': 45.0})
+        self.assertEqual((values(result.image)['fan_1_curve_1_temp_c'], values(result.image)['fan_zero_rpm']),
+                         (45.0, 1))
+
     def test_other_families_are_refused_and_other_products_warned(self):
         for other in (synthetic_rom(), synthetic_rom(family='ampere')):
             with self.assertRaises(VbiosError) as exc:

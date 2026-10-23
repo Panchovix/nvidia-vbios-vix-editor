@@ -410,7 +410,7 @@ class StructureTests(unittest.TestCase):
 
 
 def synthetic_blackwell(*, shared_objects=False, rails=2, clock_subsize=2, power_topology=False, fans=False,
-                        thermal=False, factory_clocks=False, perf_cf=False, lpwr=False):
+                        thermal=False, factory_clocks=False, perf_cf=False, lpwr=False, index_tables=False):
     """Object directory with BIT-referenced tables and computed SHA384 hashes.
 
     rails=1 and clock_subsize=1 give the single-rail Workstation layout.
@@ -426,7 +426,13 @@ def synthetic_blackwell(*, shared_objects=False, rails=2, clock_subsize=2, power
     at their stock 40/75, 52/64 and 65/85 % with hysteresis 1/9, 1/4 and 1/9, 3 a GPC one at
     60/80 %; 9 policies, policy 0 active with controllers 0, 1, 2 and 13. lpwr adds the LPWR
     tables of an RTX 5090 (GR power gating on entries 0-1, MSCG 0-2, every video entry, DIFR
-    entry 0, GR rail gating off) and widens the BIT P token to 0x138 bytes.
+    entry 0, GR rail gating off) and widens the BIT P token to 0x138 bytes. index_tables adds the
+    tables that name VFE equations outside the VFE and rail tables, as on every GB20x image: a clock
+    programming table (C+0x0c v0x50, object 4) of two 23-byte entries naming equations 400 and 401,
+    an FLL table (C+0x10 v0x20, object 5) of two 13-byte entries naming equation 402 at byte 7, a
+    voltage policy table (P+0x70 v0x20, legacy image) with one single-rail entry and a P+0x104
+    table (v0x10, object 0xa7) of two 21-byte entries naming equations 403..406 at bytes 5..8 (bytes
+    1..2 hold 5 and 9); it widens the BIT P token to 0x138 bytes and the C token to 0x14.
     """
     import hashlib
     legacy, efi, meta, extended = 512, 2560, 3072, 11264
@@ -448,8 +454,8 @@ def synthetic_blackwell(*, shared_objects=False, rails=2, clock_subsize=2, power
     b[bit:bit + 6] = b'\xff\xb8BIT\x00'
     b[bit + 8:bit + 11] = bytes((12, 6, 2))
     b[bit + 11] = -sum(b[bit:bit + 12]) & 255
-    struct.pack_into('<BBHH', b, bit + 12, ord('P'), 2, 0x138 if lpwr else 252, 256)
-    struct.pack_into('<BBHH', b, bit + 18, ord('C'), 2, 12, 600)
+    struct.pack_into('<BBHH', b, bit + 12, ord('P'), 2, 0x138 if lpwr or index_tables else 252, 256)
+    struct.pack_into('<BBHH', b, bit + 18, ord('C'), 2, 0x14 if index_tables else 12, 600)
     version = b'98.02.18.00.01'
     b[legacy + 700:legacy + 700 + len(version)] = version
     clocks, power, vfe, rail, profiles = 11776, 12288, 16384, legacy + 1000, 14592
@@ -522,14 +528,15 @@ def synthetic_blackwell(*, shared_objects=False, rails=2, clock_subsize=2, power
             b[mapping + 4 + 5 * i:mapping + 9 + 5 * i] = bytes((enable, row, 0x0A, 0x10, 0x27))
         # Curves: levels 20/50/100 % and three (1/32 C, RPM) points reaching the row limits, on the
         # channel entries and on entries 4/5, enabled past the cooler rows as on every source.
-        # Bytes 30..33 hold the fan-stop temperatures 43/50 C (1/32 C), as on the RTX 5080.
+        # Bytes 30..33 hold the fan-stop temperatures 43/50 C (1/32 C) and bytes 34..46 the rest of the
+        # RTX 5080's block (dwords 90000/100000, words 61/5000, byte 46 = 0), which GSP-RM accepts.
         for i in range(6):
             entry, start = policy + 4 + 0x33 * i, 50 if i < 4 else 93
             if i >= 4:
                 b[entry] = 1
             b[entry + 14:entry + 17] = bytes((20, 50, 100))
             struct.pack_into('<6H', b, entry + 18, start * 32, 1050, (start + 5) * 32, 2200, (start + 10) * 32, 3500)
-            struct.pack_into('<HH', b, entry + 30, 43 * 32, 50 * 32)
+            struct.pack_into('<HHIIHH', b, entry + 30, 43 * 32, 50 * 32, 90000, 100000, 61, 5000)
         objects += [(0x1E, policy, 4 + 0x33 * 0x0B), (0x20, mapping, 4 + 5 * 4)]
         # Control (P+0xdc) and speed (P+0xe0) entries: channels 0-2 stored, 3 a placeholder.
         control, speed = 26848, 26912
@@ -600,6 +607,26 @@ def synthetic_blackwell(*, shared_objects=False, rails=2, clock_subsize=2, power
                 struct.pack_into(fmt, b, at + len(header) + size * i, word)
             objects.append((owner, at, len(header) + size * len(words)))
             at += (len(header) + size * len(words) + 7) // 8 * 8
+    if index_tables:
+        programming, fll, policy, p104 = 27008, 27072, legacy + 1200, 27120
+        struct.pack_into('<I', b, legacy + 612, pointer(programming))
+        struct.pack_into('<I', b, legacy + 616, pointer(fll))
+        for off, at in ((0x70, policy), (0x104, p104)):
+            struct.pack_into('<I', b, legacy + 256 + off, pointer(at))
+        b[programming:programming + 8] = bytes((0x50, 8, 23, 2, 0, 0, 0, 0))
+        for i in range(2):
+            entry = programming + 8 + 23 * i
+            b[entry:entry + 5] = bytes((3, 0x2A, 3)) + struct.pack('<H', 400 + i)
+        b[fll:fll + 7] = bytes((0x20, 7, 13, 2, 1, 0xFF, 0xFF))
+        for i in range(2):
+            entry = fll + 7 + 13 * i
+            b[entry:entry + 13] = bytes((1, i, 0, 0x36, 0, 0x2A, 3)) + struct.pack('<H', 402) + bytes((0, 0x40, 0x95, 1))
+        b[policy:policy + 9] = bytes((0x20, 4, 5, 1, 1, 3, 0, 0, 0))
+        b[p104:p104 + 5] = bytes((0x10, 5, 21, 2, 1))
+        for i in range(2):
+            entry = p104 + 5 + 21 * i
+            b[entry:entry + 13] = bytes((1,)) + struct.pack('<HHHHI', (5, 9)[i], 0, 403 + 2 * i, 404 + 2 * i, 0x1FFE)
+        objects += [(4, programming, 8 + 23 * 2), (5, fll, 7 + 13 * 2), (0xA7, p104, 5 + 21 * 2)]
     count = len(objects) + (1 if shared_objects else 0)
     base = directory + 16 + count * 60
     objects[0] = (0xFB, base, 32)
