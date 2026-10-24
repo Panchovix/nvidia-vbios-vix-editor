@@ -1,8 +1,10 @@
 """Native GTK4 view. Import this module only from the GUI entry point."""
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+import functools
 from pathlib import Path
 import sys
+import traceback
 
 import gi
 
@@ -17,8 +19,9 @@ from .i18n import Messages
 from .file_pickers import show_builtin_picker, show_path_dialog
 from .controller import (Controller, compare_memory, controls, import_from, loader_messages, memory_view,
                          open_document, reset_document, save_document, stage_document)
-from .presentation import (ADVANCED_SECTION, advanced_group, classify_number, dependency_reason, display_units,
-                           fan_curve_hint, fan_stop_notes, field_label, field_section, import_summary, linux_value,
+from .presentation import (ADVANCED_SECTION, advanced_group, change_rows, change_value, classify_number,
+                           dependency_reason, display_units, fan_channel_reason, fan_curve_hint, fan_stop_notes,
+                           field_label, field_section, import_summary, linux_value,
                            number, memory_columns, memory_comparison, memory_configuration, memory_raw_text,
                            MEMORY_TIMINGS, opt_in_field_keys, parse_number, per_chip,
                            primary_preview, read_only_reason, row_title, SECTION_NAMES, section_order, shunt_real,
@@ -137,6 +140,21 @@ class FlagSwitch(Gtk.Switch):
         self.set_active(str(text).strip() == '1')
 
 
+def reported(callback):
+    """A main loop callback that reports an unexpected exception in the window (EditorWindow._unexpected) instead
+    of leaving it waiting: GLib alone would print the traceback and drop the rest of the callback, and the status
+    would keep saying the check is running. The traceback still goes to stderr."""
+    @functools.wraps(callback)
+    def run(self, *args):
+        try:
+            return callback(self, *args)
+        except Exception as exc:
+            traceback.print_exc()
+            self._unexpected(exc)
+            return GLib.SOURCE_REMOVE
+    return run
+
+
 class EditorWindow(Gtk.ApplicationWindow):
     def __init__(self, application, initial_path=None, language='en', file_dialog='auto', theme='auto'):
         self.text = Messages(language)
@@ -165,7 +183,11 @@ class EditorWindow(Gtk.ApplicationWindow):
         self.shunt_notes = {}
         self.pending_text = {}
         self.hidden_text = {}
-        # A row put back to its stored value because its switch is off does not count as typing.
+        # Text of the rows greyed out by their switch or the fan channel count (_sync_dependencies), which show
+        # their stored value meanwhile: it comes back when the row is editable again.
+        self.parked = {}
+        # Text the window sets itself (a greyed-out row's stored or parked value, imported values) does not count
+        # as typing; the caller checks once afterwards.
         self.syncing = False
         # The collapsed Advanced section keeps its state while the same ROM stays open.
         self.advanced_expanded = False
@@ -397,6 +419,23 @@ class EditorWindow(Gtk.ApplicationWindow):
         for name in ('error', 'vb-bad'):
             (self.status.add_css_class if failed else self.status.remove_css_class)(name)
 
+    def _unexpected(self, error):
+        """After an exception in the window's own code: stop waiting, show the error, and keep Save off until a
+        check completes."""
+        if self.verify_source:
+            GLib.source_remove(self.verify_source)
+            self.verify_source = 0
+        self.verifying = False
+        self.spinner.stop()
+        self.dirty = self.controller.document is not None
+        self._status_error(True)
+        code = getattr(error, 'code', type(error).__name__)
+        self.status.set_text(self.text('unexpected', message=error, code=code))
+        try:
+            self._sensitivity()
+        except Exception:
+            traceback.print_exc()
+
     def _error_text(self, error):
         code = getattr(error, 'code', type(error).__name__)
         if 'error.' + code in self.text.catalog:
@@ -405,6 +444,7 @@ class EditorWindow(Gtk.ApplicationWindow):
             message = f"{self.text('failure_generic')}: {error}"
         return code, self.text('failure', message=message, code=code)
 
+    @reported
     def _complete(self, generation, document, error):
         # A newer open/reset owns the view. Old results never replace its state.
         if self.closed or generation != self.generation:
@@ -426,6 +466,7 @@ class EditorWindow(Gtk.ApplicationWindow):
             if opened:
                 self.pending_text = {}
                 self.hidden_text = {}
+                self.parked = {}
                 self.advanced_expanded = False
                 self._render()
             else:
@@ -564,12 +605,14 @@ class EditorWindow(Gtk.ApplicationWindow):
 
     def _values(self):
         doc = self.controller.document
-        # Hidden opt-in fields keep their staged or typed values.
+        # Hidden opt-in fields keep their staged or typed values. Those whose switch or fan channel is off
+        # (_blocked) stay out of the check, as their greyed-out rows would, and come back when it is on again.
         fields = {f['key']: f for f in controls(doc.report)}
-        values = {key: value for key, value in doc.changes.items() if key not in self.entries}
+        blocked = self._blocked()
+        values = {key: value for key, value in doc.changes.items() if key not in self.entries and key not in blocked}
         # Rows hold display units (A for mA); the backend gets stored units.
         values.update({key: to_stored(fields[key], text) if key in fields else text
-                       for key, text in self.hidden_text.items()})
+                       for key, text in self.hidden_text.items() if key not in blocked})
         values.update({key: to_stored(self.rows[key]['field'], entry.get_text().strip())
                        for key, entry in self.entries.items() if not self._unset(key)})
         return values
@@ -636,6 +679,7 @@ class EditorWindow(Gtk.ApplicationWindow):
         future.add_done_callback(finished)
         return GLib.SOURCE_REMOVE
 
+    @reported
     def _verified(self, generation, revision, document, error):
         # Results for older inputs are dropped: a newer check is already queued.
         if self.closed or generation != self.generation or revision != self.input_revision:
@@ -689,8 +733,10 @@ class EditorWindow(Gtk.ApplicationWindow):
         if self.controller.document is None:
             return
         # Keep values typed but not yet verified, including those of fields
-        # the toggle hides, across the re-render.
-        typed = {key: entry.get_text() for key, entry in self.entries.items()}
+        # the toggle hides, across the re-render. A greyed-out row passes on its parked text: the new row is
+        # greyed out again, or the hidden value stays out of the check while its switch or channel is off.
+        typed = {key: self.parked.pop(key, entry.get_text()) for key, entry in self.entries.items()}
+        self.parked = {}
         self.pending_text = {**self.hidden_text, **typed}
         self._render()
         if self.dirty:
@@ -706,6 +752,7 @@ class EditorWindow(Gtk.ApplicationWindow):
         self.dirty = False
         self.pending_text = {}
         self.hidden_text = {}
+        self.parked = {}
         self._render()
         self._status_error(False)
         self.status.set_text(self.text('reset_done'))
@@ -860,8 +907,8 @@ class EditorWindow(Gtk.ApplicationWindow):
         self._shunt_note(row, field)
         self.entries[field['key']] = entry
         self.rows[field['key']] = dict(row=row, delta=delta, field=field)
-        if field.get('depends_on'):
-            # Shown while the switch this value depends on is off.
+        if field.get('depends_on') or field.get('fan_channel') is not None:
+            # Shown while the switch this value depends on, or the fan channel count, leaves it off (_blocked).
             dependency = label('', wrap=True, css=('vb-note',))
             dependency.set_visible(False)
             row.append(dependency)
@@ -1268,21 +1315,30 @@ class EditorWindow(Gtk.ApplicationWindow):
         self.executor.submit(import_from, document, path, sections, include_opt_in).add_done_callback(finished)
         return token
 
+    @reported
     def _imported(self, token, document, report, error, on_done):
         if self.closed or token is not self.importing:
             return GLib.SOURCE_REMOVE
         self.importing = None
         current = self.controller.document
-        if error is not None:
-            self.import_lines = [(self.text('import.failed', message=self._error_text(error)[1]), 'warning')]
-        elif current is None or current.original is not document.original or self.busy:
-            self.import_lines = [(self.text('import.stale'), 'warning')]
-        else:
-            self._apply_import(report)
-            self.import_lines = import_summary(report, {f['key']: f for f in controls(current.report)}, self.language)
-        self._sensitivity()
-        if on_done is not None:
-            on_done(self.import_lines)
+        try:
+            if error is not None:
+                self.import_lines = [(self.text('import.failed', message=self._error_text(error)[1]), 'warning')]
+            elif current is None or current.original is not document.original or self.busy:
+                self.import_lines = [(self.text('import.stale'), 'warning')]
+            else:
+                self._apply_import(report)
+                self.import_lines = import_summary(report, {f['key']: f for f in controls(current.report)},
+                                                   self.language)
+            self._sensitivity()
+        except Exception as exc:
+            # The dialog stops waiting too; reported shows the error in the window.
+            unexpected = self.text('unexpected', message=exc, code=getattr(exc, 'code', type(exc).__name__))
+            self.import_lines = [(self.text('import.failed', message=unexpected), 'warning')]
+            raise
+        finally:
+            if on_done is not None:
+                on_done(self.import_lines)
         return GLib.SOURCE_REMOVE
 
     def _apply_import(self, report):
@@ -1295,8 +1351,8 @@ class EditorWindow(Gtk.ApplicationWindow):
             field, entry = fields.get(key), self.entries.get(key)
             if field is None or field['current'] is None:
                 continue
-            edited = (parse_number(entry.get_text()) != to_display(field, field['current']) if entry is not None else
-                      key in doc.changes or key in self.hidden_text)
+            edited = (key in self.parked or parse_number(entry.get_text()) != to_display(field, field['current'])
+                      if entry is not None else key in doc.changes or key in self.hidden_text)
             if edited:
                 changes[key] = field['current']
         if not changes:
@@ -1306,12 +1362,19 @@ class EditorWindow(Gtk.ApplicationWindow):
         if (report['include_opt_in'] and not self.advanced_toggle.get_active() and
                 any(fields[key].get('opt_in') for key in changes)):
             self.advanced_toggle.set_active(True)
-        for key, value in changes.items():
-            text = number(to_display(fields[key], value))
-            if key in self.entries:
-                self.entries[key].set_text(text)
-            else:
-                self.hidden_text[key] = text
+        # All values first, then one check: a row is greyed out or not by the imported switch and channel count,
+        # not by the ones typed before them.
+        self.syncing = True
+        try:
+            for key, value in changes.items():
+                text = number(to_display(fields[key], value))
+                if key in self.entries:
+                    self.parked.pop(key, None)
+                    self.entries[key].set_text(text)
+                else:
+                    self.hidden_text[key] = text
+        finally:
+            self.syncing = False
         self._input_changed()
 
     def _refresh(self, announce=True):
@@ -1322,10 +1385,7 @@ class EditorWindow(Gtk.ApplicationWindow):
             self._show_changes(self._typed_changes(), checking=self.verifying)
         elif doc.proposal:
             preview = primary_preview(doc)
-            self._show_changes([(row_title(before, self.language)[0],
-                                 self._shown(before, to_display(before, before['current'])),
-                                 self._shown(after, to_display(after, after['current'])), display_units(after))
-                                for before, after in preview])
+            self._show_changes(change_rows(preview, self.language))
             if announce and not self.verifying and not self.busy:
                 self.status.set_text(self.text('live_ok', count=len(preview),
                                                bytes=doc.proposal.manifest['changed_bytes'])
@@ -1335,9 +1395,7 @@ class EditorWindow(Gtk.ApplicationWindow):
 
     def _shown(self, field, amount):
         """A display value for the change list, On/Off for a flag field, 'per chip' for a VMIN set per chip."""
-        if amount is None and per_chip(field):
-            return self.text('per_chip_value')
-        return value_text(field, amount, self.language) if field['units'] == 'flag' else amount
+        return change_value(field, amount, self.language)
 
     def _typed_changes(self):
         """Changes as typed, before verification: (label, before, after, units)."""
@@ -1354,12 +1412,15 @@ class EditorWindow(Gtk.ApplicationWindow):
         hidden = {key: to_display(fields[key], value) for key, value in self.controller.document.changes.items()
                   if key in fields}
         hidden.update({key: parse_number(text) for key, text in self.hidden_text.items() if key in fields})
+        blocked = self._blocked()
         for key, value in hidden.items():
-            if key not in self.rows and value is not None:
-                field = fields[key]
-                changes.append((row_title(field, self.language)[0],
-                                self._shown(field, to_display(field, field['current'])), self._shown(field, value),
-                                display_units(field)))
+            field = fields[key]
+            current = to_display(field, field['current'])
+            # hidden_text keeps every value the advanced toggle hid, changed or not: only the changes are listed,
+            # and not those whose switch or fan channel is off (_values leaves them out).
+            if key not in self.rows and key not in blocked and value is not None and value != current:
+                changes.append((row_title(field, self.language)[0], self._shown(field, current),
+                                self._shown(field, value), display_units(field)))
         return changes
 
     def _switch_value(self, key, fields):
@@ -1373,20 +1434,31 @@ class EditorWindow(Gtk.ApplicationWindow):
         return None if value is None else parse_number(str(value))
 
     def _blocked(self):
-        """{key: reason} for the editable rows whose switch (depends_on) is off, as typed, staged or stored."""
+        """{key: reason} for the editable fields, shown or hidden, whose switch (depends_on) is off, or whose fan
+        channel the fan channel count leaves off, as typed, staged or stored."""
         doc = self.controller.document
-        if doc is None or not any(info['field'].get('depends_on') for info in self.rows.values()):
+        if doc is None:
             return {}
         fields = {f['key']: f for f in controls(doc.report)}
+        gated = [f for f in fields.values()
+                 if f['editable'] and (f.get('depends_on') or f.get('fan_channel') is not None)]
+        if not gated:
+            return {}
+        channels = fields.get('fan_channels')
+        count = self._switch_value('fan_channels', fields) if channels else None
         blocked = {}
-        for key, info in self.rows.items():
-            dependency = info['field'].get('depends_on')
+        for field in gated:
+            dependency = field.get('depends_on')
             if dependency and self._switch_value(dependency['field'], fields) != Decimal(str(dependency['value'])):
-                blocked[key] = dependency_reason(info['field'], fields, self.language)
+                blocked[field['key']] = dependency_reason(field, fields, self.language)
+            elif reason := fan_channel_reason(field, channels, count, self.language):
+                blocked[field['key']] = reason
         return blocked
 
     def _sync_dependencies(self):
-        """Grey out the rows whose switch is off and say why; such a row goes back to its stored value."""
+        """Grey out the rows whose switch or fan channel is off (_blocked) and say why; such a row shows its stored
+        value, and the text it had (parked) comes back once the row is editable again, so a passing value of the
+        switch or count does not lose what was typed."""
         blocked = self._blocked()
         for key, info in self.rows.items():
             note = info.get('dependency')
@@ -1395,10 +1467,16 @@ class EditorWindow(Gtk.ApplicationWindow):
             entry, field = self.entries[key], info['field']
             off = key in blocked
             stored = to_display(field, field['current'])
+            text = None
             if off and stored is not None and parse_number(entry.get_text()) != stored:
+                self.parked[key] = entry.get_text()
+                text = number(stored)
+            elif not off and key in self.parked:
+                text = self.parked.pop(key)
+            if text is not None:
                 self.syncing = True
                 try:
-                    entry.set_text(number(stored))
+                    entry.set_text(text)
                 finally:
                     self.syncing = False
             entry.set_sensitive(not self.busy and not off)

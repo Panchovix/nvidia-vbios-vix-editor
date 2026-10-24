@@ -199,7 +199,11 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    both minima to 1200 RPM: both minima and the first point of all four curves.
    No values are adjusted automatically. The minimum and maximum level (%) of each channel
    and the curve levels appear with the advanced fields. Save a new channel count
-   before changing channel limits, curves or zero RPM on the copy.
+   before changing channel limits, curves or zero RPM on the copy. A lower count greys
+   out the rows of the fans it turns off (the copy keeps them stored but off) and the
+   change list shows their values as "not used"; a value typed in such a row comes back
+   when the count turns its fan on again. A higher count lists the stored values of the
+   fans it turns on.
    Voltage compatibility aliases, selector indices and stored boot values are
    not shown; `nvbios fields` lists them. The same goes for the generic input
    current and OCP placeholders (`current_limit_a`, `ocp_limit_a`) and the MSVDD
@@ -304,9 +308,9 @@ Off costs a little idle power and may avoid idle stutter or flicker; very short 
 can cause stutter or, rarely, a black screen at idle. A value that depends on a switch (the
 controller values on the utilization policy, an idle time on its feature) is greyed out,
 with the reason, while that switch is off, including when you turn it off before saving; a
-value typed there goes back to the stored one, and turning the switch back on makes it
-editable again. This section is not behind **Show advanced XOC-style fields**, and **Import
-from ROM…** never copies it.
+value typed there shows the stored one meanwhile, and turning the switch back on makes it
+editable again with the typed value. This section is not behind **Show advanced XOC-style
+fields**, and **Import from ROM…** never copies it.
 
 **Memory (read-only)**, a collapsed section after the read-only fields, shows the
 memory tables of Turing, Ampere, Ada and Blackwell images (`nvbios memory` prints the

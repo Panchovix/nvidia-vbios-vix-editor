@@ -176,6 +176,8 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'live_checking': 'Verificando cambios…',
  'live_ok': 'Cambios verificados: {count} · integridad de la copia OK · {bytes} bytes',
  'live_same': 'Sin diferencias con el original.',
+ 'change.not_used': 'no se usa',
+ 'unexpected': 'Error inesperado en la ventana del editor, por favor repórtalo: {message} [{code}]',
  'not_a_number': 'Introduce un número',
  'order_hint': 'Rompe el orden mínimo ≤ nominal ≤ máximo de su grupo',
  'order_hint_voltage': 'Rompe el orden VMIN < REL ≤ ALT; cambia estos valores juntos',
@@ -439,6 +441,8 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                        'mantiene el valor guardado.'),
  'reason.depends_on_stock': ('Para cambiar este valor, deja el interruptor "{switch}" en De fábrica. Mientras está en '
                              'Desactivado, se mantiene el valor guardado.'),
+ 'reason.fan_channel_off': ('No se usa mientras la cantidad de canales de ventilador sea {count}: la copia guarda el '
+                             'ventilador {fan}, pero apagado, y con {fan} canales o más vuelve a encenderse.'),
  'reason.perf_cf_policy': ('La entrada de la política de utilización de esta ROM no tiene el formato de las ROM '
                            'revisadas, así que ni ella ni sus controladores son editables.'),
  'reason.perf_cf_controller': 'Este controlador no tiene el formato de las ROM revisadas.',

@@ -33,11 +33,18 @@ class Document:
 
     @property
     def preview(self):
+        """(before, after) descriptors of each field the staged copy changes, in report order. A copy can also
+        lose or gain fields (a lower fan channel count clears the last channels, a higher one enables stored
+        channels): after is None for a field only the original has, before is None for one only the copy has,
+        listed last."""
         if self.proposal is None:
             return []
-        after = {f['key']: f for f in self.proposal.manifest['after']['fields']}
-        return [(field, after[field['key']]) for field in self.report['fields']
-                if field['current'] != after[field['key']]['current']]
+        fields = self.proposal.manifest['after']['fields']
+        after = {f['key']: f for f in fields}
+        before = {f['key'] for f in self.report['fields']}
+        return ([(field, after.get(field['key'])) for field in self.report['fields']
+                 if field['key'] not in after or field['current'] != after[field['key']]['current']] +
+                [(None, field) for field in fields if field['key'] not in before])
 
 
 def controls(report):

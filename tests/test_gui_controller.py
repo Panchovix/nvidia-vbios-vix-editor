@@ -155,6 +155,51 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.controller.stage({'fan_channels': '2', 'fan_1_min_rpm': '900'}).changes,
                          {'fan_1_min_rpm': '900'})
 
+    def test_a_fan_channel_count_previews_the_channel_it_clears_or_enables(self):
+        from decimal import Decimal
+        from nvidia_vbios.editor import edit
+        from nvidia_vbios.gui.presentation import change_rows, fan_channel_reason, primary_preview
+        from nvidia_vbios.rom import from_bytes
+        two, three = self.root / 'two.rom', self.root / 'three.rom'
+        two.write_bytes(synthetic_blackwell(fans=True))
+        three.write_bytes(edit(from_bytes(two.read_bytes()), {'fan_channels': 3}).blob)
+        doc = self.controller.open(three)
+        fields = {f['key']: f for f in doc.report['fields']}
+        fan_3 = [f['key'] for f in doc.report['fields'] if f.get('fan_channel') == 2]
+        self.assertEqual(len(fan_3), 15)
+        # A lower count clears the last channel: its fields, advanced ones included, are not used in the copy.
+        lowered = self.controller.stage({'fan_channels': '2'})
+        self.assertEqual([(a['key'], b and b['current']) for a, b in primary_preview(lowered)],
+                         [('fan_channels', 2)] + [(key, None) for key in fan_3])
+        rows = change_rows(primary_preview(lowered))
+        self.assertEqual(rows[:3], [('Fan channels', 3, 2, ''), ('Fan 3 minimum speed', '1050 RPM', 'not used', ''),
+                                    ('Fan 3 maximum speed', '3500 RPM', 'not used', '')])
+        self.assertIn(('Fan 3 curve point 1 temperature', '50 °C', 'not used', ''), rows)
+        self.assertEqual(change_rows(primary_preview(lowered), 'es')[1],
+                         ('Velocidad mínima del ventilador 3', '1050 RPM', 'no se usa', ''))
+        # Its rows are greyed out while the typed count leaves the channel off.
+        channels = fields['fan_channels']
+        self.assertEqual(fan_channel_reason(fields['fan_3_min_rpm'], channels, Decimal(2)),
+                         'Not used while the fan channel count is 2: the copy keeps fan 3 stored but off, and a '
+                         'count of 3 or more turns it on again.')
+        self.assertEqual(fan_channel_reason(fields['fan_2_min_rpm'], channels, Decimal(1), 'es'),
+                         'No se usa mientras la cantidad de canales de ventilador sea 1: la copia guarda el '
+                         'ventilador 2, pero apagado, y con 2 canales o más vuelve a encenderse.')
+        for count in (Decimal(3), Decimal('2.5'), Decimal(0), Decimal(4), None):
+            self.assertIsNone(fan_channel_reason(fields['fan_3_min_rpm'], channels, count), count)
+        self.assertIsNone(fan_channel_reason(fields['fan_2_min_rpm'], channels, Decimal(2)))
+        self.assertIsNone(fan_channel_reason(fields['power_max_w'], channels, Decimal(1)))
+        # The stored count again: no change.
+        self.assertEqual(self.controller.stage({'fan_channels': '3'}).preview, [])
+        # A higher count enables the stored channel: its fields only the copy has come last.
+        self.controller.open(two)
+        raised = self.controller.stage({'fan_channels': '3'})
+        self.assertEqual([(a and a['key'], b['key']) for a, b in primary_preview(raised)],
+                         [('fan_channels', 'fan_channels')] + [(None, key) for key in fan_3])
+        self.assertEqual(change_rows(primary_preview(raised))[1], ('Fan 3 minimum speed', 'not used', 1050, 'RPM'))
+        self.assertEqual(change_rows(primary_preview(raised), 'es')[-1][1:],
+                         ('no se usa', 50, '°C'))
+
     def test_shared_vmin_notes_the_memory_floor_and_the_added_equation(self):
         from nvidia_vbios.gui.presentation import vmin_clone_notes
         from nvidia_vbios.rom import from_bytes, inspect_image

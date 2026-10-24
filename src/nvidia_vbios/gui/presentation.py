@@ -362,8 +362,49 @@ def unsupported_notes(report, language='en'):
 
 
 def primary_preview(document):
+    """Document.preview without the technical fields (technical_field_keys) of the report each field is in."""
     hidden = technical_field_keys(document.report)
-    return [(before, after) for before, after in document.preview if before['key'] not in hidden]
+    added = technical_field_keys(document.proposal.manifest['after']) if document.proposal is not None else set()
+    return [(before, after) for before, after in document.preview
+            if (before['key'] not in hidden if before is not None else after['key'] not in added)]
+
+
+def change_value(field, amount, language='en'):
+    """A display value for the change list: On/Off for a flag field, 'per chip' for a VMIN set per chip."""
+    if amount is None and per_chip(field):
+        return Messages(language)('per_chip_value')
+    return value_text(field, amount, language) if field['units'] == 'flag' else amount
+
+
+def change_rows(pairs, language='en'):
+    """(title, before, after, units) of the change list for (before, after) descriptor pairs (Document.preview).
+
+    A field only one side has reads 'not used' on the other side, and its value carries the units: a channel a
+    lower fan channel count clears reads 500 RPM → not used, one a higher count enables not used → 500 RPM.
+    """
+    text = Messages(language)
+    rows = []
+    for before, after in pairs:
+        field = before if before is not None else after
+        title, units = row_title(field, language)[0], display_units(field)
+        old, new = (text('change.not_used') if side is None else
+                    change_value(side, to_display(side, side['current']), language) for side in (before, after))
+        if after is None:
+            old, units = f'{number(old)} {units}'.strip(), ''
+        rows.append((title, old, new, units))
+    return rows
+
+
+def fan_channel_reason(field, channels, count, language='en'):
+    """Why the row of a fan channel's field is greyed out: the fan channel count (count: typed, staged or stored, a
+    Decimal or None; channels: its descriptor) is one the image offers and leaves that channel off. None otherwise."""
+    channel = field.get('fan_channel')
+    bounds = (channels or {}).get('bounds') or {}
+    low, high = bounds.get('minimum'), bounds.get('maximum')
+    if (channel is None or count is None or low is None or high is None or not low <= count <= high or
+            count != count.to_integral_value() or channel < count):
+        return None
+    return Messages(language)('reason.fan_channel_off', count=number(count), fan=channel + 1)
 
 
 # Windows tools such as MSI Afterburner show the stored table value: half of

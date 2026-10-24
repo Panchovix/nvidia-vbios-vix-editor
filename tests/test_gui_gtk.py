@@ -757,6 +757,238 @@ class GtkSmokeTests(unittest.TestCase):
                 while context.pending():
                     context.iteration(False)
 
+    def test_a_fan_channel_count_checks_saves_and_comes_back_in_both_languages(self):
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gio, GLib, Gtk
+        from unittest.mock import patch
+        from nvidia_vbios.editor import edit, load
+        from nvidia_vbios.gui.app import EditorWindow, texts
+        from nvidia_vbios.rom import from_bytes
+        from test_rom_formats import synthetic_blackwell
+        app = Gtk.Application(application_id='org.nvidia_vbios.FanChannelSmoke',
+                              flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.assertTrue(app.register(None))
+        context = GLib.MainContext.default()
+
+        def until(condition):
+            deadline = time.monotonic() + 15
+            while not condition():
+                while context.pending():
+                    context.iteration(False)
+                if time.monotonic() >= deadline:
+                    self.fail('GTK operation did not complete')
+                time.sleep(.01)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            two, three = Path(tmp) / 'two.rom', Path(tmp) / 'three.rom'
+            two.write_bytes(synthetic_blackwell(fans=True))
+            three.write_bytes(edit(from_bytes(two.read_bytes()), {'fan_channels': 3}).blob)
+            for language in ('en', 'es'):
+                with self.subTest(language=language):
+                    window = EditorWindow(app, three, language)
+                    window.present()
+                    try:
+                        until(lambda: not window.busy and window.controller.document is not None)
+                        channels, fan_3 = window.entries['fan_channels'], window.entries['fan_3_min_rpm']
+                        note = window.rows['fan_3_min_rpm']['dependency']
+                        self.assertEqual((channels.get_text(), fan_3.get_text()), ('3', '1050'))
+                        fan_3.set_text('1000')
+                        until(lambda: not window.verifying and not window.dirty)
+                        # A lower count clears the last channel: its rows go back to the stored values and grey out,
+                        # and the check ends with the cleared fields listed as not used.
+                        channels.set_text('2')
+                        self.assertEqual(fan_3.get_text(), '1050')
+                        self.assertFalse(fan_3.is_sensitive())
+                        self.assertTrue(note.get_visible())
+                        self.assertIn(window.text('reason.fan_channel_off', count=2, fan=3), texts(note))
+                        self.assertTrue(window.entries['fan_2_min_rpm'].is_sensitive())
+                        until(lambda: not window.verifying and not window.dirty)
+                        document = window.controller.document
+                        self.assertEqual(document.changes, {'fan_channels': '2'})
+                        self.assertEqual(window.status.get_text(), window.text(
+                            'live_ok', count=16, bytes=document.proposal.manifest['changed_bytes']))
+                        self.assertFalse(window.spinner.get_spinning())
+                        self.assertIn('3 → 2', window.preview_text())
+                        self.assertIn(f"1050 RPM → {window.text('change.not_used')}", window.preview_text())
+                        self.assertTrue(window.lookup_action('save').get_enabled())
+                        self.assertTrue(window.save_button.is_sensitive())
+                        output = Path(tmp) / f'two-{language}.rom'
+                        window._accept_save_path(output, document)
+                        until(lambda: not window.busy)
+                        self.assertTrue(window.status.get_text().startswith(window.text(
+                            'saved', output=output, manifest=f'{output}.json')))
+                        self.assertEqual({f['key']: f['current'] for f in load(output).report['fields']}
+                                         ['fan_channels'], 2)
+                        # The stored count again: the rows come back with the value typed before the count.
+                        channels.set_text('3')
+                        self.assertTrue(fan_3.is_sensitive())
+                        self.assertFalse(note.get_visible())
+                        self.assertEqual(fan_3.get_text(), '1000')
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual(window.controller.document.changes, {'fan_3_min_rpm': '1000'})
+                        fan_3.set_text('1050')
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual(window.status.get_text(), window.text('live_same'))
+                        self.assertEqual(window.preview_text(), window.text('live_none'))
+                        # An unexpected exception in the window's own code ends the check with the error, Save off.
+                        refresh = window._refresh
+                        with patch.object(window, '_refresh', side_effect=RuntimeError('broken view')), \
+                                patch('nvidia_vbios.gui.app.traceback.print_exc') as printed:
+                            channels.set_text('1')
+                            until(lambda: not window.verifying)
+                        self.assertEqual(window._refresh, refresh)
+                        printed.assert_called_once()
+                        self.assertEqual(window.status.get_text(), window.text(
+                            'unexpected', message='broken view', code='RuntimeError'))
+                        self.assertTrue(window.status.has_css_class('error'))
+                        self.assertFalse(window.spinner.get_spinning())
+                        self.assertFalse(window.lookup_action('save').get_enabled())
+                        channels.set_text('3')
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual(window.status.get_text(), window.text('live_same'))
+                        self.assertFalse(window.status.has_css_class('error'))
+                        # A higher count enables the stored channel of a two-channel image.
+                        window.open_path(two)
+                        until(lambda: not window.busy and window.entries['fan_channels'].get_text() == '2')
+                        self.assertNotIn('fan_3_min_rpm', window.entries)
+                        window.entries['fan_channels'].set_text('3')
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertTrue(window.status.get_text().startswith(window.text(
+                            'live_ok', count=16, bytes=0).split(':')[0]))
+                        self.assertIn(f"{window.text('change.not_used')} → 1050 RPM", window.preview_text())
+                        self.assertTrue(window.lookup_action('save').get_enabled())
+                    finally:
+                        window.close()
+                        while context.pending():
+                            context.iteration(False)
+
+    def test_values_a_fan_channel_count_greys_out_are_kept_and_imported_in_both_languages(self):
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gio, GLib, Gtk
+        from unittest.mock import patch
+        from nvidia_vbios.editor import edit
+        from nvidia_vbios.gui.app import EditorWindow, texts
+        from nvidia_vbios.gui.presentation import primary_preview
+        from nvidia_vbios.rom import from_bytes
+        from test_rom_formats import synthetic_blackwell
+        app = Gtk.Application(application_id='org.nvidia_vbios.FanChannelKeepSmoke',
+                              flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.assertTrue(app.register(None))
+        context = GLib.MainContext.default()
+
+        def until(condition):
+            deadline = time.monotonic() + 15
+            while not condition():
+                while context.pending():
+                    context.iteration(False)
+                if time.monotonic() >= deadline:
+                    self.fail('GTK operation did not complete')
+                time.sleep(.01)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            three, donor = Path(tmp) / 'three.rom', Path(tmp) / 'donor.rom'
+            blob = edit(from_bytes(synthetic_blackwell(fans=True)), {'fan_channels': 3}).blob
+            three.write_bytes(blob)
+            # Another three-channel image with other fan 3 values: the maximum and a curve point, with its level.
+            imported = {'fan_3_max_rpm': '3600', 'fan_3_curve_2_rpm': '2500', 'fan_3_curve_2_pct': '60'}
+            donor.write_bytes(edit(from_bytes(blob), {key: int(value) for key, value in imported.items()}).blob)
+            for language in ('en', 'es'):
+                with self.subTest(language=language):
+                    window = EditorWindow(app, three, language)
+                    window.present()
+                    try:
+                        until(lambda: not window.busy and window.controller.document is not None)
+                        entries, channels = window.entries, window.entries['fan_channels']
+                        idle = lambda: not window.verifying and not window.dirty
+                        typed = {'fan_2_curve_2_rpm': '2300', 'fan_3_curve_2_rpm': '2350'}
+                        for key, text in typed.items():
+                            entries[key].set_text(text)
+                        until(idle)
+                        self.assertEqual(window.controller.document.changes, typed)
+                        # A count typo corrected at once (GTK deletes, then inserts): while it reads 1 the rows of
+                        # fans 2 and 3 show their stored values, and the typed values come back with the count.
+                        for text in ('', '1', '', '3'):
+                            channels.set_text(text)
+                            if text == '1':
+                                self.assertEqual({key: entries[key].get_text() for key in typed},
+                                                 {'fan_2_curve_2_rpm': '2200', 'fan_3_curve_2_rpm': '2200'})
+                                self.assertFalse(entries['fan_2_curve_2_rpm'].is_sensitive())
+                        self.assertEqual({key: entries[key].get_text() for key in typed}, typed)
+                        until(idle)
+                        self.assertEqual(window.controller.document.changes, typed)
+                        # Fan 3 values, a lower count, then an import from an image with the stored count: every
+                        # imported value is staged, fan 3 included, the count goes back to the shared one, and the
+                        # values typed before the count give way to the other image's.
+                        window.lookup_action('reset').activate(None)
+                        channels = entries['fan_channels']           # a reset renders new rows
+                        entries['fan_3_curve_1_rpm'].set_text('1100')
+                        entries['fan_3_curve_2_rpm'].set_text('2350')
+                        until(idle)
+                        channels.set_text('2')
+                        until(idle)
+                        self.assertEqual(window.controller.document.changes, {'fan_channels': '2'})
+                        done = []
+                        self.assertIsNotNone(window.import_path(donor, ['fans'], on_done=done.append))
+                        until(lambda: done and idle())
+                        self.assertEqual(done[0][0], (window.text('import.applied', count=3, file='donor.rom'),
+                                                      'heading'))
+                        document = window.controller.document
+                        self.assertEqual(document.changes, imported)
+                        self.assertEqual(len(primary_preview(document)), 3)
+                        self.assertEqual(channels.get_text(), '3')
+                        self.assertEqual([entries[key].get_text() for key in
+                                          ('fan_3_max_rpm', 'fan_3_curve_1_rpm', 'fan_3_curve_2_rpm')],
+                                         ['3600', '1050', '2500'])
+                        self.assertTrue(entries['fan_3_curve_2_rpm'].is_sensitive())
+                        # A hidden advanced value of fan 3 stays out of a lower count's check, comes back as the
+                        # greyed-out row's parked value, and returns with the count.
+                        window.lookup_action('reset').activate(None)
+                        window.advanced_toggle.set_active(True)
+                        entries['fan_3_curve_2_pct'].set_text('60')
+                        until(idle)
+                        window.advanced_toggle.set_active(False)
+                        entries['fan_channels'].set_text('2')
+                        # The provisional list has the count only, without the hidden values the toggle keeps.
+                        self.assertEqual(len(window.preview_text().split('\n')), 2)
+                        until(idle)
+                        document = window.controller.document
+                        self.assertEqual(document.changes, {'fan_channels': '2'})
+                        verified = window.text('live_ok', count=16, bytes=document.proposal.manifest['changed_bytes'])
+                        self.assertEqual(window.status.get_text(), verified)
+                        window.advanced_toggle.set_active(True)
+                        level = entries['fan_3_curve_2_pct']
+                        self.assertEqual(level.get_text(), '50')
+                        self.assertFalse(level.is_sensitive())
+                        until(idle)
+                        self.assertEqual(window.status.get_text(), verified)
+                        self.assertTrue(window.lookup_action('save').get_enabled())
+                        # Hidden again, then the stored count: the value is checked again.
+                        window.advanced_toggle.set_active(False)
+                        entries['fan_channels'].set_text('3')
+                        until(idle)
+                        self.assertEqual(window.controller.document.changes, {'fan_3_curve_2_pct': '60'})
+                        window.advanced_toggle.set_active(True)
+                        self.assertEqual(entries['fan_3_curve_2_pct'].get_text(), '60')
+                        self.assertTrue(entries['fan_3_curve_2_pct'].is_sensitive())
+                        # An unexpected exception while importing also ends the dialog's wait.
+                        dialog = window.show_import_dialog(donor)
+                        dialog.checks['fans'].set_active(True)
+                        with patch('nvidia_vbios.gui.app.import_summary', side_effect=RuntimeError('broken summary')), \
+                                patch('nvidia_vbios.gui.app.traceback.print_exc'):
+                            dialog.accept_button.emit('clicked')
+                            until(lambda: window.importing is None)
+                        unexpected = window.text('unexpected', message='broken summary', code='RuntimeError')
+                        self.assertEqual(texts(dialog.summary), [window.text('import.failed', message=unexpected)])
+                        self.assertEqual(dialog.cancel_button.get_label(), window.text('import.close'))
+                        self.assertEqual(window.status.get_text(), unexpected)
+                        dialog.close()
+                    finally:
+                        window.close()
+                        while context.pending():
+                            context.iteration(False)
+
     def test_fan_curve_blockers_follow_both_pending_channels_in_both_languages(self):
         import gi
         gi.require_version('Gtk', '4.0')

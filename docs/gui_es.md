@@ -223,7 +223,11 @@ requieren seis cambios para subir ambos mínimos a 1200 RPM: los dos mínimos y 
 primer punto de las cuatro curvas. Ningún valor se ajusta automáticamente.
 El nivel mínimo y máximo (%) de cada canal y los niveles
 de las curvas aparecen con los campos avanzados. Guarda primero una nueva cantidad
-de canales y cambia los límites, las curvas o la parada en reposo en la copia. Ada y
+de canales y cambia los límites, las curvas o la parada en reposo en la copia. Una
+cantidad menor deja en gris las filas de los ventiladores que apaga (la copia los guarda,
+pero apagados) y la lista de cambios muestra sus valores como "no se usa"; un valor escrito
+en esas filas vuelve cuando la cantidad enciende otra vez su ventilador. Una cantidad
+mayor muestra los valores guardados de los ventiladores que enciende. Ada y
 Ampere no heredan esa conversión. Los techos de
 salida OCP revisados se expresan en mA, pero editarlos no demuestra que el firmware
 los aplique. Un techo de ecuación REL/ALT/OV tampoco es un voltaje evaluado ni
@@ -303,9 +307,10 @@ poco más en reposo y puede evitar tirones o parpadeos en reposo; tiempos de rep
 pueden causar tirones o, rara vez, pantalla negra en reposo. Un valor que depende de un
 interruptor (los valores de los controladores de la política de utilización, un tiempo de
 reposo de su función) queda en gris, con el motivo, mientras ese interruptor está apagado,
-también si lo apagas antes de guardar; un valor escrito ahí vuelve al guardado, y al volver a
-activar el interruptor se puede editar de nuevo. Esta sección no depende de **Mostrar campos
-avanzados (estilo XOC)**, e **Importar desde ROM…** nunca la copia.
+también si lo apagas antes de guardar; un valor escrito ahí muestra el guardado mientras
+tanto, y al volver a activar el interruptor se puede editar de nuevo con el valor escrito.
+Esta sección no depende de **Mostrar campos avanzados (estilo XOC)**, e **Importar desde
+ROM…** nunca la copia.
 
 **Memoria (solo lectura)**, una sección plegada después de los campos de solo lectura,
 muestra las tablas de memoria de las imágenes Turing, Ampere, Ada y Blackwell (`nvbios

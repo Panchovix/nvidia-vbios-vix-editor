@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.32
+
+- **Lowering Fan channels no longer gets stuck on "Checking changes…".** Typing a smaller fan channel count (for
+  example 2 on a 3-channel ROM such as the ROG Matrix or the Astral 20th anniversary, to use it on a 2-channel Astral)
+  left the window waiting forever, so the copy could not be saved; `nvbios edit ROM OUT --set fan_channels=2` was not
+  affected. Now the rows of the fans the new count turns off are greyed out with the reason and show their stored
+  values, the change list shows those values as "not used" (and the values of the fans a larger count turns on as "not
+  used → value"), and an unexpected error in the window or during an import shows in the status line and in the import
+  window instead of a silent wait.
+- **Greyed-out rows keep what you typed.** A value typed in a row that the fan channel count or a switch (the
+  utilization policy, a DIFR or GR rail gating feature) greys out comes back when the count turns its fan on again or
+  the switch is turned back on, so a passing count such as 1 while typing 3 loses nothing. Before, a row greyed out by
+  a switch went back to its stored value for good. Hidden advanced values of a fan the count turns off stay out of the
+  check until the count turns it on again.
+- **The change list no longer shows unchanged hidden fields.** Turning **Show advanced XOC-style fields** off while an
+  edit was being checked listed every hidden advanced field as "800 → 800 W", "Off → Off" and so on until the check
+  ended, and kept them if it failed.
+
 ## 0.1.31
 
 - **Import from ROM… copies a fan curve with its levels.** Importing the Fans section now brings each fan curve with
