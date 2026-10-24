@@ -28,6 +28,8 @@ from .presentation import (ADVANCED_SECTION, advanced_group, classify_number, de
 
 # Typing pauses this long before the copy is rebuilt and verified.
 LIVE_DELAY_MS = 350
+# The import summary grows its dialog up to this height and scrolls beyond it.
+IMPORT_SUMMARY_HEIGHT = 280
 
 CSS = """
 .vb-content { padding: 18px 18px 8px 18px; }
@@ -1184,10 +1186,10 @@ class EditorWindow(Gtk.ApplicationWindow):
             box.append(check)
         box.append(label(self.text('import.note'), wrap=True, css=('vb-note',), selectable=False))
         window.summary = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        scroll = Gtk.ScrolledWindow()
+        scroll = Gtk.ScrolledWindow(vexpand=True, overlay_scrolling=False)
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroll.set_propagate_natural_height(True)
-        scroll.set_max_content_height(280)
+        scroll.set_max_content_height(IMPORT_SUMMARY_HEIGHT)
         scroll.set_child(window.summary)
         box.append(scroll)
         buttons = Gtk.Box(spacing=8, halign=Gtk.Align.END)
@@ -1205,6 +1207,9 @@ class EditorWindow(Gtk.ApplicationWindow):
             for line, kind in lines:
                 window.summary.append(label(line, wrap=True, css={'warning': ('vb-bad',), 'detail': ('vb-note',)}
                                             .get(kind, ())))
+            # A shown window keeps its height, so the summary would only get what is left: back to the natural
+            # height, which holds the summary up to its cap. It stays a default size, so the window still shrinks.
+            window.set_default_size(window.get_default_size()[0], -1)
             if done:
                 window.accept_button.set_visible(False)
                 window.cancel_button.set_label(self.text('import.close'))
@@ -1296,8 +1301,11 @@ class EditorWindow(Gtk.ApplicationWindow):
                 changes[key] = field['current']
         if not changes:
             return
-        if not self.advanced_toggle.get_active() and any(fields[key].get('opt_in') for key in changes):
-            self.advanced_toggle.set_active(True)        # opt-in values were asked for: show their rows
+        # Opt-in values were asked for: show their rows. The levels of a fan curve come with it unasked and stay
+        # behind the toggle, as on any other ROM; the change list shows them.
+        if (report['include_opt_in'] and not self.advanced_toggle.get_active() and
+                any(fields[key].get('opt_in') for key in changes)):
+            self.advanced_toggle.set_active(True)
         for key, value in changes.items():
             text = number(to_display(fields[key], value))
             if key in self.entries:

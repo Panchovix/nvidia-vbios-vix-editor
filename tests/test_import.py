@@ -62,6 +62,7 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(self.target.blob, self.blob)
 
     def test_opt_in_fields_are_imported_only_when_included(self):
+        # Fan curve levels are the exception: they come with their curve (test_a_set_waits_for_its_differing...).
         donor = donor_of(self.blob, {'fan_zero_rpm': 1, 'board_fixed_rated_w': 80})
         report, result = import_fields(self.target, donor, ['fans', 'power'])
         self.assertIsNone(result)
@@ -73,23 +74,18 @@ class ImportTests(unittest.TestCase):
 
     def test_a_set_waits_for_its_differing_opt_in_partner(self):
         # Without the fixed board policies the lower ceiling would leave them above it, a mix of both ROMs.
-        lower = {'power_max_w': 65, 'power_default_w': 60}
-        donor = donor_of(self.blob, dict(lower, board_fixed_rated_w=60))
-        report, result = import_fields(self.target, donor, ['power'])
-        self.assertIsNone(result)
+        # A fan curve point comes whole with its level, an advanced field that comes with its curve all the same.
+        lower, point = {'power_max_w': 65, 'power_default_w': 60}, {'fan_1_curve_2_rpm': 2000, 'fan_1_curve_2_pct': 40}
+        donor = donor_of(self.blob, dict(lower, board_fixed_rated_w=60, **point))
+        report, result = import_fields(self.target, donor, ['power', 'fans'])
+        self.assertEqual(report['changes'], point)
         self.assertEqual({e['field']: (e['reason'], e.get('partners')) for e in report['skipped']},
                          {'power_max_w': ('held_back', ['board_fixed_rated_w']),
                           'power_default_w': ('held_back', ['board_fixed_rated_w']),
                           'board_fixed_rated_w': ('opt_in', None)})
-        report, result = import_fields(self.target, donor, ['power'], include_opt_in=True)
-        self.assertEqual(report['changes'], dict(lower, board_fixed_rated_w=60))
-        # A fan curve point comes whole: its speed waits for its level.
-        donor = donor_of(self.blob, {'fan_1_curve_2_rpm': 2000, 'fan_1_curve_2_pct': 40})
-        report, _ = import_fields(self.target, donor, ['fans'], dry_run=True)
-        self.assertEqual((report['changes'], [(e['field'], e['reason']) for e in report['skipped']]),
-                         ({}, [('fan_1_curve_2_rpm', 'held_back'), ('fan_1_curve_2_pct', 'opt_in')]))
-        report, _ = import_fields(self.target, donor, ['fans'], include_opt_in=True, dry_run=True)
-        self.assertEqual(report['changes'], {'fan_1_curve_2_rpm': 2000, 'fan_1_curve_2_pct': 40})
+        self.assertEqual(values(result.image)['fan_1_curve_2_pct'], 40)
+        report, result = import_fields(self.target, donor, ['power', 'fans'], include_opt_in=True)
+        self.assertEqual((report['changes'], report['skipped']), (dict(lower, board_fixed_rated_w=60, **point), []))
 
     def test_a_set_comes_whole_from_one_rom(self):
         # A curve temperature read-only in both ROMs holds back the speed of its curve; a read-only field
@@ -182,23 +178,37 @@ class ImportTests(unittest.TestCase):
 
     def test_a_curve_below_the_zero_rpm_upper_comes_only_with_its_pair(self):
         # With zero RPM on, an upper stays at most point 1 of its curve: a donor curve that starts lower than this
-        # ROM's upper is refused alone and comes with the donor's pair, an advanced field.
+        # ROM's upper is refused alone and comes with the donor's pair, an advanced field, or with zero RPM off.
+        # The refusal names those advanced fields, and the summary says to import again with them.
+        from nvidia_vbios.gui.presentation import Messages, import_summary
         from test_extended_fields import repair_fixture
         blob = bytearray(self.blob)
         table = backend(from_bytes(bytes(blob))).fan_coolers()
         for entry in table['rows'][:3] + table['extra_curves']:
             blob[entry['policy_offset'] + 0x32] = 0x17 if entry['index'] < 4 else 0x07
         target = from_bytes(repair_fixture(blob), 'board.rom')
-        donor = donor_of(target.blob, {'fan_1_curve_1_temp_c': 45, 'fan_1_zero_rpm_high_temp_c': 45})
+        fields, hint = {f['key']: f for f in target.report['fields']}, Messages('en')('import.opt_in_hint')
+        for stages, partner in (([{'fan_1_curve_1_temp_c': 45, 'fan_1_zero_rpm_high_temp_c': 45}],
+                                 {'fan_1_zero_rpm_high_temp_c': 45.0}),
+                                ([{'fan_zero_rpm': 0}, {'fan_1_curve_1_temp_c': 45}], {'fan_zero_rpm': 0})):
+            with self.subTest(partner=partner):
+                donor = donor_of(target.blob, *stages)
+                report, result = import_fields(target, donor, ['fans'])
+                self.assertIsNone(result)
+                refused = next(e for e in report['skipped'] if e['field'] == 'fan_1_curve_1_temp_c')
+                self.assertEqual((refused['reason'], refused['code'], refused['partners']),
+                                 ('refused', 'ZERO_RPM_ABOVE_CURVE', list(partner)))
+                self.assertIn('fan_1_zero_rpm_high_temp_c', refused['message'])
+                self.assertIn((hint, 'detail'), import_summary(report, fields))
+                report, result = import_fields(target, donor, ['fans'], include_opt_in=True)
+                self.assertEqual(report['changes'], dict(partner, fan_1_curve_1_temp_c=45.0))
+                self.assertEqual(values(result.image)['fan_1_curve_1_temp_c'], 45.0)
+        # A donor curve below its own upper (a board shipped that way): the advanced fields would not help.
+        donor = FakeDonor(target, {'fan_1_curve_1_temp_c': dict(current=45.0)})
         report, result = import_fields(target, donor, ['fans'])
-        self.assertIsNone(result)
         refused = next(e for e in report['skipped'] if e['field'] == 'fan_1_curve_1_temp_c')
-        self.assertEqual((refused['reason'], refused['code']), ('refused', 'ZERO_RPM_ABOVE_CURVE'))
-        self.assertIn('fan_1_zero_rpm_high_temp_c', refused['message'])
-        report, result = import_fields(target, donor, ['fans'], include_opt_in=True)
-        self.assertEqual(report['changes'], {'fan_1_curve_1_temp_c': 45.0, 'fan_1_zero_rpm_high_temp_c': 45.0})
-        self.assertEqual((values(result.image)['fan_1_curve_1_temp_c'], values(result.image)['fan_zero_rpm']),
-                         (45.0, 1))
+        self.assertEqual((refused['code'], 'partners' in refused), ('ZERO_RPM_ABOVE_CURVE', False))
+        self.assertNotIn((hint, 'detail'), import_summary(report, fields))
 
     def test_other_families_are_refused_and_other_products_warned(self):
         for other in (synthetic_rom(), synthetic_rom(family='ampere')):

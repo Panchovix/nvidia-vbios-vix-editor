@@ -85,7 +85,8 @@ def parser():
     p.add_argument('output', type=Path, nargs='?', help='new ROM to write (not needed with --dry-run)')
     p.add_argument('--sections', required=True, metavar='LIST',
                    help='comma-separated: power, voltage, clocks, current, fans')
-    p.add_argument('--include-opt-in', action='store_true', help='also import opt-in (advanced) fields')
+    p.add_argument('--include-opt-in', action='store_true',
+                   help='also import opt-in (advanced) fields; fan curve levels come with their curve without it')
     p.add_argument('--dry-run', action='store_true', help='report what would be imported without writing')
     p.add_argument('--json', action='store_true')
     p = commands.add_parser('normalize', help='export a validated single-chain driver payload')

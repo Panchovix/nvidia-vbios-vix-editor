@@ -342,9 +342,17 @@ the value both ROMs hold. Nothing is written until **Save Copy…**, and pending
 
 Related fields come whole from the other ROM or not at all: a minimum, rated value and maximum;
 a fan curve (the fan limits and each point's temperature, speed and level); the 12 V input limit
-and its policy 7 copy. When one of them differs but is left out, for example a curve level that
-is an advanced field you did not include, the others are held back too. A value the editor
-refuses is dropped with the values it depends on (those related fields, or all voltage fields).
+and its policy 7 copy. When one of them differs but is left out, for example the rated power of
+the fixed board policies, an advanced field you did not include, the others are held back too.
+The levels of a fan curve are advanced fields too, but they come with their curve even when the
+advanced fields are not ticked: each ROM pairs its fan speeds with levels set for its own fans, so
+speeds without their levels would run the fans at other speeds than the curve says. They show in
+the change list and stay behind **Show advanced XOC-style fields**, which the import turns on only
+when you tick the advanced fields and some of them come. A value the editor refuses is dropped
+with the values it depends on (those related fields, or all voltage fields). With zero RPM on, a
+curve that starts below this ROM's zero RPM upper threshold is refused unless the other ROM's
+thresholds, or its zero RPM off, come with it, so without the advanced fields the summary asks you
+to import again with them.
 The dialog then says how many values were imported and lists the fields left out with their
 reason: not in one of the ROMs, read-only, another quantity in the other ROM (other units,
 memory level, notebook or board power layout, or voltage equation, such as REL and ALT that

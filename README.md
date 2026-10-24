@@ -15,9 +15,9 @@ connector power and current limits, VMIN, fixed REL/ALT voltages, clock offset r
 A read-only **Memory** section (all four families) shows the memory configurations, the memory clock bands and
 their timing entries with decoded values and, on Blackwell, an undecoded board memory-training profile, and tells
 whether another ROM's tables are identical or differ. **Import from ROM…** copies the values of chosen sections
-(for example the fan settings; fan curves, Blackwell board power and Turing VMIN often need the advanced fields
-too) from another ROM of the same family as pending changes; they are copied as stored numbers, so check that this
-board's hardware can take them.
+(for example the fan settings; Blackwell board power and Turing VMIN often need the advanced fields too, as does a
+fan curve that starts below this ROM's zero RPM threshold) from another ROM of the same family as pending changes;
+they are copied as stored numbers, so check that this board's hardware can take them.
 
 Loading an edited image with the Linux or Windows loader works with NVIDIA 615.x (R615) drivers on Linux and
 616.x, 617.x and 621.x drivers on Windows (621.01 is tested on Blackwell, Ada and Ampere, not yet on Turing). It

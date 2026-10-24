@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.31
+
+- **Import from ROM… copies a fan curve with its levels.** Importing the Fans section now brings each fan curve with
+  its levels (%), also when the advanced fields are not ticked (and with `nvbios import` without
+  `--include-opt-in`). Each ROM pairs its fan speeds with levels set for its own fans, so speeds without their levels
+  run the fans at other speeds than the curve says. Before, a curve whose levels differed, which is nearly always the
+  case between two boards, was left out whole. The zero RPM switch and temperatures and the other advanced fields
+  still come only when ticked, and the imported levels show in the change list without turning on **Show advanced
+  XOC-style fields**. With zero RPM on, a curve that starts below this ROM's zero RPM upper threshold still needs the
+  advanced fields, so that the other ROM's thresholds (or its zero RPM off) come with it. The summary now says so,
+  and `nvbios import` lists those fields as `partners` of the refused ones.
+- **The import window shows its whole summary.** It grows up to a height and then scrolls with a visible scroll bar.
+  Before, it could show only its first two lines, so an import that left fields out looked like "Nothing imported"
+  with no reason.
+
 ## 0.1.30
 
 - **VMIN set per chip (experimental; Ampere, Ada and Blackwell).** On many ROMs the minimum voltage is not one

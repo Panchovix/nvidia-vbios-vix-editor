@@ -25,6 +25,8 @@ BOARD_KEYS = frozenset(('fan_channels',))
 # generic rules: editable on almost every ROM, a donor without one (a Founders Edition) gives 0 MHz.
 PRODUCT_KEYS = frozenset(('max_operating_temp_c',))
 # One fan curve: the fan limits and each point's temperature, speed and level (three ordering groups in the editor).
+# Its levels are opt-in fields that come with it all the same: each ROM pairs its speeds with levels set for its own
+# fans, so speeds without their levels would run the fans at other speeds than the curve says.
 FAN_CURVE = re.compile(r'fan_(\d+_(min|max)_(rpm|pct)|(\d+|extra_\d+)_curve_\d+_(temp_c|rpm|pct))')
 # The zero RPM temperature pair of one fan policy entry. The editor checks every fan temperature as one ordering
 # group (the upper stays at most point 1 of its curve), but each pair still comes whole from one ROM on its own.
@@ -110,16 +112,18 @@ def import_fields(target, donor, sections, *, include_opt_in=False, dry_run=Fals
 
     Both images must be of the same family and format; another device of the family only adds a
     warning. Fields hidden as aliases or placeholders are not considered, nor opt-in fields unless
-    include_opt_in, nor the fan channel count or the maximum operating temperature (BOARD_KEYS,
-    PRODUCT_KEYS). A field is proposed when it is editable in both images, means the same quantity
-    in both and its donor value is inside the target's bounds, checked as edit() checks them: the
-    encoding bounds when partners of its ordering group are proposed with it, else its own. A
-    dependent set (_set) comes whole from the donor: when one of its fields differs but is left
-    out, the others are held back. The proposal goes through edit() as one request, so the
-    cross-field checks see the final set; a unit the editor refuses (_unit) is dropped whole and
-    reported, never applied in part. result is the verified EditResult of the applied values, or
-    None when none is applied; report lists them (`changes`, `applied`), every `skipped` field with
-    its reason, the `unchanged` keys (editable here, equal in both) and `warnings`.
+    include_opt_in (the levels of a fan curve come with their curve all the same, FAN_CURVE), nor
+    the fan channel count or the maximum operating temperature (BOARD_KEYS, PRODUCT_KEYS). A field
+    is proposed when it is editable in both images, means the same quantity in both and its donor
+    value is inside the target's bounds, checked as edit() checks them: the encoding bounds when
+    partners of its ordering group are proposed with it, else its own. A dependent set (_set) comes
+    whole from the donor: when one of its fields differs but is left out, the others are held back.
+    The proposal goes through edit() as one request, so the cross-field checks see the final set; a
+    unit the editor refuses (_unit) is dropped whole and reported, never applied in part, and a zero
+    RPM start refusal names the opt-in fields left out that would lift it (`partners`). result is
+    the verified EditResult of the applied values, or None when none is applied; report lists them
+    (`changes`, `applied`), every `skipped` field with its reason, the `unchanged` keys (editable
+    here, equal in both) and `warnings`.
     """
     sections = [sections] if isinstance(sections, str) else list(dict.fromkeys(sections))
     unknown = [name for name in sections if name not in IMPORT_SECTIONS]
@@ -148,7 +152,8 @@ def import_fields(target, donor, sections, *, include_opt_in=False, dry_run=Fals
         section = field_section(field)
         if key in hidden or section not in sections:
             continue
-        opted_out = not include_opt_in and any(f.get('opt_in') for f in (mine, other) if f)
+        opted_out = (not include_opt_in and not FAN_CURVE.fullmatch(key) and
+                     any(f.get('opt_in') for f in (mine, other) if f))
         editable = [f is not None and f['editable'] for f in (mine, other)]
         both = mine is not None and other is not None
         same = both and (all(mine.get(name) == other.get(name) for name in IDENTITY) and
@@ -244,8 +249,17 @@ def import_fields(target, donor, sections, *, include_opt_in=False, dry_run=Fals
                     refused.append((name, error))
             pending = kept
             break
+    opted = {entry['field'] for entry in left if entry['reason'] == 'opt_in'}
+
+    def lifting(exc):
+        """The opt-in fields left out that would lift a zero RPM start refusal: the zero RPM pairs it names and the
+        zero RPM switch, which is off in the donor when it differs here. With them the donor's zero RPM settings
+        would come with its curve."""
+        joint = exc.details.get('joint_fields') if isinstance(exc.details, dict) else None
+        partners = [key for key in order if key in opted and (key in (joint or ()) or key == 'fan_zero_rpm')]
+        return dict(partners=partners) if exc.code == 'ZERO_RPM_ABOVE_CURVE' and partners else {}
     skipped = [entry for entry in left + out if entry['reason'] != 'read_only' or entry['field'] in holding] + held
-    skipped += [dict(entries[key], reason='refused', code=exc.code, message=str(exc))
+    skipped += [dict(entries[key], reason='refused', code=exc.code, message=str(exc), **lifting(exc))
                 for name, exc in refused for key in units[name]]
     applied = sorted((key for name in pending for key in units[name]), key=order.get) if result else []
     report = dict(schema_version=1, target=ours, donor=theirs, sections=sections, include_opt_in=bool(include_opt_in),

@@ -346,9 +346,18 @@ hasta **Guardar copia…**, y los valores pendientes de otras secciones se manti
 Los campos relacionados vienen completos de la otra ROM o no vienen: un mínimo, un valor nominal
 y un máximo; una curva de ventilador (los límites de los ventiladores y la temperatura, la
 velocidad y el nivel de cada punto); el límite de entrada de 12 V y su copia en la política 7.
-Si uno de ellos difiere pero queda fuera, por ejemplo un nivel de curva que es un campo avanzado
-que no incluiste, los demás también se retienen. Un valor que el editor rechaza queda fuera
-junto con los valores de los que depende (esos campos relacionados, o todos los voltajes). Luego
+Si uno de ellos difiere pero queda fuera, por ejemplo la potencia nominal de las políticas fijas
+de la placa, un campo avanzado que no incluiste, los demás también se retienen. Los niveles de
+una curva de ventilador también son campos avanzados, pero vienen con su curva aunque no marques
+los campos avanzados: cada ROM empareja sus velocidades de ventilador con niveles ajustados para
+sus propios ventiladores, así que las velocidades sin sus niveles harían girar los ventiladores a
+velocidades distintas de las que indica la curva. Aparecen en la lista de cambios y quedan detrás
+de **Mostrar campos avanzados (estilo XOC)**, que la importación activa solo cuando marcas los
+campos avanzados y viene alguno de ellos. Un valor que el editor rechaza queda fuera junto con los
+valores de los que depende (esos campos relacionados, o todos los voltajes). Con la parada en
+reposo activada, una curva que empieza por debajo del umbral superior de parada en reposo de esta
+ROM se rechaza salvo que vengan con ella los umbrales de la otra ROM, o su parada en reposo
+desactivada, así que sin los campos avanzados el resumen te pide importar de nuevo con ellos. Luego
 el diálogo indica cuántos valores se importaron y lista los campos que quedaron fuera con su
 motivo: no está en una de las ROM, es de solo lectura, en la otra ROM es otra magnitud (otras
 unidades, otro nivel de memoria, otro esquema de potencia de notebook o de placa, u otra

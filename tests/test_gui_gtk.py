@@ -1122,7 +1122,8 @@ class GtkSmokeTests(unittest.TestCase):
         gi.require_version('Gtk', '4.0')
         from gi.repository import Gio, GLib, Gtk
         from nvidia_vbios.editor import edit
-        from nvidia_vbios.gui.app import EditorWindow, texts
+        from nvidia_vbios.gui.app import IMPORT_SUMMARY_HEIGHT, EditorWindow, texts
+        from nvidia_vbios.gui.presentation import row_title
         from nvidia_vbios.rom import from_bytes
         from test_rom_formats import synthetic_blackwell, synthetic_rom
         app = Gtk.Application(application_id='org.nvidia_vbios.ImportSmoke', flags=Gio.ApplicationFlags.NON_UNIQUE)
@@ -1138,12 +1139,21 @@ class GtkSmokeTests(unittest.TestCase):
                     self.fail('GTK operation did not complete')
                 time.sleep(.01)
 
+        def summary_height(dialog):
+            """(height of the summary's scroll area, height that shows its lines up to the cap, natural height)."""
+            scroll = dialog.summary.get_ancestor(Gtk.ScrolledWindow)
+            natural = dialog.summary.measure(Gtk.Orientation.VERTICAL, scroll.get_width())[1]
+            return scroll.get_height(), min(natural, IMPORT_SUMMARY_HEIGHT), natural
+
         with tempfile.TemporaryDirectory() as tmp:
             path, other, ada = Path(tmp) / 'board.rom', Path(tmp) / 'other.rom', Path(tmp) / 'ada.rom'
+            fewer = Path(tmp) / 'fewer.rom'
             blob = synthetic_blackwell(fans=True)
             path.write_bytes(blob)
             other.write_bytes(edit(from_bytes(blob), {'fan_pwm_frequency_hz': 25000, 'fan_zero_rpm': 1,
-                                                      'power_max_w': 120}).blob)
+                                                      'power_max_w': 120, 'fan_1_curve_2_rpm': 2000,
+                                                      'fan_1_curve_2_pct': 40}).blob)
+            fewer.write_bytes(edit(from_bytes(blob), {'fan_channels': 1}).blob)
             ada.write_bytes(synthetic_rom())
             for language in ('en', 'es'):
                 with self.subTest(language=language):
@@ -1162,16 +1172,24 @@ class GtkSmokeTests(unittest.TestCase):
                         self.assertTrue(dialog.accept_button.get_sensitive())
                         dialog.accept_button.emit('clicked')
                         until(lambda: window.importing is None and not window.verifying and not window.dirty)
+                        # The curve point comes with its level, which stays behind the advanced toggle.
+                        curve = {'fan_1_curve_2_rpm': '2000', 'fan_1_curve_2_pct': '40'}
                         self.assertEqual(window.controller.document.changes,
-                                         {'power_max_w': '110', 'fan_pwm_frequency_hz': '25000'})
+                                         {'power_max_w': '110', 'fan_pwm_frequency_hz': '25000', **curve})
                         self.assertEqual(window.entries['fan_pwm_frequency_hz'].get_text(), '25')
                         self.assertEqual(window.entries['fan_1_curve_1_temp_c'].get_text(), '50')
+                        self.assertEqual(window.hidden_text, {'fan_1_curve_2_pct': '40'})
+                        level = next(f for f in window.controller.document.report['fields']
+                                     if f['key'] == 'fan_1_curve_2_pct')
+                        self.assertIn(row_title(level, language)[0], window.preview_text())
                         self.assertIn('changed', window.rows['fan_pwm_frequency_hz']['row'].get_css_classes())
                         shown = texts(dialog.summary)
-                        self.assertIn(window.text('import.applied', count=1, file='other.rom'), shown)
+                        self.assertIn(window.text('import.applied', count=3, file='other.rom'), shown)
                         self.assertIn(window.text('import.reason.opt_in'), '\n'.join(shown))
                         self.assertEqual(dialog.cancel_button.get_label(), window.text('import.close'))
                         self.assertFalse(window.advanced_toggle.get_active())
+                        # The dialog grows to show the whole summary.
+                        until(lambda: summary_height(dialog)[0] >= summary_height(dialog)[2])
                         dialog.cancel_button.emit('clicked')
                         # Opt-in values open the advanced rows; the earlier values stay pending.
                         self.assertIsNotNone(window.import_path(other, ['fans'], include_opt_in=True))
@@ -1179,8 +1197,10 @@ class GtkSmokeTests(unittest.TestCase):
                         until(lambda: window.importing is None and not window.verifying and not window.dirty)
                         self.assertTrue(window.advanced_toggle.get_active())
                         self.assertTrue(window.entries['fan_zero_rpm'].get_active())
+                        self.assertEqual(window.entries['fan_1_curve_2_pct'].get_text(), '40')
                         self.assertEqual(window.controller.document.changes,
-                                         {'power_max_w': '110', 'fan_pwm_frequency_hz': '25000', 'fan_zero_rpm': '1'})
+                                         {'power_max_w': '110', 'fan_pwm_frequency_hz': '25000', 'fan_zero_rpm': '1',
+                                          **curve})
                         self.assertTrue(window.lookup_action('save').get_enabled())
                         # Another family is refused in the summary and changes nothing.
                         document = window.controller.document
@@ -1188,6 +1208,16 @@ class GtkSmokeTests(unittest.TestCase):
                         until(lambda: window.importing is None)
                         self.assertIn('FAMILY_MISMATCH', window.import_lines[0][0])
                         self.assertIs(window.controller.document, document)
+                        # A longer summary grows the dialog up to its cap and scrolls beyond it.
+                        dialog = window.show_import_dialog(fewer)
+                        dialog.checks['fans'].set_active(True)
+                        dialog.accept_button.emit('clicked')
+                        until(lambda: window.importing is None and not window.verifying and not window.dirty)
+                        self.assertGreater(len(window.import_lines), 15)
+                        until(lambda: summary_height(dialog)[0] >= summary_height(dialog)[1])
+                        self.assertGreater(summary_height(dialog)[2], IMPORT_SUMMARY_HEIGHT)
+                        self.assertLessEqual(summary_height(dialog)[0], IMPORT_SUMMARY_HEIGHT)
+                        dialog.close()
                         # Closing the dialog before the import ends drops its result.
                         dialog = window.show_import_dialog(other)
                         dialog.checks['power'].set_active(True)

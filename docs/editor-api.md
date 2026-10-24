@@ -241,7 +241,10 @@ board power fields of a notebook TGP layout) and `equation_type`, and a voltage 
 equation shared by the same fields (REL and ALT that follow OV share its equation, so their values
 are not those of a ROM where each has its own). Aliases and placeholders the GUI hides are left
 out, opt-in fields unless `include_opt_in`, and the fan channel count, which describes the board's
-fans. A dependent set comes whole from the donor: an ordering group (a minimum, rated value and
+fans. The levels of a fan curve (`fan_N_min/max_pct` and the curve points' `*_pct`) are opt-in
+fields that come with their curve all the same: each ROM pairs its speeds with levels set for its
+own fans, so speeds without their levels would run the fans at other speeds than the curve says.
+A dependent set comes whole from the donor: an ordering group (a minimum, rated value and
 maximum), the fan curve (`fan_N_min/max_rpm/pct` and every curve point's temperature, speed and
 level), the zero RPM pair of one fan policy entry and the 12 V input limit with
 `input_current_policy7_limit_ma`. When a field of a set
@@ -257,10 +260,11 @@ quantities (`different_meaning`), whatever the equation types. `fan_zero_rpm` is
 pairs: with `include_opt_in`, a donor's 1 turns zero RPM on in the target, with the target's own
 template where it has one (an RTX A6000 from an RTX 3080 Ti Founders Edition). The start temperature
 rule applies to the proposal like any edit: a donor curve whose point 1 is below the target's upper
-with zero RPM on is refused (`refused`, `ZERO_RPM_ABOVE_CURVE`) unless the donor's pair comes with
-it, a donor upper above the target's new point 1 is refused as out of bounds while the rest
-applies, and on a template board a donor curve that starts below the template's upper comes
-while `fan_zero_rpm` is refused.
+with zero RPM on is refused (`refused`, `ZERO_RPM_ABOVE_CURVE`) unless the donor's pair, or its
+`fan_zero_rpm` 0, comes with it (without `include_opt_in`, the refused fields list those left out
+as their `partners`), a donor upper above the target's new point 1 is refused as out of bounds
+while the rest applies, and on a template board a donor curve that starts below the template's
+upper comes while `fan_zero_rpm` is refused.
 
 It returns `(report, result)`. `result` is the verified `EditResult` of the applied values, or
 `None` when none is applied. `report` holds `changes` (key → value, as `edit` takes them), the
@@ -272,8 +276,9 @@ except the `product_specific` field), `warnings` and a `note`. A skipped field's
 both ROMs; listed only when it holds a set back), `opt_in`, `board_specific` (the fan channel
 count), `product_specific` (`max_operating_temp_c`, set for each product),
 `different_meaning`, `out_of_bounds` (with the `bounds`), `held_back` (with the `partners` that
-held its set back) or `refused` (with the editor's `code` and `message`). An opt-in field is listed
-only when both ROMs hold it with different values.
+held its set back) or `refused` (with the editor's `code` and `message`; a zero RPM start refusal
+also with the opt-in fields left out that would lift it as `partners`). An opt-in field left out
+is listed only when both ROMs hold it with different values.
 
 Values are copied as stored numbers, not adapted to the board: fan speeds, power or current
 limits and voltage limits from another board can exceed this board's hardware (fans rated for a
