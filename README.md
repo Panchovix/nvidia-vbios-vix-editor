@@ -1,10 +1,10 @@
 # NVIDIA VBIOS Vix Editor
 
-Offline VBIOS Editor for Blackwell 2.0 (GB2XX) cards, Ada (AD1XX), Ampere (GA1XX) and Turing (TU2XX/TU1XX) GPUs.
+Offline VBIOS Editor for Blackwell 2.0 (GB2XX) cards, Ada (AD1XX), Ampere (GA1XX) and Turing (TU1XX) GPUs.
 
-Use them via a loder, [NVIDIA Linux VBIOS Vix Loader](https://github.com/Panchovix/nvidia-linux-vbios-vix-loader) for Linux.
+Use them via a loader, [NVIDIA Linux VBIOS Vix Loader](https://github.com/Panchovix/nvidia-linux-vbios-vix-loader) for Linux.
 
-On Windows, [NVIDIA Windows VBIOS Vix Loader](https://github.com/Panchovix/nvidia-windows-vbios-vix-loader) or mvolt+ with BIOS override.
+On Windows, [NVIDIA Windows VBIOS Vix Loader](https://github.com/Panchovix/nvidia-windows-vbios-vix-loader) or mVolt+ with BIOS override.
 
 **Not affiliated with, endorsed by or sponsored by NVIDIA Corporation.** NVIDIA and
 GeForce are trademarks of NVIDIA Corporation.
@@ -113,8 +113,8 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
 
 ## Detailed Description
 
-Offline editor for NVIDIA Blackwell (GB20x) VBIOS images, Ada (AD10x) images.
-Ampere (GA10x) images and Turing (TU20x/TU11X) images. It edits when applicable: power limits, voltage ceilings, the minimum voltage
+Offline editor for NVIDIA Blackwell (GB20x), Ada (AD10x), Ampere (GA10x) and Turing (TU10x/TU11x) VBIOS images.
+It edits when applicable: power limits, voltage ceilings, the minimum voltage
 (VMIN), clock offset ranges, 12 V input current and output OCP limits, fan PWM frequency, fan channels,
 per-channel fan speed limits, the stored fan curves and zero RPM (experimental).
 A read-only **Memory** section (all four families) shows the memory configurations, the memory clock bands and
