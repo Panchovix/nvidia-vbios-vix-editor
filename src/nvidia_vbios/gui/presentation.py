@@ -254,14 +254,16 @@ def sense_profile_notes(field, fields, language='en'):
 def notebook_notes(field, family, language='en'):
     """Notes of the board power fields of a GB20x notebook TGP layout (notebook_tgp).
 
-    The ceiling notes that the platform requests the running limit, so raising the ceiling alone usually
-    leaves it where it was. The experimental base TGP (notebook_base_tgp_w, an advanced field) notes what it
-    may be and the risk; it bounds no other field, so the ceiling and the boot default do not mention it.
+    The platform requests the running limit, and on the one laptop tested it moved only with the ceiling, the
+    boot default and the experimental base TGP (notebook_base_tgp_w, an advanced field) raised together. The
+    base TGP bounds no other field, but the ceiling and the boot default name it so the three go together
+    wherever the user starts; the base TGP note adds its own bounds and the risk.
     """
     if not field.get('notebook_tgp') or not (family or '').startswith('blackwell'):
         return []
     text, key = Messages(language), field['key']
     return ([text('notebook.ceiling')] if key == 'power_max_w' else
+            [text('notebook.default')] if key == 'power_default_w' else
             [text('notebook.base_tgp')] if key == 'notebook_base_tgp_w' else [])
 
 

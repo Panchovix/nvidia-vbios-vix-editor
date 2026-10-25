@@ -355,8 +355,24 @@ NOTEBOOK_BASE_TGP_EVIDENCE = {
     'format': 'GB20x power v40 notebook layout: TGP row 2 bytes 0..12 010200000000012b07000ccc10; u32 mW at '
               'row 2 +73, 0 on every desktop and Max-Q row 2',
     'observation': "only 150000 in the image; a public log from another RTX 5090 Laptop shows the firmware's TGP "
-                   'policy base at 150000 while the running limit was base + 25 W Dynamic Boost; untested',
+                   'policy base at 150000 while the running limit was base + 25 W Dynamic Boost; for the set test on '
+                   'one RTX 5090 Laptop GPU see the hardware-test entry',
     'set_tested': False, 'runtime_get': False}
+# One user's report on an RTX 5090 Laptop GPU: the running limit moved only with the ceiling, the boot default
+# and the base TGP (row 2 +21, +17, +73) raised together. The rule is inferred from this laptop alone; the
+# firmware that combines them is closed and was not traced.
+NOTEBOOK_POWER_HARDWARE = {
+    'kind': 'hardware-test', 'set_tested': True,
+    'source': 'user report: edited images loaded as an override (Windows loader)',
+    'scope': 'one RTX 5090 Laptop GPU 98.03.5C.00.72 (10de:2c18), stock row 2 5000/95000/175000 mW, +73 150000 mW; '
+             'the RTX 5080 Laptop GPU and other laptops are untested',
+    'observed': 'power_max_w 225 alone left the GPU at 175 W with a power cap (the tools showed 225 W); power_max_w '
+                '225 with a raised power_default_w left it at 175 W; power_max_w 190 with notebook_base_tgp_w 165 '
+                '(default 95 W) left it at about 172-175 W with a power cap (the tools showed 190 W), no rail near '
+                'its limit; power_max_w 190, power_default_w 110 and notebook_base_tgp_w 165 together gave about '
+                '185 W under load',
+    'inferred': "running limit ~ min(boot default + the platform's configurable TGP (cTGP) offset, base TGP) + "
+                'Dynamic Boost, capped by the ceiling; on this laptop +55 W and +25 W, both from its system BIOS'}
 NOTEBOOK_SMI_EVIDENCE = {
     'kind': 'owner-nvidia-smi-reading',
     'source': 'nvidia-smi -q -d POWER on an RTX 5080 Laptop GPU running that VBIOS, shared by its owner',
@@ -439,17 +455,23 @@ def ada_profile_note(parser, binding, ceiling=False):
 NOTEBOOK_POWER_REASON = ('stored notebook TGP ceiling; on a laptop Dynamic Boost (the NVIDIA platform framework on '
                          'Windows, nvidia-powerd on Linux) requests the running limit at runtime and this value only '
                          'caps it, while monitoring tools show this stored ceiling; raising it alone usually does not '
-                         'raise the running limit: on one RTX 5090 Laptop GPU, raising it from 175 to 225 W and also '
-                         'the boot default left the running limit at 175 W; output OCP, cooling and the laptop VRM '
-                         'still apply')
+                         'raise the running limit: on one RTX 5090 Laptop GPU the ceiling alone, or with only the boot '
+                         'default or only the notebook base TGP, left the running limit at 175 W, and the three raised '
+                         'together (190, 110 and 165 W) gave about 185 W; raise them together; output OCP, cooling '
+                         'and the laptop VRM still apply')
 NOTEBOOK_DEFAULT_REASON = ('experimental: notebook default TGP (nvidia-smi Default Power Limit); Dynamic Boost '
                            'requests the running limit at runtime, so this value alone may not move it: on one RTX '
-                           '5090 Laptop GPU, raising it together with the ceiling left the running limit at 175 W; '
-                           'not hardware-tested otherwise')
-NOTEBOOK_BASE_TGP_REASON = ('experimental, opt-in: candidate for the base TGP that Dynamic Boost adds its boost to '
-                            '(row 2 +73); an edited value stays between the boot default and the ceiling, so a '
-                            'value above the ceiling takes a higher ceiling in the same edit; untested on hardware; '
-                            'the laptop VRM, cooling and power adapter were sized for the stock limit')
+                           '5090 Laptop GPU, raising it with the ceiling left the running limit at 175 W, and raising '
+                           'it with the ceiling and the notebook base TGP, by as many watts as the base (95 -> 110 W '
+                           'with the base 150 -> 165 W and a 190 W ceiling), gave about 185 W; not hardware-tested '
+                           'otherwise')
+NOTEBOOK_BASE_TGP_REASON = ('experimental, opt-in: the base TGP that Dynamic Boost adds its boost to (row 2 +73), as '
+                            'far as one RTX 5090 Laptop GPU shows: raised with the ceiling and the boot default it '
+                            'raised the running limit, with the ceiling alone it did not; raise the boot default by '
+                            'as many watts as this value is raised; an edited value stays between the boot default '
+                            'and the ceiling, so a value above the ceiling takes a higher ceiling in the same edit; '
+                            'other laptops untested; the laptop VRM, cooling and power adapter were sized for the '
+                            'stock limit')
 
 
 @registry.register
@@ -477,6 +499,8 @@ def power(image, parser):
         # The owner's nvidia-smi reading is of the RTX 5080 Laptop GPU (row 2 5000/80000/175000 mW).
         evidence = [dict(NOTEBOOK_POWER_EVIDENCE)] + (
             [dict(NOTEBOOK_SMI_EVIDENCE)] if parser.legacy['device'] == 0x2C59 else [])
+        # The laptop test raised the ceiling and the boot default, not the floor.
+        minimum_evidence, evidence = evidence, evidence + [dict(NOTEBOOK_POWER_HARDWARE)]
         default_evidence = evidence
     elif isinstance(parser, BlackwellRom):
         for i, kind in ((2, 1), (7, 13), (8, 12), (9, 11)):
@@ -653,8 +677,9 @@ def notebook_base_tgp(image, parser, tgp, base):
     """
     return field('notebook_base_tgp_w', 'Notebook base TGP', 'W', base['value_raw'] / 1000,
                  tgp['default_raw'] / 1000, tgp['maximum_raw'] / 1000, can_edit(image, parser),
-                 [dict(NOTEBOOK_BASE_TGP_EVIDENCE)], offsets=[base['offset']], encoding='<I', scale=1000,
-                 stored_units='mW', policy_indices=[2], value_semantics='stored-notebook-base-tgp',
+                 [dict(NOTEBOOK_BASE_TGP_EVIDENCE), dict(NOTEBOOK_POWER_HARDWARE)], offsets=[base['offset']],
+                 encoding='<I', scale=1000, stored_units='mW', policy_indices=[2],
+                 value_semantics='stored-notebook-base-tgp',
                  format_scope='notebook TGP policy row 2 +73; no override profiles', experimental=True,
                  opt_in=True, ordering_group='board-power', encoding_bounds=(0, 0x7FFFFFFF / 1000),
                  reason=NOTEBOOK_BASE_TGP_REASON, notebook_tgp=True)

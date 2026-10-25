@@ -148,8 +148,8 @@ they are copied as stored numbers, so check that this board's hardware can take 
   from the software or its output, such as edited images, files, tools or other works,
   whoever makes, shares or uses them. The author accepts no responsibility or liability
   of any kind for any of it. If you do not accept this, do not use the software.
-- Fields marked *experimental* have not been tested on hardware. Raising power,
-  current or voltage limits can damage hardware.
+- Fields marked *experimental* have not been tested on hardware, or only on the cards
+  named in their notes. Raising power, current or voltage limits can damage hardware.
 - Recognized images: GB20x object-directory v3 (GB202, GB203, GB205, GB206). Ada (AD10x),
   Ampere (GA10x) and Turing (TU10x/TU11x) images are supported with the same restriction as any other
   image: they can be inspected, and only the fields validated for them can be edited.
@@ -159,12 +159,18 @@ they are copied as stored numbers, so check that this board's hardware can take 
   Dynamic Boost (the NVIDIA platform framework on Windows, nvidia-powerd on Linux)
   requests the running power limit at runtime, and the power ceiling in the image only
   caps it. Monitoring tools show the stored ceiling, so raising **Board power ceiling**
-  alone usually does not raise the running limit: on one RTX 5090 Laptop GPU, raising it
-  from 175 to 225 W and also the boot default left the GPU at 175 W. On those two laptops
-  **Notebook base TGP** (experimental, under **Show advanced XOC-style fields**) edits a
-  stored value that may be the base Dynamic Boost adds its boost to; it is untested, and
-  the laptop's VRM, cooling and power adapter were sized for the stock limit. The fans
-  belong to the laptop, not to the image. On one RTX 3050 6GB Laptop GPU (Ampere, on
+  alone usually does not raise the running limit. On those two laptops **Notebook base
+  TGP** (experimental, under **Show advanced XOC-style fields**) edits a stored value. On
+  one RTX 5090 Laptop GPU it acted as the base Dynamic Boost adds its boost to: the
+  ceiling alone, or with only one of **Boot default board power** and **Notebook base
+  TGP**, left the GPU at about 175 W, while all three raised together (190, 110 and 165 W, from
+  175, 95 and 150 W) took it to about 185 W. To raise the running limit, raise the three
+  together, the boot default by as many watts as you raise the base TGP, and keep the base
+  TGP at or below the ceiling, which stays the cap. The RTX 5080 Laptop GPU and other laptops
+  are not tested. The laptop's VRM, cooling and power adapter were sized for the stock
+  limit, and a battery that drains while plugged in under full CPU and GPU load means the
+  adapter falls short. The fans belong to the laptop, not to the image.
+  On one RTX 3050 6GB Laptop GPU (Ampere, on
   Windows) a lowered power ceiling applied, and raising the boot default together with the
   ceiling let it draw above its stock limit; on one RTX 3050 Ti Laptop GPU the same change
   gained only a few watts. Its ROM stores a low NVVDD output current limit (45 A, where an 80 W

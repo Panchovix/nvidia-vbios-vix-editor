@@ -62,10 +62,16 @@ funcionando sin las dependencias gráficas.
    el orden mínimo <= por defecto <= máximo se comprueba sobre el resultado
    combinado. En un portátil, Dynamic Boost pide el límite de potencia en uso mientras
    funciona y el techo solo lo acota; las herramientas de monitoreo muestran el techo
-   guardado, así que subir solo el techo por lo general no sube el límite en uso (en una
-   RTX 5090 Laptop GPU, con el techo subido de 175 a 225 W y también la potencia por
-   defecto al arrancar, siguió en 175 W). La ventana lo indica en las ROM de las RTX 5080
-   y 5090 Laptop GPU.
+   guardado, así que subir solo el techo por lo general no sube el límite en uso. En una
+   RTX 5090 Laptop GPU el límite en uso pasó de 175 a unos 185 W solo con el techo, la
+   potencia por defecto al arrancar y el **TGP base del portátil** subidos juntos (190,
+   110 y 165 W, de 175, 95 y 150 W); subir solo el techo, o el techo con uno solo de los
+   otros dos, lo dejó en 175 W. Para subir el límite en uso, sube los tres juntos, la
+   potencia por defecto al arrancar tantos vatios como subas el TGP base, y el TGP base
+   sin pasar del techo, que sigue siendo el tope. Otros portátiles no se probaron, y el
+   VRM, la refrigeración y el cargador del portátil se dimensionaron para el límite de
+   fábrica. La ventana lo indica bajo los tres campos en las ROM de las RTX 5080 y 5090
+   Laptop GPU.
    Los valores de corriente de entrada de 12 V son valores guardados de
    la política, no corrientes seguras garantizadas; los límites del conector, del
    slot y de los cables siguen aplicando. **Temperatura máxima de funcionamiento**
@@ -84,8 +90,9 @@ funcionando sin las dependencias gráficas.
    GPU. **Mostrar campos avanzados (estilo XOC)**
    (desmarcada por defecto) muestra campos opcionales como la potencia nominal de
    las políticas fijas 2/7, el **TGP base del portátil** experimental de las RTX 5080 y
-   5090 Laptop GPU (un valor guardado que podría ser la base a la que Dynamic Boost le suma
-   su boost; sin probar), en Ada y Blackwell el límite de potencia del conector de
+   5090 Laptop GPU (se comportó como la base a la que Dynamic Boost le suma su boost en una
+   RTX 5090 Laptop GPU; súbelo junto con el techo y la potencia por defecto al arrancar,
+   ver arriba), en Ada y Blackwell el límite de potencia del conector de
    alimentación auxiliar (**Canal de potencia de conector 1**, experimental: en una placa con un
    solo conector de 8 pines lo más probable es que frene ese conector en unos 150 W aunque el
    límite de potencia de la placa sea más alto; un conector PCIe de 8 pines admite 150 W, y pasar

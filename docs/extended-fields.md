@@ -86,7 +86,7 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `connector_N_power_rated/max_w`, `connector_N_current_threshold_rated/max_ma` | Power policy and current hardware threshold of external 12 V connector sense channel N, numbered in power-row order; on Ada and GB20x the power policy of the auxiliary power connector input | Experimental: Ampere and Turing, current thresholds opt-in; Ada and GB20x (power only, opt-in), reviewed row shapes on the connector input channel |
 | `slot_current_threshold_rated/max_ma`, `nvvdd_power_threshold_rated/max_w` | Hardware-threshold policies (slot 12 V current; Ada NVVDD output power) | Experimental, opt-in; slot current on Ada, Ampere and Turing, NVVDD power on Ada only |
 | `board_fixed_rated_w` | Rated value of the fixed board policies 2/7 | Experimental, opt-in (hidden in the GUI by default) |
-| `notebook_base_tgp_w` | Row 2 +73 of the GB20x notebook layout, a candidate for the base TGP that Dynamic Boost adds its boost to | Experimental, opt-in (hidden in the GUI by default), GB20x notebook layout only; an edited value stays between `power_default_w` and `power_max_w`, which it does not bound |
+| `notebook_base_tgp_w` | Row 2 +73 of the GB20x notebook layout, the base TGP that Dynamic Boost adds its boost to (as one RTX 5090 Laptop GPU behaved) | Experimental, opt-in (hidden in the GUI by default), GB20x notebook layout only; hardware-tested on one RTX 5090 Laptop GPU, where it raised the running limit only together with `power_default_w` and `power_max_w`; an edited value stays between `power_default_w` and `power_max_w`, which it does not bound |
 | `input_current_rated_ma`, `input_current_max_ma` | 12 V board input-current policy, row 9 (Ada: thresholds 0/1, rows 9/10) | Experimental, reviewed row shapes |
 | `input_current_policy7_limit_ma` | Policy 7 limit linked to the 12 V input policy | Experimental, reviewed Blackwell row shape |
 | `input_policy_9_max_raw` | Row 9 raw maximum; units unknown | Read-only, only when row 9 is unrecognized |
@@ -1241,17 +1241,44 @@ power policy table keeps the v0x40 format but places its rows differently:
   `nvidia-powerd` on Linux, working from the system BIOS's data) requests the running
   limit at runtime. The VBIOS ceiling only caps that request, while monitoring tools show
   the stored ceiling. Raising `power_max_w` alone therefore usually does not raise the
-  running limit: on one RTX 5090 Laptop GPU, raising it from 175 to 225 W showed 225 W in
-  the tools but the GPU stayed at 175 W (power cap), and raising `power_default_w` as well
-  did not move it either. The output OCP, the cooling and the laptop's VRM can also keep
-  power lower. The header also stores 55000/45000/35000/25000 at bytes 24..39 (RTX 5090
-  Laptop GPU: 40000/35000/25000/15000), whose meaning is unknown.
+  running limit. The output OCP, the cooling and the laptop's VRM can also keep power
+  lower. The header also stores 55000/45000/35000/25000 at bytes 24..39 (RTX 5090 Laptop
+  GPU: 40000/35000/25000/15000), whose meaning is unknown.
+- **Hardware result: raise the three together.** One user tested edited copies of the RTX
+  5090 Laptop GPU image (`98.03.5C.00.72`, stock row 2 5000/95000/175000 mW, +73 150000 mW)
+  through the Windows loader, with a 400 W adapter:
+
+  | Edit | Running limit |
+  |---|---|
+  | `power_max_w` 225 | 175 W, power cap (the tools showed 225 W) |
+  | `power_max_w` 225, `power_default_w` raised | 175 W |
+  | `power_max_w` 190, `notebook_base_tgp_w` 165 (default left at 95 W) | about 172-175 W, power cap (the tools showed the 190 W ceiling) |
+  | `power_max_w` 190, `power_default_w` 110, `notebook_base_tgp_w` 165 | about 185 W under load |
+
+  In the third test no rail was near its limit (NVVDD output about 120 A of its 180 A
+  OCP, MSVDD well under 60 A, about 8.6 A at 19.5 V on the input side). A rule consistent
+  with all four, inferred from this one laptop (the firmware is closed and was not traced):
+  running limit ≈ min(boot default + the platform's configurable TGP (cTGP) offset, base
+  TGP) + Dynamic Boost, capped by the ceiling. On this laptop the offset looks like +55 W
+  (95 -> 150) and Dynamic Boost +25 W: stock min(95 + 55, 150) + 25 = 175 W, the second
+  test min(default + 55, 150) + 25 = 175 W, the third min(95 + 55, 165) + 25 = 175 W and
+  the fourth min(110 + 55, 165) + 25 = 190 W (measured about 185 W). So raise
+  `power_max_w`, `power_default_w` and `notebook_base_tgp_w` together, `power_default_w`
+  by as many watts as you raise the base TGP; keep the base TGP at or below the ceiling
+  and expect the ceiling to stay the cap. The offset and the boost most likely come from
+  the laptop's system BIOS and can differ between models; the RTX 5080 Laptop GPU and
+  other laptops are not tested. The laptop's VRM, cooling and power adapter were sized for the stock limit.
+  The adapter feeds the CPU and the GPU at full load together, and a battery that drains
+  while plugged in is the sign that it falls short. On the notebook layout `power_max_w`,
+  `power_default_w` and `notebook_base_tgp_w` carry this as a `hardware-test` evidence
+  entry (`set_tested: true`) whose scope names that one laptop.
 - **Base TGP, experimental and opt-in (`notebook_base_tgp_w`).** Row 2 +73 holds 150000 mW
   on both notebooks, the only 150000 in each image, and 0 on every desktop and Max-Q row 2.
   A public log from another RTX 5090 Laptop GPU shows the firmware's TGP policy base at
-  150000 mW while the running limit was that base + 25 W of Dynamic Boost. So +73 is a
-  candidate for the base TGP that Dynamic Boost adds its boost to. That is unproven (the
-  firmware is closed) and untested. The field exists only when row 2 bytes 0..12 equal
+  150000 mW while the running limit was that base + 25 W of Dynamic Boost. On the laptop
+  above, +73 behaved as that base: raised with the ceiling and the boot default it raised
+  the running limit, raised with the ceiling alone it did not. That rests on one laptop
+  (the firmware is closed). The field exists only when row 2 bytes 0..12 equal
   the reviewed notebook bytes `010200000000012b07000ccc10` and the stored value lies
   between the rated value and the maximum of row 2. Its bounds are the stored
   `power_default_w` and `power_max_w`, so a base above the ceiling takes a higher ceiling
@@ -1284,10 +1311,10 @@ power policy table keeps the v0x40 format but places its rows differently:
   rail gating on entries 0..2 (`lpwr_gr_rail_gating`, with its idle time, see
   [LPWR idle power switches](#lpwr-idle-power-switches-and-idle-times)).
 
-There is no saved GET for a notebook. On one RTX 5090 Laptop GPU an edited ceiling showed
-in the monitoring tools, but neither it nor a raised boot default moved the running limit
-(above); no other edited value has been booted on a Blackwell notebook (Ampere laptops
-have, see Ampere fields).
+There is no saved GET for a notebook. On one RTX 5090 Laptop GPU edited ceilings showed in
+the monitoring tools, and the running limit moved only with the ceiling, the boot default
+and the base TGP raised together (above); no other edited field has been tested on a
+Blackwell notebook (Ampere laptops have, see Ampere fields).
 The power and OCP descriptors carry `structural-row-comparison` evidence with
 `runtime_get: false`.
 

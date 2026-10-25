@@ -1368,7 +1368,14 @@ class NotebookLayoutTests(unittest.TestCase):
         self.assertEqual(fields['power_default_w']['policy_indices'], [2])
         self.assertIn('Dynamic Boost', fields['power_max_w']['reason'])
         self.assertEqual([e['kind'] for e in fields['power_max_w']['evidence']],
-                         ['structural-row-comparison', 'owner-nvidia-smi-reading'])
+                         ['structural-row-comparison', 'owner-nvidia-smi-reading', 'hardware-test'])
+        # The RTX 5090 Laptop GPU test raised the ceiling and the boot default, not the floor.
+        for key in ('power_max_w', 'power_default_w'):
+            test = [e for e in fields[key]['evidence'] if e['kind'] == 'hardware-test']
+            self.assertEqual(len(test), 1, key)
+            self.assertTrue(test[0]['set_tested'])
+            self.assertIn('10de:2c18', test[0]['scope'])
+        self.assertNotIn('hardware-test', [e['kind'] for e in fields['power_min_w']['evidence']])
         self.assertEqual((fields['nvvdd_output_ocp_rated_ma']['current'], fields['msvdd_output_ocp_rated_ma']['current']),
                          (180000, 60000))
         for key in ('nvvdd_output_ocp_rated_ma', 'msvdd_output_ocp_max_ma'):
@@ -1482,7 +1489,8 @@ class NotebookLayoutTests(unittest.TestCase):
             self.assertTrue(base[flag], flag)
         self.assertEqual((base['ordering_group'], base['units'], base['stored_units'], base['policy_indices']),
                          ('board-power', 'W', 'mW', [2]))
-        self.assertEqual(base['evidence'][0]['kind'], 'structural-row-comparison')
+        self.assertEqual([(e['kind'], e['set_tested']) for e in base['evidence']],
+                         [('structural-row-comparison', False), ('hardware-test', True)])
         self.assertIn('Dynamic Boost', base['reason'])
         # The base TGP bounds neither the ceiling nor the boot default: they keep the bounds they have without it.
         self.assertEqual((fields['power_max_w']['bounds']['minimum'], fields['power_default_w']['bounds']['maximum']),

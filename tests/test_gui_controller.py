@@ -756,27 +756,51 @@ class PresentationNumberTests(unittest.TestCase):
         ceiling = notebook_notes(fields['power_max_w'], family)
         self.assertEqual(len(ceiling), 1)
         self.assertIn('raising it alone usually does not raise the running limit', ceiling[0])
-        # The base TGP bounds neither the ceiling nor the boot default, so their notes do not mention it.
-        self.assertNotIn('base TGP', ceiling[0])
-        self.assertEqual(notebook_notes(fields['power_default_w'], family), [])
+        # The base TGP bounds neither the ceiling nor the boot default, but on the one laptop tested the running
+        # limit moved only with the three raised together, so each note names the other two.
+        default = notebook_notes(fields['power_default_w'], family)
+        self.assertEqual(len(default), 1)
+        for note in (ceiling[0], default[0]):
+            self.assertIn('Notebook base TGP (under Show advanced XOC-style fields, where the ROM has it)', note)
+            self.assertIn('from 175 to about 185 W', note)
+        self.assertIn('To raise the running limit, raise the three together.', ceiling[0])
+        self.assertIn("the laptop's VRM, cooling and power adapter were sized for the stock limit", ceiling[0])
+        # The step is a difference in watts, not the base TGP's value.
+        self.assertIn('by as many watts as you raise the base TGP', default[0])
         self.assertEqual(notebook_notes(fields['power_min_w'], family), [])
         base = notebook_notes(fields['notebook_base_tgp_w'], family)
         self.assertEqual(len(base), 1)
+        self.assertTrue(base[0].startswith('Tested on one RTX 5090 Laptop GPU'), base[0])
+        self.assertIn('To raise the running limit, raise the three together, the boot default by as many watts as '
+                      'you raise this value', base[0])
         self.assertIn('When you change it, it has to stay between the boot default and the ceiling', base[0])
         self.assertIn('To go above the ceiling, raise the ceiling with it in the same edit', base[0])
         self.assertIn('does not show this field but keeps its stored value', base[0])
+        self.assertIn('Other laptops are not tested', base[0])
         spanish = notebook_notes(fields['notebook_base_tgp_w'], family, 'es')[0]
         self.assertIn('Dynamic Boost', spanish)
+        self.assertTrue(spanish.startswith('Probado en una RTX 5090 Laptop GPU'), spanish)
         self.assertIn('Para pasar del techo, sube el techo junto con él en la misma edición', spanish)
         self.assertIn('no muestra este campo pero conserva su valor guardado', spanish)
+        for key in ('power_max_w', 'power_default_w'):
+            note = notebook_notes(fields[key], family, 'es')[0]
+            self.assertIn('el TGP base del portátil', note)
+            self.assertIn('está en Mostrar campos avanzados (estilo XOC) cuando la ROM lo tiene.', note)
+        self.assertIn('tantos vatios como subas el TGP base',
+                      notebook_notes(fields['power_default_w'], family, 'es')[0])
+        self.assertIn('tantos vatios como subas este valor', spanish)
+        self.assertIn('se dimensionaron para el límite de fábrica',
+                      notebook_notes(fields['power_max_w'], family, 'es')[0])
         self.assertEqual(field_label(fields['notebook_base_tgp_w']), 'Notebook base TGP (experimental)')
         self.assertEqual(field_label(fields['notebook_base_tgp_w'], 'es'), 'TGP base del portátil (experimental)')
         self.assertTrue(shunt_scaled(fields['notebook_base_tgp_w']))
-        # Without the base TGP the ceiling keeps its running-limit note; other families and layouts have none.
+        # Without the base TGP field the ceiling and the boot default keep their notes; other families and layouts
+        # have none.
         plain = inspect_image(from_bytes(notebook_fixture()))
         plain_fields = {f['key']: f for f in plain['fields']}
         self.assertEqual(notebook_notes(plain_fields['power_max_w'], family), ceiling)
-        self.assertEqual(notebook_notes(plain_fields['power_default_w'], family), [])
+        self.assertEqual(notebook_notes(plain_fields['power_default_w'], family), default)
+        self.assertEqual(notebook_notes(fields['power_default_w'], 'ada'), [])
         self.assertEqual(notebook_notes(fields['power_max_w'], 'ada'), [])
         desktop = {f['key']: f for f in inspect_image(from_bytes(synthetic_blackwell()))['fields']}
         self.assertEqual(notebook_notes(desktop['power_max_w'], family), [])

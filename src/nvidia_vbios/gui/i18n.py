@@ -328,14 +328,29 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'sense_profiles.past_top': 'Going past {watts} W is more than that cable is rated for. That is your call.',
  'notebook.ceiling': 'On a laptop, Dynamic Boost requests the running power limit at runtime and this ceiling only '
                      'caps it. Monitoring tools show this stored ceiling, so raising it alone usually does not raise '
-                     'the running limit: on one RTX 5090 Laptop GPU, raising it from 175 to 225 W and also the boot '
-                     'default left the running limit at 175 W.',
- 'notebook.base_tgp': 'Not tested on hardware. A candidate for the base TGP that Dynamic Boost adds its boost to. '
+                     'the running limit. On one RTX 5090 Laptop GPU the running limit went from 175 to about 185 W '
+                     'with the ceiling, the boot default and Notebook base TGP (under Show advanced XOC-style fields, '
+                     'where the ROM has it) raised together to 190, 110 and 165 W. The ceiling alone, or with only '
+                     'one of the other two, left it at 175 W. To raise the running limit, raise the three together. '
+                     "Other laptops are not tested, and the laptop's VRM, cooling and power adapter were sized for "
+                     'the stock limit.',
+ 'notebook.default': 'To raise the running limit on a laptop, raise this boot default together with the ceiling and '
+                     'Notebook base TGP (under Show advanced XOC-style fields, where the ROM has it), by as many '
+                     'watts as you raise the base TGP. On one RTX 5090 Laptop GPU, 110 W here (from 95 W) with the '
+                     'base TGP raised from 150 to 165 W and a 190 W ceiling took the running limit from 175 to about '
+                     '185 W. A raised boot default and ceiling without the base TGP left it at 175 W.',
+ 'notebook.base_tgp': 'Tested on one RTX 5090 Laptop GPU, where it behaved like the base TGP that Dynamic Boost adds '
+                      'its boost to and raised the running limit only together with the ceiling and the boot '
+                      'default. With 165 W here (from 150 W), a 190 W ceiling and a 110 W boot default (from 95 W) '
+                      'the running limit went from 175 to about 185 W, while the same base TGP and ceiling with the '
+                      'stock boot default left it at 175 W. To raise the running limit, raise the three together, '
+                      'the boot default by as many watts as you raise this value. The ceiling still caps the result. '
                       'When you change it, it has to stay between the boot default and the ceiling. To go above the '
                       'ceiling, raise the ceiling with it in the same edit. A copy saved with the ceiling below it or '
                       'the boot default above it does not show this field but keeps its stored value, and the field '
-                      "comes back once they are moved back. The laptop's VRM, cooling and power adapter were sized "
-                      'for the stock limit.',
+                      "comes back once they are moved back. Other laptops are not tested. The laptop's VRM, cooling "
+                      'and power adapter were sized for the stock limit, and a battery that drains while plugged in '
+                      'under full CPU and GPU load means the adapter falls short.',
  'lpwr.enabled_entries': ('This product is not among the reviewed ones, so this switch covers the entries this '
                           'ROM enables. A copy saved with Off no longer shows the switch, since an entry shipped '
                           'disabled looks the same as one turned off: keep the original ROM to go back to Stock.'),

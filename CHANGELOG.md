@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.35
+
+- **RTX 5080 and RTX 5090 Laptop GPU: raise the boot default, the base TGP and the ceiling together.** One user
+  reported that on their RTX 5090 Laptop GPU (stock 175 W), raising **Board power ceiling** alone, or with only **Boot
+  default board power** or only **Notebook base TGP**, left the GPU at about 175 W. Raising all three together (190 W
+  ceiling, 110 W boot default and 165 W base TGP, from 175, 95 and 150 W) took the GPU to about 185 W under load. On
+  that laptop the running limit looks like the boot default plus 55 W, at most the base TGP, plus 25 W of Dynamic
+  Boost, and never above the ceiling (inferred from this one laptop; for those values it gives 190 W). So to raise the
+  running limit, raise the three together, the boot default by as many watts as you raise the base TGP, and keep the
+  base TGP at or below the ceiling, which stays the cap. The notes under the three fields and the docs now say so, and
+  **Notebook base TGP** is now marked as tested on that laptop. It stays experimental and under **Show advanced
+  XOC-style fields**, and nothing changed in what the fields accept. **Notebook base TGP** exists only on Blackwell
+  laptop ROMs with this power layout (the RTX 5080 and RTX 5090 Laptop GPU); Ampere and Ada laptops do not have it.
+  The RTX 5080 Laptop GPU and other laptops are not tested, and the 55 W and 25 W most likely come from each laptop's
+  system BIOS, so they can differ between models. The laptop's VRM, cooling and power adapter were sized for the stock
+  limit, and a battery that drains while plugged in under full CPU and GPU load means the adapter falls short. For API
+  users: on the RTX 5080 and RTX 5090 Laptop GPU layout, `power_max_w`, `power_default_w` and `notebook_base_tgp_w`
+  carry a `hardware-test` evidence entry whose scope names that one laptop.
+
 ## 0.1.34
 
 - **Ampere: the NVVDD output current limit can be edited (experimental, opt-in).** Under **Show advanced XOC-style

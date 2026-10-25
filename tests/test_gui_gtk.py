@@ -255,10 +255,12 @@ class GtkSmokeTests(unittest.TestCase):
                         ceiling = '\n'.join(texts(window.rows['power_max_w']['row']))
                         default = '\n'.join(texts(window.rows['power_default_w']['row']))
                         self.assertIn(window.text('notebook.ceiling'), ceiling)
+                        self.assertIn(window.text('notebook.default'), default)
                         self.assertNotIn(window.text('notebook.ceiling'), default)
-                        # The base TGP bounds neither, so their rows do not name it.
+                        # The base TGP bounds neither, but both rows name it: the three are raised together.
                         label = window.text('field.notebook_base_tgp_w').split(' (')[0]
-                        self.assertNotIn(label, ceiling + default)
+                        self.assertIn(label, ceiling)
+                        self.assertIn(label, default)
 
                         def staged(typed, changes):
                             for key, text in typed.items():

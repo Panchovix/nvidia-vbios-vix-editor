@@ -620,7 +620,9 @@ class BlackwellRom:
         A candidate for the base TGP that Dynamic Boost adds its boost to: both notebook images
         store 150000 there, the only 150000 in each image, and a public log from another RTX 5090
         Laptop shows the firmware's TGP policy base at 150000 mW while the running limit was that
-        base + 25 W. Unproven. None unless the layout is the notebook one, row 2 bytes 0..12 equal
+        base + 25 W. On one RTX 5090 Laptop GPU it raised the running limit together with the ceiling
+        and the boot default, not with the ceiling alone (the firmware is closed, so this rests on
+        that laptop). None unless the layout is the notebook one, row 2 bytes 0..12 equal
         the reviewed notebook bytes and the value lies between the rated value (+17) and the
         maximum (+21) of row 2.
         """

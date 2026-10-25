@@ -69,9 +69,15 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    minimum <= default <= maximum is checked on the combined result. On a laptop,
    Dynamic Boost requests the running power limit at runtime and the ceiling only caps
    it; monitoring tools show the stored ceiling, so raising it alone usually does not
-   raise the running limit (on one RTX 5090 Laptop GPU, with the ceiling raised from 175
-   to 225 W and a higher boot default, it still ran at 175 W). The window notes this on
-   RTX 5080 and 5090 Laptop GPU ROMs. The 12 V input
+   raise the running limit. On one RTX 5090 Laptop GPU the running limit went from 175
+   to about 185 W only with the ceiling, the boot default and **Notebook base TGP**
+   raised together (190, 110 and 165 W, from 175, 95 and 150 W); the ceiling alone, or
+   with only one of the other two, left it at 175 W. To raise the running limit, raise
+   the three together, the boot default by as many watts as you raise the base TGP, and
+   keep the base TGP at or below the ceiling, which stays the cap. Other laptops are not
+   tested, and the laptop's VRM, cooling and power adapter were sized for the stock
+   limit. The window notes this under the three fields on RTX 5080 and 5090 Laptop GPU
+   ROMs. The 12 V input
    current values are stored policy values, not hardware-safe ratings; connector,
    slot and cable limits still apply. **Max operating temperature** (Blackwell, Ada,
    Ampere and Turing, in the Power card; experimental, not hardware-tested) is the
@@ -88,7 +94,8 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    known which one the GPU reaches first. **Show advanced XOC-style fields** (off by
    default) reveals opt-in fields such as the rated power of the fixed board
    policies 2/7, the experimental **Notebook base TGP** of the RTX 5080 and 5090 Laptop
-   GPU (a stored value that may be the base Dynamic Boost adds its boost to; untested), on
+   GPU (it behaved as the base Dynamic Boost adds its boost to on one RTX 5090 Laptop
+   GPU; raise it with the ceiling and the boot default, see above), on
    Ada and Blackwell the power limit of the auxiliary power connector (**Connector power
    channel 1**, experimental: on a board with one 8-pin connector it most likely holds that
    connector near 150 W even with a higher board power limit; a PCIe 8-pin connector is rated
