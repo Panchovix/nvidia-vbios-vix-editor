@@ -1,29 +1,10 @@
 # NVIDIA VBIOS Vix Editor
 
-Offline editor for NVIDIA Blackwell (GB20x) VBIOS images, for Linux and Windows, with a
-GTK editor window and a JSON command line. It edits power limits, voltage ceilings, the minimum voltage
-(VMIN), clock offset ranges, 12 V input current and output OCP limits, fan PWM frequency, fan channels,
-per-channel fan speed limits, the stored fan curves and zero RPM (experimental). Ada (AD10x) images get power limits,
-clock offset ranges, slot power, fans and, where they apply, voltage ceilings, VMIN, fixed REL/ALT voltages
-and the XOC-style flat voltage limit (experimental).
-Ampere (GA10x) images get power limits, power connector channels, clock offset ranges, slot power, fans
-and, where it applies, VMIN (experimental). Turing (TU10x/TU11x) images get power limits, slot and
-connector power and current limits, VMIN, fixed REL/ALT voltages, clock offset ranges and fans
-(experimental; on one RTX 2080 Ti edited board and connector power limits loaded and the card reached about
-458 W under load, nothing else is tested on a Turing card; see the
-[Turing tester guide](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/turing.md)).
-A read-only **Memory** section (all four families) shows the memory configurations, the memory clock bands and
-their timing entries with decoded values and, on Blackwell, an undecoded board memory-training profile, and tells
-whether another ROM's tables are identical or differ. **Import from ROM…** copies the values of chosen sections
-(for example the fan settings; Blackwell board power and Turing VMIN often need the advanced fields too, as does a
-fan curve that starts below this ROM's zero RPM threshold) from another ROM of the same family as pending changes;
-they are copied as stored numbers, so check that this board's hardware can take them.
+Offline VBIOS Editor for Blackwell 2.0 (GB2XX) cards, Ada (AD1XX), Ampere (GA1XX) and Turing (TU2XX/TU1XX) GPUs.
 
-Loading an edited image with the Linux or Windows loader works with NVIDIA 615.x (R615) drivers on Linux and
-616.x, 617.x and 621.x drivers on Windows (621.01 is tested on Blackwell, Ada and Ampere, not yet on Turing). It
-may stop working in a future driver if NVIDIA decides to change or remove the override, so check that it still
-applies after every driver update (Linux: `nvbios system status` and an edited value in `nvidia-smi`; Windows:
-**Verify**).
+Use them via a loder, [NVIDIA Linux VBIOS Vix Loader](https://github.com/Panchovix/nvidia-linux-vbios-vix-loader) for L,inux
+on Windows,
+[NVIDIA Windows VBIOS Vix Loader](https://github.com/Panchovix/nvidia-windows-vbios-vix-loader) or mvolt+ with BIOS override.
 
 **Not affiliated with, endorsed by or sponsored by NVIDIA Corporation.** NVIDIA and
 GeForce are trademarks of NVIDIA Corporation.
@@ -95,6 +76,16 @@ terminal:
 .\nvbios.exe edit card.rom out.rom --set power_max_w=700
 ```
 
+## Screenshots
+
+<table>
+<tr>
+<td align="center"><a href="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb202-rtx5090.png"><img src="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb202-rtx5090.png" width="280" alt="RTX 5090 (GB202)"></a><br>RTX 5090 (GB202): changes verified while typing</td>
+<td align="center"><a href="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb203-rtx5080.png"><img src="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb203-rtx5080.png" width="280" alt="RTX 5080 (GB203)"></a><br>RTX 5080 (GB203): image just opened</td>
+<td align="center"><a href="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb205-rtx5070.png"><img src="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb205-rtx5070.png" width="280" alt="RTX 5070 (GB205)"></a><br>RTX 5070 (GB205): single rail, current in A, fans</td>
+</tr>
+</table>
+
 The programs are not code-signed, so Windows SmartScreen may warn the first time:
 choose *More info*, then *Run anyway*.
 
@@ -120,15 +111,18 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios --version
 env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
 ```
 
-## Screenshots
+## Detailed Description
 
-<table>
-<tr>
-<td align="center"><a href="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb202-rtx5090.png"><img src="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb202-rtx5090.png" width="280" alt="RTX 5090 (GB202)"></a><br>RTX 5090 (GB202): changes verified while typing</td>
-<td align="center"><a href="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb203-rtx5080.png"><img src="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb203-rtx5080.png" width="280" alt="RTX 5080 (GB203)"></a><br>RTX 5080 (GB203): image just opened</td>
-<td align="center"><a href="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb205-rtx5070.png"><img src="https://github.com/Panchovix/nvidia-vbios-vix-editor/raw/main/docs/screenshots/gb205-rtx5070.png" width="280" alt="RTX 5070 (GB205)"></a><br>RTX 5070 (GB205): single rail, current in A, fans</td>
-</tr>
-</table>
+Offline editor for NVIDIA Blackwell (GB20x) VBIOS images, Ada (AD10x) images.
+Ampere (GA10x) images and Turing (TU20x/TU11X) images. It edits when applicable: power limits, voltage ceilings, the minimum voltage
+(VMIN), clock offset ranges, 12 V input current and output OCP limits, fan PWM frequency, fan channels,
+per-channel fan speed limits, the stored fan curves and zero RPM (experimental).
+A read-only **Memory** section (all four families) shows the memory configurations, the memory clock bands and
+their timing entries with decoded values and, on Blackwell, an undecoded board memory-training profile, and tells
+whether another ROM's tables are identical or differ. **Import from ROM…** copies the values of chosen sections
+(for example the fan settings; Blackwell board power and Turing VMIN often need the advanced fields too, as does a
+fan curve that starts below this ROM's zero RPM threshold) from another ROM of the same family as pending changes;
+they are copied as stored numbers, so check that this board's hardware can take them.
 
 ## Read before using an edited image
 
