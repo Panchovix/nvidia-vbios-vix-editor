@@ -2,7 +2,7 @@
 
 Offline VBIOS Editor for Blackwell 2.0 (GB2XX) cards, Ada (AD1XX), Ampere (GA1XX) and Turing (TU2XX/TU1XX) GPUs.
 
-Use them via a loder, [NVIDIA Linux VBIOS Vix Loader](https://github.com/Panchovix/nvidia-linux-vbios-vix-loader) for L,inux
+Use them via a loder, [NVIDIA Linux VBIOS Vix Loader](https://github.com/Panchovix/nvidia-linux-vbios-vix-loader) for Linux
 on Windows,
 [NVIDIA Windows VBIOS Vix Loader](https://github.com/Panchovix/nvidia-windows-vbios-vix-loader) or mvolt+ with BIOS override.
 
