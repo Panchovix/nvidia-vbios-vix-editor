@@ -91,11 +91,13 @@ class GtkSmokeTests(unittest.TestCase):
             path = Path(tmp) / 'ampere.rom'
             # Row 11 caps the sum of both connector channels at 280 W.
             path.write_bytes(connector_sum(synthetic_rom(family='ampere', policies=True, fans=2)))
-            for language, title, note in (
+            for language, title, note, ocp in (
                     ('en', 'Connector power channel 1 ceiling', 'Row 11 also caps the sum of connector power channels '
-                                                                '1, 2 at 280 W rated / 280 W maximum'),
+                                                                '1, 2 at 280 W rated / 280 W maximum',
+                     'NVVDD output current limit, rated (advanced)'),
                     ('es', 'Techo del canal de potencia de conector 1', 'La fila 11 también limita la suma de los '
-                                                                        'canales de potencia de conector 1, 2')):
+                                                                        'canales de potencia de conector 1, 2',
+                     'Límite de corriente de salida de NVVDD, nominal (avanzado)')):
                 with self.subTest(language=language):
                     window = EditorWindow(app, path, language)
                     window.present()
@@ -108,12 +110,73 @@ class GtkSmokeTests(unittest.TestCase):
                         for key in ('connector_2_power_rated_w', 'connector_sum_power_rated_w', 'gpc_offset_max_mhz',
                                     'fan_pwm_frequency_hz'):
                             self.assertIn(key, window.entries)
-                        # Hardware thresholds stay behind the advanced toggle; constant voltages have no entry.
-                        self.assertNotIn('input_current_rated_ma', window.entries)
+                        # Hardware thresholds and the NVVDD output current limit stay behind the advanced
+                        # toggle; constant voltages have no entry.
+                        for key in ('input_current_rated_ma', 'nvvdd_output_ocp_rated_ma', 'nvvdd_output_ocp_max_ma'):
+                            self.assertNotIn(key, window.entries)
+                        self.assertNotIn('nvvdd_output_ocp_max_ma', window.readonly_rows)
                         self.assertNotIn('nvvdd_rel_equation_max_mv', window.entries)
+                        window.advanced_toggle.set_active(True)
+                        until(lambda: 'nvvdd_output_ocp_rated_ma' in window.entries)
+                        self.assertIn(ocp, '\n'.join(texts(window.field_box)))
+                        self.assertEqual(window.entries['nvvdd_output_ocp_rated_ma'].get_text(), '226.8')  # in amps
+                        self.assertIn('nvvdd_output_ocp_max_ma', window.entries)
+                        for key in ('nvvdd_output_ocp_max_ma', 'nvvdd_output_ocp_rated_ma'):
+                            self.assertIn(window.text('output_ocp.ampere'), '\n'.join(texts(window.rows[key]['row'])))
+                        self.assertNotIn(window.text('output_ocp.ampere'),
+                                         '\n'.join(texts(window.rows['input_current_rated_ma']['row'])))
                         window.entries['connector_1_power_max_w'].set_text('200')
                         until(lambda: not window.verifying and not window.dirty)
                         self.assertEqual(window.controller.document.changes['connector_1_power_max_w'], '200')
+                    finally:
+                        window.close()
+
+    def test_auxiliary_connector_rows_stay_behind_the_advanced_toggle_with_their_notes(self):
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gio, GLib, Gtk
+        from nvidia_vbios.gui.app import EditorWindow, texts
+        from test_connector_input import ada_connector
+        app = Gtk.Application(application_id='org.nvidia_vbios.ConnectorSmoke', flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.assertTrue(app.register(None))
+        context = GLib.MainContext.default()
+
+        def until(condition):
+            deadline = time.monotonic() + 15
+            while not condition():
+                while context.pending():
+                    context.iteration(False)
+                if time.monotonic() >= deadline:
+                    self.fail('GTK operation did not complete')
+                time.sleep(.01)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'connector.rom'
+            path.write_bytes(ada_connector())
+            for language, title, rating in (
+                    ('en', 'Connector power channel 1 ceiling (advanced)',
+                     'a PCIe 8-pin connector is rated for 150 W, a 12V-2x6 (16-pin) cable for the level its sense pins '
+                     'report.'),
+                    ('es', 'Techo del canal de potencia de conector 1 (avanzado)',
+                     'un conector PCIe de 8 pines admite 150 W, y un cable 12V-2x6 (16 pines), el nivel que indican '
+                     'sus pines de detección.')):
+                with self.subTest(language=language):
+                    window = EditorWindow(app, path, language)
+                    window.present()
+                    try:
+                        until(lambda: not window.busy and window.controller.document is not None)
+                        self.assertNotIn('connector_1_power_max_w', window.entries)
+                        window.advanced_toggle.set_active(True)
+                        until(lambda: 'connector_1_power_max_w' in window.entries)
+                        ceiling = '\n'.join(texts(window.rows['connector_1_power_max_w']['row']))
+                        self.assertIn(title, ceiling)
+                        self.assertIn(rating, ceiling)
+                        self.assertNotIn(rating, '\n'.join(texts(window.rows['connector_1_power_rated_w']['row'])))
+                        window.entries['connector_1_power_max_w'].set_text('200')
+                        window.entries['connector_1_power_rated_w'].set_text('200')
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual(window.controller.document.changes,
+                                         {'connector_1_power_max_w': '200', 'connector_1_power_rated_w': '200'})
                     finally:
                         window.close()
 

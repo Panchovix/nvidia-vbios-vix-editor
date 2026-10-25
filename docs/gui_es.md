@@ -85,10 +85,18 @@ funcionando sin las dependencias gráficas.
    (desmarcada por defecto) muestra campos opcionales como la potencia nominal de
    las políticas fijas 2/7, el **TGP base del portátil** experimental de las RTX 5080 y
    5090 Laptop GPU (un valor guardado que podría ser la base a la que Dynamic Boost le suma
-   su boost; sin probar), los umbrales de hardware (corriente del slot; en
+   su boost; sin probar), en Ada y Blackwell el límite de potencia del conector de
+   alimentación auxiliar (**Canal de potencia de conector 1**, experimental: en una placa con un
+   solo conector de 8 pines lo más probable es que frene ese conector en unos 150 W aunque el
+   límite de potencia de la placa sea más alto; un conector PCIe de 8 pines admite 150 W, y pasar
+   de lo que admiten el conector y su cable pone en riesgo el cable, el conector y la fuente, lo
+   que es decisión tuya; los límites de potencia de la placa, del slot y de corriente de entrada
+   de 12 V siguen vigentes; la fila lo indica), los umbrales de hardware (corriente del slot; en
    Ampere y Turing la corriente de los conectores; en Ada la potencia de salida
    NVVDD y la corriente de entrada de 12 V, rotulada "umbral"), el límite de
-   corriente de salida NVVDD y los voltajes fijos REL/ALT de Turing y, en
+   corriente de salida NVVDD de Turing y Ampere (en Ampere puede ser lo que limita
+   un portátil por debajo de un techo de potencia subido; sin probar, y el VRM se
+   dimensionó para el valor de fábrica), los voltajes fijos REL/ALT de Turing y, en
    Blackwell y Ada, **REL y ALT de NVVDD siguen a OV** (un interruptor: activado
    da el límite de voltaje plano estilo XOC; guárdalo solo y conserva la imagen
    original para volver atrás) y, en Blackwell, Ada y Ampere, **Parada de

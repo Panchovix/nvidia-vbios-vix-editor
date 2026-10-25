@@ -88,11 +88,19 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    known which one the GPU reaches first. **Show advanced XOC-style fields** (off by
    default) reveals opt-in fields such as the rated power of the fixed board
    policies 2/7, the experimental **Notebook base TGP** of the RTX 5080 and 5090 Laptop
-   GPU (a stored value that may be the base Dynamic Boost adds its boost to; untested), the
+   GPU (a stored value that may be the base Dynamic Boost adds its boost to; untested), on
+   Ada and Blackwell the power limit of the auxiliary power connector (**Connector power
+   channel 1**, experimental: on a board with one 8-pin connector it most likely holds that
+   connector near 150 W even with a higher board power limit; a PCIe 8-pin connector is rated
+   150 W, and going past what the connector and its cable are rated for puts the cable, the
+   connector and the power supply at risk, which is your call; the board power, slot and 12 V
+   input current limits still apply; the row notes this), the
    hardware thresholds (slot current; on Ampere and Turing
    the connector current; on Ada the NVVDD output power and the 12 V input
-   current, labelled "threshold"), the Turing NVVDD output current limit and
-   fixed REL/ALT voltages and, on Blackwell and Ada, **NVVDD REL and ALT follow
+   current, labelled "threshold"), the Turing and Ampere NVVDD output current
+   limit (on Ampere it may be what caps a laptop below a raised power ceiling;
+   untested, and the VRM was sized for the stock value), the Turing fixed REL/ALT
+   voltages and, on Blackwell and Ada, **NVVDD REL and ALT follow
    OV** (a switch: on gives the flat XOC-style voltage limit; save it on its own,
    and keep the original image to go back) and, on Blackwell, Ada and Ampere, **Fan
    zero RPM** (a switch for the flag bits that let the fans stand still at idle,

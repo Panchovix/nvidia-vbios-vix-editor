@@ -53,6 +53,25 @@ def connector_currents(count):
     return [f'connector_{n}_current_threshold_{side}_ma' for n in range(1, count + 1) for side in ('max', 'rated')]
 
 
+NVVDD_OCP = ['nvvdd_output_ocp_max_ma', 'nvvdd_output_ocp_rated_ma']
+
+
+def nvvdd_rows(blob, row18=(1, 5001000, 5001000), row18_class=0x10):
+    """The NVVDD rows of the RTX 3050 Ti Laptop GPU stock image on a synthetic Ampere image (policies=True): channel
+    18 as the other NVVDD channel (sensor byte 14 = 5), rows 16 and 17 on it (class 5 mW, 18.75 and 12.5 W; row 17
+    with parameter byte 0 = 7), and on the NVVDD current channel 19 row 12 (class 1 mA, 5001 A) and row 18 (row18
+    limits, class 0 mA by default: the 5001 A no-limit row)."""
+    parser = backend(from_bytes(blob))
+    table, rows = parser.pointer('P', 0x3C), parser.power_rows()
+    blob = patched(blob, table + 6 + 22 * 18, bytes.fromhex('01 01 00 1b b7 00 00 10 00 00 00 00 00 00 05 02'))
+    for row, data in ((12, bytes((0x11, 19)) + struct.pack('<III', 1000, 5001000, 5001000)),
+                      (16, bytes((0x05, 18)) + struct.pack('<III', 1000, 18750, 18750)),
+                      (17, bytes((0x05, 18)) + struct.pack('<III', 1, 12500, 12500) + b'\x07'),
+                      (18, bytes((row18_class, 19)) + struct.pack('<III', *row18) + b'\x01')):
+        blob = patched(blob, rows[row]['offset'], data)
+    return blob
+
+
 def with_connector_current(blob, channel=5, threshold=1):
     """Row 9 of a synthetic Ampere image (policies=True) as a class-5 mA current threshold on a power channel."""
     row = backend(from_bytes(blob)).power_rows()[9]['offset']
@@ -163,8 +182,8 @@ class AmperePowerTests(unittest.TestCase):
         self.assertEqual((fields['connector_1_power_max_w']['channel_rail'], fields['connector_2_power_max_w']['channel_rail']),
                          (0xFA, 0xFB))
         self.assertEqual(fields['input_current_rated_ma']['policy_indices'], [10])
-        ocp = fields['nvvdd_output_ocp_max_ma']
-        self.assertEqual((ocp['current'], ocp['editable']), (226800, False))
+        self.assertEqual([(fields[k]['current'], fields[k]['editable'], fields[k]['opt_in']) for k in NVVDD_OCP],
+                         [(226800, True, True)] * 2)
         self.assertTrue(all(fields[k]['experimental'] for k in POWER))
         self.assertNotIn('nvvdd_power_threshold_max_w', fields)
 
@@ -332,6 +351,169 @@ class AmperePowerTests(unittest.TestCase):
         blob = patched(with_connector_current(self.image.blob), self.rows[12]['offset'],
                        bytes((0x15, 5)) + struct.pack('<III', 1000, 16000, 19200))
         self.assertNotIn('connector_1_current_threshold_max_ma', descriptors(from_bytes(blob)))
+
+    def test_the_nvvdd_output_current_limit_is_an_opt_in_pair(self):
+        fields = descriptors(self.image)
+        for key in NVVDD_OCP:
+            with self.subTest(key=key):
+                field = fields[key]
+                self.assertTrue(field['editable'] and field['experimental'] and field['opt_in'])
+                self.assertEqual((field['current'], field['units'], field['policy_indices'], field['power_channel'],
+                                  field['ordering_group']), (226800, 'mA', [13], 19, 'nvvdd-output-ocp'))
+                self.assertEqual((field['bounds']['encoding_minimum'], field['bounds']['encoding_maximum']),
+                                 (0, 5000999))
+                for text in ('experimental, opt-in', 'row 13, class 0 mA', 'NVVDD output current channel',
+                             'whether the firmware enforces it is unproven on Ampere',
+                             'it likely protects the core VRM, which was sized for the stock value',
+                             'not hardware-tested', 'reliability voltage ceiling (nvvdd_rel_max_mv) may be the next',
+                             'values stay below 5001 A', 'stored value, not a hardware-safe VRM rating'):
+                    self.assertIn(text, field['reason'])
+                self.assertFalse({'same_channel_rows', 'unlimited_rows', 'other_nvvdd_rows'} & set(field))
+        self.assertEqual([fields[k]['label'] for k in NVVDD_OCP],
+                         ['NVVDD output current limit ceiling', 'NVVDD output current limit (rated)'])
+        # The ceiling from the stored rated value up to below 5001 A; the rated value from the stored minimum up to
+        # the stored ceiling.
+        self.assertEqual([(fields[k]['bounds']['minimum'], fields[k]['bounds']['maximum']) for k in NVVDD_OCP],
+                         [(226800, 5000999), (1, 226800)])
+        # Both raised in one edit: row 13 rated and maximum in both chains with the image checksums, minimum kept.
+        result = edit(self.image, {'nvvdd_output_ocp_max_ma': 453600, 'nvvdd_output_ocp_rated_ma': 453600})
+        self.assertTrue(result.manifest['integrity']['valid'])
+        after = backend(result.image).power_rows()
+        self.assertEqual((after[13]['minimum_raw'], after[13]['default_raw'], after[13]['maximum_raw']),
+                         (1, 453600, 453600))
+        self.assertEqual([r for i, r in enumerate(after) if i != 13], [r for i, r in enumerate(self.rows) if i != 13])
+        offsets = [at for o in (6, 10) for at in self.parser.copy_offsets(self.rows[13]['offset'] + o, 4)]
+        self.assertEqual(len(offsets), 4)
+        changed_bytes_within(self, self.image, result, offsets)
+        self.assertEqual(len({r['offset'] for r in result.manifest['integrity_repairs']}), 2)
+        self.assertEqual(result.manifest['preservation']['changed_rated_defaults'], ['nvvdd_output_ocp_rated_ma'])
+        self.assertEqual(descriptors(result.image)['nvvdd_output_ocp_rated_ma']['bounds']['maximum'], 453600)
+        self.assertEqual(edit(result.image, {k: 226800 for k in NVVDD_OCP}).blob, self.image.blob)
+        # Up to 5000.999 A, and back.
+        top = edit(self.image, {k: 5000999 for k in NVVDD_OCP})
+        self.assertEqual(descriptors(top.image)['nvvdd_output_ocp_max_ma']['current'], 5000999)
+        self.assertEqual(edit(top.image, {k: 226800 for k in NVVDD_OCP}).blob, self.image.blob)
+        # 5001 A (the no-limit value) or more, a rated value above the ceiling, a ceiling below the rated value, and
+        # a rated value below the stored minimum are refused.
+        for changes in ({'nvvdd_output_ocp_max_ma': 5001000}, {k: 5001000 for k in NVVDD_OCP},
+                        {'nvvdd_output_ocp_max_ma': 6000000, 'nvvdd_output_ocp_rated_ma': 300000},
+                        {'nvvdd_output_ocp_rated_ma': 226801}, {'nvvdd_output_ocp_max_ma': 226799},
+                        {'nvvdd_output_ocp_max_ma': 300000, 'nvvdd_output_ocp_rated_ma': 300001},
+                        {'nvvdd_output_ocp_rated_ma': 0}):
+            with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
+                edit(self.image, changes)
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+
+    def test_a_no_limit_row_on_the_nvvdd_current_channel_does_not_block_the_limit(self):
+        # Rows 12 and 18 hold 5001 A as rated and maximum on channel 19, rows 16 and 17 read channel 18.
+        image = from_bytes(nvvdd_rows(self.image.blob))
+        parser, rows = backend(image), backend(image).power_rows()
+        fields = descriptors(image)
+        named = [{'row': 16, 'class': 5, 'power_channel': 18, 'minimum': 1000, 'rated': 18750, 'maximum': 18750,
+                  'units': 'mW'},
+                 {'row': 17, 'class': 5, 'power_channel': 18, 'minimum': 1, 'rated': 12500, 'maximum': 12500,
+                  'units': 'mW'}]
+        for key in NVVDD_OCP:
+            with self.subTest(key=key):
+                field = fields[key]
+                self.assertTrue(field['editable'])
+                self.assertEqual(field['policy_indices'], [13])
+                self.assertNotIn('same_channel_rows', field)
+                self.assertEqual(field['unlimited_rows'],
+                                 [{'row': 18, 'minimum': 1, 'rated': 5001000, 'maximum': 5001000, 'units': 'mA'}])
+                self.assertEqual(field['other_nvvdd_rows'], named)
+                self.assertIn('row 18 on the same channel holds that value as rated and maximum and is not counted '
+                              'as a second limit', field['reason'])
+                self.assertIn('row 16 is a class-5 mW row on another NVVDD channel (18; 18.75 W rated, 18.75 W '
+                              'maximum; a hardware threshold, meaning unknown, no field) and may bind first',
+                              field['reason'])
+                self.assertIn('a hardware threshold that trips would show as a hardware slowdown, not as a power '
+                              'limit', field['reason'])
+                self.assertIn('row 17 is a class-5 mW row on another NVVDD channel (18; 12.5 W rated, 12.5 W '
+                              'maximum', field['reason'])
+                self.assertNotIn('row 12', field['reason'])
+        # The 90 A / 90 A edit of the RTX 3050 Ti Laptop GPU report writes row 13 only.
+        result = edit(image, {k: 90000 for k in NVVDD_OCP})
+        self.assertTrue(result.manifest['integrity']['valid'])
+        after = backend(result.image).power_rows()
+        self.assertEqual((after[13]['minimum_raw'], after[13]['default_raw'], after[13]['maximum_raw']),
+                         (1, 90000, 90000))
+        self.assertEqual([r for i, r in enumerate(after) if i != 13], [r for i, r in enumerate(rows) if i != 13])
+        changed_bytes_within(self, image, result,
+                             [at for o in (6, 10) for at in parser.copy_offsets(rows[13]['offset'] + o, 4)])
+        self.assertEqual(edit(result.image, {k: 226800 for k in NVVDD_OCP}).blob, image.blob)
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'nvvdd_output_ocp_max_ma': 5001000})
+        self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        # Only rated and maximum both 5001 A is the no-limit row: 4000 A rated under a 5001 A maximum is a limit.
+        near = descriptors(from_bytes(nvvdd_rows(self.image.blob, row18=(1, 4000000, 5001000))))
+        self.assertFalse(near['nvvdd_output_ocp_max_ma']['editable'])
+        self.assertNotIn('unlimited_rows', near['nvvdd_output_ocp_max_ma'])
+        # A row of another class on the same channel neither blocks nor is the field (row 18 as class 1 mA, 300 A).
+        other = descriptors(from_bytes(nvvdd_rows(self.image.blob, row18=(1, 300000, 300000), row18_class=0x11)))
+        self.assertTrue(other['nvvdd_output_ocp_rated_ma']['editable'])
+        self.assertIn('row 18 is a class-1 mA row on this NVVDD channel (19; 300 A rated, 300 A maximum',
+                      other['nvvdd_output_ocp_rated_ma']['reason'])
+
+    def test_a_second_real_limit_on_the_nvvdd_current_channel_keeps_both_values_read_only(self):
+        # Row 18 as a class-0 mA row on channel 19 with a real value: which row binds is unknown.
+        for limits, own, second in (((1, 300000, 300000), 13, 18), ((1, 100000, 120000), 18, 13)):
+            with self.subTest(limits=limits):
+                fields = descriptors(from_bytes(nvvdd_rows(self.image.blob, row18=limits)))
+                for key in NVVDD_OCP:
+                    field = fields[key]
+                    self.assertFalse(field['editable'])
+                    self.assertTrue(field['opt_in'])
+                    # The lowest row has the field; the other one is named.
+                    self.assertEqual(field['policy_indices'], [own])
+                    self.assertEqual([o['row'] for o in field['same_channel_rows']], [second])
+                    self.assertIn(f'row {second} (parameter byte 0 = ', field['reason'])
+                    self.assertIn('is another policy row of the same class and unit on this power channel; which row '
+                                  'binds is unknown', field['reason'])
+                    self.assertNotIn('unlimited_rows', field)
+        # No class-0 mA row below 5001 A on an NVVDD channel: no field.
+        blob = patched(self.image.blob, self.rows[13]['offset'] + 2, struct.pack('<III', 1, 5001000, 5001000))
+        self.assertFalse(set(NVVDD_OCP) & set(descriptors(from_bytes(blob))))
+
+    def test_a_current_row_on_another_nvvdd_channel_never_takes_the_field(self):
+        # Row 12 as a class-0 mA row on the other NVVDD channel 18 (sensor byte 14 = 5), 60 A: below row 13 and at a
+        # lower row index, but not on the output current channel. It is named and may bind first; row 13 keeps the
+        # field through edits that pass it, and going back writes row 13 again.
+        rows = self.rows
+        blob = patched(nvvdd_rows(self.image.blob), rows[12]['offset'],
+                       bytes((0x10, 18)) + struct.pack('<III', 1, 60000, 60000))
+        image = from_bytes(blob)
+        fields = descriptors(image)
+        for key in NVVDD_OCP:
+            self.assertTrue(fields[key]['editable'])
+            self.assertEqual(fields[key]['policy_indices'], [13])
+            self.assertEqual(fields[key]['other_nvvdd_rows'][0], {'row': 12, 'class': 0, 'power_channel': 18,
+                                                                  'minimum': 1, 'rated': 60000, 'maximum': 60000,
+                                                                  'units': 'mA'})
+            self.assertIn('row 12 is a class-0 mA row on another NVVDD channel (18; 60 A rated, 60 A maximum; '
+                          'meaning unknown, no field) and may bind first', fields[key]['reason'])
+        low = edit(image, {k: 45000 for k in NVVDD_OCP})
+        high = edit(low.image, {k: 60000 for k in NVVDD_OCP})
+        for result, value in ((low, 45000), (high, 60000)):
+            after = backend(result.image).power_rows()
+            self.assertEqual((after[12]['default_raw'], after[12]['maximum_raw']), (60000, 60000))
+            self.assertEqual((after[13]['default_raw'], after[13]['maximum_raw']), (value, value))
+            self.assertEqual(descriptors(result.image)['nvvdd_output_ocp_max_ma']['policy_indices'], [13])
+        self.assertEqual(edit(high.image, {k: 226800 for k in NVVDD_OCP}).blob, image.blob)
+        # The same row on a second output current channel (channel 18 with sensor byte 14 = 6, not byte-identical to
+        # channel 19) is a second limit: both values stay read-only, so no edit can move the field.
+        table = backend(image).pointer('P', 0x3C)
+        rival = from_bytes(patched(blob, table + 6 + 22 * 18 + 14, b'\x06'))
+        fields = descriptors(rival)
+        for key in NVVDD_OCP:
+            field = fields[key]
+            self.assertFalse(field['editable'])
+            self.assertEqual(field['policy_indices'], [12])
+            self.assertEqual(field['reason'], 'read-only: row 13 (power channel 19, rated 226.8 A, maximum 226.8 A) '
+                                              'is another class-0 mA row on an NVVDD output current channel; which '
+                                              'row binds is unknown, so editing this row alone may have no effect')
+        with self.assertRaises(VbiosError):
+            edit(rival, {k: 70000 for k in NVVDD_OCP})
 
     def test_notebook_header_names_row_2(self):
         image = from_bytes(synthetic_rom(family='ampere', copies=2, notebook=True))

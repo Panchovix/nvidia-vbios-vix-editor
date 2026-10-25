@@ -51,6 +51,17 @@ ADA_POLICIES = {
                        '93d3c5c1448196872068413a3c76d5d6a981e70d1f8383b02b75dea5970daaba'),
                       NVVDD_CURRENT_CHANNEL, 'mA'),
 }
+# Auxiliary power connector input rows (TableRom.ada_connector_policies): the slot_power row shape
+# with its channel byte excluded (sha256 over entry byte 0 and bytes 14..0x52; class 4 mW), on a
+# board input: a class-5 single input at 12 V that channel 0 (the class-2 board total) adds with
+# weight 1.0, on a connector rail, with no parameter but the provider byte 15 (0..2). Rail 0xda is
+# the auxiliary connector input that saved GET identifies on every connector-powered GB20x source
+# (monitor class 8, rail 218); 0xdb/0xdc are the next inputs (the spare Ada channels 26..28 list
+# da/db/dc on providers 0/1/2; the MSI 2500 W GB20x image adds a 0xdb input on provider 2). 0xfa,
+# 0xfb, 0xfc and 0xe4 are the Ampere connector channel rails (AMPERE_CONNECTOR_RAILS); the RTX 4070
+# image uses 0xfa. The rail does not name the connector type: the 8-pin RTX 4060 Ti uses 0xda too.
+ADA_CONNECTOR_SHAPE = 'e48af26eb4a825082b0d78339ae3ec74adfc17de9718493db5dbe39435fbe085'
+ADA_CONNECTOR_RAILS = (0xDA, 0xDB, 0xDC, 0xFA, 0xFB, 0xFC, 0xE4)
 # Power override profile table (P+0xF4), version 0x10, parsed for Ada and GB20x by the same GSP-RM
 # 615.78.08 code (0x17cd67c, gsp_ga10x.bin): a 10-byte header, four 0x3d-byte selection rows (5-byte
 # header {u8 type, u32 param}, eight 7-byte entries {u8 flags, u8 profile, u32 value, u8 param}) and
@@ -433,6 +444,67 @@ class TableRom:
                     channel_index=index, minimum_offset=row['offset'] + 2, default_offset=row['offset'] + 6,
                     same_channel_rows=same)
 
+    def ada_connector_policies(self):
+        """Ada auxiliary power connector input rows (class 4 mW), in row order, as ada_policy items.
+
+        A row qualifies by ADA_CONNECTOR_SHAPE (the slot_power shape without its
+        channel byte) and a connector input channel: one that channel 0 adds with
+        weight 1.0 (relationships), a class-5 single input at 12 V on an
+        ADA_CONNECTOR_RAILS rail with bytes 8..14 and 16..25 zero and the provider
+        byte 15 at 0..2. Notebook images (notebook_power) give no row: their DC
+        input channel holds the same bytes. Limits are not pinned; the row must
+        keep 0 <= minimum <= rated <= maximum. same_channel_rows lists every other
+        row of the same class and unit on a byte-identical channel entry, as in
+        ada_policy; threshold_rows the class-5 mA rows (hardware current
+        thresholds) on it; unrecognized_rows the class-4 mW rows on another
+        connector input channel that do not qualify (they may bind instead).
+        """
+        if self.family != 'ada':
+            return []
+        rows, size = self.power_rows(), self.power_entry_size
+        if self.notebook_power:
+            return []
+        inputs = {r[1] for r in self.relationships(0) if r[0] == 1 and r[2:6] == UNIT_WEIGHT}
+
+        def connector_input(index):
+            if index not in inputs or index >= 0x20:
+                return False
+            channel = self.power_channel(index)
+            return (channel[0] == 5 and channel[1] in ADA_CONNECTOR_RAILS and channel[2:8] == CHANNEL_12V and
+                    not any(channel[8:15]) and channel[15] in (0, 1, 2) and not any(channel[16:]))
+
+        def entry(o):
+            return dict(row=o['row'], parameter_byte_0=self.blob[o['offset'] + 14], minimum_raw=o['minimum_raw'],
+                        default_raw=o['default_raw'], maximum_raw=o['maximum_raw'], units=o['limit_unit'])
+
+        def on(channel, o):
+            return self.blob[o['offset'] + 1] < 0x20 and self.power_channel(self.blob[o['offset'] + 1]) == channel
+        accepted = []
+        for row in rows:
+            raw = self.blob[row['offset']:row['offset'] + size]
+            tail = raw[14:ADA_POWER_ENTRY].ljust(ADA_POWER_ENTRY - 14, b'\0')
+            if (hashlib.sha256(raw[:1] + tail).hexdigest() == ADA_CONNECTOR_SHAPE and not any(raw[ADA_POWER_ENTRY:])
+                    and connector_input(raw[1]) and 0 <= row['minimum_raw'] <= row['default_raw'] <= row['maximum_raw']):
+                accepted.append((row, raw, tail))
+        own = {row['row'] for row, _, _ in accepted}
+        loose = [o for o in rows if o['type'] == 4 and o['limit_unit'] == 'mW' and o['row'] not in own and
+                 self.blob[o['offset'] + 1] < 0x20 and connector_input(self.blob[o['offset'] + 1])]
+        result = []
+        for row, raw, tail in accepted:
+            index = raw[1]
+            channel = self.power_channel(index)
+            same = [entry(o) for o in rows if o['row'] != row['row'] and o['type'] == row['type'] and
+                    o['limit_unit'] == row['limit_unit'] and on(channel, o)]
+            thresholds = [entry(o) for o in rows if o['type'] == 5 and o['limit_unit'] == 'mA' and on(channel, o)]
+            unrecognized = [dict(entry(o), channel_index=self.blob[o['offset'] + 1],
+                                 channel_rail=self.power_channel(self.blob[o['offset'] + 1])[1])
+                            for o in loose if not on(channel, o)]
+            result.append(dict(row, vbios_row_index=row['row'], units='mW', channel_index=index,
+                               channel_rail=channel[1], immutable_row_sha256=hashlib.sha256(raw[:2] + tail).hexdigest(),
+                               minimum_offset=row['offset'] + 2, default_offset=row['offset'] + 6,
+                               same_channel_rows=same, threshold_rows=thresholds, unrecognized_rows=unrecognized))
+        return result
+
     def ampere_policies(self, role):
         """Ampere and Turing power rows of one role, identified by class, unit and power channel.
 
@@ -520,6 +592,21 @@ class TableRom:
                                minimum_offset=row['offset'] + 2, default_offset=row['offset'] + 6,
                                same_channel_rows=same, summed_cap_rows=summed))
         return result
+
+    def ampere_nvvdd_rows(self):
+        """Ampere power rows on an NVVDD channel (channel bytes 0..1 = 01 01: class 1, rail 1), in row order.
+
+        Every class and unit, values unchecked; each row adds channel_index. On the Ampere
+        corpus these are row 13 (and rows 12 and 18 on most images) on the NVVDD output
+        current channel 19 (sensor byte 14 = 6) and rows 16 and 17 on channel 18 (sensor
+        byte 14 = 5). The TGP row is never one.
+        """
+        if self.family != 'ampere':
+            return []
+        count = self.blob[self.pointer('P', 0x3C) + 3]
+        return [dict(row, channel_index=index) for row in self.power_rows()
+                for index in (self.blob[row['offset'] + 1],)
+                if row['row'] != self.tgp_index and index < count and self.power_channel(index)[:2] == b'\x01\x01']
 
     def relationships(self, index):
         """Relationship entries of a class-2 power channel (its bytes 14..15: first..last entry), else [].

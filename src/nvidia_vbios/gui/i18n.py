@@ -303,6 +303,17 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'field.nvvdd_power_threshold_max_w': 'NVVDD output power threshold ceiling (advanced, experimental)',
  'field.connector_power_max': 'Connector power channel {connector} ceiling (experimental)',
  'field.connector_power_rated': 'Connector power channel {connector} limit, rated (experimental)',
+ 'field.connector_power_max_advanced': 'Connector power channel {connector} ceiling (advanced, experimental)',
+ 'field.connector_power_rated_advanced': 'Connector power channel {connector} limit, rated (advanced, experimental)',
+ 'connector_input.rating': 'This limit caps the power drawn through the auxiliary power connector. The ROM does not '
+                           'store the connector type: a PCIe 8-pin connector is rated for 150 W, a 12V-2x6 (16-pin) '
+                           'cable for the level its sense pins report. Going past what the connector and its cable are '
+                           'rated for puts the cable, the connector and the power supply at risk. That is your call.',
+ 'connector_input.limits': 'The board power limit and, where the board stores them, the PCIe slot limit and the 12 V '
+                           'input current limit or threshold still apply and may limit next, so raise them together '
+                           'where needed. Not tested on hardware.',
+ 'connector_input.threshold': 'Row {row} also holds a {amps} A current threshold on this connector input (about '
+                              '{watts} W at 12 V). It cannot be edited here and may hold the connector first.',
  'field.connector_sum_power_max_w': 'Connector power sum ceiling (experimental)',
  'field.connector_sum_power_rated_w': 'Connector power sum limit, rated (experimental)',
  'summed_cap.connectors': 'Row {row} also caps the sum of connector power channels {channels} at {rated} {units} '
@@ -328,6 +339,9 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'lpwr.enabled_entries': ('This product is not among the reviewed ones, so this switch covers the entries this '
                           'ROM enables. A copy saved with Off no longer shows the switch, since an entry shipped '
                           'disabled looks the same as one turned off: keep the original ROM to go back to Stock.'),
+ 'output_ocp.ampere': ('Not tested on hardware. A power cap below the board power ceiling may come from this current '
+                       'limit, though it is not known whether the GPU enforces it. It likely protects the core VRM, '
+                       'which was sized for the stock value. Raising it is your call, and small steps are safer.'),
  'sense_profiles.input_current': 'The 12 V input current threshold (rated {amps} A, about {watts} W at 12 V) may '
                                  'limit first. Raise it too, under Show advanced XOC-style fields.',
  'vmin_clone.memory': 'On this ROM the memory clock voltage floor keeps its stock value. A lower VMIN shows only while '

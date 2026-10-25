@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.1.34
+
+- **Ampere: the NVVDD output current limit can be edited (experimental, opt-in).** Under **Show advanced XOC-style
+  fields**, Ampere ROMs now show **NVVDD output current limit ceiling** and **NVVDD output current limit, rated** (row
+  13 of the power table). Before, the ceiling was shown read-only. On one RTX 3050 Ti Laptop GPU, a raised power
+  ceiling and boot default stopped at about 60-64 W with power limit as the reason. Its ROM stores 45 A there, while
+  an 80 W ROM of the same GPU stores 90 A, so this low stored value is the likely cause of that cap, though it is not
+  proven. The ceiling can be raised alone. To raise the rated value past the stored ceiling, raise the ceiling in the
+  same edit: 90 A in the window, or in mA on the command line
+  `nvbios edit ROM OUT --set nvvdd_output_ocp_max_ma=90000 --set nvvdd_output_ocp_rated_ma=90000`. 90 A is what the
+  80 W ROM stores, and smaller steps are possible. The limit likely protects the core VRM, which was sized for the
+  stock value, and it is not known whether the GPU enforces it. Once it is raised, the stored voltage ceiling,
+  read-only on Ampere, may be the next limit, and two other NVVDD rows (16 and 17, not editable) may bind first; those
+  would show as a hardware slowdown, not a power limit (inferred). Values stay below 5001 A, the value the ROM uses
+  for no limit. Not tested on hardware. Reported in [issue
+  #8](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/8).
+- **Power connector limit on Ada and Blackwell (opt-in, experimental).** An RTX 4070 with one 8-pin power connector
+  stopped at about 143 W on that connector (about 95 % of a stored 150 W limit) even with a higher board power limit,
+  most likely because the ROM also stores a power limit for the auxiliary power connector; a similar stop was reported
+  on an RTX 5060 Ti with one 8-pin connector (no readings). On the Ada and Blackwell ROMs where the editor recognizes
+  it (in its corpus: RTX 4070, RTX 4060 Ti, RTX 5060 Ti, RTX 4000, 4500, 5000 and 6000 Ada), **Connector power channel
+  1** now shows it under **Show advanced XOC-style fields**, with its ceiling and rated value; to raise the rated
+  value past the stored ceiling, raise the ceiling in the same edit. The ROM does not say which connector the board
+  has: a PCIe 8-pin connector is rated for 150 W, a 12V-2x6 cable for the level its sense pins report. Going past what
+  the connector and its cable are rated for puts the cable, the connector and the power supply at risk, and that is
+  your call. The board power limit, the PCIe slot limit and the 12 V input current limit still apply and may limit
+  next, so raise them too where needed; on the RTX 4000 Ada a 12.34 A threshold on the same connector (not editable)
+  may limit it first, near 148 W. Not tested on hardware. For API users: the keys are `connector_1_power_max_w` and
+  `connector_1_power_rated_w`, as on Ampere, with `opt_in: true` and `power_input: "auxiliary-connector"`.
+- **RTX PRO 6000 Max-Q and RTX 5070: the 12 V input current reasons name the connector.** On these ROMs the 12 V input
+  current policy reads the auxiliary power connector input, not the whole 12 V input, so it limits the current through
+  the connector alone. Only the field reasons changed.
+
 ## 0.1.33
 
 - **RTX 5090 Laptop GPU: the NVVDD and MSVDD output current limits can be edited.** Its output OCP

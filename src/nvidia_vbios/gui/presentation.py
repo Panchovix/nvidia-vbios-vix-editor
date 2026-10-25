@@ -101,7 +101,7 @@ def field_label(field, language='en'):
         return text('field.input_threshold_' + key[len('input_current_'):])
     if key in FIELD_KEYS:
         return text('field.' + key)
-    # An opt-in output current limit (Turing row 13) or fixed voltage (Turing) is shown with the
+    # An opt-in output current limit (Turing or Ampere row 13) or fixed voltage (Turing) is shown with the
     # advanced fields.
     advanced = '_advanced' if field.get('opt_in') else ''
     for rail in ('nvvdd', 'msvdd'):
@@ -124,7 +124,8 @@ def field_label(field, language='en'):
                 return text('field.fixed' + advanced, role=role.upper(), rail=rail.upper())
     match = CONNECTOR_KEY.fullmatch(key)
     if match:
-        return text('field.connector_power_' + match.group(2), connector=match.group(1))
+        # The Ada and GB20x auxiliary connector input limits are opt-in (advanced).
+        return text('field.connector_power_' + match.group(2) + advanced, connector=match.group(1))
     match = CONNECTOR_CURRENT_KEY.fullmatch(key)
     if match:
         return text('field.connector_current_threshold_' + match.group(2), connector=match.group(1))
@@ -208,6 +209,26 @@ def summed_cap_notes(field, fields, language='en'):
     return notes
 
 
+def connector_input_notes(field, fields, language='en'):
+    """Notes of an editable Ada or GB20x auxiliary connector input limit (power_input 'auxiliary-connector').
+
+    Shown on the ceiling, or on the rated limit when the ceiling is read-only: the connector ratings (the
+    ROM does not store the connector type) and the risk of going past them, the limits that still apply
+    after it, and one note per hardware current threshold on the same connector input (threshold_rows).
+    """
+    match = CONNECTOR_KEY.fullmatch(field['key'])
+    if not match or field.get('power_input') != 'auxiliary-connector' or not field.get('editable'):
+        return []
+    if match.group(2) == 'rated':
+        ceiling = next((f for f in fields if f['key'] == f'connector_{match.group(1)}_power_max_w'), None)
+        if ceiling is not None and ceiling.get('editable'):
+            return []
+    text = Messages(language)
+    return [text('connector_input.rating'), text('connector_input.limits')] + [
+        text('connector_input.threshold', row=row['row'], amps=number(Decimal(row['rated']) / 1000),
+             watts=number(round(Decimal(row['rated']) * 12 / 1000))) for row in field.get('threshold_rows', ())]
+
+
 def sense_profile_notes(field, fields, language='en'):
     """Notes of a board power field on an Ada ROM whose override profiles follow the 16-pin cable sense pins.
 
@@ -242,6 +263,15 @@ def notebook_notes(field, family, language='en'):
     text, key = Messages(language), field['key']
     return ([text('notebook.ceiling')] if key == 'power_max_w' else
             [text('notebook.base_tgp')] if key == 'notebook_base_tgp_w' else [])
+
+
+def output_current_notes(field, family, language='en'):
+    """Note of the editable Ampere NVVDD output current limit (opt-in, row 13): a power cap below the ceiling may
+    come from it, its enforcement is unknown and it likely protects the core VRM."""
+    if (family != 'ampere' or not field.get('opt_in') or not field.get('editable') or
+            field.get('key') not in ('nvvdd_output_ocp_max_ma', 'nvvdd_output_ocp_rated_ma')):
+        return []
+    return [Messages(language)('output_ocp.ampere')]
 
 
 def lpwr_notes(field, language='en'):

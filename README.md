@@ -167,7 +167,11 @@ they are copied as stored numbers, so check that this board's hardware can take 
   belong to the laptop, not to the image. On one RTX 3050 6GB Laptop GPU (Ampere, on
   Windows) a lowered power ceiling applied, and raising the boot default together with the
   ceiling let it draw above its stock limit; on one RTX 3050 Ti Laptop GPU the same change
-  gained only a few watts.
+  gained only a few watts. Its ROM stores a low NVVDD output current limit (45 A, where an 80 W
+  ROM of the same GPU stores 90 A), the likely cause, though not proven. **NVVDD output current
+  limit ceiling** and **NVVDD output current limit, rated** (experimental, under **Show advanced
+  XOC-style fields**) edit it; the limit likely protects the core VRM, which was sized for the
+  stock value.
 
 ## Run from source
 

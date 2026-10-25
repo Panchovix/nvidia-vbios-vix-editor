@@ -80,10 +80,10 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `fan_N_zero_rpm_low_temp_c`, `fan_N_zero_rpm_high_temp_c`, `fan_extra_M_zero_rpm_*_temp_c` | The two temperatures at bytes 30..33 (1/32 °C) of a channel's or an extra curve's fan policy entry, read with the zero RPM bits (inferred meaning: idle fans stop below the lower and start above the upper) | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); only where the entry stores a nonzero pair (the upper at least the lower) and byte 46 is not 0xff; editable where the entry's block passes the firmware validator, on Ada and Ampere where `fan_zero_rpm` is offered; an edit keeps lower > 0, lower < upper <= point 1 of the same curve and 110 °C; with zero RPM on, an edit may not leave the upper above point 1 (`ZERO_RPM_ABOVE_CURVE`) |
 | `*_rel/alt/ov/vmin_selector_index` | Full stored selector index | Read-only |
 | `*_boot_voltage_uv` | Stored boot voltage | Read-only, preserved |
-| `*_output_ocp_max_ma` | Reviewed output-OCP policy maximum (client ceiling) | Reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images; Turing NVVDD row 13 (class 10, experimental, opt-in) |
-| `*_output_ocp_rated_ma` | Reviewed output-OCP rated value, enforced from boot | Experimental, reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images; Turing NVVDD row 13 (opt-in) |
+| `*_output_ocp_max_ma` | Reviewed output-OCP policy maximum (client ceiling) | Reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images; Turing NVVDD row 13 (class 10, experimental, opt-in); Ampere NVVDD row 13 (class 0, experimental, opt-in) |
+| `*_output_ocp_rated_ma` | Reviewed output-OCP rated value, enforced from boot | Experimental, reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images; Turing and Ampere NVVDD row 13 (opt-in) |
 | `slot_power_rated_w`, `slot_power_max_w` | PCIe slot power policy: row 19 (SFF), row 18 (5060 Ti), Ada and Ampere row 5, Turing row 3 | Experimental, reviewed row shapes only |
-| `connector_N_power_rated/max_w`, `connector_N_current_threshold_rated/max_ma` | Power policy and current hardware threshold of external 12 V connector sense channel N, numbered in power-row order | Experimental, Ampere and Turing; current thresholds opt-in |
+| `connector_N_power_rated/max_w`, `connector_N_current_threshold_rated/max_ma` | Power policy and current hardware threshold of external 12 V connector sense channel N, numbered in power-row order; on Ada and GB20x the power policy of the auxiliary power connector input | Experimental: Ampere and Turing, current thresholds opt-in; Ada and GB20x (power only, opt-in), reviewed row shapes on the connector input channel |
 | `slot_current_threshold_rated/max_ma`, `nvvdd_power_threshold_rated/max_w` | Hardware-threshold policies (slot 12 V current; Ada NVVDD output power) | Experimental, opt-in; slot current on Ada, Ampere and Turing, NVVDD power on Ada only |
 | `board_fixed_rated_w` | Rated value of the fixed board policies 2/7 | Experimental, opt-in (hidden in the GUI by default) |
 | `notebook_base_tgp_w` | Row 2 +73 of the GB20x notebook layout, a candidate for the base TGP that Dynamic Boost adds its boost to | Experimental, opt-in (hidden in the GUI by default), GB20x notebook layout only; an edited value stays between `power_default_w` and `power_max_w`, which it does not bound |
@@ -749,6 +749,64 @@ a profile table cannot be decoded. The 12 V
 input-current values (6600 mA on the SFF) may also bind and should be raised with
 them. Nothing here is hardware-tested.
 
+### Auxiliary power connector input, opt-in (`connector_1_power_rated_w`, `connector_1_power_max_w`)
+
+Some boards store a power policy on the input of their auxiliary power connector, apart
+from the board power limit. On a board with one 8-pin connector it most likely holds
+that connector at 150 W, so the board stops below a raised board power limit (inferred,
+not hardware-tested). One RTX 4070 with one 8-pin connector, its board power limit raised
+to 240 W, stopped at about 195-198 W under load with 142.6 W on the 8-pin input and
+52.5 W on the slot; its normalized power reading (95.3 %) is close to 142.6 / 150
+(95.1 %). A similar stop was reported on an RTX 5060 Ti with one 8-pin connector (no
+readings).
+
+On GB20x the row is recognized by its shape and channel, whatever the device:
+
+- it has the shape of the GET-reviewed SFF slot policy (row 19: type 2, byte 1 = 0 for
+  mW, every byte but the range bytes 13:25 and the monitor byte 5);
+- its monitor's power channel is byte-identical to the auxiliary connector input
+  channel `05 da 00 1b b7 00 00 10`, then zero bytes with byte 15 = 1 (a class-5 single
+  input at 12 V, rail 0xda, provider byte 1). The saved GET reports that channel as
+  monitor 2 (class 8, rail 218) on every connector-powered reviewed source (RTX PRO 6000
+  Max-Q, RTX 5090, 5080, 5070 Ti), where the Max-Q 12 V input policy (row 9) reads it, and
+  no such monitor on the slot-powered RTX PRO 4000 SFF. Every connector-powered GB20x image
+  of the corpus stores it as channel 2;
+- it is not one of rows 2/7/8/9, the only policies an override profile entry names.
+
+The rail does not name the connector type: 8-pin and 12V-2x6 boards both use 0xda. Only
+the RTX 5060 Ti images have such a row: row 17, 0/150000/150000 mW (the corpus holds two
+different images, one of them from a board with one 8-pin connector). Where more than
+one row matched, every value would stay read-only, since which row binds is unknown. The
+keys follow the numbered Ampere connector channels (`connector_1_*`). The values are in
+W, stored as uint32 mW, in the `connector-1-power` ordering group: the ceiling goes from
+the rated value up to the encoding maximum and the rated value up to the ceiling, so set
+both in one edit to go past the stored ceiling. No override profile names this row, so
+the base row alone is written, and the fields are read-only when the profiles do not
+decode. They are opt-in (shown under **Show advanced XOC-style fields**) and
+experimental: no edited value has been booted.
+
+On the RTX PRO 6000 Max-Q and the RTX 5070 images the 12 V input current policy (row 9)
+reads this connector input channel too, not the whole 12 V input: there it limits the
+current through the connector alone, without the slot (25 A on the RTX 5070, about 300 W
+at 12 V). Their `input_current_*` reasons say so. Neither has a connector power row.
+
+The ROM does not store the connector type. A PCIe 8-pin connector is rated 150 W and a
+12V-2x6 cable is rated for the level its sense pins report. Going past what the connector
+and its cable are rated for puts the cable, the connector and the power supply at risk;
+that is the user's call. The board power limit, the slot limit (`slot_power_*`) and the
+12 V input current limit (`input_current_*` and `input_current_policy7_limit_ma`; 18 A on
+the RTX 5060 Ti, about 216 W at 12 V) still apply and may bind next. To raise the
+connector limit of an RTX 5060 Ti to 200 W (above the 150 W rating of an 8-pin
+connector) together with a 220 W board limit and a 25 A input current limit
+(`board_fixed_rated_w` raises the rated value of the fixed board policies 2/7 with the
+ceiling):
+
+```sh
+./nvbios edit original.rom modified.rom --set power_max_w=220 --set power_default_w=220 \
+  --set board_fixed_rated_w=220 --set connector_1_power_max_w=200 --set connector_1_power_rated_w=200 \
+  --set input_current_max_ma=25000 --set input_current_rated_ma=25000 --set input_current_policy7_limit_ma=25000
+```
+
 ### Maximum operating temperature (`max_operating_temp_c`)
 
 The thermal policy table (P+0x50, object 0x1b) has version 0x20, a 12-byte header (22
@@ -1144,8 +1202,9 @@ with `runtime_get: false`:
   NVVDD OCP: 660 A on the Workstation, 170 A on the 5060 Ti, 240 A on the 5070.
 - **PCIe slot power (5060 Ti).** Row 18 has the immutable shape of the GET-reviewed
   SFF row 19 slot policy (type 2, mW, monitor 1, 66 W), so `slot_power_*` edits
-  row 18 there. Row 17 (type 2, monitor 2, 150 W, likely the 8-pin input) has no
-  reviewed template and is not offered.
+  row 18 there. Row 17 has the same shape on monitor 2, the auxiliary connector input
+  (150 W), and is offered as the opt-in `connector_1_power_*` (see the auxiliary power
+  connector input above).
 - `api_rail_index` stays unknown. No edited value has been booted on these boards.
 
 ## Notebook images (RTX 5080 and RTX 5090 Laptop GPU)
@@ -1959,7 +2018,8 @@ excluded) and the exact power-channel entry they read:
 | `slot_current_threshold_rated_ma`, `_max_ma` (opt-in) | class 5 hardware threshold, mA, slot channel | RTX 2000 Ada GET: policy 8, unit mA, 8.25 A, current = rated |
 | `input_current_rated_ma`, `_max_ma` (opt-in) | class 5 hardware thresholds 0 and 1, mA, on the 12 V input channel (byte-identical to GB20x channel 9), written together | Structural only (no Ada GET of these rows); editable only while both rows hold the same value |
 | `nvvdd_power_threshold_rated_w`, `_max_w` (opt-in) | class 5 mW on the NVVDD output power channel 18 | RTX 2000 Ada GET: policy 16, mW, monitor rail 1, current = rated |
-| `nvvdd_output_ocp_max_ma` | class 0 mA on the NVVDD output current channel 19 | Read-only: absent from the RTX 2000 Ada runtime policy list, so enforcement is unproven |
+| `nvvdd_output_ocp_max_ma` | class 0 mA on the NVVDD output current channel 19 | Read-only: absent from the RTX 2000 Ada runtime policy list, so enforcement is unproven. On the other Ada images and every Ampere image row 12 names rows 13 and 18 in the policy relationship entries; on the RTX 2000 Ada and RTX 4000 Ada (and SFF) row 12 is class 0 with unused entries, which may be why row 13 is absent there (inferred) |
+| `connector_1_power_rated_w`, `_max_w` (opt-in) | class 4 mW with the slot row shape (its channel byte excluded) on a board input that channel 0 adds: a class-5 single input at 12 V on a connector rail (0xda, 0xdb, 0xdc, 0xfa, 0xfb, 0xfc, 0xe4), no parameter but the provider byte 15 (0..2); the auxiliary power connector input | Structural (no Ada GET of these rows); readings from one RTX 4070 with one 8-pin connector are consistent with its 150 W value binding (not hardware-tested) |
 
 Class-5 rows are hardware thresholds: their fields carry
 `policy_class: "hardware-threshold"`, are opt-in (shown under **Show advanced
@@ -1980,8 +2040,54 @@ the firmware enforces is unknown, so both NVVDD threshold values stay read-only
 there; raising row 16 alone could leave the 100 W row in force.
 
 Raising the slot power or slot current threshold of a slot-powered board exceeds
-the PCIe CEM slot rating. Auxiliary-connector rows, laptop-only rows and
-placeholder rows stay unexposed.
+the PCIe CEM slot rating. Laptop-only rows and placeholder rows stay unexposed.
+
+**Auxiliary power connector input (opt-in).** A row qualifies by the slot row shape (its
+channel byte excluded) on a board input channel: a class-5 single input at 12 V that
+channel 0 (the class-2 board total, rail 0xf5) adds with weight 1.0, on rail 0xda, 0xdb,
+0xdc, 0xfa, 0xfb, 0xfc or 0xe4, with no parameter but the provider byte 15 (0..2).
+Notebook images are left out: their DC input channel holds the same bytes. The images of
+seven products have one such row, all on channel 5: 150 W on the RTX 4070 (rail 0xfa),
+the RTX 4060 Ti 8 GB and 16 GB and the RTX 4000 Ada (rail 0xda), and 300 W on the RTX
+4500 Ada (row 6) and the RTX 5000 and 6000 Ada (row 5; rail 0xda). Rail 0xda is the
+auxiliary connector input that the GB20x saved GET identifies (see the GB20x auxiliary
+power connector input above), and 0xfa is the first connector channel rail of Ampere,
+whose rows there hold 150-175 W. The rail does not name the connector type: the 8-pin
+RTX 4060 Ti and the 16-pin boards both use 0xda. The RTX 4090, 4080, 4080 SUPER, 4070 Ti
+SUPER and 4070 SUPER images read their connector channel only with class-0 rows of
+unknown meaning, so they get no field; the RTX 4070 also keeps its class-0 mA row 8
+(58 A rated, 75 A maximum) on that channel. The fields follow the other Ada policy rows:
+the keys and numbering of the Ampere connector channels (`connector_1_*`, then
+`connector_2_*` on an image with a second such row), every duplicate chain written,
+read-only while another class-4 mW row reads the same channel or a class-4 mW row of
+another shape reads another connector input channel, and the cable sense profiles
+handled as for the TGP (a top-level profile entry on this row is written with it,
+lower-level entries bound it). The ceiling goes from the rated value up to the encoding
+maximum and the rated value up to the ceiling.
+
+On a board with one 8-pin connector this row most likely holds the connector at 150 W
+even with a higher board power limit: readings from one RTX 4070 with its board limit
+raised to 240 W, stopped at about 195-198 W with 142.6 W on the 8-pin input, are
+consistent with it (95.3 % in its normalized power reading, close to 142.6 / 150 =
+95.1 %; not hardware-tested). The ROM does not store the connector type: a PCIe 8-pin
+connector is rated 150 W and a 12V-2x6 cable for the level its sense pins report. Going
+past what the connector and its cable are rated for puts the cable, the connector and
+the power supply at risk; that is the user's call. The board power limit and, where the
+image stores them, the slot limit and the 12 V input current thresholds (20 A on the
+RTX 4070, about 240 W at 12 V) still apply and may bind next; the RTX 5000 and 6000 Ada
+store no slot row. The RTX 4000 Ada has no 12 V input current rows but keeps a class-5
+mA hardware threshold on the connector channel itself (row 9, 12.34 A, about 148 W at
+12 V). It has no field, the descriptor lists it in `threshold_rows` and the GUI notes it:
+it probably holds the connector near 148 W whatever the connector power limit. Nothing
+here is hardware-tested. To raise the connector limit of an RTX 4070 to 200 W (above the
+150 W rating of an 8-pin connector) together with a 240 W board limit and a 25 A input
+current threshold:
+
+```sh
+./nvbios edit original.rom modified.rom --set power_max_w=240 --set power_default_w=240 \
+  --set connector_1_power_max_w=200 --set connector_1_power_rated_w=200 \
+  --set input_current_max_ma=25000 --set input_current_rated_ma=25000
+```
 
 **Override profiles picked by the cable sense pins (P+0xF4, experimental).** One Ada
 image, an MSI RTX 4090 (95.02.3C.40.EA), stores override profiles; every other Ada
@@ -2103,8 +2209,9 @@ Windows loader. An RTX 3050 6GB Laptop GPU (75 W HP BIOS) took a 70 W ceiling an
 55 W boot default the same way, and the driver reported a 70 W limit. On the same
 laptop a 95 W ceiling with an 80 W boot default let it draw above its stock 75 W (about
 92 W at most in a monitoring tool); on an RTX 3050 Ti Laptop GPU (stock 55 W) the same
-kind of raise gained only a few watts. Writes go to every duplicate chain and repair the
-additive checksum of each touched image.
+kind of raise gained only a few watts, likely because of its low NVVDD output current
+row (45 A; the 80 W image of the same GPU stores 90 A; see [NVVDD output current limit](#ampere-nvvdd-output-current-limit-nvvdd_output_ocp_rated_ma-nvvdd_output_ocp_max_ma-opt-in)).
+Writes go to every duplicate chain and repair the additive checksum of each touched image.
 
 **Image chains.** Laptop and headless dumps (A40, RTX 3070/3060/3050 Ti/3050
 Laptop) have no EFI image: the legacy image is marked last and the data images
@@ -2136,7 +2243,7 @@ byte 15:
 | `slot_current_threshold_rated_ma`, `_max_ma` (opt-in) | class 5 mA on the slot channel | Hardware threshold, as on Ada |
 | `input_current_rated_ma`, `_max_ma` (opt-in) | class 5 mA on the 12 V input channel, rail 0xe0 | Every such row written together (two on the RTX 3090 Ti) |
 | `connector_N_current_threshold_rated_ma`, `_max_ma` (opt-in) | class 5 mA on the channel of connector N | Rows 9 and 10 (threshold index 1 and 2 in parameter byte 0); 13-22.75 A rated, 13-32 A maximum; a field only where the channel carries one connector power row and one such row (none on the 3-connector RTX 3080 Ti channel 7, the RTX 3070 0xfc channel and the laptops) |
-| `nvvdd_output_ocp_max_ma` | class 0 mA on the NVVDD output channel | Read-only, as on Ada |
+| `nvvdd_output_ocp_rated_ma`, `_max_ma` (opt-in) | 13: class 0 mA on the NVVDD output current channel 19 (class 1, rail 1, sensor byte 14 = 6), the lowest such row | 54-445 A rated on the 40 corpus images (45 A on the reported RTX 3050 Ti Laptop image); values stay below 5001 A; see [NVVDD output current limit](#ampere-nvvdd-output-current-limit-nvvdd_output_ocp_rated_ma-nvvdd_output_ocp_max_ma-opt-in) |
 
 With the slot policy, the connector-channel policies probably cap the board power
 below a TGP raised past their sum (inferred, untested). A class-2 power channel sums
@@ -2161,8 +2268,70 @@ Ada applies, and rows must keep minimum <= rated <= maximum.
 Not exposed: the two rows on the NVVDD
 power channel (12.5-250 W, mostly class 5; some above the TGP, as on the GA103
 RTX 3060 Ti and the RTX 3070 Ti Laptop; class 0 on the RTX 3090 Ti, row 16, and
-the A2000, row 17; meaning unknown), the MSVDD output-current row of the two-rail
-boards and the laptop rows.
+the A2000, row 17; meaning unknown; the NVVDD output current reasons name them),
+the MSVDD output-current row of the two-rail boards and the laptop rows.
+
+### Ampere NVVDD output current limit (`nvvdd_output_ocp_rated_ma`, `nvvdd_output_ocp_max_ma`, opt-in)
+
+Row 13 is a class-0 mA row on the NVVDD output current channel 19 on every Ampere
+image examined (54-445 A rated on the 40 corpus images; the reported RTX 3050 Ti Laptop
+image below stores 45 A, the lowest seen). The field takes the lowest class-0 mA row on
+the NVVDD output current channel (channel bytes 0..1 = `01 01`, sensor byte 14 = 6)
+whose maximum is below 5001 A, which is row 13 on all 40 Ampere images examined (the
+corpus grew after the 35-image checks above). Its ceiling goes from the stored rated
+value up to 5000.999 A and its rated value from the stored minimum up to the ceiling;
+both form the ordering group `nvvdd-output-ocp`. The ceiling can be raised alone; a
+rated value above the stored ceiling needs the ceiling raised in the same edit (for
+example `--set nvvdd_output_ocp_max_ma=90000 --set nvvdd_output_ocp_rated_ma=90000`,
+the value of the 80 W image below; the GUI takes amps). The edit writes the rated value
+and the maximum of row 13 in every duplicate chain, keeps its minimum and repairs the
+image checksums. Both fields are experimental, opt-in (**Show advanced XOC-style
+fields**) and not hardware-tested: whether the firmware enforces the row is unproven on
+Ampere. It likely protects the core VRM, which was sized for the stock value, so the
+stored number is a policy value, not a hardware-safe VRM rating.
+
+On every Ampere image row 12 (class 1 mA, 5001 A, on channel 19 or, on GA102, on the
+sum channel 17) names rows 13 and 18 in the relationship entries of the power policy
+table, which suggests a combined policy over them (inferred). On the RTX 2000 Ada, RTX
+4000 Ada and RTX 4000 Ada SFF row 12 is class 0 and names unused entries, which may be
+why row 13 is absent from the RTX 2000 Ada runtime list; enforcement stays unproven.
+
+**No-limit rows.** 5001000 stored as both the rated value and the maximum (5001 A or
+5001 W) is the value Ampere power rows hold where they set no limit: on the 40 Ampere
+images examined, 269 rows hold 5001000, always as both values, 6 or 7 per image (200
+class 0/1 mW rows on sum and input channels, 40 class 1 mA rows, 29 class 0 mA rows),
+and no other row stores more than 1001000. 29 images store such a class-0 mA row 18
+on channel 19 next to row 13. A row of the same class, unit and channel with that
+value is listed in `unlimited_rows` and the reason and does not make the field
+read-only. Any other row of the same class, unit and channel is a second real limit
+and keeps both values read-only (`same_channel_rows`), as does a class-0 mA limit on
+another output current channel, because which row binds is unknown and editing one
+alone may have no effect; an edit therefore never moves the field to another row.
+Values at or above 5001 A are refused: row 13 would no longer be the lowest limit on
+its channel, and at 5001 A for both values it would itself read as a no-limit row and
+lose its field.
+
+**Rows that may bind first.** Rows 16 and 17 read the other NVVDD channel 18 (sensor
+byte 14 = 5; class 5 mW, or class 0 on the RTX 3090 Ti row 16 and the RTX A2000 row
+17; meaning unknown). Class 5 is the hardware-threshold class, as for the Ada row of
+the same shape (`nvvdd_power_threshold_*_w`), so a trip there would show as a hardware
+slowdown rather than a power limit (inferred). The reasons and `other_nvvdd_rows` name
+these other rows on an NVVDD channel; they have no field and may bind first.
+Same-channel limits and no-limit rows are listed apart (`same_channel_rows`,
+`unlimited_rows`). Once row 13 is raised, the reliability voltage ceiling
+(`nvvdd_rel_max_mv`, read-only on Ampere) may be the next limit.
+
+**Report behind the field.** On one RTX 3050 Ti Laptop GPU (10de:25a0, 50 W rated /
+55 W maximum), a 72-75 W ceiling and a 70 W boot default loaded with the loader still
+stopped at about 60-64 W with power limit as the reason, also at low CPU load, while
+the same laptop reached 80 W flashed with an 80 W image of the same GPU (on an older
+driver). That image stores 90 A in row 13 where the stock image stores 45 A (rows 16
+and 17: 28.125/21.5 W against 18.75/12.5 W). At 0.85-0.90 V, 45 A is about 38-41 W of
+core power, which fits a 60-64 W board power, so the 45 A row is the likely cap; that
+is inferred, not proven. The 80 W image also raises the reliability voltage ceiling
+from 900 to 1081.25 mV (read-only here), so after a row 13 raise the GPU may stop at
+0.9 V, which is reported as a voltage reason rather than as power. It also stores other
+power sensor bytes, so its 80 W reading may not compare 1:1 with the stock image.
 
 **Voltage (P+0x68, P+0x20).** Rail table `20 05 11 01 00` (NVVDD) or `20 05 11 02 01`
 (GA102 except the RTX 3090 Ti: NVVDD and MSVDD, the second name inferred from the

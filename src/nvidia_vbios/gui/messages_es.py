@@ -312,6 +312,19 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.nvvdd_power_threshold_max_w': 'Techo del umbral de potencia de salida NVVDD (avanzado, experimental)',
  'field.connector_power_max': 'Techo del canal de potencia de conector {connector} (experimental)',
  'field.connector_power_rated': 'Límite del canal de potencia de conector {connector}, nominal (experimental)',
+ 'field.connector_power_max_advanced': 'Techo del canal de potencia de conector {connector} (avanzado, experimental)',
+ 'field.connector_power_rated_advanced': ('Límite del canal de potencia de conector {connector}, nominal (avanzado, '
+                                          'experimental)'),
+ 'connector_input.rating': 'Este límite acota la potencia que entra por el conector de alimentación auxiliar. La '
+                           'ROM no guarda el tipo de conector: un conector PCIe de 8 pines admite 150 W, y un cable '
+                           '12V-2x6 (16 pines), el nivel que indican sus pines de detección. Pasar de lo que admiten '
+                           'el conector y su cable pone en riesgo el cable, el conector y la fuente. Es decisión tuya.',
+ 'connector_input.limits': 'El límite de potencia de la placa y, donde la placa los guarda, el límite del slot PCIe y '
+                           'el límite o umbral de corriente de entrada de 12 V siguen vigentes y pueden limitar '
+                           'después, así que súbelos juntos donde haga falta. Sin probar en hardware.',
+ 'connector_input.threshold': 'La fila {row} también guarda un umbral de corriente de {amps} A en esta entrada del '
+                              'conector (unos {watts} W a 12 V). No se puede editar aquí y puede frenar el conector '
+                              'antes.',
  'field.connector_sum_power_max_w': 'Techo de la suma de potencia de conectores (experimental)',
  'field.connector_sum_power_rated_w': 'Límite de la suma de potencia de conectores, nominal (experimental)',
  'summed_cap.connectors': 'La fila {row} también limita la suma de los canales de potencia de conector {channels} a '
@@ -339,6 +352,10 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                           'que esta ROM activa. Una copia guardada con Desactivado ya no muestra el interruptor, '
                           'porque una entrada que viene desactivada se ve igual que una apagada: guarda la ROM '
                           'original para volver a De fábrica.'),
+ 'output_ocp.ampere': ('Sin probar en hardware. Un tope de potencia por debajo del techo de potencia de la placa puede '
+                       'venir de este límite de corriente, aunque no se sabe si la GPU lo aplica. Probablemente '
+                       'protege el VRM del núcleo, que se dimensionó para el valor de fábrica. Subirlo queda a tu '
+                       'criterio, y es más seguro hacerlo en pasos pequeños.'),
  'sense_profiles.input_current': 'El umbral de corriente de entrada de 12 V (nominal {amps} A, unos {watts} W a 12 V) '
                                  'puede limitar antes. Súbelo también, en Mostrar campos avanzados (estilo XOC).',
  'vmin_clone.memory': 'En esta ROM el piso de voltaje del reloj de memoria mantiene su valor de fábrica. Un VMIN más '

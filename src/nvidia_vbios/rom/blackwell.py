@@ -42,6 +42,17 @@ NVVDD_POWER_DEVICE = bytes.fromhex('0200000000140200090000ff60000000000100000000
 MSVDD_CHANNEL = bytes.fromhex('0110001bb7000010000000000000080000000000000000000000')
 MSVDD_POWER_DEVICE = bytes.fromhex('02200000001402ff000000016d000000000100000000000000')
 OUTPUT_CHAINS = {'NVVDD': (NVVDD_CHANNEL, NVVDD_POWER_DEVICE), 'MSVDD': (MSVDD_CHANNEL, MSVDD_POWER_DEVICE)}
+# The auxiliary power connector input channel: a class-5 single input at 12 V on rail 0xda with
+# provider byte 1. Saved GET reports it as monitor 2 (class 8, rail 218) on every connector-powered
+# reviewed source (RTX PRO 6000 Max-Q, RTX 5090, 5080, 5070 Ti), where the Max-Q 12 V input policy
+# (row 9) reads it, and no such monitor on the slot-powered RTX PRO 4000 SFF. Channel 2, byte for
+# byte, on every connector-powered GB20x image.
+CONNECTOR_INPUT_CHANNEL = bytes.fromhex('05da001bb7000010000000000000000100000000000000000000')
+# The GET-reviewed SFF row 19 slot policy shape with its monitor byte excluded: sha256 over row
+# bytes 0..4, 6..12 and 25..101 (type 2, byte 1 = 0 for mW).
+SLOT_ROW_SHAPE = 'a0e2f8f8065365e2f1ddd5abe4185fc302f91fd4dff11106c1a263fc3fb153b9'
+# The policies an override profile entry may name (power_profiles); a connector input row is never one.
+PROFILE_POLICIES = (2, 7, 8, 9)
 # Notebook images (notebook_power_layout) have no saved GET. Their output OCP rows are accepted by
 # static comparison, whatever the device: rows 13/14 must equal the Max-Q rows and monitors 27/28
 # the reviewed channel chains (OUTPUT_CHAINS), byte for byte. Reviewed on the RTX 5080 Laptop GPU
@@ -832,6 +843,35 @@ class BlackwellRom:
         return dict(row, vbios_row_index=index, monitor_index=raw[5], immutable_row_sha256=fingerprint,
                     association_recognized=recognized, units='mW' if recognized else 'unknown',
                     default_offset=row['offset'] + 17, maximum_offset=row['offset'] + 21)
+
+    def connector_power_policies(self):
+        """Auxiliary power connector input rows (type 2, mW), in row order; no SET/enforcement claim.
+
+        A row qualifies, whatever the device, by SLOT_ROW_SHAPE (the GET-reviewed
+        SFF slot row with its monitor byte excluded) and a monitor whose power
+        channel is byte-identical to CONNECTOR_INPUT_CHANNEL; row 17 of the RTX 5060
+        Ti images (0/150000/150000 mW). Rows 2/7/8/9 (PROFILE_POLICIES) never
+        qualify, so no decoded override profile names a returned row and writing
+        the base row is the whole edit. Limits are not pinned; the row must keep
+        0 <= minimum <= rated <= maximum. A channel table that does not decode
+        gives no row.
+        """
+        result = []
+        for row in self.power_rows():
+            raw = self.blob[row['offset']:row['offset'] + 102]
+            if (row['row'] in PROFILE_POLICIES or
+                    hashlib.sha256(raw[:5] + raw[6:13] + raw[25:]).hexdigest() != SLOT_ROW_SHAPE or
+                    not 0 <= row['minimum_raw'] <= row['default_raw'] <= row['maximum_raw']):
+                continue
+            try:
+                channel = self.power_channel(raw[5])
+            except FormatError:
+                continue
+            if channel == CONNECTOR_INPUT_CHANNEL:
+                result.append(dict(row, vbios_row_index=row['row'], monitor_index=raw[5], channel_rail=channel[1],
+                                   immutable_row_sha256=hashlib.sha256(raw[:13] + raw[25:]).hexdigest(), units='mW',
+                                   default_offset=row['offset'] + 17, maximum_offset=row['offset'] + 21))
+        return result
 
     def power_profiles(self):
         """Decode the power table's override profiles (P+0xF4).

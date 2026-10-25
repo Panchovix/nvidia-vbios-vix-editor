@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 import math
 import struct
-from ..rom.blackwell import BlackwellRom, FAN_POLICY_FLAG_OFFSET
+from ..rom.blackwell import BlackwellRom, CONNECTOR_INPUT_CHANNEL, FAN_POLICY_FLAG_OFFSET
 from ..rom.structure import (DRAM_POINT_OFFSET_BIT, GPC_CURVE_OFFSET_LIMIT, vfe_constant_mhz,
                              vfe_free_slot)
 from ..rom.errors import VbiosError, FormatError
@@ -1542,7 +1542,8 @@ def profiles_decoded(parser):
     return True
 
 
-def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, reasons, **extra):
+def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, reasons, upper_raw=0x7FFFFFFF,
+                      blocked=None, **extra):
     """Maximum and rated fields of Ada policy rows written together in every duplicate chain.
 
     items share one role (one row, or the two 12 V input thresholds). A value is
@@ -1552,7 +1553,10 @@ def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, re
     class-5 rows carry policy_class 'hardware-threshold'. Ampere rows of the same
     class and unit on a sum channel that adds this one are listed in
     summed_cap_rows and named in the reason: they may bind first. The reason
-    names the connector_sum_power fields of a row that has them.
+    names the connector_sum_power fields of a row that has them. upper_raw is the
+    highest stored value either field may take (the u32 encoding's signed range
+    unless a caller keeps a reserved value out of reach). blocked, a read-only
+    reason, keeps both values read-only (a caller's own second limit).
     """
     watts = items[0]['units'] == 'mW'
     scale, units = (1000, 'W') if watts else (1, 'mA')
@@ -1579,7 +1583,7 @@ def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, re
                                               'units': o['units']} for o in summed])
     common = dict(encoding='<I', scale=scale, stored_units=items[0]['units'],
                   policy_indices=[i['vbios_row_index'] for i in items], experimental=True, ordering_group=group,
-                  encoding_bounds=(0, 0x7FFFFFFF / scale), power_channel=items[0]['channel_index'],
+                  encoding_bounds=(0, upper_raw / scale), power_channel=items[0]['channel_index'],
                   immutable_row_sha256=[i['immutable_row_sha256'] for i in items],
                   raw_bounds=raw[0] if len(raw) == 1 else raw, **extra)
 
@@ -1649,8 +1653,11 @@ def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, re
             reasons = (reasons[0] + replaced(entries['maximum'], 'this value', 'it') +
                        replaced(entries['default'], 'the rated value', 'this ceiling'),
                        reasons[1] + replaced(entries['default'], 'this value', 'it'))
+    if blocked:
+        one_max = one_rated = False
+        differ = blocked
     return [field(keys[0], labels[0], units, max(maxima) / scale if len(maxima) == 1 else None,
-                  max_lower / scale, 0x7FFFFFFF / scale, editable and one_max, [dict(e) for e in evidence],
+                  max_lower / scale, upper_raw / scale, editable and one_max, [dict(e) for e in evidence],
                   offsets=offsets('maximum_offset') + tied['maximum'], value_semantics='stored-policy-maximum',
                   writable_status=None if one_max else 'unsupported', reason=reasons[0] if one_max else differ,
                   **common),
@@ -1733,6 +1740,102 @@ AMPERE_CONNECTOR_CURRENT_EVIDENCE = [dict(
                 'has no field; the laptop row 9 has no connector power row on its channel (threshold index 0) and no '
                 'field; the threshold indices run slot 0, connector 1, connector 2 as on Turing; rows on the 12 V '
                 'input channel (rail 0xe0) stay input_current')]
+# Rated and maximum 5001000 (5001 A or 5001 W) is the value Ampere power rows store where they set no limit. On
+# the 40 Ampere images examined, 269 rows hold 5001000, every one as both rated and maximum, 6 or 7 per image:
+# 200 class 0/1 mW rows on sum and input channels, 40 class 1 mA rows (row 12 on the NVVDD current channel 19 of
+# 29 images, 11 on sums) and 29 class 0 mA rows (row 18 on channel 19). No row stores it as only one of the two,
+# and no other row stores more than 1001000 (row 1, 1001 W on every image). The NVVDD output current fields count
+# no such row as a second limit and keep their own values below it.
+AMPERE_UNLIMITED_RAW = 5001000
+AMPERE_NVVDD_CURRENT_EVIDENCE = [
+    dict(AMPERE_STRUCTURAL_EVIDENCE, source='Ampere VBIOS corpus, 40 GA102-GA107 images (images were added after the '
+                                            '35-image structural checks)',
+         format='Ampere power row class 0 mA on the NVVDD output current channel (class 1, rail 1, sensor byte 14 = 6)',
+         observation='row 13 on every corpus image reads channel 19, rated 54-445 A; 29 of the 40 images also store '
+                     'row 18 there (class 0 mA, 5001 A rated and maximum, the no-limit value of 269 Ampere rows); on '
+                     'every image row 12 (class 1 mA, 5001 A, on channel 19 or, on GA102, on sum channel 17) names '
+                     'rows 13 and 18 in the relationship entries of the power policy table (inferred: a combined '
+                     'policy over them); on the RTX 2000 Ada, RTX 4000 Ada and RTX 4000 Ada SFF row 12 is class 0 '
+                     'with unused entries, which may be why row 13 is absent from the RTX 2000 Ada runtime list; '
+                     'rows 16 and 17 read the other NVVDD channel 18 (sensor byte 14 = 5; class 5 mW, the hardware '
+                     'threshold class, or class 0 on the RTX 3090 Ti row 16 and the RTX A2000 row 17; 12.5-250 W; '
+                     'meaning unknown)'),
+    {'kind': 'owner-report', 'set_tested': False,
+     'source': 'RTX 3050 Ti Laptop GPU owner (10de:25a0, 50 W rated / 55 W maximum stock image, not in the corpus), '
+               'loader',
+     'observation': 'with a 72-75 W ceiling and a 70 W boot default the GPU stopped at about 60-64 W with power limit '
+                    'as the reason, also at low CPU load; the stock image stores 45 A in row 13, the lowest seen; '
+                    'the corpus 80 W image of the same GPU stores 90 A there, rows 16 and 17 at 28.125/21.5 W '
+                    'against 18.75/12.5 W, a 1081.25 mV reliability voltage ceiling against 900 mV and other power '
+                    'sensor bytes, and with it flashed (older driver) the laptop reached 80 W; 45 A at 0.85-0.90 V is '
+                    'about 38-41 W of core power, which fits a 60-64 W board power: row 13 is the likely cap '
+                    '(inferred, not proven)'}]
+
+
+def ampere_unlimited(row):
+    """True for a power row (ampere_policies same_channel_rows entry or item) that sets no limit (AMPERE_UNLIMITED_RAW)."""
+    return row['default_raw'] == row['maximum_raw'] == AMPERE_UNLIMITED_RAW
+
+
+def ampere_nvvdd_current(image, parser):
+    """Opt-in NVVDD output current limit of an Ampere image: the lowest class-0 mA row on the NVVDD output current
+    channel (class 1, rail 1, sensor byte 14 = 6; row 13).
+
+    Rows that set no limit (ampere_unlimited: row 18 on most images) neither take the field nor
+    block it; a second real limit of the same class and unit on the same channel, or on another
+    output current channel, keeps both values read-only, so an edit never moves the field to
+    another row. Values stay below 5001 A, so the row remains a limit and keeps its field. Other
+    rows on an NVVDD channel are named in the reasons: they may bind first.
+    """
+    limits = sorted((i for i in parser.ampere_policies('nvvdd_current') if i['maximum_raw'] < AMPERE_UNLIMITED_RAW
+                     and parser.power_channel(i['channel_index'])[14] == 6), key=lambda i: i['maximum_raw'])
+    if not limits:
+        return []
+    item = limits[0]
+    unlimited = [o for o in item['same_channel_rows'] if ampere_unlimited(o)]
+    item = dict(item, same_channel_rows=[o for o in item['same_channel_rows'] if not ampere_unlimited(o)])
+    skipped = {item['row']} | {o['row'] for o in item['same_channel_rows'] + unlimited}
+    others = [{'row': r['row'], 'class': r['type'], 'power_channel': r['channel_index'], 'minimum': r['minimum_raw'],
+               'rated': r['default_raw'], 'maximum': r['maximum_raw'], 'units': r['limit_unit']}
+              for r in parser.ampere_nvvdd_rows() if r['row'] not in skipped and not ampere_unlimited(r)]
+
+    def amount(raw, units):
+        return f"{raw / 1000:g} {'A' if units == 'mA' else 'W'}"
+    # A class-0 mA limit on another output current channel: which row binds is unknown.
+    rivals = [i for i in limits[1:] if i['row'] not in skipped]
+    blocked = ('read-only: ' + '; '.join(
+        f"row {i['row']} (power channel {i['channel_index']}, rated {amount(i['default_raw'], 'mA')}, maximum "
+        f"{amount(i['maximum_raw'], 'mA')})" for i in rivals) +
+        (' is another class-0 mA row' if len(rivals) == 1 else ' are other class-0 mA rows') +
+        ' on an NVVDD output current channel; which row binds is unknown, so editing this row alone may have no '
+        'effect') if rivals else None
+    note = ''.join(f"; row {o['row']} on the same channel holds that value as rated and maximum and is not counted "
+                   'as a second limit' for o in unlimited)
+    note += ''.join(f"; row {o['row']} is a class-{o['class']} {o['units']} row on "
+                    f"{'this' if o['power_channel'] == item['channel_index'] else 'another'} NVVDD channel "
+                    f"({o['power_channel']}; {amount(o['rated'], o['units'])} rated, "
+                    f"{amount(o['maximum'], o['units'])} maximum; "
+                    f"{'a hardware threshold, ' if o['class'] == 5 else ''}meaning unknown, no field) and may bind "
+                    'first' for o in others)
+    if any(o['class'] == 5 for o in others):
+        note += '; a hardware threshold that trips would show as a hardware slowdown, not as a power limit (inferred)'
+    limit = ('whether the firmware enforces it is unproven on Ampere; it likely protects the core VRM, which was '
+             'sized for the stock value; not hardware-tested; once it is raised, the read-only reliability voltage '
+             'ceiling (nvvdd_rel_max_mv) may be the next limit; values stay below 5001 A, the no-limit value of '
+             'Ampere power rows, so this row stays a limit')
+    extra = dict(unlimited_rows=[{'row': o['row'], 'minimum': o['minimum_raw'], 'rated': o['default_raw'],
+                                  'maximum': o['maximum_raw'], 'units': o['units']} for o in unlimited]) if unlimited else {}
+    return ada_policy_fields(
+        image, parser, [item], ('nvvdd_output_ocp_max_ma', 'nvvdd_output_ocp_rated_ma'),
+        ('NVVDD output current limit ceiling', 'NVVDD output current limit (rated)'), group='nvvdd-output-ocp',
+        opt_in=True, evidence=AMPERE_NVVDD_CURRENT_EVIDENCE, upper_raw=AMPERE_UNLIMITED_RAW - 1, blocked=blocked,
+        **extra, **({'other_nvvdd_rows': others} if others else {}),
+        reasons=(f"experimental, opt-in: ceiling of the NVVDD output current limit (row {item['row']}, class 0 mA, "
+                 'the lowest such row on the NVVDD output current channel); SET and enforcement untested; ' + limit +
+                 note + '; stored value, not a hardware-safe VRM rating',
+                 f"experimental, opt-in: rated NVVDD output current limit (row {item['row']}, class 0 mA on the NVVDD "
+                 'output current channel); a power cap below the board power ceiling may come from it; ' + limit +
+                 note + '; stored value, not a hardware-safe VRM rating'))
 
 
 def ampere_policy(parser, role):
@@ -1767,26 +1870,8 @@ def output_ocp(image, parser):
                      'unless a load log shows the NVVDD current near it; ' + TURING_UNTESTED + note + '; stored value, '
                      'not a hardware-safe VRM rating'))
     if ampere(parser):
-        # Class-0 mA rows on the NVVDD output-current channel (row 13; single-rail images
-        # add a 5001 A row 18). As on Ada, whether the firmware enforces them is unproven.
-        items = sorted(parser.ampere_policies('nvvdd_current'), key=lambda i: i['maximum_raw'])
-        if not items:
-            return []
-        item = items[0]
-        others = [{'row': o['row'], 'minimum': o['minimum_raw'], 'rated': o['default_raw'],
-                   'maximum': o['maximum_raw'], 'units': 'mA'} for o in items[1:]]
-        return [field('nvvdd_output_ocp_max_ma', 'NVVDD output current policy ceiling', 'mA', item['maximum_raw'],
-                      None, None, False, [dict(AMPERE_STRUCTURAL_EVIDENCE, format='Ampere power row class 0 mA on an '
-                                                                                  'NVVDD output channel (class 1, rail 1)',
-                                               observation='row 13 on every image (54-445 A); the single-rail '
-                                                           'images add a 5001 A row 18 on the same channel')],
-                      writable_status='unsupported', stored_units='mA', value_semantics='stored-policy-maximum',
-                      policy_indices=[item['vbios_row_index']],
-                      raw_bounds={'minimum': item['minimum_raw'], 'rated': item['default_raw'],
-                                  'maximum': item['maximum_raw'], 'units': 'mA'},
-                      **({'same_channel_rows': others} if others else {}),
-                      reason='read-only: class-0 NVVDD output-current policy (the lowest ceiling on this channel); '
-                             'whether the firmware enforces it is unproven, as on Ada')]
+        # Row 13: class 0 mA on the NVVDD output current channel (most images add a 5001 A row 18 there).
+        return ampere_nvvdd_current(image, parser)
     if ada(parser):
         # Row 13 (class 0, mA) on the NVVDD output-current channel. It is not in the
         # runtime policy list of the RTX 2000 Ada, so its enforcement is unproven.
@@ -1942,12 +2027,173 @@ def slot_power(image, parser):
                          'hardware-safe slot rating', **common)]
 
 
+CONNECTOR_INPUT_REPORT = {
+    'kind': 'owner-report', 'set_tested': False,
+    'source': 'monitoring readings under load from an RTX 4070 with one 8-pin connector, shared by its owner',
+    'observation': 'with the board power limit raised to 240 W (verified) the board stopped at about 195-198 W with '
+                   'the power limit reason set: 8-pin input 142.6 W (maximum 145.7 W), PCIe slot input 52.5 W, total '
+                   'power 81.2 % of the limit; the normalized power reading, 95.3 % (maximum 103 %), is close to '
+                   '142.6 / 150 (95.1 %), which points to a 150 W limit on the 8-pin input (inferred, not '
+                   'hardware-tested); a similar stop was reported on an RTX 5060 Ti with one 8-pin connector (no '
+                   'readings)'}
+ADA_CONNECTOR_INPUT_EVIDENCE = [
+    dict(ADA_STRUCTURAL_EVIDENCE, source='Ada VBIOS corpus, 32 parseable images',
+         format='Ada power row class 4 mW with the slot power row shape (830b68bb) minus its channel byte (e48af26e), '
+                'on a board input channel: a class-5 single input at 12 V that channel 0 (the class-2 board total, '
+                'rail 0xf5) adds with weight 1.0, rail 0xda, 0xdb, 0xdc, 0xfa, 0xfb, 0xfc or 0xe4, no parameter but '
+                'the provider byte 15 (0..2); notebook images excluded',
+         observation='one such row on the images of seven products, all on channel 5: 150 W on the RTX 4070 '
+                     '(rail 0xfa), the RTX 4060 Ti 8 GB and 16 GB and the RTX 4000 Ada (rail 0xda), 300 W on the '
+                     'RTX 4500, 5000 and 6000 Ada (rail 0xda); the RTX 4090, 4080, 4080 SUPER, 4070 Ti SUPER and '
+                     '4070 SUPER images read their connector channel only with class-0 rows and get no field; '
+                     'rail 0xda is the auxiliary connector input of the GB20x saved GET (monitor class 8, rail '
+                     '218), 0xfa the first Ampere connector channel (150-175 W); the rail does not name the '
+                     'connector type (0xda on the 8-pin RTX 4060 Ti and on 16-pin boards alike)'),
+    dict(CONNECTOR_INPUT_REPORT)]
+CONNECTOR_INPUT_CHANNEL_EVIDENCE = {
+    'kind': 'saved-get-monitor-correlation', 'source': 'saved runtime GET capture', 'set_tested': False,
+    'format': 'GB20x power channel 05da001bb7000010 0000000000000001 (class 5 single input at 12 V, rail 0xda, '
+              'provider byte 1)',
+    'observed': 'monitor 2, class 8, rail 218 on every connector-powered reviewed source (RTX PRO 6000 Max-Q, RTX '
+                '5090, 5080, 5070 Ti), where the Max-Q 12 V input policy 9 reads it (32500 mA); no such monitor on '
+                'the slot-powered RTX PRO 4000 SFF; channel 2 holds these bytes on every connector-powered GB20x image'}
+# Shown in the reasons of the auxiliary connector input fields. The ROM does not store the connector type.
+CONNECTOR_INPUT_RATING = ('the connector type is not stored (a PCIe 8-pin connector is rated 150 W, a 12V-2x6 '
+                          'cable at the level its sense pins report); a value above what the connector and its cable '
+                          'are rated for puts the cable, the connector and the power supply at risk, and is your '
+                          'call')
+
+
+def connector_input_limits(image, parser, item):
+    """The limits that still apply after the auxiliary connector input limit, naming the fields of this image.
+
+    The slot and 12 V input current limits are named only where the image has their fields; the
+    hardware current thresholds on the connector channel itself (Ada threshold_rows) are named
+    with their stored value.
+    """
+    def keys(resolver):
+        try:
+            return [b.descriptor['key'] for b in resolver(image, parser)]
+        except VbiosError:
+            return []
+    slot = keys(slot_power)
+    current = [k for k in ('input_current_rated_ma', 'input_current_max_ma', 'input_current_policy7_limit_ma')
+               if k in keys(input_current)]
+    parts = ['the board power limit']
+    if slot:
+        parts.append(f"the PCIe slot limit ({', '.join(slot)})")
+    if current:
+        parts.append(f"the 12 V input current {'threshold' if ada(parser) else 'limit'} ({', '.join(current)})")
+    text = (', '.join(parts[:-1]) + ' and ' + parts[-1] if len(parts) > 1 else parts[0]) + (
+        ' still apply' if len(parts) > 1 else ' still applies') + ' and may bind next'
+    for row in item.get('threshold_rows', ()):
+        text += (f"; row {row['row']}, a {row['default_raw'] / 1000:g} A current threshold (rated) on this connector "
+                 f"input, about {row['default_raw'] * 12 / 1000:.0f} W at 12 V, has no field and may hold the "
+                 'connector first')
+    return text
+
+
+def connector_input_power(image, parser):
+    """Ada and GB20x auxiliary power connector input policies (opt-in), numbered in power-row order.
+
+    Ada: class 4 mW rows by shape and connector input channel (TableRom.ada_connector_policies),
+    written in every duplicate chain with the Ada override profile handling of ada_policy_fields;
+    read-only while a class-4 mW row on another connector input channel is not recognized.
+    GB20x: type 2 mW rows with the SFF slot row shape on the connector input channel
+    (BlackwellRom.connector_power_policies, never a profile-named row); like slot_power,
+    read-only while a profile does not decode, and read-only when more than one row reads that
+    channel.
+    """
+    try:
+        items = parser.ada_connector_policies() if ada(parser) else parser.connector_power_policies()
+    except FormatError:
+        return []
+    if not items:
+        return []
+    result = []
+    for number, item in enumerate(items, 1):
+        limits = connector_input_limits(image, parser, item)
+        keys = (f'connector_{number}_power_max_w', f'connector_{number}_power_rated_w')
+        labels = (f'Connector power channel {number} ceiling', f'Connector power channel {number} limit (rated)')
+        channel = item['channel_index'] if ada(parser) else item['monitor_index']
+        where = f"power channel {channel}, rail {item['channel_rail']:#04x}"
+        reasons = ('experimental, opt-in: ceiling of the per-connector input power policy of the auxiliary power '
+                   f'connector ({where}); SET and enforcement untested; {CONNECTOR_INPUT_RATING}; {limits}; stored '
+                   'value, not a hardware-safe connector rating',
+                   'experimental, opt-in: rated limit of the per-connector input power policy of the auxiliary power '
+                   f'connector ({where}); readings from one RTX 4070 with one 8-pin connector point to this policy '
+                   'holding that connector near 150 W under a raised board power limit (inferred); '
+                   f'{CONNECTOR_INPUT_RATING}; {limits}; not hardware-tested; stored value, not a hardware-safe '
+                   'connector rating')
+        thresholds = [{'row': t['row'], 'parameter_byte_0': t['parameter_byte_0'], 'minimum': t['minimum_raw'],
+                       'rated': t['default_raw'], 'maximum': t['maximum_raw'], 'units': t['units']}
+                      for t in item.get('threshold_rows', ())]
+        extra = dict(opt_in=True, connector=number, channel_rail=item['channel_rail'],
+                     power_input='auxiliary-connector', **({'threshold_rows': thresholds} if thresholds else {}))
+        if ada(parser):
+            loose = item['unrecognized_rows']
+            blocked = None
+            if loose:
+                blocked = ('read-only: ' + '; '.join(
+                    f"row {o['row']} (class 4 mW on power channel {o['channel_index']}, rail {o['channel_rail']:#04x}, "
+                    f"rated {o['default_raw'] / 1000:g} W, maximum {o['maximum_raw'] / 1000:g} W)" for o in loose) +
+                    (' is another connector input policy' if len(loose) == 1 else ' are other connector input policies') +
+                    ' without a recognized shape; which connector limit binds is unknown, so editing this row alone '
+                    'may have no effect')
+                extra['unrecognized_connector_rows'] = [
+                    {'row': o['row'], 'power_channel': o['channel_index'], 'channel_rail': o['channel_rail'],
+                     'minimum': o['minimum_raw'], 'rated': o['default_raw'], 'maximum': o['maximum_raw'],
+                     'units': o['units']} for o in loose]
+            result += ada_policy_fields(image, parser, [item], keys, labels, group=f'connector-{number}-power',
+                                        evidence=ADA_CONNECTOR_INPUT_EVIDENCE, reasons=reasons, blocked=blocked,
+                                        **extra)
+            continue
+        index = item['vbios_row_index']
+        decoded = profiles_decoded(parser)
+        editable = can_edit(image, parser) and decoded and len(items) == 1
+        reason = None
+        if len(items) > 1:
+            reason = ('read-only: rows ' + ', '.join(str(i['vbios_row_index']) for i in items) + ' all read the '
+                      'auxiliary connector input channel; which row binds is unknown, so editing one alone may have '
+                      'no effect')
+        elif not decoded:
+            reason = ('read-only: the power override profiles do not decode, so a profile may override this policy; '
+                      'editing it alone may have no effect')
+        evidence = [dict(STRUCTURAL_ROW_EVIDENCE, immutable_row_sha256=item['immutable_row_sha256'],
+                         scope='RTX PRO 4000 SFF 98.03.AA.00.02 (the GET-reviewed row 19 slot policy template); RTX '
+                               '5060 Ti 98.06.1F.80.06 and 98.06.39.00.B2 (row 17)',
+                         format=f"GB20x power40/38-or-3d/66/14 row{index} type2; byte1 0; monitor index "
+                                f"{item['monitor_index']}",
+                         observation='the shape of the GET-reviewed SFF row19 slot policy with its monitor byte '
+                                     'excluded, on the auxiliary connector input channel; one such row (row 17, '
+                                     '150 W) on the RTX 5060 Ti images, none on the other GB20x images'),
+                    dict(CONNECTOR_INPUT_CHANNEL_EVIDENCE), dict(CONNECTOR_INPUT_REPORT)]
+        common = dict(encoding='<I', scale=1000, stored_units='mW', policy_indices=[index], experimental=True,
+                      ordering_group=f'connector-{number}-power', encoding_bounds=(0, 0x7FFFFFFF / 1000),
+                      vbios_policy_index=index, monitor={'index': item['monitor_index'], 'class': 8},
+                      power_channel=item['monitor_index'],
+                      raw_bounds={'minimum': item['minimum_raw'], 'rated': item['default_raw'],
+                                  'maximum': item['maximum_raw'], 'units': 'mW'}, **extra)
+        result += [field(keys[0], labels[0], 'W', item['maximum_raw'] / 1000, item['default_raw'] / 1000,
+                         0x7FFFFFFF / 1000, editable, [dict(e) for e in evidence], offsets=[item['maximum_offset']],
+                         value_semantics='stored-policy-maximum', reason=reason or reasons[0], **common),
+                   field(keys[1], labels[1], 'W', item['default_raw'] / 1000, item['minimum_raw'] / 1000,
+                         item['maximum_raw'] / 1000, editable, [dict(e) for e in evidence],
+                         offsets=[item['default_offset']], value_semantics='stored-policy-rated-default',
+                         reason=reason or reasons[1], **common)]
+    return result
+
+
 @registry.register
 def connector_power(image, parser):
-    """Ampere and Turing external 12 V connector-channel power policies (class 4 mW), numbered in power-row order.
+    """External 12 V connector-channel power policies, numbered in power-row order.
 
-    A channel is a sense channel, not a physical connector: one connector may span several.
+    Ampere and Turing: class 4 mW rows on the connector channels; a channel is a sense
+    channel, not a physical connector: one connector may span several. Ada and GB20x:
+    the auxiliary power connector input rows (connector_input_power, opt-in).
     """
+    if ada(parser) or isinstance(parser, BlackwellRom):
+        return connector_input_power(image, parser)
     if not (ampere(parser) or turing(parser)):
         return []
     tested = TURING_CONNECTOR_TESTED if turing(parser) else 'not hardware-tested'
@@ -2064,6 +2310,15 @@ def input_current(image, parser):
                   policy_types={'vbios': item['type'], 'rm': item['rm_policy_type'], 'api': item['api_policy_type']},
                   monitor={'index': item['monitor_index'], 'class': item['monitor_class']}, raw_bounds=raw_bounds)
 
+    try:
+        connector = parser.power_channel(item['monitor_index']) == CONNECTOR_INPUT_CHANNEL
+    except FormatError:
+        connector = False
+    # The RTX PRO 6000 Max-Q and RTX 5070 row 9 reads the auxiliary connector input channel (power channel 2).
+    reads = ('; on this image the policy reads the auxiliary power connector input (power channel '
+             f"{item['monitor_index']}, rail 0xda), not the whole 12 V input, so it limits the current through the "
+             'connector alone, without the slot' if connector else '')
+
     def offsets(name, base):
         if top is not None:
             return top_profile_offsets(top, (9,), name)
@@ -2073,14 +2328,14 @@ def input_current(image, parser):
     result = [field('input_current_max_ma', '12 V input current ceiling', 'mA', maximum,
                     maximum_lower, maximum_upper, editable, bound_evidence,
                     offsets=offsets('maximum', item['maximum_offset']), value_semantics='stored-policy-maximum',
-                    reason='experimental: ' + note + 'client ceiling of the 12 V input-current policy; SET and '
-                           'enforcement untested; stored value, not a hardware-safe current rating',
+                    reason='experimental: ' + note + 'client ceiling of the 12 V input-current policy' + reads +
+                           '; SET and enforcement untested; stored value, not a hardware-safe current rating',
                     **common, **extra),
               field('input_current_rated_ma', '12 V input current limit (rated)', 'mA', rated,
                     rated_lower, rated_upper, editable, bound_evidence,
                     offsets=offsets('default', item['default_offset']), value_semantics='stored-policy-rated-default',
-                    reason='experimental: ' + note + 'rated limit applied without a client request; enforcement not '
-                           'hardware-tested; stored value, not a hardware-safe current rating',
+                    reason='experimental: ' + note + 'rated limit applied without a client request' + reads +
+                           '; enforcement not hardware-tested; stored value, not a hardware-safe current rating',
                     **common, **extra)]
     if item['linked_limit_recognized']:
         # Raising row9 alone may leave the effective 12 V limit at this value.

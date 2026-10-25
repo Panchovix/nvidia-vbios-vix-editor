@@ -666,6 +666,25 @@ class PresentationNumberTests(unittest.TestCase):
             self.assertTrue(shunt_scaled(fields[key]))
             self.assertEqual(field_section(fields[key]), 'power')
         self.assertFalse(shunt_scaled(fields['nvvdd_output_ocp_max_ma']))
+        # The opt-in NVVDD output current limit (row 13) is labelled as the Turing one.
+        self.assertEqual([field_label(fields[k]) for k in ('nvvdd_output_ocp_max_ma', 'nvvdd_output_ocp_rated_ma')],
+                         ['NVVDD output current limit ceiling (advanced, experimental)',
+                          'NVVDD output current limit, rated (advanced, experimental)'])
+        self.assertEqual(field_section(fields['nvvdd_output_ocp_rated_ma']), 'current')
+        # Both rows note the risk in each language; not on another family or a read-only row.
+        from nvidia_vbios.gui.i18n import Messages
+        from nvidia_vbios.gui.presentation import output_current_notes
+        for language in ('en', 'es'):
+            for key in ('nvvdd_output_ocp_max_ma', 'nvvdd_output_ocp_rated_ma'):
+                self.assertEqual(output_current_notes(fields[key], 'ampere', language),
+                                 [Messages(language)('output_ocp.ampere')])
+        self.assertIn('likely protects the core VRM', output_current_notes(fields['nvvdd_output_ocp_max_ma'],
+                                                                            'ampere')[0])
+        self.assertIn('Probablemente protege el VRM del núcleo',
+                      output_current_notes(fields['nvvdd_output_ocp_max_ma'], 'ampere', 'es')[0])
+        self.assertEqual(output_current_notes(fields['nvvdd_output_ocp_max_ma'], 'turing'), [])
+        self.assertEqual(output_current_notes(dict(fields['nvvdd_output_ocp_max_ma'], editable=False), 'ampere'), [])
+        self.assertEqual(output_current_notes(fields['connector_1_power_max_w'], 'ampere'), [])
 
     def test_a_row_capping_the_connector_sum_is_noted_on_each_connector_row(self):
         from nvidia_vbios.gui.presentation import field_label, section_order, shunt_scaled, summed_cap_notes
@@ -882,7 +901,7 @@ class PresentationNumberTests(unittest.TestCase):
         self.assertEqual(field_label(fields['nvvdd_output_ocp_rated_ma'], 'es'),
                          'Límite de corriente de salida de NVVDD, nominal (avanzado, experimental)')
         self.assertLessEqual(set(keys), opt_in_field_keys({'fields': list(fields.values())}))
-        # Without opt-in (the Ada and Ampere rows) the label stays the OCP one.
+        # Without opt-in (the Ada row) the label stays the OCP one.
         self.assertEqual(field_label({'key': 'nvvdd_output_ocp_rated_ma'}),
                          'NVVDD output OCP current limit, rated (experimental)')
 
