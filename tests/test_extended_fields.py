@@ -1306,10 +1306,14 @@ NOTEBOOK_ROW14 = {0: 7, 1: 1, 5: 28, 6: 1, 33: 1, 34: 1, 35: 12, 36: 12}
 
 
 def notebook_fixture(*, device=0x2C59, header=(0xFF, 0xFF, 2), row8_type=0, profiles=False, chain=True,
-                     dram_descriptor=0x1182, fan_enable=0):
-    """Notebook image: TGP in row 2, empty rows 7/8, the Max-Q rows 13/14 and channels 27/28, no GPU fans."""
-    from nvidia_vbios.rom.blackwell import OUTPUT_CHAINS
-    blob = bytearray(synthetic_blackwell(power_topology=True, fans=True))
+                     dram_descriptor=0x1182, fan_enable=0, base=None, row2_prefix=None, rails=2):
+    """Notebook image: TGP in row 2, empty rows 7/8, the Max-Q rows 13/14 and channels 27/28, no GPU fans.
+
+    base writes row 2 +73 (mW) and the reviewed notebook row 2 bytes 0..12 (row2_prefix replaces them); rails=1
+    builds it on the single-rail table."""
+    from nvidia_vbios.rom.blackwell import NOTEBOOK_TGP_ROW_PREFIX, OUTPUT_CHAINS
+    blob = bytearray(synthetic_blackwell(power_topology=True, fans=True,
+                                         **({} if rails == 2 else dict(rails=1, clock_subsize=1))))
     set_device(blob, device)
     parsed = backend(from_bytes(bytes(blob)))
     rows = parsed.power_rows()
@@ -1319,6 +1323,10 @@ def notebook_fixture(*, device=0x2C59, header=(0xFF, 0xFF, 2), row8_type=0, prof
         blob[rows[index]['offset']] = row8_type if index == 8 else 0
         struct.pack_into('<III', blob, rows[index]['offset'] + 13, 0, 0, 0)
     struct.pack_into('<III', blob, rows[2]['offset'] + 13, 5000, 80000, 175000)
+    if base is not None:
+        at = rows[2]['offset']
+        blob[at:at + 13] = NOTEBOOK_TGP_ROW_PREFIX if row2_prefix is None else row2_prefix
+        struct.pack_into('<I', blob, at + 73, base)
     for index, shape, rated in ((13, NOTEBOOK_ROW13, 180000), (14, NOTEBOOK_ROW14, 60000)):
         at = rows[index]['offset']
         blob[at:at + 102] = bytes(102)
@@ -1383,19 +1391,200 @@ class NotebookLayoutTests(unittest.TestCase):
             self.assertEqual(after[key]['current'], value)
         self.assertEqual((target[2]['minimum_raw'], target[14]), (5000, source[14]))
 
-    def test_layout_header_rows_profiles_and_id_gate_the_fields(self):
+    def test_layout_header_rows_profiles_and_chain_gate_the_fields(self):
         for name, options in {'desktop header': dict(header=(0xFF, 8, 0xFF)), 'row 8 TGP': dict(row8_type=12),
                               'override profile': dict(profiles=True)}.items():
-            with self.subTest(case=name):
-                fields = descriptors(from_bytes(notebook_fixture(**options)))
-                self.assertNotIn('power_max_w', fields)
-                self.assertNotIn('nvvdd_output_ocp_rated_ma', fields if name != 'override profile' else {})
-        for name, options in {'unlisted id': dict(device=0x2C58), 'channel chain': dict(chain=False)}.items():
-            with self.subTest(case=name):
-                fields = descriptors(from_bytes(notebook_fixture(**options)))
-                self.assertTrue(fields['power_max_w']['editable'])
-                self.assertFalse(fields['nvvdd_output_ocp_max_ma']['editable'])
+            for device in (0x2C59, 0x2C58):
+                with self.subTest(case=name, device=device):
+                    image = from_bytes(notebook_fixture(device=device, **options))
+                    fields = descriptors(image)
+                    self.assertNotIn('power_max_w', fields)
+                    self.assertNotIn('nvvdd_output_ocp_rated_ma', fields if name != 'override profile' else {})
+                    if name != 'override profile':
+                        self.assertEqual([i['association_basis'] for i in backend(image).output_ocp_policies()],
+                                         [None, None])
+        fields = descriptors(from_bytes(notebook_fixture(chain=False)))
+        self.assertTrue(fields['power_max_w']['editable'])
+        self.assertFalse(fields['nvvdd_output_ocp_max_ma']['editable'])
+        self.assertNotIn('msvdd_output_ocp_rated_ma', fields)
+
+    def test_output_ocp_rows_recognized_by_layout_on_any_device(self):
+        """The notebook layout, its Max-Q rows 13/14 and their channel chains, whatever the device ID: 0x2c58
+        (another RTX 5090 Laptop GPU ID) and 0x2d18 (an RTX 5070 Laptop GPU ID), which no list names."""
+        for device in (0x2C58, 0x2D18):
+            with self.subTest(device=device):
+                image = from_bytes(notebook_fixture(device=device))
+                self.assertEqual({i['logical_rail_id']: i['association_basis']
+                                  for i in backend(image).output_ocp_policies()},
+                                 {'NVVDD': 'structural-notebook', 'MSVDD': 'structural-notebook'})
+                fields = descriptors(image)
+                for key in ('nvvdd_output_ocp_max_ma', 'nvvdd_output_ocp_rated_ma', 'msvdd_output_ocp_max_ma',
+                            'msvdd_output_ocp_rated_ma'):
+                    self.assertTrue(fields[key]['editable'], key)
+                    self.assertEqual(fields[key]['evidence'][0]['format'],
+                                     'GB20x notebook rows13/14 type7; monitors 27/28')
+                self.assertEqual((fields['nvvdd_output_ocp_rated_ma']['current'],
+                                  fields['msvdd_output_ocp_rated_ma']['current']), (180000, 60000))
+                result = edit(image, {'msvdd_output_ocp_rated_ma': 80000, 'msvdd_output_ocp_max_ma': 80000})
+                self.assertEqual(descriptors(result.image)['msvdd_output_ocp_rated_ma']['current'], 80000)
+                # The owner's nvidia-smi reading stays the RTX 5080 Laptop GPU's.
+                self.assertNotIn('owner-nvidia-smi-reading', [e['kind'] for e in fields['power_max_w']['evidence']])
+        # The Max-Q rows without the notebook layout and an unreviewed device: not recognized.
+        image = from_bytes(notebook_fixture(device=0x2C58, header=(0xFF, 8, 0xFF)))
+        self.assertFalse(any(i['association_recognized'] for i in backend(image).output_ocp_policies()))
+
+    def test_notebook_output_ocp_needs_the_chain_on_every_device_and_both_rails(self):
+        """The saved GET of a GET-reviewed desktop device covers its own rows, not the Max-Q rows of a notebook image:
+        there the chain is required too. A notebook layout on the single-rail table recognizes neither row."""
+        for device in (0x2B85, 0x2C02, 0x2C05, 0x2C33):
+            with self.subTest(device=device):
+                for chain, expected in ((True, ['structural-notebook'] * 2), (False, [None, None])):
+                    image = from_bytes(notebook_fixture(device=device, chain=chain))
+                    self.assertEqual([i['association_basis'] for i in backend(image).output_ocp_policies()],
+                                     expected)
+                    fields = descriptors(image)
+                    self.assertEqual(fields['msvdd_output_ocp_max_ma']['editable'], chain)
+                    self.assertEqual('msvdd_output_ocp_rated_ma' in fields, chain)
+        # 0x2d04 (RTX 5060 Ti, a reviewed single-rail ID) keeps its MSVDD rail absent; 0x2d18 is listed nowhere.
+        for device in (0x2D04, 0x2D18):
+            with self.subTest(device=device, rails=1):
+                image = from_bytes(notebook_fixture(device=device, rails=1))
+                parser = backend(image)
+                self.assertEqual((parser.notebook_power_layout(), parser.single_rail(), parser.split_rail()),
+                                 (True, True, False))
+                policies = parser.output_ocp_policies()
+                self.assertEqual([i['association_basis'] for i in policies], [None, None])
+                self.assertEqual([i['rail_absent'] for i in policies], [False, device == 0x2D04])
+                fields = descriptors(image)
+                self.assertFalse(any(f['editable'] for k, f in fields.items() if 'output_ocp' in k))
                 self.assertNotIn('msvdd_output_ocp_rated_ma', fields)
+
+    def test_rtx_5090_laptop_id_gets_the_output_ocp_rows(self):
+        fields = descriptors(from_bytes(notebook_fixture(device=0x2C18)))
+        for key in ('nvvdd_output_ocp_max_ma', 'nvvdd_output_ocp_rated_ma', 'msvdd_output_ocp_max_ma',
+                    'msvdd_output_ocp_rated_ma'):
+            self.assertTrue(fields[key]['editable'], key)
+            self.assertIn('10de:2c18', fields[key]['evidence'][0]['scope'])
+        # The owner's nvidia-smi reading is of the RTX 5080 Laptop GPU only.
+        for key in ('power_min_w', 'power_default_w', 'power_max_w'):
+            self.assertNotIn('owner-nvidia-smi-reading', [e['kind'] for e in fields[key]['evidence']], key)
+        reading = descriptors(from_bytes(notebook_fixture()))['power_max_w']['evidence'][1]
+        self.assertEqual(reading['scope'], 'RTX 5080 Laptop GPU 98.03.5C.00.F2 (10de:2c59)')
+
+    def test_base_tgp_needs_notebook_row_bytes_and_a_value_between_rated_and_maximum(self):
+        image = from_bytes(notebook_fixture(base=150000))
+        report = inspect_image(image)
+        self.assertEqual(report['diagnostics'], [])
+        fields = {f['key']: f for f in report['fields']}
+        base = fields['notebook_base_tgp_w']
+        self.assertEqual((base['current'], base['bounds']['minimum'], base['bounds']['maximum']), (150, 80, 175))
+        for flag in ('editable', 'opt_in', 'experimental', 'notebook_tgp'):
+            self.assertTrue(base[flag], flag)
+        self.assertEqual((base['ordering_group'], base['units'], base['stored_units'], base['policy_indices']),
+                         ('board-power', 'W', 'mW', [2]))
+        self.assertEqual(base['evidence'][0]['kind'], 'structural-row-comparison')
+        self.assertIn('Dynamic Boost', base['reason'])
+        # The base TGP bounds neither the ceiling nor the boot default: they keep the bounds they have without it.
+        self.assertEqual((fields['power_max_w']['bounds']['minimum'], fields['power_default_w']['bounds']['maximum']),
+                         (80, 175))
+        for value in (80000, 175000):
+            self.assertEqual(descriptors(from_bytes(notebook_fixture(base=value)))['notebook_base_tgp_w']['current'],
+                             value / 1000)
+        desktop = bytes.fromhex('010200000000012b07000c7b10')
+        for name, options in {'stored zero': dict(base=0), 'below rated': dict(base=79999),
+                              'above maximum': dict(base=175001), 'desktop row 2 bytes': dict(base=150000,
+                                                                                               row2_prefix=desktop),
+                              'unchanged synthetic row': {}}.items():
+            with self.subTest(case=name):
+                fields = descriptors(from_bytes(notebook_fixture(**options)))
+                self.assertNotIn('notebook_base_tgp_w', fields)
+                self.assertEqual((fields['power_max_w']['bounds']['minimum'],
+                                  fields['power_default_w']['bounds']['maximum']), (80, 175))
+        # The layout gate itself: the same row 2 bytes and value under a desktop header are not a base TGP.
+        self.assertEqual(backend(image).notebook_base_tgp()['value_raw'], 150000)
+        self.assertIsNone(backend(from_bytes(notebook_fixture(base=150000, header=(0xFF, 8, 0xFF)))).notebook_base_tgp())
+
+    def test_base_tgp_edits_only_its_bytes_and_keeps_its_order_when_requested(self):
+        image = from_bytes(notebook_fixture(base=150000))
+        at = backend(image).power_rows()[2]['offset']
+        result = edit(image, {'notebook_base_tgp_w': 160})
+        changed_bytes_within(self, image, result, [at + 73])
+        self.assertEqual(struct.unpack_from('<I', result.blob, at + 73)[0], 160000)
+        self.assertEqual(edit(result.image, {'notebook_base_tgp_w': 150}).blob, image.blob)
+        joint = edit(image, {'power_max_w': 225, 'notebook_base_tgp_w': 200})
+        changed_bytes_within(self, image, joint, [at + 21, at + 73])
+        after = descriptors(joint.image)
+        self.assertEqual((after['power_max_w']['current'], after['notebook_base_tgp_w']['current']), (225, 200))
+        self.assertEqual(edit(joint.image, {'power_max_w': 175, 'notebook_base_tgp_w': 150}).blob, image.blob)
+        both = edit(image, {'power_default_w': 160, 'notebook_base_tgp_w': 170})
+        self.assertEqual(descriptors(both.image)['power_default_w']['current'], 160)
+        lower = edit(image, {'power_max_w': 140, 'notebook_base_tgp_w': 130})
+        self.assertEqual(descriptors(lower.image)['notebook_base_tgp_w']['current'], 130)
+        # With the base TGP in the request the result keeps rated <= base <= maximum; a refusal names the base TGP
+        # with its range: its stored bounds alone, those of the result with the ceiling or the boot default.
+        for changes, bounds in (({'notebook_base_tgp_w': 200}, (80, 175)), ({'notebook_base_tgp_w': 79}, (80, 175)),
+                                ({'power_max_w': 190, 'notebook_base_tgp_w': 200}, (80, 190)),
+                                ({'power_max_w': 140, 'notebook_base_tgp_w': 150}, (80, 140)),
+                                ({'power_default_w': 160, 'notebook_base_tgp_w': 155}, (160, 175)),
+                                ({'power_max_w': 140, 'power_default_w': 70, 'notebook_base_tgp_w': 150}, (70, 140))):
+            with self.subTest(changes=changes):
+                with self.assertRaises(VbiosError) as exc:
+                    edit(image, changes)
+                self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+                self.assertEqual(exc.exception.details['field'], 'notebook_base_tgp_w')
+                self.assertEqual((exc.exception.details['bounds']['minimum'],
+                                  exc.exception.details['bounds']['maximum']), bounds)
+        # A request whose power fields break the order of row 2 on their own names the power field that does, as
+        # without the base TGP, also when the base TGP in it is within its own range.
+        for changes, key in (({'power_default_w': 180}, 'power_default_w'), ({'power_min_w': 96}, 'power_min_w'),
+                             ({'power_max_w': 170, 'power_default_w': 180}, 'power_default_w')):
+            for base in (160, 175, 200):
+                with self.subTest(changes=changes, base=base):
+                    with self.assertRaises(VbiosError) as alone:
+                        edit(image, changes)
+                    with self.assertRaises(VbiosError) as exc:
+                        edit(image, dict(changes, notebook_base_tgp_w=base))
+                    self.assertEqual((alone.exception.details['field'], exc.exception.code,
+                                      exc.exception.details['field']), (key, 'OUT_OF_BOUNDS', key))
+                    self.assertIn('notebook_base_tgp_w', exc.exception.details['joint_fields'])
+        # Only the reviewed binding may write row 2 +73.
+        for custom, changes, code in ((custom_registry('alias', (at + 73,)), {'alias': 160}, 'PRESERVED_FIELD_CHANGED'),
+                                      (custom_registry('notebook_base_tgp_w', (at + 73, at + 45)),
+                                       {'notebook_base_tgp_w': 160}, 'INVALID_FIELD_EVIDENCE')):
+            with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
+                edit(image, changes, field_registry=custom)
+            self.assertEqual(exc.exception.code, code)
+
+    def test_base_tgp_bounds_no_other_field(self):
+        # Without the base TGP in the request the ceiling and the boot default edit as they do without the field,
+        # also past the stored base: +73 stays as stored and the edited image has no base TGP field.
+        from nvidia_vbios.gui.presentation import notebook_notes
+        image, plain = from_bytes(notebook_fixture(base=150000)), from_bytes(notebook_fixture())
+        at = backend(image).power_rows()[2]['offset']
+        for changes in ({'power_max_w': 120}, {'power_max_w': 140}, {'power_default_w': 160},
+                        {'power_max_w': 250, 'power_default_w': 175}, {'power_max_w': 140, 'power_default_w': 70},
+                        {'power_max_w': 200}, {'power_default_w': 120}):
+            with self.subTest(changes=changes):
+                result = edit(image, changes)
+                self.assertEqual(result.blob[at + 73:at + 77], image.blob[at + 73:at + 77])
+                # The same edits as on the image without a base TGP.
+                same = edit(plain, changes)
+                self.assertEqual([e['field'] for e in result.manifest['edits']],
+                                 [e['field'] for e in same.manifest['edits']])
+                report = inspect_image(result.image)
+                self.assertEqual(report['diagnostics'], [])
+                fields = {f['key']: f for f in report['fields']}
+                for key, value in changes.items():
+                    self.assertEqual(fields[key]['current'], value, key)
+                row = backend(result.image).power_rows()[2]
+                inside = row['default_raw'] <= 150000 <= row['maximum_raw']
+                self.assertEqual('notebook_base_tgp_w' in fields, inside)
+                for field in fields.values():
+                    notebook_notes(field, report['architecture']['family'])
+                # Back to the stored values, the base TGP is a field again.
+                back = edit(result.image, {key: descriptors(image)[key]['current'] for key in changes})
+                self.assertEqual(back.blob, image.blob)
+                self.assertEqual(descriptors(back.image)['notebook_base_tgp_w']['current'], 150)
 
     def test_dram_flag_and_empty_fan_list_are_narrow(self):
         from nvidia_vbios.rom.errors import FormatError

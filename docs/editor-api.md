@@ -61,7 +61,7 @@ editable.
 | Field key | Public unit | Stored unit | Recognized support |
 | --- | --- | --- | --- |
 | `power_min_w` | W | mW, uint32 | TGP minimum: Ada/Ampere/Turing header index; GB20x row8, 1 W through the TGP rated default |
-| `power_default_w`, `input_current_*_ma`, `*_output_ocp_rated_ma`, `slot_power_*_w`, `connector_N_power_*_w`, `connector_sum_power_*_w`, `connector_N_current_threshold_*_ma`, `board_fixed_rated_w`, clock offset ranges, `nvvdd_vmin_mv`, fan fields | W, mA, MHz, mV, Hz, RPM, %, °C | see `extended-fields.md` | Experimental, not hardware-tested (Turing board and connector power: one RTX 2080 Ti, see `turing.md`); `board_fixed_rated_w` and the Ada/Ampere `input_current_*_ma`, Ada/Ampere/Turing `slot_current_threshold_*_ma`, Ampere/Turing `connector_N_current_threshold_*_ma` and Ada `nvvdd_power_threshold_*_w` hardware thresholds (`policy_class: "hardware-threshold"`) are opt-in (`opt_in: true`), as is the Turing `nvvdd_output_ocp_*_ma` (row 13, class 10); `connector_N_power_*_w` are the Ampere/Turing external connector-channel policies (a sense channel, not a physical connector) and `connector_N_current_threshold_*_ma` the current threshold row on the same channel; `connector_sum_power_*_w` is the Ampere policy on their sum, where one row caps it |
+| `power_default_w`, `input_current_*_ma`, `*_output_ocp_rated_ma`, `slot_power_*_w`, `connector_N_power_*_w`, `connector_sum_power_*_w`, `connector_N_current_threshold_*_ma`, `board_fixed_rated_w`, `notebook_base_tgp_w`, clock offset ranges, `nvvdd_vmin_mv`, fan fields | W, mA, MHz, mV, Hz, RPM, %, °C | see `extended-fields.md` | Experimental, not hardware-tested (Turing board and connector power: one RTX 2080 Ti, see `turing.md`); `board_fixed_rated_w`, the GB20x notebook `notebook_base_tgp_w` (row 2 +73) and the Ada/Ampere `input_current_*_ma`, Ada/Ampere/Turing `slot_current_threshold_*_ma`, Ampere/Turing `connector_N_current_threshold_*_ma` and Ada `nvvdd_power_threshold_*_w` hardware thresholds (`policy_class: "hardware-threshold"`) are opt-in (`opt_in: true`), as is the Turing `nvvdd_output_ocp_*_ma` (row 13, class 10); `connector_N_power_*_w` are the Ampere/Turing external connector-channel policies (a sense channel, not a physical connector) and `connector_N_current_threshold_*_ma` the current threshold row on the same channel; `connector_sum_power_*_w` is the Ampere policy on their sum, where one row caps it |
 | `power_max_w` | W | mW, uint32 | Ada V3x 30/32/53, 30/34/5b and 30/2c/4b; Ampere V3x 30/2c/47, 30/2c/43 and 30/32/47 (every Ampere field is experimental); Turing V3x 30/2c/42 and 30/27/42 (experimental, see `turing.md`); GB20x V40 40/38-or-3d/66 |
 | `nvvdd_rel_max_mv` | mV | uV, exact float32 | Ada single logic rail V20; GB20x V30; Ampere and Turing read-only (constant equations) |
 | `nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv` | mV | uV, exact float32 (constant and clamp maximum; the clamp minimum is kept) | Constant Ada and Turing REL/ALT equations; experimental (opt-in on Turing); ordering group `nvvdd-rel-alt`, with `nvvdd_vmin_mv` on Turing |
@@ -147,8 +147,13 @@ PERF_CF utilization policy switch and its controllers (`perf_cf_*`) and the LPWR
 switches and idle times (`lpwr_*`), all experimental (see `extended-fields.md`). Their
 descriptors carry `section: "advanced"`, which `nvbios fields` shows; the GUI lists them in
 a collapsed section of their own, and `import_fields` never copies them. A switch is a 0/1
-flag; an LPWR switch also carries `switch: "stock-off"` (1 is Stock, 0 is Off). A field
-that only matters while a switch is on carries
+flag; an LPWR switch also carries `switch: "stock-off"` (1 is Stock, 0 is Off). An LPWR
+switch with `lpwr_coverage: "enabled-entries"` (a product whose stock entries the editor
+has not reviewed) covers the entries the image enables, so the copy an Off request makes
+enables none of them and lists no such switch (nor its idle times): `edit` accepts that
+result once the reparsed table enables no entry, and `affected_fields` lists the switch
+with `after: 0`. An idle time requested in that edit at its stored value is accepted too:
+its bytes are checked to stay as stored, and it is not listed. A field that only matters while a switch is on carries
 `depends_on: {"field": <switch key>, "value": 1}`: `edit` changes it only while that switch
 has that value, stored in the image or requested in the same edit, and otherwise refuses
 with `DEPENDENT_FIELD_DISABLED` (`details.field` is the refused key, `details.depends_on`
@@ -236,8 +241,8 @@ nothing to import it refuses with `NOTHING_TO_IMPORT`.
 A field is proposed when its donor value differs and it is editable in both ROMs, means the same
 quantity in both and the value is inside the target's bounds, checked as `edit` checks them (an
 ordering group's encoding bounds when its partners are proposed with it). The same quantity means
-the same `units`, memory level (`memory_mhz`), power layout (`notebook_tgp`, which marks the three
-board power fields of a notebook TGP layout) and `equation_type`, and a voltage field on an
+the same `units`, memory level (`memory_mhz`), power layout (`notebook_tgp`, which marks the board
+power fields of a notebook TGP layout) and `equation_type`, and a voltage field on an
 equation shared by the same fields (REL and ALT that follow OV share its equation, so their values
 are not those of a ROM where each has its own). Aliases and placeholders the GUI hides are left
 out, opt-in fields unless `include_opt_in`, and the fan channel count, which describes the board's

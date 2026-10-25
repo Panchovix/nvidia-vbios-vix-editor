@@ -86,6 +86,7 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `connector_N_power_rated/max_w`, `connector_N_current_threshold_rated/max_ma` | Power policy and current hardware threshold of external 12 V connector sense channel N, numbered in power-row order | Experimental, Ampere and Turing; current thresholds opt-in |
 | `slot_current_threshold_rated/max_ma`, `nvvdd_power_threshold_rated/max_w` | Hardware-threshold policies (slot 12 V current; Ada NVVDD output power) | Experimental, opt-in; slot current on Ada, Ampere and Turing, NVVDD power on Ada only |
 | `board_fixed_rated_w` | Rated value of the fixed board policies 2/7 | Experimental, opt-in (hidden in the GUI by default) |
+| `notebook_base_tgp_w` | Row 2 +73 of the GB20x notebook layout, a candidate for the base TGP that Dynamic Boost adds its boost to | Experimental, opt-in (hidden in the GUI by default), GB20x notebook layout only; an edited value stays between `power_default_w` and `power_max_w`, which it does not bound |
 | `input_current_rated_ma`, `input_current_max_ma` | 12 V board input-current policy, row 9 (Ada: thresholds 0/1, rows 9/10) | Experimental, reviewed row shapes |
 | `input_current_policy7_limit_ma` | Policy 7 limit linked to the 12 V input policy | Experimental, reviewed Blackwell row shape |
 | `input_policy_9_max_raw` | Row 9 raw maximum; units unknown | Read-only, only when row 9 is unrecognized |
@@ -104,7 +105,7 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `xbar/sys/vid_min/max_table_mhz`, `dram_min_table_mhz` | Clock offset range in table MHz | Experimental, reviewed Blackwell and Ada; Ampere; Turing `dram_min_table_mhz` only (its XBAR/SYS/VID rows store no range) |
 | `perf_cf_util_policy` | PERF_CF utilization policy (policy entry 0, bit 7): 1 on, 0 off | Experimental, GB20x, Ada, Ampere and Turing, Advanced section; see [Advanced section](#advanced-section-performance-controllers-and-idle-power) |
 | `perf_cf_D_target_pct`, `perf_cf_D_jump_pct`, `perf_cf_D_hysteresis_down`, `perf_cf_D_hysteresis_up` (D = `gpc`, `dram`, `vid`) | Utilization target and jump threshold (whole %) and decrease/increase hysteresis counts of the GPC, DRAM and video utilization controllers | Experimental, GB20x, Ada, Ampere and Turing, Advanced section; only while `perf_cf_util_policy` is 1 (`depends_on`) |
-| `lpwr_gr_power_gating`, `lpwr_mscg`, `lpwr_nvdec_gating`, `lpwr_nvenc_gating`, `lpwr_ofa_gating`, `lpwr_nvjpg_gating`, `lpwr_difr`, `lpwr_gr_rail_gating` | LPWR idle power feature switches: 1 Stock, 0 Off (bit 0 of the entries the image enables in stock) | Experimental, Advanced section; GR power gating and MSCG on every family, the video engines on GB20x, DIFR on GB20x and Ada, GR rail gating only on the products that ship it on (RTX PRO 4000 SFF, RTX 5080 Laptop GPU, GA102 RTX 3080/3090 and RTX A4500..A6000, A40) |
+| `lpwr_gr_power_gating`, `lpwr_mscg`, `lpwr_nvdec_gating`, `lpwr_nvenc_gating`, `lpwr_ofa_gating`, `lpwr_nvjpg_gating`, `lpwr_difr`, `lpwr_gr_rail_gating` | LPWR idle power feature switches: 1 Stock, 0 Off (bit 0 of the entries the image enables in stock) | Experimental, Advanced section; GR power gating and MSCG on every family, the video engines on GB20x, DIFR on GB20x and Ada, GR rail gating where the image enables it (in the corpus the RTX PRO 4000 SFF, RTX 5080 and 5090 Laptop GPU, GA102 RTX 3080/3090 and RTX A4500..A6000, A40); `lpwr_coverage: "enabled-entries"` on a product the editor has not reviewed ([which entries a switch covers](#lpwr-idle-power-switches-and-idle-times)) |
 | `lpwr_difr_dfpr_idle_ms`, `lpwr_difr_sw_asr_idle_us`, `lpwr_difr_cg_idle_us`, `lpwr_gr_rail_gating_idle_us` | LPWR idle times (DIFR DFPR, SW-ASR and clock gating; GR rail gating) | Experimental, GB20x, Ada and Ampere, Advanced section; 0.5x..4x stock; only while their switch is Stock (`depends_on`) |
 
 Each selector field uses one complete role name, for example
@@ -766,18 +767,18 @@ stores three equal temperatures, one value per product:
 | RTX PRO 6000 Max-Q (2bb4) | 92 °C |
 | RTX PRO 6000 Workstation (2bb1) | 93 °C |
 | RTX PRO 4000 SFF (2c33) | 96 °C |
-| RTX 5080 Laptop GPU (2c59) | 89 °C |
+| RTX 5080 Laptop GPU (2c59), RTX 5090 Laptop GPU (2c18) | 89 °C |
 
 A read-only `nvidia-smi` capture on five devices (two RTX PRO 6000 Max-Q, an RTX 5080,
 an RTX 5070 Ti and an RTX PRO 4000 SFF) showed "GPU Current Temp" plus "GPU Current
 T.Limit Temp" equal to this value, so it is the limit the driver measures the GPU's
 temperature headroom against (its maximum operating temperature). The capture is not
-distributed. Entries 1 and 4 store 105 °C (entry 4: 103 °C on the RTX 5080 Laptop GPU);
-what they do was not traced. The RTX 5080 Laptop GPU alone also stores a second class 1
-entry with byte 1 = 1, entry 2 at 87/75/87 °C, below its entry 0 (89 °C). Its role was not
-traced and no notebook was in the capture, so on that product the lower entry may limit the
-GPU first and a raised value may have no effect; the field stays editable there, and its
-`reason` names the other entry.
+distributed. Entries 1 and 4 store 105 °C (entry 4: 103 °C on the RTX 5080 and 5090 Laptop
+GPUs); what they do was not traced. The RTX 5080 and 5090 Laptop GPU images alone also store
+a second class 1 entry with byte 1 = 1, entry 2 at 87/75/87 °C, below their entry 0 (89 °C).
+Its role was not traced and no notebook was in the capture, so on those products the lower
+entry may limit the GPU first and a raised value may have no effect; the field stays editable
+there, and its `reason` names the other entry.
 
 - **Edit.** One field writes the three temperatures together, in steps of 1/32 °C.
   Byte 0, byte 1 and every other entry stay as stored, whatever the field registry, and
@@ -1032,7 +1033,9 @@ boolean; the code that applies an offset was not traced.
 ### Joint validation
 
 `power_min_w`, `power_default_w` and `power_max_w` form the `board-power` ordering
-group; the two input-current fields form `input-current-12v`; each output-OCP rail's
+group (with `board_fixed_rated_w`, and on the GB20x notebook layout with
+`notebook_base_tgp_w`, see [Notebook images](#notebook-images-rtx-5080-and-rtx-5090-laptop-gpu));
+the two input-current fields form `input-current-12v`; each output-OCP rail's
 rated and maximum fields form `nvvdd-output-ocp` or `msvdd-output-ocp`; the slot
 power fields form `slot-power`; and the fan fields form `fan-speed` (every RPM limit and
 curve speed), `fan-level` (every % limit and curve level) and `fan-temperature` (every
@@ -1044,7 +1047,9 @@ is checked against the static bounds in its descriptor, which hold the partners'
 current values. When partners are requested together, each value is first checked
 against `bounds.encoding_minimum`/`encoding_maximum`, and then against the reviewed
 bounds recomputed on the edited result. A broken minimum <= default <= maximum
-order returns `OUT_OF_BOUNDS`. For example, raising the default to 900 W and the
+order returns `OUT_OF_BOUNDS`, and so does a requested notebook base TGP that ends up
+outside default <= base <= maximum. The base TGP bounds no other field: an edit without
+it is checked as if it did not exist. For example, raising the default to 900 W and the
 ceiling to 1000 W in one request is accepted, while the same default alone is
 refused. Clock rows are reparsed after every edit: their identities must be
 unchanged, and each range that contained 0 must still contain it.
@@ -1058,7 +1063,8 @@ their own bounds, as before. Only a canonical `power_min_w`, `power_default_w`,
 `connector_N_current_threshold_rated_ma` or `board_fixed_rated_w` binding may change
 a minimum or rated value, and only the
 canonical `input_current_policy7_limit_ma` binding may write row 7's opaque bytes
-61:65. Any other binding with one of these keys fails with `INVALID_FIELD_EVIDENCE`.
+61:65 (the canonical `notebook_base_tgp_w` binding, likewise, row 2's bytes 73:77 on the
+GB20x notebook layout). Any other binding with one of these keys fails with `INVALID_FIELD_EVIDENCE`.
 Aliases, partial offsets, other rows and non-matching profiles stay protected.
 Override profiles that matched the base must still match after the edit, and no
 profile may end with a policy default above its maximum. On a top-level profile
@@ -1142,11 +1148,20 @@ with `runtime_get: false`:
   reviewed template and is not offered.
 - `api_rail_index` stays unknown. No edited value has been booted on these boards.
 
-## Notebook image (RTX 5080 Laptop GPU)
+## Notebook images (RTX 5080 and RTX 5090 Laptop GPU)
 
 | Image | PCI ID | BIOS |
 |---|---|---|
 | GB203 RTX 5080 Laptop GPU (Lenovo Legion 7 Pro) | `10de:2c59` | `98.03.5C.00.F2` |
+| GB203 RTX 5090 Laptop GPU | `10de:2c18` | `98.03.5C.00.72` |
+
+The notebook fields below are recognized by the tables, not by the device ID, so another
+image with this layout and these rows gets them too. Only the owner's `nvidia-smi`
+reading belongs to one product (the RTX 5080 Laptop GPU). The stock maximum operating
+temperature (89 °C) and GR rail gating are listed for these two devices: on another
+device ID the temperature can only be lowered, and the GR rail gating switch covers the
+entries the image enables, so a copy saved with Off no longer shows it
+([LPWR](#lpwr-idle-power-switches-and-idle-times)).
 
 The rail and VFE tables are the split-rail ones, so the NVVDD and MSVDD voltage
 fields work unchanged (REL 1025 mV, OV 1200 mV, rail INFO VMIN slot 700 mV on both
@@ -1155,32 +1170,65 @@ clamp, see [VMIN set per chip](#vmin-set-per-chip-tree-roots-and-per-chip-equati
 power policy table keeps the v0x40 format but places its rows differently:
 
 - **TGP in row 2.** Every desktop and Max-Q source has policy header bytes 21..23 =
-  `ff 08 ff` and its TGP in row 8 (type 12). The notebook has `ff ff 02`, rows 7 and 8
-  of type 0 with zero limits, and row 2 (type 1) holding 5000/80000/175000 mW.
-  `nvidia-smi -q -d POWER` on a laptop running the same VBIOS reports Min 5 W, Default
-  80 W and Max 175 W. `power_min_w`, `power_default_w` and `power_max_w` edit row 2 at +13, +17
-  and +21. Override profiles on this layout are unreviewed; an image with any profile
-  offers no power fields. The fixed-policy opt-in field does not exist here.
-- **Running limit.** On a laptop the platform (the system BIOS's Dynamic Boost data
-  and, on Linux, `nvidia-powerd`) requests the running limit. A raised ceiling is only
-  a ceiling; the request, the output OCP, the cooling and the laptop's VRM can all keep
-  power lower. The header also stores 55000/45000/35000/25000 at bytes 24..39, whose
-  meaning is unknown.
+  `ff 08 ff` and its TGP in row 8 (type 12). The notebooks have `ff ff 02`, rows 7 and 8
+  of type 0 with zero limits, and row 2 (type 1) holding 5000/80000/175000 mW
+  (5000/95000/175000 mW on the RTX 5090 Laptop GPU). `nvidia-smi -q -d POWER` on an RTX 5080
+  Laptop GPU running the same VBIOS reports Min 5 W, Default 80 W and Max 175 W (public
+  readings of RTX 5090 Laptop GPUs: 5, 95 and 175 W). `power_min_w`,
+  `power_default_w` and `power_max_w` edit row 2 at +13, +17 and +21. Override profiles on
+  this layout are unreviewed; an image with any profile offers no power fields. The
+  fixed-policy opt-in field does not exist here.
+- **Running limit.** On a laptop Dynamic Boost (the NVIDIA platform framework on Windows,
+  `nvidia-powerd` on Linux, working from the system BIOS's data) requests the running
+  limit at runtime. The VBIOS ceiling only caps that request, while monitoring tools show
+  the stored ceiling. Raising `power_max_w` alone therefore usually does not raise the
+  running limit: on one RTX 5090 Laptop GPU, raising it from 175 to 225 W showed 225 W in
+  the tools but the GPU stayed at 175 W (power cap), and raising `power_default_w` as well
+  did not move it either. The output OCP, the cooling and the laptop's VRM can also keep
+  power lower. The header also stores 55000/45000/35000/25000 at bytes 24..39 (RTX 5090
+  Laptop GPU: 40000/35000/25000/15000), whose meaning is unknown.
+- **Base TGP, experimental and opt-in (`notebook_base_tgp_w`).** Row 2 +73 holds 150000 mW
+  on both notebooks, the only 150000 in each image, and 0 on every desktop and Max-Q row 2.
+  A public log from another RTX 5090 Laptop GPU shows the firmware's TGP policy base at
+  150000 mW while the running limit was that base + 25 W of Dynamic Boost. So +73 is a
+  candidate for the base TGP that Dynamic Boost adds its boost to. That is unproven (the
+  firmware is closed) and untested. The field exists only when row 2 bytes 0..12 equal
+  the reviewed notebook bytes `010200000000012b07000ccc10` and the stored value lies
+  between the rated value and the maximum of row 2. Its bounds are the stored
+  `power_default_w` and `power_max_w`, so a base above the ceiling takes a higher ceiling
+  in the same edit (`board-power` ordering group), for example `power_max_w=225` with
+  `notebook_base_tgp_w=200`; a request with the base is refused when the result leaves it
+  outside default <= base <= maximum. It bounds neither of them: without the base in the
+  request, `power_max_w` and `power_default_w` keep their usual bounds, and an edit that
+  puts the ceiling below the stored base or the boot default above it leaves +73 as it was
+  and the edited image without this field. The laptop's VRM, cooling and power adapter
+  were sized for the stock limit.
 - **Output OCP.** Rows 13 and 14 equal the GET-reviewed Max-Q rows byte for byte
   (range bytes excluded), monitors 27 and 28. Each monitor's power channel and the
   power device it reads are byte-identical to the reviewed NVVDD (channel 13, device 9)
-  or MSVDD (channel 12, device 8) output on all seven GET-reviewed sources. The chain
-  is required, and so is device ID `0x2C59`. Stock rated values: NVVDD 180 A, MSVDD
-  60 A, each with rated = maximum.
-- **Row 9** is type 3 with unit byte 1 and value 11375, not the type 11 input-current
-  row of the desktop cards. It stays read-only (`input_policy_9_max_raw`).
+  or MSVDD (channel 12, device 8) output on all seven GET-reviewed sources. The notebook
+  layout (above) with the two-row (NVVDD and MSVDD) rail table, the Max-Q rows and the
+  chain are required, not a device ID, and the chain is checked on every device, a
+  GET-reviewed desktop ID included: another image with this layout whose rows and chains
+  match is recognized the same way, and one whose rows or chains differ, or whose rail
+  table has one row, keeps them read-only. Rows 13 and 14 of both images are
+  byte-identical. Stock rated values: NVVDD 180 A, MSVDD 60 A, each with rated =
+  maximum.
+- **Row 9** is type 3 with unit byte 1 and value 11375 (RTX 5090 Laptop GPU: 12434), not
+  the type 11 input-current row of the desktop cards. It stays read-only
+  (`input_policy_9_max_raw`).
 - **Clock offsets.** The table equals the desktop one except bit 12 of the DRAM row
   descriptor (`0x1182` instead of `0x182`). That one bit is accepted on that row only.
 - **Fans.** The cooler list is empty and every per-channel enable is 0: the laptop's
   fans belong to the system, so no fan field is offered.
+- **Idle power.** Every LPWR table of the two images is byte-identical. Both enable GR
+  rail gating on entries 0..2 (`lpwr_gr_rail_gating`, with its idle time, see
+  [LPWR idle power switches](#lpwr-idle-power-switches-and-idle-times)).
 
-There is no saved GET for a notebook, and no edited value has been booted on a
-Blackwell one (one Ampere laptop has, see Ampere fields).
+There is no saved GET for a notebook. On one RTX 5090 Laptop GPU an edited ceiling showed
+in the monitoring tools, but neither it nor a raised boot default moved the running limit
+(above); no other edited value has been booted on a Blackwell notebook (Ampere laptops
+have, see Ampere fields).
 The power and OCP descriptors carry `structural-row-comparison` evidence with
 `runtime_get: false`.
 
@@ -1739,7 +1787,7 @@ The GB20x tables:
 | `lpwr_mscg` (memory system clock gating) | P+0x84, 0x3a, 7, 16, u32 | 0..2; 0..1 on the RTX PRO 6000 Workstation, RTX 5070 and RTX 5060 Ti |
 | `lpwr_nvdec_gating`, `lpwr_nvenc_gating`, `lpwr_ofa_gating`, `lpwr_nvjpg_gating` | P+0x11c, 0x120, 0x124, 0x128; 0xb4..0xb7; 10, 2, u16 | all five |
 | `lpwr_difr` | P+0xe8, 0x8e, 11, 18, u32 | entry 0 |
-| `lpwr_gr_rail_gating` | P+0xd4, 0x7e, 12, 1, u8 | RTX PRO 4000 SFF entry 0, RTX 5080 Laptop GPU entries 0..2; no switch elsewhere |
+| `lpwr_gr_rail_gating` | P+0xd4, 0x7e, 12, 1, u8 | RTX PRO 4000 SFF entry 0, RTX 5080 and 5090 Laptop GPU entries 0..2; no other image enables it |
 
 GSP-RM's LPWR initialization checks each table version (0x10) and parses every entry;
 an entry whose bit 0 is clear is skipped, for each of these features.
@@ -1756,12 +1804,22 @@ an entry whose bit 0 is clear is skipped, for each of these features.
   enable one. One limit: the video engine switches cover every entry, so a ROM whose
   NVDEC, NVENC, OFA or NVJPG entries all ship disabled reads as Off, and Stock then
   enables them; no corpus image ships like that.
-- **GR rail gating.** Its stock-disabled GeForce entries store 0xfe, the same byte a
-  switched-off enabled entry stores, so the bytes cannot tell them apart. The switch is
-  offered only on the products whose stock entries are reviewed (PCI device 2c33: entry
-  0; 2c59: entries 0..2), and only where those entries store 0xff or 0xfe. Another
-  product with GR rail gating enabled shows the switch and its idle time read-only.
-  Forcing it on elsewhere is not offered.
+- **GR rail gating.** Disabled entries store 0xfc, but the GeForce desktops store 0xfe
+  on entry 0 (RTX 5090) or entries 0..1 (RTX 5080, 5070 Ti), the same byte a
+  switched-off enabled entry stores, so the bytes cannot tell those apart. On the
+  products whose stock entries are reviewed (PCI device 2c33: entry 0; 2c59 and 2c18,
+  whose GR rail gating tables are byte-identical: entries 0..2) the switch covers those
+  entries, also in a copy saved with Off, and only while they store 0xff or 0xfe. Each
+  laptop rests on one image, so an image of either that ships entries 0..2 as 0xfe would
+  read as Off, and Stock would enable them. On any
+  other product it covers the entries the image enables (bit 0 set), offered only while
+  each of them stores 0xff; its descriptor carries `lpwr_coverage: "enabled-entries"`
+  and its state is always Stock. Off clears bit 0 of exactly those entries, so the Off
+  copy enables none and shows no switch (nor its idle time): an entry shipped disabled
+  looks the same, so Stock there could enable an entry the vendor ships disabled. Keep
+  the original ROM to go back. An image that enables no entry has no switch, and an
+  enabled entry with another value leaves it read-only. Forcing GR rail gating on is not
+  offered. On every corpus image this rule gives the same switches as the reviewed list.
 - **Idle times.** Absolute values in their units, from 0.5x to 4x the stock value, and
   editable only while their switch is Stock (`depends_on`). GSP-RM copies them without
   conditions into the idle thresholds of their controllers, which become counter cycles
@@ -1835,10 +1893,16 @@ the video engine tables.
   enabled entry stores with bit 0 cleared, so the GB20x rule applies with these values.
   Elsewhere a stock-disabled entry stores exactly what an enabled one stores switched
   off: GR rail gating 0xfe, Ada DIFR 0xfffffffe or 0xffffffee, Turing GR power gating
-  0xffffffe6 and MSCG 0xffffffec. There, as for GR rail gating on GB20x, the switch is
-  offered only on the products (PCI devices) whose stock entries are reviewed, and only
-  while each covered entry stores one of the reviewed values with or without bit 0;
-  another product that enables the feature shows the switch, and its idle times, read-only.
+  0xffffffe6 and MSCG 0xffffffec. There, as for GR rail gating on GB20x, a reviewed
+  product's switch covers the entries it enables in stock (PCI devices listed by the
+  editor), while each covered entry stores one of the reviewed values with or without
+  bit 0. On any other product the switch covers the entries the image enables, while each
+  of them stores one of those values (`lpwr_coverage: "enabled-entries"`, always Stock):
+  its Off copy enables none and shows neither the switch nor its idle times, and an
+  image that enables none has no switch. On every corpus image this gives the same
+  switches as the reviewed list. It applies only to the tables named here: no corpus
+  image has DIFR on Ampere, or GR rail gating or DIFR on Turing, and such a table with an
+  enabled entry stays read-only.
 - **Two RTX 4090 images** (factory-OC boards) store GR power gating entry 2 like an
   enabled entry switched off: their switch is read-only, since its entries disagree.
 - **Idle times.** The DIFR words (header +5, +7, +9: 1000, 15 and 15 on every Ada image)
@@ -2036,8 +2100,10 @@ workstation, datacenter and laptop); all are recognized. No Ampere board runs on
 the maintainers' Linux machine, so **every Ampere field is experimental** and none
 has a runtime reading there. An RTX A2000 took an edited power floor through the
 Windows loader. An RTX 3050 6GB Laptop GPU (75 W HP BIOS) took a 70 W ceiling and a
-55 W boot default the same way, and the driver reported a 70 W limit; a raised
-ceiling is not tested on a laptop. Writes go to every duplicate chain and repair the
+55 W boot default the same way, and the driver reported a 70 W limit. On the same
+laptop a 95 W ceiling with an 80 W boot default let it draw above its stock 75 W (about
+92 W at most in a monitoring tool); on an RTX 3050 Ti Laptop GPU (stock 55 W) the same
+kind of raise gained only a few watts. Writes go to every duplicate chain and repair the
 additive checksum of each touched image.
 
 **Image chains.** Laptop and headless dumps (A40, RTX 3070/3060/3050 Ti/3050

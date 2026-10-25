@@ -8,8 +8,10 @@ from ..editor.sections import (ADVANCED_SECTION, SECTION_NAMES, SECTIONS, field_
                                opt_in_field_keys, technical_field_keys)
 from ..editor.registry import (FACTORY_BOOST_REASON, FACTORY_OFFSET_FRACTION_REASON, FACTORY_UNREVIEWED_REASON,
                                FAN_ZERO_RPM_MIXED_REASON, FAN_ZERO_RPM_NO_BLOCK_REASON, FAN_ZERO_RPM_TEMPS_OFF_REASON,
-                               LPWR_GR_RG_UNRECOGNIZED_REASON, LPWR_GR_RG_UNREVIEWED_REASON, LPWR_MIXED_REASON,
-                               LPWR_STOCK_UNRECOGNIZED_REASON, LPWR_STOCK_UNREVIEWED_REASON, LPWR_TIME_SWITCH_REASON,
+                               LPWR_ENABLED_ENTRIES, LPWR_ENABLED_UNRECOGNIZED_REASON,
+                               LPWR_GR_RG_ENABLED_UNRECOGNIZED_REASON, LPWR_GR_RG_UNRECOGNIZED_REASON,
+                               LPWR_MIXED_REASON, LPWR_STOCK_UNRECOGNIZED_REASON, LPWR_TABLE_UNREVIEWED_REASON,
+                               LPWR_TIME_SWITCH_REASON,
                                MAX_TEMP_DISABLED_REASON, MAX_TEMP_LOWER_LIMIT_REASON, MAX_TEMP_NO_POLICY_REASON,
                                MAX_TEMP_UNEQUAL_REASON, MAX_TEMP_UNRECOGNIZED_REASON,
                                PERF_CF_CONTROLLER_UNRECOGNIZED_REASON, PERF_CF_POLICY_UNRECOGNIZED_REASON)
@@ -23,7 +25,8 @@ FIELD_KEYS = frozenset(('power_min_w', 'power_max_w', 'nvvdd_rel_max_mv', 'msvdd
                         'gpc_offset_max_mhz', 'gpc_offset_min_mhz',
                         'memory_offset_min_mhz', 'dram_min_table_mhz',
                         'input_current_policy7_limit_ma', 'slot_power_rated_w', 'slot_power_max_w',
-                        'board_fixed_rated_w', 'fan_pwm_frequency_hz', 'fan_channels', 'nvvdd_rel_alt_follow_ov',
+                        'board_fixed_rated_w', 'notebook_base_tgp_w', 'fan_pwm_frequency_hz', 'fan_channels',
+                        'nvvdd_rel_alt_follow_ov',
                         'fan_zero_rpm',
                         'slot_current_threshold_rated_ma', 'slot_current_threshold_max_ma',
                         'nvvdd_power_threshold_rated_w', 'nvvdd_power_threshold_max_w',
@@ -78,10 +81,11 @@ REASON_KEYS = {
     PERF_CF_POLICY_UNRECOGNIZED_REASON: 'reason.perf_cf_policy',
     PERF_CF_CONTROLLER_UNRECOGNIZED_REASON: 'reason.perf_cf_controller',
     LPWR_MIXED_REASON: 'reason.lpwr_mixed',
-    LPWR_GR_RG_UNREVIEWED_REASON: 'reason.lpwr_gr_rg_unreviewed',
     LPWR_GR_RG_UNRECOGNIZED_REASON: 'reason.lpwr_gr_rg_unrecognized',
-    LPWR_STOCK_UNREVIEWED_REASON: 'reason.lpwr_stock_unreviewed',
+    LPWR_GR_RG_ENABLED_UNRECOGNIZED_REASON: 'reason.lpwr_gr_rg_unrecognized',
     LPWR_STOCK_UNRECOGNIZED_REASON: 'reason.lpwr_stock_unrecognized',
+    LPWR_ENABLED_UNRECOGNIZED_REASON: 'reason.lpwr_stock_unrecognized',
+    LPWR_TABLE_UNREVIEWED_REASON: 'reason.lpwr_table_unreviewed',
     LPWR_TIME_SWITCH_REASON: 'reason.lpwr_time_switch',
     FAN_ZERO_RPM_MIXED_REASON: 'reason.fan_zero_rpm_mixed',
     FAN_ZERO_RPM_NO_BLOCK_REASON: 'reason.fan_zero_rpm_no_block',
@@ -226,6 +230,28 @@ def sense_profile_notes(field, fields, language='en'):
     return notes
 
 
+def notebook_notes(field, family, language='en'):
+    """Notes of the board power fields of a GB20x notebook TGP layout (notebook_tgp).
+
+    The ceiling notes that the platform requests the running limit, so raising the ceiling alone usually
+    leaves it where it was. The experimental base TGP (notebook_base_tgp_w, an advanced field) notes what it
+    may be and the risk; it bounds no other field, so the ceiling and the boot default do not mention it.
+    """
+    if not field.get('notebook_tgp') or not (family or '').startswith('blackwell'):
+        return []
+    text, key = Messages(language), field['key']
+    return ([text('notebook.ceiling')] if key == 'power_max_w' else
+            [text('notebook.base_tgp')] if key == 'notebook_base_tgp_w' else [])
+
+
+def lpwr_notes(field, language='en'):
+    """Note of an editable idle power switch on a product whose stock entries are not reviewed (lpwr_coverage
+    LPWR_ENABLED_ENTRIES): it covers the entries the ROM enables, so a copy saved with Off shows no switch."""
+    if field.get('lpwr_coverage') != LPWR_ENABLED_ENTRIES or not field.get('editable'):
+        return []
+    return [Messages(language)('lpwr.enabled_entries')]
+
+
 def per_chip(field):
     """True for a VMIN field whose stock value is set per chip (vmin_tree in its stock state): the ROM stores no
     number for it, so its row starts empty and its original value reads 'per chip'."""
@@ -361,12 +387,27 @@ def unsupported_notes(report, language='en'):
             if d.get('resolver') in RESOLVER_SECTIONS}
 
 
+# Fields that are shown only while other fields' values allow it, and whose own bytes only a request for them
+# writes: the notebook base TGP is no field once the ceiling is below it or the boot default above it.
+GATED_FIELD_KEYS = frozenset(('notebook_base_tgp_w',))
+
+
 def primary_preview(document):
-    """Document.preview without the technical fields (technical_field_keys) of the report each field is in."""
+    """Document.preview without the technical fields (technical_field_keys) of the report each field is in.
+
+    A gated field (GATED_FIELD_KEYS) that only one side has and that is not requested is left out too: it keeps
+    its stored value and is only shown or hidden because another field moved, so it is no change."""
     hidden = technical_field_keys(document.report)
     added = technical_field_keys(document.proposal.manifest['after']) if document.proposal is not None else set()
-    return [(before, after) for before, after in document.preview
-            if (before['key'] not in hidden if before is not None else after['key'] not in added)]
+    pairs = []
+    for before, after in document.preview:
+        key = (before or after)['key']
+        if key in (hidden if before is not None else added):
+            continue
+        if (before is None or after is None) and key in GATED_FIELD_KEYS and key not in document.changes:
+            continue
+        pairs.append((before, after))
+    return pairs
 
 
 def change_value(field, amount, language='en'):
@@ -531,7 +572,7 @@ def to_stored(field, text):
 # inputs), the 12 V input current, an external 12 V connector (Ampere, Turing; power
 # or current) or their sum (Ampere) or the PCIe slot input. NVVDD/MSVDD output current
 # and NVVDD output power are VRM sensors and are not scaled.
-SHUNT_KEYS = frozenset(('power_min_w', 'power_default_w', 'power_max_w', 'board_fixed_rated_w',
+SHUNT_KEYS = frozenset(('power_min_w', 'power_default_w', 'power_max_w', 'board_fixed_rated_w', 'notebook_base_tgp_w',
                         'slot_power_rated_w', 'slot_power_max_w', 'input_current_rated_ma',
                         'input_current_max_ma', 'input_current_policy7_limit_ma',
                         'slot_current_threshold_rated_ma', 'slot_current_threshold_max_ma',

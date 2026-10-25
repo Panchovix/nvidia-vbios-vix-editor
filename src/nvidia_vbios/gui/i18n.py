@@ -296,6 +296,7 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'field.slot_power_rated_w': 'PCIe slot power limit, rated (experimental)',
  'field.slot_power_max_w': 'PCIe slot power ceiling (experimental)',
  'field.board_fixed_rated_w': 'Fixed board policies 2/7 rated power (advanced, XOC-style, experimental)',
+ 'field.notebook_base_tgp_w': 'Notebook base TGP (experimental)',
  'field.slot_current_threshold_rated_ma': 'PCIe slot current threshold, rated (advanced, experimental)',
  'field.slot_current_threshold_max_ma': 'PCIe slot current threshold ceiling (advanced, experimental)',
  'field.nvvdd_power_threshold_rated_w': 'NVVDD output power threshold, rated (advanced, experimental)',
@@ -314,6 +315,19 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
                           'top level, most likely a {watts} W cable (inferred, not tested). Lower levels keep their '
                           'own limits.',
  'sense_profiles.past_top': 'Going past {watts} W is more than that cable is rated for. That is your call.',
+ 'notebook.ceiling': 'On a laptop, Dynamic Boost requests the running power limit at runtime and this ceiling only '
+                     'caps it. Monitoring tools show this stored ceiling, so raising it alone usually does not raise '
+                     'the running limit: on one RTX 5090 Laptop GPU, raising it from 175 to 225 W and also the boot '
+                     'default left the running limit at 175 W.',
+ 'notebook.base_tgp': 'Not tested on hardware. A candidate for the base TGP that Dynamic Boost adds its boost to. '
+                      'When you change it, it has to stay between the boot default and the ceiling. To go above the '
+                      'ceiling, raise the ceiling with it in the same edit. A copy saved with the ceiling below it or '
+                      'the boot default above it does not show this field but keeps its stored value, and the field '
+                      "comes back once they are moved back. The laptop's VRM, cooling and power adapter were sized "
+                      'for the stock limit.',
+ 'lpwr.enabled_entries': ('This product is not among the reviewed ones, so this switch covers the entries this '
+                          'ROM enables. A copy saved with Off no longer shows the switch, since an entry shipped '
+                          'disabled looks the same as one turned off: keep the original ROM to go back to Stock.'),
  'sense_profiles.input_current': 'The 12 V input current threshold (rated {amps} A, about {watts} W at 12 V) may '
                                  'limit first. Raise it too, under Show advanced XOC-style fields.',
  'vmin_clone.memory': 'On this ROM the memory clock voltage floor keeps its stock value. A lower VMIN shows only while '
@@ -424,13 +438,10 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'reason.perf_cf_controller': 'This controller does not have the layout of the reviewed ROMs.',
  'reason.lpwr_mixed': ('Some entries of this feature are enabled and others are not in this ROM, unlike the reviewed '
                        'ROMs.'),
- 'reason.lpwr_gr_rg_unreviewed': ('GR rail gating is enabled in this ROM, but which entries this product enables as '
-                                  'shipped is not reviewed.'),
  'reason.lpwr_gr_rg_unrecognized': 'A GR rail gating entry of this ROM does not store the reviewed value.',
- 'reason.lpwr_stock_unreviewed': ('This feature is enabled in this ROM, but which entries this product enables as '
-                                  'shipped is not reviewed. In this table an entry shipped disabled looks the same as '
-                                  'one turned off.'),
  'reason.lpwr_stock_unrecognized': 'An entry of this feature in this ROM does not store a reviewed value.',
+ 'reason.lpwr_table_unreviewed': ('This feature is enabled in this ROM, but none of the reviewed ROMs of this GPU '
+                                  'family have this table.'),
  'reason.lpwr_time_switch': 'The switch of this idle time is read-only in this ROM.',
  'reason.fan_zero_rpm_mixed': ('Zero RPM is on for some fan entries of this ROM and off for others (bit 2 of '
                                'their flag byte differs), so neither On nor Off describes it, and the editor '

@@ -14,11 +14,13 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from nvidia_vbios import cli
 from nvidia_vbios.editor import IMPORT_SECTIONS, edit, import_fields
-from nvidia_vbios.editor.registry import (LPWR_GR_RG_UNRECOGNIZED_REASON, LPWR_GR_RG_UNREVIEWED_REASON,
-                                          LPWR_MIXED_REASON, LPWR_STOCK_UNRECOGNIZED_REASON,
-                                          LPWR_STOCK_UNREVIEWED_REASON, LPWR_TIME_SWITCH_REASON,
+from nvidia_vbios.editor.registry import (LPWR_ENABLED_ENTRIES, LPWR_ENABLED_UNRECOGNIZED_REASON,
+                                          LPWR_GR_RG_ENABLED_UNRECOGNIZED_REASON, LPWR_GR_RG_UNRECOGNIZED_REASON,
+                                          LPWR_MIXED_REASON, LPWR_STOCK, LPWR_STOCK_UNRECOGNIZED_REASON,
+                                          LPWR_TABLE_UNREVIEWED_REASON, LPWR_TIME_SWITCH_REASON,
                                           PERF_CF_CONTROLLER_UNRECOGNIZED_REASON, PERF_CF_POLICY_UNRECOGNIZED_REASON,
-                                          percent_fxp, registry)
+                                          lpwr_covered, percent_fxp, registry)
+from nvidia_vbios.gui.presentation import lpwr_notes
 from nvidia_vbios.gui.i18n import MESSAGES_EN
 from nvidia_vbios.gui.messages_es import MESSAGES_ES
 from nvidia_vbios.gui.presentation import (SECTION_NAMES, dependency_reason, field_label, field_section,
@@ -461,22 +463,78 @@ class LpwrTests(unittest.TestCase):
         with self.assertRaises(VbiosError) as exc:
             edit(off.image, {'lpwr_gr_rail_gating_idle_us': 1000})
         self.assertEqual(exc.exception.code, 'DEPENDENT_FIELD_DISABLED')
-        # The notebook enables entries 0..2; a stored Off reads 0 and Stock enables exactly those.
-        notebook = fixture(device=0x2C59, mutate=set_gr_rail_gating(0xFE, 0xFE, 0xFE))
-        field = descriptors(notebook)['lpwr_gr_rail_gating']
-        self.assertEqual((field['current'], field['lpwr_entries']), (0, [0, 1, 2]))
-        stock = edit(notebook, {'lpwr_gr_rail_gating': 1})
-        at = lpwr_entry(backend(notebook), 'gr_rg', 0)['offset']
-        self.assertEqual(stock.blob[at:at + 5], bytes((0xFF, 0xFF, 0xFF, 0xFC, 0xFC)))
-        # Another product with an enabled entry: read-only, with its idle time.
-        fields = descriptors(fixture(device=0x2C02, mutate=set_gr_rail_gating(0xFF)))
-        self.assertEqual((fields['lpwr_gr_rail_gating']['editable'], fields['lpwr_gr_rail_gating']['reason']),
-                         (False, LPWR_GR_RG_UNREVIEWED_REASON))
-        self.assertEqual((fields['lpwr_gr_rail_gating_idle_us']['editable'],
-                          fields['lpwr_gr_rail_gating_idle_us']['reason']), (False, LPWR_TIME_SWITCH_REASON))
+        # The RTX 5080 and 5090 Laptop GPUs enable entries 0..2; a stored Off reads 0 and Stock enables exactly
+        # those.
+        for device in (0x2C59, 0x2C18):
+            with self.subTest(device=device):
+                laptop = fixture(device=device, mutate=set_gr_rail_gating(0xFF, 0xFF, 0xFF))
+                field = descriptors(laptop)['lpwr_gr_rail_gating']
+                self.assertEqual((field['current'], field['editable'], field['lpwr_entries']), (1, True, [0, 1, 2]))
+                self.assertNotIn('lpwr_coverage', field)
+                at = lpwr_entry(backend(laptop), 'gr_rg', 0)['offset']
+                off = edit(laptop, {'lpwr_gr_rail_gating': 0})
+                self.assertEqual(off.blob[at:at + 5], bytes((0xFE, 0xFE, 0xFE, 0xFC, 0xFC)))
+                field = descriptors(off.image)['lpwr_gr_rail_gating']
+                self.assertEqual((field['current'], field['editable'], field['lpwr_entries']), (0, True, [0, 1, 2]))
+                self.assertEqual(edit(off.image, {'lpwr_gr_rail_gating': 1}).blob, laptop.blob)
         # A reviewed product whose entry stores another value: read-only.
         field = descriptors(fixture(device=0x2C33, mutate=set_gr_rail_gating(0x7F)))['lpwr_gr_rail_gating']
         self.assertEqual((field['editable'], field['reason']), (False, LPWR_GR_RG_UNRECOGNIZED_REASON))
+
+    def test_gr_rail_gating_on_unlisted_products_covers_the_enabled_entries(self):
+        """A product LPWR_STOCK does not list: the switch covers the entries the image enables, and a copy saved with
+        Off, which enables none, shows no switch."""
+        self.assertNotIn(0x2C02, LPWR_STOCK['gr_rg'])
+        # Entry 0 enabled, entry 1 stored like an enabled entry switched off (as a shipped-disabled one is).
+        image = fixture(device=0x2C02, mutate=set_gr_rail_gating(0xFF, 0xFE))
+        fields = descriptors(image)
+        switch, idle = fields['lpwr_gr_rail_gating'], fields['lpwr_gr_rail_gating_idle_us']
+        self.assertEqual((switch['current'], switch['editable'], switch['lpwr_entries'], switch['lpwr_coverage']),
+                         (1, True, [0], LPWR_ENABLED_ENTRIES))
+        self.assertIn('keep the original ROM to go back', switch['reason'])
+        self.assertEqual((idle['editable'], idle['bounds']['minimum'], idle['bounds']['maximum']), (True, 250, 2000))
+        self.assertEqual([len(t) for t in (lpwr_notes(switch), lpwr_notes(switch, 'es'), lpwr_notes(idle))], [1, 1, 0])
+        at = lpwr_entry(backend(image), 'gr_rg', 0)['offset']
+        off = edit(image, {'lpwr_gr_rail_gating': 0})
+        self.assertTrue(off.manifest['integrity']['valid'])
+        self.assertEqual(off.manifest['changed_object_ids'], [0x7E])
+        changed_bytes_within(self, image, off, [at])
+        self.assertEqual(off.blob[at:at + 5], bytes((0xFE, 0xFE, 0xFC, 0xFC, 0xFC)))
+        self.assertEqual([a for a in off.manifest['affected_fields'] if a['field'] == 'lpwr_gr_rail_gating'],
+                         [dict(field='lpwr_gr_rail_gating', before=1, after=0, units='flag', requested=True)])
+        # The Off copy enables no entry: no switch, no idle time, and Stock cannot be requested there.
+        after = descriptors(off.image)
+        self.assertFalse({'lpwr_gr_rail_gating', 'lpwr_gr_rail_gating_idle_us'} & set(after))
+        with self.assertRaises(VbiosError) as exc:
+            edit(off.image, {'lpwr_gr_rail_gating': 1})
+        self.assertEqual(exc.exception.code, 'UNKNOWN_FIELD')
+        # The idle time edits while the switch is Stock and is refused with Off in the same edit.
+        result = edit(image, {'lpwr_gr_rail_gating_idle_us': 1000})
+        self.assertEqual(descriptors(result.image)['lpwr_gr_rail_gating_idle_us']['current'], 1000)
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'lpwr_gr_rail_gating': 0, 'lpwr_gr_rail_gating_idle_us': 1000})
+        self.assertEqual(exc.exception.code, 'DEPENDENT_FIELD_DISABLED')
+        # Off with the idle time requested again at its stored value: the same copy as Off alone, as on a listed
+        # product, and the idle time is not listed as changed.
+        same = edit(image, {'lpwr_gr_rail_gating': 0, 'lpwr_gr_rail_gating_idle_us': idle['current']})
+        self.assertEqual(same.blob, off.blob)
+        self.assertEqual([a['field'] for a in same.manifest['affected_fields'] if a['field'].startswith('lpwr_')],
+                         ['lpwr_gr_rail_gating'])
+        # Every enabled entry: entries 0..2 as on the laptops.
+        field = descriptors(fixture(device=0x2C58, mutate=set_gr_rail_gating(0xFF, 0xFF, 0xFF)))['lpwr_gr_rail_gating']
+        self.assertEqual((field['editable'], field['lpwr_entries']), (True, [0, 1, 2]))
+        # An enabled entry with an unreviewed form: read-only, with its idle time.
+        fields = descriptors(fixture(device=0x2C02, mutate=set_gr_rail_gating(0xFF, 0x7F)))
+        switch = fields['lpwr_gr_rail_gating']
+        self.assertEqual((switch['editable'], switch['reason'], switch['lpwr_entries']),
+                         (False, LPWR_GR_RG_ENABLED_UNRECOGNIZED_REASON, [0, 1]))
+        self.assertEqual(fields['lpwr_gr_rail_gating_idle_us']['reason'], LPWR_TIME_SWITCH_REASON)
+        self.assertEqual(lpwr_notes(fields['lpwr_gr_rail_gating']), [])
+        with self.assertRaises(VbiosError) as exc:
+            edit(fixture(device=0x2C02, mutate=set_gr_rail_gating(0xFF, 0x7F)), {'lpwr_gr_rail_gating': 0})
+        self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
+        # No enabled entry: no switch (an entry shipped disabled looks like one switched off).
+        self.assertNotIn('lpwr_gr_rail_gating', descriptors(fixture(device=0x2C02, mutate=set_gr_rail_gating(0xFE))))
 
     def test_difr_idle_times_bounds_units_and_dependency(self):
         image = fixture()
@@ -575,13 +633,13 @@ class SectionTests(unittest.TestCase):
         self.assertIn('pasos de 10 µs', field_label(fields['lpwr_gr_rail_gating_idle_us'], 'es'))
         self.assertIsNone(dependency_reason(fields['lpwr_mscg'], fields))
         for reason in (PERF_CF_POLICY_UNRECOGNIZED_REASON, PERF_CF_CONTROLLER_UNRECOGNIZED_REASON, LPWR_MIXED_REASON,
-                       LPWR_GR_RG_UNREVIEWED_REASON, LPWR_GR_RG_UNRECOGNIZED_REASON, LPWR_TIME_SWITCH_REASON):
+                       LPWR_GR_RG_UNRECOGNIZED_REASON, LPWR_TIME_SWITCH_REASON):
             with self.subTest(reason=reason):
                 english, spanish = (read_only_reason(dict(reason=reason), lang) for lang in ('en', 'es'))
                 self.assertTrue(english and spanish and english != spanish)
                 self.assertNotEqual(spanish, read_only_reason(dict(reason='unmapped'), 'es'))
         for key in ('section.advanced', 'section.advanced_note', 'section.advanced_perf', 'section.advanced_lpwr',
-                    'error.DEPENDENT_FIELD_DISABLED', 'flag_stock'):
+                    'error.DEPENDENT_FIELD_DISABLED', 'flag_stock', 'lpwr.enabled_entries'):
             self.assertIn(key, MESSAGES_EN)
             self.assertIn(key, MESSAGES_ES)
         self.assertEqual(MESSAGES_EN['section.advanced'], 'Advanced: performance controllers and idle power')
@@ -750,7 +808,9 @@ class LegacyAdvancedTests(unittest.TestCase):
         self.assertEqual((field['editable'], field['current'], field['reason']), (False, None, LPWR_MIXED_REASON))
 
     def test_switches_of_reviewed_products(self):
-        """Where a stock-disabled entry looks like a switched-off one, only the reviewed products get the switch."""
+        """Where a stock-disabled entry looks like a switched-off one, a reviewed product's switch covers the entries
+        it enables in stock, also in a copy saved with Off; any other product's switch covers the entries the image
+        enables (test_switches_of_unlisted_products)."""
         # Turing: a desktop TU106 (entries 0, 1 and 4) and a laptop TU106 (also entry 3).
         laptop = legacy_advanced('turing', device=0x1F11, lpwr={0x80: ['efffffff01', 'e7ffffff01', 'e6ffffff00',
                                                                        'e7ffffff00', 'e5ffffff00']})
@@ -762,38 +822,111 @@ class LegacyAdvancedTests(unittest.TestCase):
         self.assertEqual((descriptors(off.image)['lpwr_gr_power_gating']['current'],
                           descriptors(off.image)['lpwr_mscg']['current']), (0, 0))
         self.assertEqual(edit(off.image, {'lpwr_gr_power_gating': 1, 'lpwr_mscg': 1}).blob, laptop.blob)
-        # Another Turing product: both switches read-only.
-        fields = descriptors(legacy_advanced('turing', device=0x1F95))
-        for key in ('lpwr_gr_power_gating', 'lpwr_mscg'):
-            self.assertEqual((fields[key]['editable'], fields[key]['reason']), (False, LPWR_STOCK_UNREVIEWED_REASON))
         # A reviewed product whose entry stores another value: read-only.
         fields = descriptors(legacy_advanced('turing', lpwr={0x80: ['c1ffffff01', 'e7ffffff01', 'e6ffffff01',
                                                                     'e6ffffff01', 'e5ffffff01']}))
         self.assertEqual(fields['lpwr_gr_power_gating']['reason'], LPWR_STOCK_UNRECOGNIZED_REASON)
-        # Ada DIFR on an AD107 product no reviewed image covers: shipped disabled (0xfffffffe and 0xffffffee, as on
-        # the RTX 4070 and RTX 4090, look like a switched-off entry 0) there is no switch; enabled, it is read-only.
-        disabled = ['00feffff00ffffffffffffffffffffffff'] * 4
-        for value in ('feffffff', 'eeffffff'):
-            entries = [value + '026400fa002c01640096009600'] + disabled
-            fields = descriptors(legacy_advanced('ada', device=0x28E0, lpwr={0xE8: entries}))
-            self.assertFalse({'lpwr_difr', *DIFR_TIMES} & set(fields))
-        fields = descriptors(legacy_advanced('ada', device=0x28E0))
-        self.assertEqual((fields['lpwr_difr']['editable'], fields['lpwr_difr']['reason']),
-                         (False, LPWR_STOCK_UNREVIEWED_REASON))
-        self.assertTrue(all(fields[k]['reason'] == LPWR_TIME_SWITCH_REASON for k in DIFR_TIMES))
         # The RTX 2000 Ada enables entry 0: a stored Off reads 0 and Stock enables exactly entry 0.
+        disabled = ['00feffff00ffffffffffffffffffffffff'] * 4
         stored_off = legacy_advanced('ada', lpwr={0xE8: ['feffffff026400fa002c01640096009600'] + disabled})
         self.assertEqual(descriptors(stored_off)['lpwr_difr']['current'], 0)
         self.assertEqual(edit(stored_off, {'lpwr_difr': 1}).blob, legacy_advanced('ada').blob)
-        # Ampere GR rail gating: an RTX 3090 enables entries 0..1, an RTX 3090 Ti none (no switch); another product
-        # with an enabled entry shows it read-only.
-        self.assertNotIn('lpwr_gr_rail_gating', descriptors(legacy_advanced('ampere', device=0x2203,
-                                                                            lpwr={0xD4: ['fe'] * 5})))
-        fields = descriptors(legacy_advanced('ampere', device=0x2203))
-        self.assertEqual((fields['lpwr_gr_rail_gating']['reason'], fields['lpwr_gr_rail_gating_idle_us']['reason']),
-                         (LPWR_GR_RG_UNREVIEWED_REASON, LPWR_TIME_SWITCH_REASON))
+        # An RTX 3090 enables GR rail gating entries 0..1: its Off copy keeps the switch, at Off.
+        off = edit(legacy_advanced('ampere'), {'lpwr_gr_rail_gating': 0})
+        field = descriptors(off.image)['lpwr_gr_rail_gating']
+        self.assertEqual((field['current'], field['editable'], field['lpwr_entries']), (0, True, [0, 1]))
+        self.assertNotIn('lpwr_coverage', field)
+        self.assertEqual(edit(off.image, {'lpwr_gr_rail_gating': 1}).blob, legacy_advanced('ampere').blob)
         self.assertEqual(descriptors(legacy_advanced('ampere', lpwr={0xD4: ['7f', 'ff', 'fe', 'fe', 'fe']}))
                          ['lpwr_gr_rail_gating']['reason'], LPWR_GR_RG_UNRECOGNIZED_REASON)
+
+    def test_switches_of_unlisted_products(self):
+        """A product LPWR_STOCK does not list: each switch covers the entries the image enables, while each stores a
+        reviewed form; Off clears exactly them, so the Off copy enables none and shows no switch (nor its idle
+        times); an image that enables none has no switch."""
+        # (family, device, switch, BIT P offset, entries the image enables, enable bytes after Off, idle times).
+        cases = (('turing', 0x1F95, 'lpwr_gr_power_gating', 0x80, [0, 1, 4], [0xEE, 0xE6, 0xE6, 0xE6, 0xE4], ()),
+                 ('turing', 0x1F95, 'lpwr_mscg', 0x84, [0, 1], [0xFC, 0xEC, 0xEC, 0xEC, 0xCC], ()),
+                 ('ampere', 0x2203, 'lpwr_gr_rail_gating', 0xD4, [0, 1], [0xFE] * 5, ('lpwr_gr_rail_gating_idle_us',)),
+                 ('ada', 0x28E0, 'lpwr_difr', 0xE8, [0], [0xFE, 0x00, 0x00, 0x00, 0x00], DIFR_TIMES))
+        for family, device, key, pointer, enabled, after, times in cases:
+            with self.subTest(family=family, key=key):
+                self.assertNotIn(device, LPWR_STOCK[LPWR_SWITCHES[key]])
+                image = legacy_advanced(family, device=device)
+                parser = backend(image)
+                fields = descriptors(image)
+                field = fields[key]
+                self.assertEqual((field['current'], field['editable'], field['lpwr_entries'], field['lpwr_coverage']),
+                                 (1, True, enabled, LPWR_ENABLED_ENTRIES))
+                self.assertTrue(all(fields[k]['editable'] for k in times))
+                self.assertEqual(len(bindings(image)[key].offsets), len(parser.chains) * len(enabled))
+                off = edit(image, {key: 0})
+                self.assertTrue(off.manifest['integrity']['valid'])
+                table = backend(off.image).lpwr_table(LPWR_SWITCHES[key])['entries']
+                self.assertEqual([e['value'] & 0xFF for e in table], after)
+                stored = parser.lpwr_table(LPWR_SWITCHES[key])['entries']
+                self.assertEqual([e['value'] for e in table],
+                                 [e['value'] & ~1 if e['index'] in enabled else e['value'] for e in stored])
+                allowed = {at for start in bindings(image)[key].offsets
+                           for at in range(start, start + struct.calcsize(bindings(image)[key].encoding))}
+                self.assertLessEqual(changed(image, off), allowed | {r['offset'] for r in
+                                                                     off.manifest['integrity_repairs']})
+                self.assertFalse({key, *times} & set(descriptors(off.image)))
+                # Its idle times requested again at their stored values with Off: the same copy.
+                if times:
+                    self.assertEqual(edit(image, {key: 0, **{k: fields[k]['current'] for k in times}}).blob,
+                                     off.blob)
+                # The other switch of the same image is unaffected.
+                others = {k: f['current'] for k, f in descriptors(off.image).items() if k in LPWR_SWITCHES}
+                self.assertEqual(others, {k: f['current'] for k, f in fields.items()
+                                          if k in LPWR_SWITCHES and k != key})
+        # An enabled entry with an unreviewed form: read-only, with its idle times.
+        fields = descriptors(legacy_advanced('ada', device=0x28E0, lpwr={
+            0xE8: ['fdffffff026400fa002c01640096009600'] + ['00feffff00ffffffffffffffffffffffff'] * 4}))
+        self.assertEqual((fields['lpwr_difr']['editable'], fields['lpwr_difr']['reason']),
+                         (False, LPWR_ENABLED_UNRECOGNIZED_REASON))
+        self.assertTrue(all(fields[k]['reason'] == LPWR_TIME_SWITCH_REASON for k in DIFR_TIMES))
+        fields = descriptors(legacy_advanced('turing', device=0x1F95, lpwr={0x80: ['c1ffffff01', 'e7ffffff01',
+                                                                                  'e6ffffff01', 'e6ffffff01',
+                                                                                  'e5ffffff01']}))
+        self.assertEqual((fields['lpwr_gr_power_gating']['editable'], fields['lpwr_gr_power_gating']['reason']),
+                         (False, LPWR_ENABLED_UNRECOGNIZED_REASON))
+        self.assertTrue(fields['lpwr_mscg']['editable'])
+        self.assertEqual(descriptors(legacy_advanced('ampere', device=0x2203, lpwr={0xD4: ['7f', 'ff', 'fe', 'fe',
+                                                                                          'fe']}))
+                         ['lpwr_gr_rail_gating']['reason'], LPWR_GR_RG_ENABLED_UNRECOGNIZED_REASON)
+        # Shipped disabled: GR rail gating on an RTX 3090 Ti, Ada DIFR entry 0 stored 0xfffffffe or 0xffffffee (as
+        # on the RTX 4070 and RTX 4090, like a switched-off entry 0): no switch and no idle time.
+        self.assertFalse({'lpwr_gr_rail_gating', 'lpwr_gr_rail_gating_idle_us'} &
+                         set(descriptors(legacy_advanced('ampere', device=0x2203, lpwr={0xD4: ['fe'] * 5}))))
+        for value in ('feffffff', 'eeffffff'):
+            entries = [value + '026400fa002c01640096009600'] + ['00feffff00ffffffffffffffffffffffff'] * 4
+            fields = descriptors(legacy_advanced('ada', device=0x28E0, lpwr={0xE8: entries}))
+            self.assertFalse({'lpwr_difr', *DIFR_TIMES} & set(fields))
+
+    def test_unlisted_products_cover_enabled_entries_only_on_the_reviewed_tables(self):
+        """A table no corpus image of the family references (Ampere DIFR, Turing GR rail gating and DIFR): on a
+        product LPWR_STOCK does not list, an enabled entry keeps the switch read-only, whatever it stores."""
+        for family, device, name, enabled, disabled in (('ampere', 0x2203, 'difr', 0xFFFFFFFF, 0xFFFFFFFE),
+                                                        ('turing', 0x1F95, 'gr_rg', 0xFF, 0xFE),
+                                                        ('turing', 0x1F95, 'difr', 0xFFFFFFFF, 0xFFFFFFFE)):
+            with self.subTest(family=family, name=name):
+                parser = backend(legacy_advanced(family, device=device))
+                self.assertIsNone(parser.lpwr_table(name))
+                table = dict(entries=[dict(index=i, offset=0, value=enabled if i == 0 else disabled) for i in range(5)])
+                covered, reason, structural = lpwr_covered(parser, family, name, table)
+                self.assertEqual(([e['index'] for e in covered], reason, structural),
+                                 ([0], LPWR_TABLE_UNREVIEWED_REASON, True))
+                table = dict(entries=[dict(index=i, offset=0, value=disabled) for i in range(5)])
+                self.assertEqual(lpwr_covered(parser, family, name, table)[:2], ([], None))
+        # The same entries on the tables the forms were reviewed on: a switch over the enabled entry.
+        for family, device, name, enabled, disabled in (('ampere', 0x2203, 'gr_rg', 0xFF, 0xFE),
+                                                        ('ada', 0x28E0, 'difr', 0xFFFFFFFF, 0xFFFFFFFE)):
+            with self.subTest(family=family, name=name):
+                parser = backend(legacy_advanced(family, device=device))
+                table = dict(entries=[dict(index=i, offset=0, value=enabled if i == 0 else disabled) for i in range(5)])
+                covered, reason, structural = lpwr_covered(parser, family, name, table)
+                self.assertEqual(([e['index'] for e in covered], reason, structural), ([0], None, True))
 
     def test_dependent_fields_change_only_while_their_switch_is_on(self):
         for family, switch, key, value in (('turing', 'perf_cf_util_policy', 'perf_cf_gpc_target_pct', 50),
@@ -848,11 +981,21 @@ class LegacyAdvancedTests(unittest.TestCase):
         donor = edit(image, {'perf_cf_gpc_target_pct': 60, 'lpwr_mscg': 0, 'lpwr_gr_rail_gating_idle_us': 3000}).image
         report, result = import_fields(image, donor, IMPORT_SECTIONS, include_opt_in=True)
         self.assertEqual((report['changes'], result), ({}, None))
-        for reason in (LPWR_STOCK_UNREVIEWED_REASON, LPWR_STOCK_UNRECOGNIZED_REASON):
-            with self.subTest(reason=reason):
-                english, spanish = (read_only_reason(dict(reason=reason), lang) for lang in ('en', 'es'))
-                self.assertTrue(english and spanish and english != spanish)
-                self.assertNotEqual(spanish, read_only_reason(dict(reason='unmapped'), 'es'))
+        english, spanish = (read_only_reason(dict(reason=LPWR_STOCK_UNRECOGNIZED_REASON), language)
+                            for language in ('en', 'es'))
+        self.assertTrue(english and spanish and english != spanish)
+        self.assertNotEqual(spanish, read_only_reason(dict(reason='unmapped'), 'es'))
+        # The reasons of a product LPWR_STOCK does not list read as their listed counterparts in the window.
+        for reason, same in ((LPWR_ENABLED_UNRECOGNIZED_REASON, LPWR_STOCK_UNRECOGNIZED_REASON),
+                             (LPWR_GR_RG_ENABLED_UNRECOGNIZED_REASON, LPWR_GR_RG_UNRECOGNIZED_REASON),
+                             (LPWR_TABLE_UNREVIEWED_REASON, None)):
+            for language in ('en', 'es'):
+                text = read_only_reason(dict(reason=reason), language)
+                self.assertNotEqual(text, read_only_reason(dict(reason='unmapped'), language))
+                if same:
+                    self.assertEqual(text, read_only_reason(dict(reason=same), language))
+        self.assertNotEqual(*(read_only_reason(dict(reason=LPWR_TABLE_UNREVIEWED_REASON), language)
+                              for language in ('en', 'es')))
         self.assertTrue(MESSAGES_EN['section.advanced_note'].startswith('Blackwell, Ada, Ampere and Turing.'))
         self.assertTrue(MESSAGES_ES['section.advanced_note'].startswith('Blackwell, Ada, Ampere y Turing.'))
         fields = descriptors(legacy_advanced('ada'))

@@ -60,7 +60,13 @@ funcionando sin las dependencias gráficas.
    entrada de 12 V y rangos de offset de reloj) llevan una insignia. Cambia
    juntos los valores relacionados, como un nuevo valor por defecto y su techo:
    el orden mínimo <= por defecto <= máximo se comprueba sobre el resultado
-   combinado. Los valores de corriente de entrada de 12 V son valores guardados de
+   combinado. En un portátil, Dynamic Boost pide el límite de potencia en uso mientras
+   funciona y el techo solo lo acota; las herramientas de monitoreo muestran el techo
+   guardado, así que subir solo el techo por lo general no sube el límite en uso (en una
+   RTX 5090 Laptop GPU, con el techo subido de 175 a 225 W y también la potencia por
+   defecto al arrancar, siguió en 175 W). La ventana lo indica en las ROM de las RTX 5080
+   y 5090 Laptop GPU.
+   Los valores de corriente de entrada de 12 V son valores guardados de
    la política, no corrientes seguras garantizadas; los límites del conector, del
    slot y de los cables siguen aplicando. **Temperatura máxima de funcionamiento**
    (Blackwell, Ada, Ampere y Turing, en la tarjeta Potencia; experimental, sin probar en
@@ -71,13 +77,15 @@ funcionando sin las dependencias gráficas.
    3090, 89 °C en una RTX 2080 Ti), en pasos de
    1/32 °C, y es de solo lectura en las ROM estilo XOC, donde ese límite está desactivado
    o no existe. Un valor más bajo debería hacer que el driver baje los clocks antes, y uno
-   más alto deja menos margen térmico. La ROM de la RTX 5080 Laptop GPU guarda además un
-   segundo límite del mismo tipo (87 °C) cuyo papel no se rastreó, así que ahí subir el
+   más alto deja menos margen térmico. Las ROM de la RTX 5080 y 5090 Laptop GPU guardan además
+   un segundo límite del mismo tipo (87 °C) cuyo papel no se rastreó, así que ahí subir el
    valor puede no tener efecto. En las ROM de portátil Ampere y Ada es de solo lectura:
    guardan un límite más bajo del mismo tipo (89 °C) y no se sabe cuál alcanza primero la
    GPU. **Mostrar campos avanzados (estilo XOC)**
    (desmarcada por defecto) muestra campos opcionales como la potencia nominal de
-   las políticas fijas 2/7, los umbrales de hardware (corriente del slot; en
+   las políticas fijas 2/7, el **TGP base del portátil** experimental de las RTX 5080 y
+   5090 Laptop GPU (un valor guardado que podría ser la base a la que Dynamic Boost le suma
+   su boost; sin probar), los umbrales de hardware (corriente del slot; en
    Ampere y Turing la corriente de los conectores; en Ada la potencia de salida
    NVVDD y la corriente de entrada de 12 V, rotulada "umbral"), el límite de
    corriente de salida NVVDD y los voltajes fijos REL/ALT de Turing y, en
@@ -296,12 +304,15 @@ reposo**, los interruptores que tiene la ROM, cada uno en **De fábrica** (como 
 **Desactivado**: **Power gating de GR** y **Clock gating del sistema de memoria, MSCG** en
 todas las familias, **Power gating de NVDEC/NVENC/OFA/NVJPG** en Blackwell, **Ahorro de
 energía con imagen fija, DIFR** en Blackwell y en las Ada que lo traen activado, y **Rail
-gating de GR** solo donde viene activado (la RTX PRO 4000 SFF, la RTX 5080 Laptop GPU y las
-GA102 RTX 3080/3090, RTX A4500..A6000 y A40); y los **tiempos de reposo de DIFR** y **del rail
-gating de GR** (ms o µs, el rail gating de GR en pasos de 10 µs, de 0,5x a 4x los de
-fábrica). En un producto Turing, Ampere o Ada que el editor no revisó, un interruptor cuyas
-entradas se ven iguales vengan apagadas de fábrica o apagadas después se muestra de solo
-lectura, con el motivo. Se espera que
+gating de GR** donde viene activado (entre las ROM revisadas, la RTX PRO 4000 SFF, las RTX
+5080 y 5090 Laptop GPU y las GA102 RTX 3080/3090, RTX A4500..A6000 y A40); y los **tiempos de
+reposo de DIFR** y **del rail gating de GR** (ms o µs, el rail gating de GR en pasos de 10 µs,
+de 0,5x a 4x los de fábrica). Cuando las entradas de un interruptor se ven iguales vengan
+apagadas de fábrica o apagadas después (rail gating de GR, DIFR en Ada, power gating de GR y
+MSCG en Turing) y el editor no revisó el producto, el interruptor cubre las entradas que la
+ROM activa, y su fila lo indica: una copia guardada con **Desactivado** ya no muestra ese
+interruptor, así que guarda la ROM original para volver a **De fábrica**. Una entrada que el
+editor no reconoce deja el interruptor de solo lectura, con el motivo. Se espera que
 solo actúen en reposo o con carga ligera (es una inferencia). Desactivado gasta un
 poco más en reposo y puede evitar tirones o parpadeos en reposo; tiempos de reposo muy cortos
 pueden causar tirones o, rara vez, pantalla negra en reposo. Un valor que depende de un

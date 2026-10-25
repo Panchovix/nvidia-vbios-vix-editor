@@ -87,6 +87,47 @@ class ImportTests(unittest.TestCase):
         report, result = import_fields(self.target, donor, ['power', 'fans'], include_opt_in=True)
         self.assertEqual((report['changes'], report['skipped']), (dict(lower, board_fixed_rated_w=60, **point), []))
 
+    def test_a_notebook_base_tgp_comes_with_the_notebook_board_power(self):
+        # The base TGP is an opt-in member of the board power set: a donor's edited base left out holds back the
+        # ceiling it was raised with, as the fixed board policies' rated power does on a desktop.
+        from test_extended_fields import notebook_fixture
+        target = from_bytes(notebook_fixture(base=150000), 'laptop.rom')
+        donor = donor_of(notebook_fixture(base=150000), {'power_max_w': 225, 'notebook_base_tgp_w': 200})
+        report, result = import_fields(target, donor, ['power'])
+        self.assertIsNone(result)
+        self.assertEqual({e['field']: (e['reason'], e.get('partners')) for e in report['skipped']},
+                         {'power_max_w': ('held_back', ['notebook_base_tgp_w']),
+                          'notebook_base_tgp_w': ('opt_in', None)})
+        report, result = import_fields(target, donor, ['power'], include_opt_in=True)
+        self.assertEqual((report['changes'], report['skipped']), ({'power_max_w': 225, 'notebook_base_tgp_w': 200}, []))
+        self.assertEqual((values(result.image)['power_max_w'], values(result.image)['notebook_base_tgp_w']), (225, 200))
+
+    def test_a_notebook_rom_edited_past_the_base_tgp_by_an_earlier_release_imports_as_before(self):
+        # Earlier releases left row 2 +73 at 150000 under a 140 W ceiling or a 160 W boot default, as an edit without
+        # the base TGP still does. Such a donor has no base TGP field and its values come over as before; a stock
+        # donor brings such a ROM back, base TGP field included.
+        from test_extended_fields import notebook_fixture
+        target = from_bytes(notebook_fixture(base=150000), 'laptop.rom')
+        at = backend(target).power_rows()[2]['offset'] + 73
+        for changes in ({'power_max_w': 140}, {'power_default_w': 160}, {'power_max_w': 120, 'power_default_w': 100}):
+            with self.subTest(changes=changes):
+                donor = donor_of(notebook_fixture(base=150000), changes)
+                self.assertEqual(donor.blob[at:at + 4], target.blob[at:at + 4])
+                self.assertNotIn('notebook_base_tgp_w', values(donor))
+                for opt_in in (False, True):
+                    report, result = import_fields(target, donor, ['power'], include_opt_in=opt_in)
+                    self.assertEqual(report['changes'], changes)
+                    self.assertEqual({e['field']: e['reason'] for e in report['skipped']},
+                                     {'notebook_base_tgp_w': 'absent_in_donor'} if opt_in else {})
+                    self.assertEqual({key: values(result.image)[key] for key in changes}, changes)
+                    self.assertEqual(result.blob[at:at + 4], target.blob[at:at + 4])
+                    self.assertNotIn('notebook_base_tgp_w', values(result.image))
+                report, result = import_fields(donor, target, ['power'], include_opt_in=True)
+                self.assertEqual({e['field']: e['reason'] for e in report['skipped']},
+                                 {'notebook_base_tgp_w': 'absent_in_target'})
+                self.assertEqual(result.blob, target.blob)
+                self.assertEqual(values(result.image)['notebook_base_tgp_w'], 150)
+
     def test_a_set_comes_whole_from_one_rom(self):
         # A curve temperature read-only in both ROMs holds back the speed of its curve; a read-only field
         # outside any set is not listed.

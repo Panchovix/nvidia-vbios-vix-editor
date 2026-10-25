@@ -18,7 +18,8 @@ from ..rom.tables import ADVANCED_TABLES, PROFILE_BYTES, TableRom, checksum_tail
 from .registry import (registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
                        fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
                        fixed_voltage, dram_offset_points, gpc_curve_offset, max_operating_temperature,
-                       factory_clocks, perf_cf_controllers, lpwr_features, VMIN_SEMANTICS, VMIN_FIXED_SEMANTICS,
+                       factory_clocks, perf_cf_controllers, lpwr_features, LPWR_ENABLED_ENTRIES, VMIN_SEMANTICS,
+                       VMIN_FIXED_SEMANTICS,
                        FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS, DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS,
                        MAX_TEMP_SEMANTICS, FACTORY_SEMANTICS, ADVANCED_SEMANTICS, PERF_CF_CONTROLLERS, fxp_percent,
                        FAN_ZERO_RPM_BITS, FAN_ZERO_RPM_TEMP_CEILING, FAN_ZERO_RPM_TEMP_FLOOR, fan_stop_accepted,
@@ -45,8 +46,10 @@ ADVANCED_OBJECTS = {0xA8: PERF_CF_TABLE[-1], 0xAC: PERF_CF_POLICIES[-1],
                     **{pointer: owner for pointer, owner, *_ in LPWR_TABLES.values()}}
 # The only requests that may change otherwise preserved power-row values:
 # canonical key -> preserved row attribute it may change. 'linked_limit' is
-# the opaque policy7 copy of the 12 V input limit, limited to its own bytes.
+# the opaque policy7 copy of the 12 V input limit and 'base_tgp' the notebook
+# base TGP (row 2 +73), each limited to its own bytes.
 PRESERVATION_EXCEPTIONS = {'power_min_w': 'minimum_raw', 'power_default_w': 'default_raw',
+                           'notebook_base_tgp_w': 'base_tgp',
                            'input_current_rated_ma': 'default_raw',
                            'nvvdd_output_ocp_rated_ma': 'default_raw', 'msvdd_output_ocp_rated_ma': 'default_raw',
                            'slot_power_rated_w': 'default_raw', 'board_fixed_rated_w': 'default_raw',
@@ -128,6 +131,21 @@ def _reviewed(image, parser):
         except VbiosError:
             continue
     return result
+
+
+def _lpwr_off_without_switch(binding, value, key, rebuilt):
+    """True for the canonical binding of an LPWR switch over the entries the image enables (lpwr_coverage
+    LPWR_ENABLED_ENTRIES) requested Off, when the reparsed table enables none of its entries: such a copy has no
+    switch to read back, since Stock could not tell which entries to enable."""
+    if (binding is None or binding.descriptor.get('lpwr_coverage') != LPWR_ENABLED_ENTRIES or
+            _amount(value, key) != 0):
+        return False
+    from ..rom.errors import FormatError
+    try:
+        table = rebuilt.lpwr_table(binding.descriptor['lpwr_table'])
+    except FormatError:
+        return False
+    return table is not None and not any(e['value'] & 1 for e in table['entries'])
 
 
 def _same(left, right):
@@ -253,6 +271,35 @@ def _zero_rpm_start(image, output, fans, reviewed, changes, ran):
                                   'joint_fields': sorted({k for f in found for k in f['keys']}),
                                   **({'channel_count': 'none' if 'none' in counts else 'separate-edits'}
                                      if counts else {})})
+
+
+def _keep_notebook_base(parser, rebuilt, output, changes):
+    """A requested Blackwell notebook base TGP (row 2 +73) ends between the rated value and the ceiling of row 2.
+
+    The base TGP bounds no other field, so only a request that includes it is checked. Alone its bounds are the
+    stored rated value and ceiling; requested with them (ordering group board-power), a result outside that order
+    is refused here, naming the base TGP with its range in the result. An edit without it may leave the base TGP
+    outside that order: the field is then no longer recognized on the result.
+    """
+    if 'notebook_base_tgp_w' not in changes or not isinstance(parser, BlackwellRom):
+        return
+    from ..rom.errors import FormatError
+    try:
+        source = parser.notebook_base_tgp()
+        if source is None or rebuilt.notebook_base_tgp():
+            return
+        row = rebuilt.power_rows()[2]
+    except FormatError:
+        return  # a broken power table is refused by the power row checks
+    value = struct.unpack_from('<I', output.blob, source['offset'])[0]
+    if (not 0 <= row['minimum_raw'] <= row['default_raw'] <= row['maximum_raw'] or
+            row['default_raw'] <= value <= row['maximum_raw']):
+        return  # a broken order of the row itself, or other changed row bytes, is refused by the checks that follow
+    raise VbiosError('OUT_OF_BOUNDS', 'notebook_base_tgp_w violates the minimum/default/maximum ordering of the joint '
+                     'result: the notebook base TGP stays between the boot default and the ceiling',
+                     details={'field': 'notebook_base_tgp_w',
+                              'bounds': {'minimum': row['default_raw'] / 1000, 'maximum': row['maximum_raw'] / 1000},
+                              'joint_fields': sorted(changes)})
 
 
 def _profile_pairs(profile):
@@ -557,6 +604,8 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                              details={'field': lower, 'bounds': {'minimum': FAN_ZERO_RPM_TEMP_FLOOR / 32,
                                                                  'maximum': (high - 1) / 32},
                                       'joint_fields': sorted((key, partner))})
+    # A requested notebook base TGP is checked before its partners, so the refusal gives its range in the result.
+    _keep_notebook_base(parser, rebuilt, output, changes)
     # A voltage value moves the bounds of the reviewed voltage fields (VMIN below REL, a fixed REL <= ALT), so
     # with a voltage field in the request every requested reviewed voltage field is checked against the result
     # too, and every other one that was editable must stay so: outside its new range it turns read-only.
@@ -569,7 +618,9 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
         # A reviewed resolver refuses a result whose minimum/default/maximum
         # ordering is broken, so a missing binding is also out of bounds.
         after_reviewed = _reviewed(output, rebuilt)
-        for key in sorted(checked):
+        # A notebook base TGP cannot break the order of its row, but it is no field on a result whose row order
+        # is broken: it is checked last, so such a result names the power field that broke it.
+        for key in sorted(checked, key=lambda k: (k == 'notebook_base_tgp_w', k)):
             after = after_reviewed.get(key)
             bounds = after.descriptor['bounds'] if after is not None else None
             if (bounds is None or not _within(_amount(changes[key], key), bounds['minimum'], bounds['maximum']) or
@@ -598,7 +649,7 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
         minimum_indices = exceptions.get('minimum_raw', set())
         default_indices = exceptions.get('default_raw', set())
         linked_bytes = {at for key, binding in canonical.items()
-                        if PRESERVATION_EXCEPTIONS.get(key) == 'linked_limit'
+                        if PRESERVATION_EXCEPTIONS.get(key) in ('linked_limit', 'base_tgp')
                         for start in binding.offsets for at in range(start, start + 4)}
         if ([r['default_raw'] for i, r in enumerate(source_rows) if i not in default_indices] !=
                 [r['default_raw'] for i, r in enumerate(target_rows) if i not in default_indices]):
@@ -960,7 +1011,21 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     before['fields'] = [dict(b.descriptor) for b in bindings]
     after['fields'] = [dict(b.descriptor) for b in after_bindings]
     by_after = {f['key']: f for f in after['fields']}
+    # An LPWR switch over the entries the image enables has no field once they are all Off: its value is the
+    # requested 0, read from the reparsed table.
+    switched_off = {key for key, value in changes.items()
+                    if key not in by_after and _lpwr_off_without_switch(canonical.get(key), value, key, rebuilt)}
+    # Its idle times go with it: one requested again at its stored value (which depends_on always allows) is
+    # checked at its bytes instead, which the edit leaves as stored.
+    unchanged = {key for key, value in changes.items()
+                 if key not in by_after and key in canonical and
+                 (canonical[key].descriptor.get('depends_on') or {}).get('field') in switched_off and
+                 _amount(value, key) == Decimal(str(canonical[key].descriptor['current'])) and
+                 all(image.blob[at:at + struct.calcsize(canonical[key].encoding)] ==
+                     output.blob[at:at + struct.calcsize(canonical[key].encoding)] for at in canonical[key].offsets)}
     for key, value in changes.items():
+        if key in switched_off or key in unchanged:
+            continue
         if (key not in by_after or by_after[key]['current'] is None or
                 Decimal(str(by_after[key]['current'])) != Decimal(str(value))):
             raise VbiosError('POSTCONDITION_FAILED', f'{key} did not survive format reparse')
@@ -969,6 +1034,9 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                             units=value['units'], requested=key in changes)
                        for key, value in by_after.items() if key in before_fields and
                        before_fields[key]['current'] != value['current']]
+    affected_fields += [dict(field=key, before=before_fields[key]['current'], after=0,
+                             units=before_fields[key]['units'], requested=True)
+                        for key in sorted(switched_off) if before_fields[key]['current'] != 0]
     rated_changes = sorted({e['field'] for e in edits if PRESERVATION_EXCEPTIONS.get(e['field']) == 'default_raw'})
     manifest = dict(schema_version=1, operation='plan' if dry_run else 'edit',
                     source=image.name, source_sha256=image.sha256, original_source_sha256=image.source_sha256,

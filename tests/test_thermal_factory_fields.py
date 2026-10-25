@@ -210,7 +210,7 @@ class MaxOperatingTemperatureTests(unittest.TestCase):
             edit(unlisted, {'max_operating_temp_c': 91})
         self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
         # Other reviewed products use their own stock value; the stored 90 C stays allowed above it.
-        for device, stock, ceiling in ((0x2C02, 88, 91), (0x2C33, 96, 99), (0x2F04, 85, 90)):
+        for device, stock, ceiling in ((0x2C02, 88, 91), (0x2C18, 89, 92), (0x2C33, 96, 99), (0x2F04, 85, 90)):
             field = descriptors(fixture(device=device))['max_operating_temp_c']
             self.assertEqual((field['stock_c'], field['bounds']['maximum']), (stock, ceiling))
 

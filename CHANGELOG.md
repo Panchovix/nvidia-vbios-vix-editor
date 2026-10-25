@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.1.33
+
+- **RTX 5090 Laptop GPU: the NVVDD and MSVDD output current limits can be edited.** Its output OCP
+  rows are the same as on the RTX 5080 Laptop GPU (NVVDD 180 A, MSVDD 60 A), so the ceiling and rated values of
+  both rails are now editable there too. Before, they were read-only on this laptop. Not tested on hardware.
+- **RTX 5090 Laptop GPU: the GR rail gating switch.** Its idle power tables are the same as on the RTX 5080 Laptop
+  GPU, so **GR rail gating** (entries 0 to 2) and its idle time can now be set there too. Before, both were read-only
+  on this laptop. Other ROMs that enable GR rail gating with the value the editor knows get the switch too (next
+  entry). Not tested on hardware.
+- **RTX 5090 Laptop GPU: Max operating temperature can be raised.** Its stock value is 89 °C, the same as on the RTX
+  5080 Laptop GPU, so it now goes up to 92 °C like there. Before, it could only be lowered. Both laptops also store a
+  second, lower temperature limit (87 °C) whose role is not known, so a raised value may have no effect. Not tested on
+  hardware.
+- **Idle power switches on products the editor has not reviewed.** In some tables an entry that ships off looks the
+  same as one turned off: GR rail gating, DIFR on Ada, and GR power gating and MSCG on Turing. On a product the editor
+  has not reviewed, these switches were read-only. Now the switch covers the entries that ROM enables, as long as they
+  hold the values the editor knows. A copy saved with **Off** no longer shows that switch, because nothing in it says
+  which entries to turn back on, so keep the original ROM to go back to **Stock**. The row in the window says so. A
+  ROM that enables none of those entries still has no switch. For API users: such a switch carries
+  `lpwr_coverage: "enabled-entries"`, and an accepted **Off** edit lists it in `affected_fields` with `after: 0` but not
+  in the copy's fields.
+- **Laptop output current limits are recognized by the ROM's tables, not by its device ID.** Another Blackwell
+  laptop ROM with the same power layout, both voltage rails, output current rows and sensor chain as the RTX 5080 and
+  5090 Laptop GPU ROMs gets the same editable NVVDD and MSVDD output current limits. Not tested on hardware.
+- **Laptops: the power ceiling notes say what it does and does not do.** On a laptop, Dynamic Boost (the NVIDIA
+  platform framework on Windows, nvidia-powerd on Linux) requests the running power limit at runtime, and the ceiling
+  in the ROM only caps it. Monitoring tools show the stored ceiling, so raising **Board power ceiling** alone usually
+  does not raise the running limit: one user reported that on their RTX 5090 Laptop GPU, raising it from 175 to 225 W
+  and also the boot default left the GPU at 175 W. The window now says so under the ceiling on RTX 5080 and 5090
+  Laptop GPU ROMs.
+- **Notebook base TGP (experimental, opt-in; RTX 5080 and 5090 Laptop GPU).** A new field under **Show advanced
+  XOC-style fields** edits a stored value, 150 W on both laptops, that may be the base TGP Dynamic Boost adds its
+  boost to. That is a guess from a public log of another RTX 5090 Laptop GPU and has not been tested. When you change
+  it, it has to stay between **Boot default board power** and **Board power ceiling**. To go above the ceiling, raise
+  the ceiling with it in the same edit, for example a 225 W ceiling and a 200 W base
+  (`nvbios edit ROM OUT --set power_max_w=225 --set notebook_base_tgp_w=200`). It does not limit the other power
+  fields: if you leave it alone, the ceiling and the boot default keep the same ranges as before. A ROM whose ceiling
+  is below it or whose boot default is above it does not show the field but keeps its stored value, and the field
+  comes back once they are moved back. The laptop's VRM, cooling and power adapter were sized for the stock limit.
+
 ## 0.1.32
 
 - **Lowering Fan channels no longer gets stuck on "Checking changes…".** Typing a smaller fan channel count (for

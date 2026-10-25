@@ -325,6 +325,20 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                           'Este valor se aplica en el nivel más alto, probablemente un cable de {watts} W (deducido, '
                           'sin probar). Los niveles más bajos mantienen sus propios límites.',
  'sense_profiles.past_top': 'Pasar de {watts} W supera lo que admite ese cable. Es decisión tuya.',
+ 'notebook.ceiling': 'En un portátil, Dynamic Boost pide el límite de potencia en uso mientras funciona y este techo '
+                     'solo lo acota. Las herramientas de monitoreo muestran este techo guardado, así que subir solo '
+                     'el techo por lo general no sube el límite en uso: en una RTX 5090 Laptop GPU, subirlo de 175 '
+                     'a 225 W y subir también la potencia por defecto al arrancar dejó el límite en uso en 175 W.',
+ 'notebook.base_tgp': 'Sin probar en hardware. Es un candidato para el TGP base al que Dynamic Boost le suma su '
+                      'boost. Si lo cambias, tiene que quedar entre la potencia por defecto al arrancar y el techo. '
+                      'Para pasar del techo, sube el techo junto con él en la misma edición. Una copia guardada con el '
+                      'techo por debajo de este valor o la potencia por defecto al arrancar por encima no muestra este '
+                      'campo pero conserva su valor guardado, y el campo vuelve al deshacer ese cambio. El VRM, la '
+                      'refrigeración y el cargador del portátil se dimensionaron para el límite de fábrica.',
+ 'lpwr.enabled_entries': ('Este producto no está entre los revisados, así que este interruptor cubre las entradas '
+                          'que esta ROM activa. Una copia guardada con Desactivado ya no muestra el interruptor, '
+                          'porque una entrada que viene desactivada se ve igual que una apagada: guarda la ROM '
+                          'original para volver a De fábrica.'),
  'sense_profiles.input_current': 'El umbral de corriente de entrada de 12 V (nominal {amps} A, unos {watts} W a 12 V) '
                                  'puede limitar antes. Súbelo también, en Mostrar campos avanzados (estilo XOC).',
  'vmin_clone.memory': 'En esta ROM el piso de voltaje del reloj de memoria mantiene su valor de fábrica. Un VMIN más '
@@ -380,6 +394,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                                            '(avanzado, experimental)'),
  'field.board_fixed_rated_w': 'Potencia nominal de las políticas fijas 2/7 de la placa (avanzado, estilo XOC, '
                               'experimental)',
+ 'field.notebook_base_tgp_w': 'TGP base del portátil (experimental)',
  'show_advanced': 'Mostrar campos avanzados (estilo XOC)',
  'shunt_multiplier': 'Multiplicador de shunt (x)',
  'shunt_help': 'Solo informativo: la VBIOS guarda los valores de los campos. Supone el mismo multiplicador en '
@@ -448,13 +463,10 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'reason.perf_cf_controller': 'Este controlador no tiene el formato de las ROM revisadas.',
  'reason.lpwr_mixed': ('En esta ROM algunas entradas de esta función están activadas y otras no, a diferencia de las '
                        'ROM revisadas.'),
- 'reason.lpwr_gr_rg_unreviewed': ('El rail gating de GR está activado en esta ROM, pero no está revisado qué entradas '
-                                  'activa este producto de fábrica.'),
  'reason.lpwr_gr_rg_unrecognized': 'Una entrada del rail gating de GR de esta ROM no guarda el valor revisado.',
- 'reason.lpwr_stock_unreviewed': ('Esta función está activada en esta ROM, pero no está revisado qué entradas '
-                                  'activa este producto de fábrica. En esta tabla una entrada que viene desactivada '
-                                  'se ve igual que una apagada.'),
  'reason.lpwr_stock_unrecognized': 'Una entrada de esta función en esta ROM no guarda un valor revisado.',
+ 'reason.lpwr_table_unreviewed': ('Esta función está activada en esta ROM, pero ninguna de las ROM revisadas de esta '
+                                  'familia de GPU tiene esta tabla.'),
  'reason.lpwr_time_switch': 'El interruptor de este tiempo de reposo es de solo lectura en esta ROM.',
  'reason.fan_zero_rpm_mixed': ('La parada en reposo está activada en algunas entradas de ventilador de esta ROM '
                                'y desactivada en otras (el bit 2 de su byte de flags difiere), así que ni '

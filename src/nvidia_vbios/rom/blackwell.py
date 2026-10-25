@@ -42,9 +42,15 @@ NVVDD_POWER_DEVICE = bytes.fromhex('0200000000140200090000ff60000000000100000000
 MSVDD_CHANNEL = bytes.fromhex('0110001bb7000010000000000000080000000000000000000000')
 MSVDD_POWER_DEVICE = bytes.fromhex('02200000001402ff000000016d000000000100000000000000')
 OUTPUT_CHAINS = {'NVVDD': (NVVDD_CHANNEL, NVVDD_POWER_DEVICE), 'MSVDD': (MSVDD_CHANNEL, MSVDD_POWER_DEVICE)}
-# Notebook images accepted by static comparison; no saved GET.
-# 0x2C59 RTX 5080 Laptop GPU (98.03.5C.00.F2, Lenovo Legion 7 Pro).
-NOTEBOOK_IDS = (0x2C59,)
+# Notebook images (notebook_power_layout) have no saved GET. Their output OCP rows are accepted by
+# static comparison, whatever the device: rows 13/14 must equal the Max-Q rows and monitors 27/28
+# the reviewed channel chains (OUTPUT_CHAINS), byte for byte. Reviewed on the RTX 5080 Laptop GPU
+# (0x2C59, 98.03.5C.00.F2, Lenovo Legion 7 Pro) and the RTX 5090 Laptop GPU (0x2C18,
+# 98.03.5C.00.72), whose rows, monitors and chains are byte-identical.
+# Row 2 bytes 0..12 of both notebook images (byte 11 is 0x7b on every desktop and Max-Q row 2).
+NOTEBOOK_TGP_ROW_PREFIX = bytes.fromhex('010200000000012b07000ccc10')
+# Row 2 +73 (u32 mW): 150000 on both notebook images, 0 on every desktop and Max-Q image.
+NOTEBOOK_BASE_TGP_OFFSET = 73
 # u16 words of a rail row that may select a VFE equation: REL, ALT, OV, the evaluated VMIN
 # (+0x13), +0x15, +0x17, the rail INFO VMIN slot (+0x21), the words +0x1D/+0x1F/+0x23 (0xffff
 # in the corpus) and the trailing block +0x29..+0x3F (voltage equations on the Max-Q, RTX PRO
@@ -533,35 +539,43 @@ class BlackwellRom:
         Single-rail images have no saved GET. Their row 13 is accepted only when
         its monitor's power channel and that channel's power device are
         byte-identical to the reviewed NVVDD ones; row 14 has no MSVDD there.
+
+        Notebook images (notebook_power_layout with the two-row rail table, any
+        device) have no saved GET either. Rows 13/14 are accepted only when they
+        match the Max-Q fingerprints and each monitor's channel and power device
+        are byte-identical to the reviewed NVVDD/MSVDD outputs. Each basis checks
+        its own fingerprints: a GET-reviewed device keeps the saved GET only on
+        the rows it was taken on (the Max-Q rows on 0x2BB4, the desktop rows on
+        the others), so Max-Q rows on another device always need the chain.
         """
         rows = self.power_rows()
         device = self.legacy['device']
-        notebook = device in NOTEBOOK_IDS and self.notebook_power_layout()
-        # The notebook rows 13/14 are byte for byte the Max-Q rows (range bytes excluded).
-        maxq = device == 0x2BB4 or notebook
+        maxq = ('89498b5f7f781ecf5243a36499bcf6122498f9329b6efe03d6c0a4adf37da99f',
+                'ae80a96ab922206ba9ccff0ab634e3f926d095040c51d04f400eeab6c3a1d5a1')
         reviewed = device in (0x2BB4, 0x2B85, 0x2C02, 0x2C05, 0x2C33)
         single = device in SINGLE_RAIL_IDS and self.single_rail()
-        fingerprints = (
-            ('89498b5f7f781ecf5243a36499bcf6122498f9329b6efe03d6c0a4adf37da99f',
-             'ae80a96ab922206ba9ccff0ab634e3f926d095040c51d04f400eeab6c3a1d5a1') if maxq else
-            ('ad14cb826607972a1efca1069c575afaf906ddae4142a4fa01c5c7c3a6f9e688', None) if single else
-            ('d1437df9c34f8b9431a2e93eb6c9918910c2a48132020a962b46dcf46b056d79',
-             '8647926a8ed6d777cad5e927b6b1e911f8820c8bf478033163af335c0f5e2548'))
+        # A notebook is recognized by its power table layout and its NVVDD/MSVDD rail table; its rows 13/14
+        # must then be byte for byte the Max-Q rows (range bytes excluded) and their monitors follow the
+        # reviewed chains.
+        notebook = self.notebook_power_layout() and self.split_rail()
+        saved = (maxq if device == 0x2BB4 else
+                 ('ad14cb826607972a1efca1069c575afaf906ddae4142a4fa01c5c7c3a6f9e688', None) if single else
+                 ('d1437df9c34f8b9431a2e93eb6c9918910c2a48132020a962b46dcf46b056d79',
+                  '8647926a8ed6d777cad5e927b6b1e911f8820c8bf478033163af335c0f5e2548'))
         result = []
         for i, (index, label, monitor_rail_id) in enumerate(((13, 'NVVDD', 1), (14, 'MSVDD', 16))):
             row = rows[index]
             raw = self.blob[row['offset']:row['offset'] + 102]
             fingerprint = hashlib.sha256(raw[:13] + raw[25:]).hexdigest()
             discriminator = unpack(raw, '<I', 1)[0]
-            shape = (row['type'] == 7 and discriminator == 1 and fingerprints[i] is not None and
-                     fingerprint == fingerprints[i] and
-                     0 <= row['minimum_raw'] <= row['default_raw'] <= row['maximum_raw'])
+            ordered = (row['type'] == 7 and discriminator == 1 and
+                       0 <= row['minimum_raw'] <= row['default_raw'] <= row['maximum_raw'])
             basis = None
-            if shape and reviewed:
+            if ordered and reviewed and fingerprint == saved[i]:
                 basis = 'saved-get'
-            elif shape and single and self.nvvdd_channel_chain(raw[5]):
+            elif ordered and single and fingerprint == saved[i] and self.nvvdd_channel_chain(raw[5]):
                 basis = 'structural-channel'
-            elif shape and notebook and self.output_channel_chain(raw[5], label):
+            elif ordered and notebook and fingerprint == maxq[i] and self.output_channel_chain(raw[5], label):
                 basis = 'structural-notebook'
             recognized = basis is not None
             result.append(dict(row, logical_rail_id=label, vbios_row_index=index,
@@ -579,20 +593,47 @@ class BlackwellRom:
         """Notebook power policy layout: the TGP is row 2, rows 7 and 8 are empty.
 
         Every desktop and Max-Q source has policy header bytes 21..23 = ff 08 ff
-        and its TGP in row 8 (type 12). The RTX 5080 Laptop image has ff ff 02,
-        rows 7 and 8 of type 0 with zero limits, and row 2 (type 1) holds
-        5000/80000/175000 mW: the minimum, default and maximum nvidia-smi
-        reports on that laptop.
+        and its TGP in row 8 (type 12). The RTX 5080 and 5090 Laptop images have
+        ff ff 02, rows 7 and 8 of type 0 with zero limits, and row 2 (type 1)
+        holds 5000/80000/175000 mW (5000/95000/175000 on the RTX 5090 Laptop):
+        the minimum, default and maximum nvidia-smi reports on those laptops.
         """
         at = self.pointer("P", 11 * 4)
         rows = self.power_rows()
         return (self.blob[at + 21:at + 24] == bytes((0xFF, 0xFF, 2)) and rows[2]['type'] == 1 and
                 all(rows[i]['type'] == 0 and not rows[i]['maximum_raw'] for i in (7, 8)))
 
+    def notebook_base_tgp(self):
+        """Row 2 +73 of the notebook layout (u32 mW), or None.
+
+        A candidate for the base TGP that Dynamic Boost adds its boost to: both notebook images
+        store 150000 there, the only 150000 in each image, and a public log from another RTX 5090
+        Laptop shows the firmware's TGP policy base at 150000 mW while the running limit was that
+        base + 25 W. Unproven. None unless the layout is the notebook one, row 2 bytes 0..12 equal
+        the reviewed notebook bytes and the value lies between the rated value (+17) and the
+        maximum (+21) of row 2.
+        """
+        if not self.notebook_power_layout():
+            return None
+        row = self.power_rows()[2]
+        at = row['offset'] + NOTEBOOK_BASE_TGP_OFFSET
+        value = unpack(self.blob, '<I', at)[0]
+        if (self.blob[row['offset']:row['offset'] + len(NOTEBOOK_TGP_ROW_PREFIX)] != NOTEBOOK_TGP_ROW_PREFIX or
+                not row['default_raw'] <= value <= row['maximum_raw']):
+            return None
+        return dict(row=2, offset=at, value_raw=value, rated_raw=row['default_raw'], maximum_raw=row['maximum_raw'])
+
     def single_rail(self):
         """True for the recognized rail table with one (NVVDD) row."""
         try:
             return self.rail_count(self.pointer("P", 0x68)) == 1
+        except FormatError:
+            return False
+
+    def split_rail(self):
+        """True for the recognized rail table with two (NVVDD and MSVDD) rows."""
+        try:
+            return self.rail_count(self.pointer("P", 0x68)) == 2
         except FormatError:
             return False
 

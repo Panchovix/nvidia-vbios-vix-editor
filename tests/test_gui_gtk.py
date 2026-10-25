@@ -161,6 +161,83 @@ class GtkSmokeTests(unittest.TestCase):
                     finally:
                         window.close()
 
+    def test_notebook_ceiling_and_base_tgp_notes_in_both_languages(self):
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gio, GLib, Gtk
+        from nvidia_vbios.gui.app import EditorWindow, texts
+        from test_extended_fields import notebook_fixture
+        app = Gtk.Application(application_id='org.nvidia_vbios.NotebookSmoke', flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.assertTrue(app.register(None))
+        context = GLib.MainContext.default()
+
+        def until(condition):
+            deadline = time.monotonic() + 15
+            while not condition():
+                while context.pending():
+                    context.iteration(False)
+                if time.monotonic() >= deadline:
+                    self.fail('GTK operation did not complete')
+                time.sleep(.01)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'notebook.rom'
+            path.write_bytes(notebook_fixture(base=150000))
+            for language in ('en', 'es'):
+                with self.subTest(language=language):
+                    window = EditorWindow(app, path, language)
+                    window.present()
+                    try:
+                        until(lambda: not window.busy and window.controller.document is not None)
+                        ceiling = '\n'.join(texts(window.rows['power_max_w']['row']))
+                        default = '\n'.join(texts(window.rows['power_default_w']['row']))
+                        self.assertIn(window.text('notebook.ceiling'), ceiling)
+                        self.assertNotIn(window.text('notebook.ceiling'), default)
+                        # The base TGP bounds neither, so their rows do not name it.
+                        label = window.text('field.notebook_base_tgp_w').split(' (')[0]
+                        self.assertNotIn(label, ceiling + default)
+
+                        def staged(typed, changes):
+                            for key, text in typed.items():
+                                window.entries[key].set_text(text)
+                            until(lambda: not window.verifying)
+                            self.assertFalse(window.dirty, typed)
+                            self.assertEqual(window.controller.document.changes, changes)
+                            self.assertEqual([key for key, info in window.rows.items()
+                                              if 'invalid' in info['row'].get_css_classes()], [])
+                            # The change list and its count hold only the requested fields: the untouched base
+                            # TGP keeps its stored value even where the copy no longer shows it as a field.
+                            document = window.controller.document
+                            if changes:
+                                self.assertEqual(window.status.get_text(), window.text(
+                                    'live_ok', count=len(changes), bytes=document.proposal.manifest['changed_bytes']))
+                            self.assertNotIn(label, window.preview_text())
+                            self.assertNotIn(window.text('change.not_used'), window.preview_text())
+
+                        # A ceiling below and a boot default above the stored base TGP (150 W) stage as without it,
+                        # with the advanced box off or on (the base TGP row shown and untouched).
+                        for advanced in (False, True):
+                            window.advanced_toggle.set_active(advanced)
+                            # The base TGP is an advanced field: hidden until the box is ticked.
+                            self.assertEqual('notebook_base_tgp_w' in window.entries, advanced)
+                            staged({'power_max_w': '120'}, {'power_max_w': '120'})
+                            staged({'power_max_w': '175', 'power_default_w': '160'}, {'power_default_w': '160'})
+                            staged({'power_default_w': '80'}, {})
+                        base = '\n'.join(texts(window.rows['notebook_base_tgp_w']['row']))
+                        self.assertIn(window.text('notebook.base_tgp'), base)
+                        self.assertIn(window.text('field.notebook_base_tgp_w').split(' (')[0], base)
+                        window.entries['power_max_w'].set_text('225')
+                        window.entries['notebook_base_tgp_w'].set_text('200')
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual((window.controller.document.changes['power_max_w'],
+                                          window.controller.document.changes['notebook_base_tgp_w']), ('225', '200'))
+                        # Past the ceiling alone, the base TGP row is marked.
+                        window.entries['power_max_w'].set_text('175')
+                        until(lambda: not window.verifying)
+                        self.assertIn('invalid', window.rows['notebook_base_tgp_w']['row'].get_css_classes())
+                    finally:
+                        window.close()
+
     def test_shared_vmin_notes_and_separate_gpc_offset_in_both_languages(self):
         import gi
         gi.require_version('Gtk', '4.0')
@@ -459,6 +536,52 @@ class GtkSmokeTests(unittest.TestCase):
                         until(lambda: not window.verifying and not window.dirty)
                         self.assertEqual(window.controller.document.changes,
                                          {'perf_cf_util_policy': '1', 'perf_cf_vid_jump_pct': '90'})
+                    finally:
+                        window.close()
+
+    def test_idle_power_switch_of_an_unlisted_product_notes_the_off_copy(self):
+        import gi
+        gi.require_version('Gtk', '4.0')
+        from gi.repository import Gio, GLib, Gtk
+        from nvidia_vbios.gui.app import EditorWindow, texts
+        from test_advanced_fields import fixture, set_gr_rail_gating
+        app = Gtk.Application(application_id='org.nvidia_vbios.UnlistedLpwrSmoke',
+                              flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.assertTrue(app.register(None))
+        context = GLib.MainContext.default()
+
+        def until(condition):
+            deadline = time.monotonic() + 15
+            while not condition():
+                while context.pending():
+                    context.iteration(False)
+                if time.monotonic() >= deadline:
+                    self.fail('GTK operation did not complete')
+                time.sleep(.01)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # An RTX 5080 image with GR rail gating entry 0 enabled: a product whose entries are not reviewed.
+            path = Path(tmp) / 'unlisted.rom'
+            path.write_bytes(fixture(device=0x2C02, mutate=set_gr_rail_gating(0xFF)).blob)
+            for language in ('en', 'es'):
+                with self.subTest(language=language):
+                    window = EditorWindow(app, path, language)
+                    window.present()
+                    try:
+                        until(lambda: not window.busy and window.controller.document is not None)
+                        note = window.text('lpwr.enabled_entries')
+                        self.assertIn(note, '\n'.join(texts(window.rows['lpwr_gr_rail_gating']['row'])))
+                        self.assertNotIn(note, '\n'.join(texts(window.rows['lpwr_mscg']['row'])))
+                        switch = window.entries['lpwr_gr_rail_gating']
+                        idle = window.entries['lpwr_gr_rail_gating_idle_us']
+                        self.assertTrue(switch.get_active() and idle.get_sensitive())
+                        switch.set_active(False)
+                        self.assertFalse(idle.get_sensitive())
+                        until(lambda: not window.verifying and not window.dirty)
+                        self.assertEqual(window.controller.document.changes, {'lpwr_gr_rail_gating': '0'})
+                        preview = window.preview_text()
+                        self.assertIn(window.text('flag_stock') + ' → ' + window.text('flag_off'), preview)
+                        self.assertIn(window.text('change.not_used'), preview)
                     finally:
                         window.close()
 

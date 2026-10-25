@@ -66,7 +66,12 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    bounded below by the rated defaults. Experimental fields (boot default power,
    12 V input current, clock offset ranges) say so in their label; stage partners
    such as a new default and ceiling together, because the order
-   minimum <= default <= maximum is checked on the combined result. The 12 V input
+   minimum <= default <= maximum is checked on the combined result. On a laptop,
+   Dynamic Boost requests the running power limit at runtime and the ceiling only caps
+   it; monitoring tools show the stored ceiling, so raising it alone usually does not
+   raise the running limit (on one RTX 5090 Laptop GPU, with the ceiling raised from 175
+   to 225 W and a higher boot default, it still ran at 175 W). The window notes this on
+   RTX 5080 and 5090 Laptop GPU ROMs. The 12 V input
    current values are stored policy values, not hardware-safe ratings; connector,
    slot and cable limits still apply. **Max operating temperature** (Blackwell, Ada,
    Ampere and Turing, in the Power card; experimental, not hardware-tested) is the
@@ -77,12 +82,14 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    °C, and it is read-only on XOC-style ROMs, where that limit is disabled or missing.
    A lower value is expected to make the driver slow the GPU sooner, and a higher one
    leaves less thermal margin. The
-   RTX 5080 Laptop GPU ROM also stores a second limit of the same kind (87 °C) whose role
-   was not traced, so raising the value there may have no effect. On Ampere and Ada laptop
+   RTX 5080 and 5090 Laptop GPU ROMs also store a second limit of the same kind (87 °C) whose
+   role was not traced, so raising the value there may have no effect. On Ampere and Ada laptop
    ROMs it is read-only: they store a lower limit of the same kind (89 °C) and it is not
    known which one the GPU reaches first. **Show advanced XOC-style fields** (off by
    default) reveals opt-in fields such as the rated power of the fixed board
-   policies 2/7, the hardware thresholds (slot current; on Ampere and Turing
+   policies 2/7, the experimental **Notebook base TGP** of the RTX 5080 and 5090 Laptop
+   GPU (a stored value that may be the base Dynamic Boost adds its boost to; untested), the
+   hardware thresholds (slot current; on Ampere and Turing
    the connector current; on Ada the NVVDD output power and the 12 V input
    current, labelled "threshold"), the Turing NVVDD output current limit and
    fixed REL/ALT voltages and, on Blackwell and Ada, **NVVDD REL and ALT follow
@@ -298,12 +305,15 @@ driver uses this table is not proven on any of these cards. Under **Idle power s
 idle power switches the ROM has, each **Stock** (as shipped) or **Off**: **GR power gating**
 and **Memory system clock gating, MSCG** on every family, **NVDEC/NVENC/OFA/NVJPG power
 gating** on Blackwell, **DIFR idle display power saving** on Blackwell and on the Ada cards
-that ship it on, and **GR rail gating** only where it ships on (the RTX PRO 4000 SFF, the
-RTX 5080 Laptop GPU and the GA102 RTX 3080/3090, RTX A4500..A6000 and A40 cards); and the
-**DIFR** and **GR rail gating idle times** (ms or µs, GR rail gating in 10 µs steps, 0.5x to
-4x stock). On a Turing, Ampere or Ada product the editor has not reviewed, a switch whose
-entries look the same shipped off or turned off is shown read-only, with the reason. They
-are expected to act only at idle or light load (inferred).
+that ship it on, and **GR rail gating** where it ships on (among the reviewed ROMs the RTX
+PRO 4000 SFF, the RTX 5080 and 5090 Laptop GPU and the GA102 RTX 3080/3090, RTX A4500..A6000
+and A40 cards); and the **DIFR** and **GR rail gating idle times** (ms or µs, GR rail gating
+in 10 µs steps, 0.5x to 4x stock). Where a switch's entries look the same shipped off or
+turned off (GR rail gating, Ada DIFR, Turing GR power gating and MSCG) and the editor has not
+reviewed the product, the switch covers the entries the ROM enables, and its row says so: a
+copy saved with **Off** no longer shows that switch, so keep the original ROM to go back to
+**Stock**. An entry the editor does not recognize keeps the switch read-only, with the
+reason. They are expected to act only at idle or light load (inferred).
 Off costs a little idle power and may avoid idle stutter or flicker; very short idle times
 can cause stutter or, rarely, a black screen at idle. A value that depends on a switch (the
 controller values on the utilization policy, an idle time on its feature) is greyed out,

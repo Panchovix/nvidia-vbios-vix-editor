@@ -200,6 +200,35 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(change_rows(primary_preview(raised), 'es')[-1][1:],
                          ('no se usa', 50, '°C'))
 
+    def test_an_idle_power_switch_of_an_unlisted_product_previews_off(self):
+        # A product whose GR rail gating entries are not reviewed: the switch covers the entries the ROM enables, so
+        # the copy saved with Off has no switch, nor its idle time. The change list shows the requested Off and the
+        # idle time as not used; the row notes what the Off copy loses.
+        from nvidia_vbios.gui.presentation import change_rows, lpwr_notes, primary_preview
+        from test_advanced_fields import fixture, set_gr_rail_gating
+        path = self.root / 'unlisted.rom'
+        path.write_bytes(fixture(device=0x2C02, mutate=set_gr_rail_gating(0xFF)).blob)
+        doc = self.controller.open(path)
+        fields = {f['key']: f for f in doc.report['fields']}
+        self.assertEqual(lpwr_notes(fields['lpwr_gr_rail_gating']),
+                         ['This product is not among the reviewed ones, so this switch covers the entries this ROM '
+                          'enables. A copy saved with Off no longer shows the switch, since an entry shipped disabled '
+                          'looks the same as one turned off: keep the original ROM to go back to Stock.'])
+        self.assertEqual(lpwr_notes(fields['lpwr_mscg']), [])
+        staged = self.controller.stage({'lpwr_gr_rail_gating': '0'})
+        self.assertTrue(staged.proposal.manifest['integrity']['valid'])
+        self.assertEqual([(a['key'], b and b['current']) for a, b in primary_preview(staged)],
+                         [('lpwr_gr_rail_gating', 0), ('lpwr_gr_rail_gating_idle_us', None)])
+        self.assertEqual(change_rows(primary_preview(staged)),
+                         [('GR rail gating', 'Stock', 'Off', ''),
+                          ('GR rail gating idle time (10 µs steps)', '500 µs', 'not used', '')])
+        self.assertEqual(change_rows(primary_preview(staged), 'es')[0][1:3], ('De fábrica', 'Desactivado'))
+        output = self.root / 'off.rom'
+        self.controller.save(output)
+        reopened = self.controller.open(output)
+        self.assertFalse({'lpwr_gr_rail_gating', 'lpwr_gr_rail_gating_idle_us'} &
+                         {f['key'] for f in reopened.report['fields']})
+
     def test_shared_vmin_notes_the_memory_floor_and_the_added_equation(self):
         from nvidia_vbios.gui.presentation import vmin_clone_notes
         from nvidia_vbios.rom import from_bytes, inspect_image
@@ -697,6 +726,82 @@ class PresentationNumberTests(unittest.TestCase):
         self.assertEqual(sense_profile_notes(fields['power_min_w'], report['fields']), [])
         plain = {f['key']: f for f in inspect_image(from_bytes(synthetic_rom(copies=2, policies=True)))['fields']}
         self.assertEqual(sense_profile_notes(plain['power_max_w'], list(plain.values())), [])
+
+    def test_notebook_notes_name_the_running_limit_and_the_base_tgp(self):
+        from nvidia_vbios.gui.presentation import field_label, notebook_notes, shunt_scaled
+        from nvidia_vbios.rom import from_bytes, inspect_image
+        from test_extended_fields import notebook_fixture
+        report = inspect_image(from_bytes(notebook_fixture(base=150000)))
+        fields = {f['key']: f for f in report['fields']}
+        family = report['architecture']['family']
+        ceiling = notebook_notes(fields['power_max_w'], family)
+        self.assertEqual(len(ceiling), 1)
+        self.assertIn('raising it alone usually does not raise the running limit', ceiling[0])
+        # The base TGP bounds neither the ceiling nor the boot default, so their notes do not mention it.
+        self.assertNotIn('base TGP', ceiling[0])
+        self.assertEqual(notebook_notes(fields['power_default_w'], family), [])
+        self.assertEqual(notebook_notes(fields['power_min_w'], family), [])
+        base = notebook_notes(fields['notebook_base_tgp_w'], family)
+        self.assertEqual(len(base), 1)
+        self.assertIn('When you change it, it has to stay between the boot default and the ceiling', base[0])
+        self.assertIn('To go above the ceiling, raise the ceiling with it in the same edit', base[0])
+        self.assertIn('does not show this field but keeps its stored value', base[0])
+        spanish = notebook_notes(fields['notebook_base_tgp_w'], family, 'es')[0]
+        self.assertIn('Dynamic Boost', spanish)
+        self.assertIn('Para pasar del techo, sube el techo junto con él en la misma edición', spanish)
+        self.assertIn('no muestra este campo pero conserva su valor guardado', spanish)
+        self.assertEqual(field_label(fields['notebook_base_tgp_w']), 'Notebook base TGP (experimental)')
+        self.assertEqual(field_label(fields['notebook_base_tgp_w'], 'es'), 'TGP base del portátil (experimental)')
+        self.assertTrue(shunt_scaled(fields['notebook_base_tgp_w']))
+        # Without the base TGP the ceiling keeps its running-limit note; other families and layouts have none.
+        plain = inspect_image(from_bytes(notebook_fixture()))
+        plain_fields = {f['key']: f for f in plain['fields']}
+        self.assertEqual(notebook_notes(plain_fields['power_max_w'], family), ceiling)
+        self.assertEqual(notebook_notes(plain_fields['power_default_w'], family), [])
+        self.assertEqual(notebook_notes(fields['power_max_w'], 'ada'), [])
+        desktop = {f['key']: f for f in inspect_image(from_bytes(synthetic_blackwell()))['fields']}
+        self.assertEqual(notebook_notes(desktop['power_max_w'], family), [])
+
+    def test_an_untouched_notebook_base_tgp_holds_back_no_power_edit(self):
+        # The window sends every shown row, the advanced base TGP included; an unchanged row is not requested, so a
+        # ceiling below or a boot default above the stored base stages as it does without that field. The change
+        # list then holds only the requested fields: the base TGP keeps its stored value, and that it is no field on
+        # the copy (or is one again on a copy edited back) is no change.
+        from nvidia_vbios.gui.presentation import change_rows, primary_preview
+        from test_extended_fields import notebook_fixture
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'laptop.rom'
+            path.write_bytes(notebook_fixture(base=150000))
+            controller = Controller()
+            controller.open(path)
+            doc = controller.document
+            for changes in ({'power_max_w': '120'}, {'power_default_w': '160'},
+                            {'power_max_w': '250', 'power_default_w': '175'}):
+                with self.subTest(changes=changes):
+                    staged = stage_document(doc, dict(changes, notebook_base_tgp_w='150', power_min_w='5'))
+                    self.assertEqual(staged.changes, changes)
+                    self.assertTrue(staged.proposal.manifest['integrity']['valid'])
+                    self.assertEqual({a['key'] for a, b in primary_preview(staged)}, set(changes))
+                    for language in ('en', 'es'):
+                        rows = change_rows(primary_preview(staged), language)
+                        self.assertEqual(len(rows), len(changes))
+                        self.assertNotIn('not used' if language == 'en' else 'no se usa', [r[2] for r in rows])
+                    # The full preview still has the pair; the window leaves it out.
+                    hidden = 'notebook_base_tgp_w' not in {f['key'] for f in staged.proposal.manifest['after']['fields']}
+                    self.assertEqual(any(a['key'] == 'notebook_base_tgp_w' for a, b in staged.preview), hidden)
+            lowered = Path(tmp) / 'lowered.rom'
+            lowered.write_bytes(controller.stage({'power_max_w': '120'}).proposal.blob)
+            copy = Controller()
+            copy.open(lowered)
+            self.assertNotIn('notebook_base_tgp_w', {f['key'] for f in copy.document.report['fields']})
+            back = stage_document(copy.document, {'power_max_w': '175'})
+            self.assertEqual([(a and a['key'], b['key']) for a, b in back.preview],
+                             [('power_max_w', 'power_max_w'), (None, 'notebook_base_tgp_w')])
+            self.assertEqual([(a['key'], b['current']) for a, b in primary_preview(back)], [('power_max_w', 175)])
+            with self.assertRaises(VbiosError) as exc:
+                stage_document(doc, {'power_max_w': '120', 'notebook_base_tgp_w': '140'})
+            self.assertEqual((exc.exception.code, exc.exception.details['field'],
+                              exc.exception.details['bounds']['maximum']), ('OUT_OF_BOUNDS', 'notebook_base_tgp_w', 120))
 
     def test_a_failed_resolver_leaves_one_note_in_its_section(self):
         from nvidia_vbios.gui.i18n import Messages

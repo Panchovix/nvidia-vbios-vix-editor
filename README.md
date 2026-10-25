@@ -159,10 +159,21 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
 - Recognized images: GB20x object-directory v3 (GB202, GB203, GB205, GB206). Ada (AD10x),
   Ampere (GA10x) and Turing (TU10x/TU11x) images are supported with the same restriction as any other
   image: they can be inspected, and only the fields validated for them can be edited.
-- Laptops: the RTX 5080 Laptop GPU layout is recognized. On a laptop the platform
-  (Dynamic Boost) sets the running power limit, so a raised power ceiling may not raise
-  it, and the fans belong to the laptop, not to the image. A lowered power ceiling loaded through the
-  Windows loader on one RTX 3050 6GB Laptop GPU (Ampere); no other laptop is tested.
+- Laptops: the layout of the RTX 5080 and RTX 5090 Laptop GPU images is recognized by its
+  tables, so another Blackwell laptop image that shares it gets the same power and output
+  current fields. On a laptop,
+  Dynamic Boost (the NVIDIA platform framework on Windows, nvidia-powerd on Linux)
+  requests the running power limit at runtime, and the power ceiling in the image only
+  caps it. Monitoring tools show the stored ceiling, so raising **Board power ceiling**
+  alone usually does not raise the running limit: on one RTX 5090 Laptop GPU, raising it
+  from 175 to 225 W and also the boot default left the GPU at 175 W. On those two laptops
+  **Notebook base TGP** (experimental, under **Show advanced XOC-style fields**) edits a
+  stored value that may be the base Dynamic Boost adds its boost to; it is untested, and
+  the laptop's VRM, cooling and power adapter were sized for the stock limit. The fans
+  belong to the laptop, not to the image. On one RTX 3050 6GB Laptop GPU (Ampere, on
+  Windows) a lowered power ceiling applied, and raising the boot default together with the
+  ceiling let it draw above its stock limit; on one RTX 3050 Ti Laptop GPU the same change
+  gained only a few watts.
 
 ## Run from source
 

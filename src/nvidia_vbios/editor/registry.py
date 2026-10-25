@@ -340,16 +340,27 @@ def checksum_layout(image, parser):
     return []
 
 
-# The notebook image has no saved GET. Its TGP row is identified by layout and
-# by the nvidia-smi limits its owner reported on the same VBIOS.
+# The notebook images have no saved GET. Their TGP row is identified by layout and, on the
+# RTX 5080 Laptop GPU, by the nvidia-smi limits its owner reported on the same VBIOS.
 NOTEBOOK_POWER_EVIDENCE = {
     'kind': 'structural-row-comparison', 'source': 'reviewed Blackwell notebook table layout',
-    'scope': 'RTX 5080 Laptop GPU 98.03.5C.00.F2 (10de:2c59)',
+    'scope': 'RTX 5080 Laptop GPU 98.03.5C.00.F2 (10de:2c59), RTX 5090 Laptop GPU 98.03.5C.00.72 (10de:2c18)',
     'format': 'GB20x power v40 notebook layout: header bytes 21..23 ff ff 02, rows 7/8 empty, TGP row 2 type 1',
+    'set_tested': False, 'runtime_get': False}
+# Row 2 +73 of the notebook layout. Nothing in open code names it; the firmware that reads the
+# table is closed.
+NOTEBOOK_BASE_TGP_EVIDENCE = {
+    'kind': 'structural-row-comparison', 'source': 'reviewed Blackwell notebook table layout',
+    'scope': 'RTX 5080 Laptop GPU 98.03.5C.00.F2 (10de:2c59), RTX 5090 Laptop GPU 98.03.5C.00.72 (10de:2c18)',
+    'format': 'GB20x power v40 notebook layout: TGP row 2 bytes 0..12 010200000000012b07000ccc10; u32 mW at '
+              'row 2 +73, 0 on every desktop and Max-Q row 2',
+    'observation': "only 150000 in the image; a public log from another RTX 5090 Laptop shows the firmware's TGP "
+                   'policy base at 150000 while the running limit was base + 25 W Dynamic Boost; untested',
     'set_tested': False, 'runtime_get': False}
 NOTEBOOK_SMI_EVIDENCE = {
     'kind': 'owner-nvidia-smi-reading',
-    'source': 'nvidia-smi -q -d POWER on the same laptop, shared by its owner',
+    'source': 'nvidia-smi -q -d POWER on an RTX 5080 Laptop GPU running that VBIOS, shared by its owner',
+    'scope': 'RTX 5080 Laptop GPU 98.03.5C.00.F2 (10de:2c59)',
     'relation': 'nvidia-smi Min/Default/Max Power Limit = row 2 minimum/rated/maximum',
     'observed': 'Min 5 W, Default 80 W, Max 175 W (Current 175 W) for row 2 5000/80000/175000 mW',
     'set_tested': False}
@@ -425,9 +436,20 @@ def ada_profile_note(parser, binding, ceiling=False):
     return note
 
 
-NOTEBOOK_POWER_REASON = ('stored notebook TGP ceiling; the platform (Dynamic Boost, nvidia-powerd) requests the '
-                         'running limit and may keep it lower; output OCP, cooling and the laptop VRM still apply; '
-                         'not hardware-tested')
+NOTEBOOK_POWER_REASON = ('stored notebook TGP ceiling; on a laptop Dynamic Boost (the NVIDIA platform framework on '
+                         'Windows, nvidia-powerd on Linux) requests the running limit at runtime and this value only '
+                         'caps it, while monitoring tools show this stored ceiling; raising it alone usually does not '
+                         'raise the running limit: on one RTX 5090 Laptop GPU, raising it from 175 to 225 W and also '
+                         'the boot default left the running limit at 175 W; output OCP, cooling and the laptop VRM '
+                         'still apply')
+NOTEBOOK_DEFAULT_REASON = ('experimental: notebook default TGP (nvidia-smi Default Power Limit); Dynamic Boost '
+                           'requests the running limit at runtime, so this value alone may not move it: on one RTX '
+                           '5090 Laptop GPU, raising it together with the ceiling left the running limit at 175 W; '
+                           'not hardware-tested otherwise')
+NOTEBOOK_BASE_TGP_REASON = ('experimental, opt-in: candidate for the base TGP that Dynamic Boost adds its boost to '
+                            '(row 2 +73); an edited value stays between the boot default and the ceiling, so a '
+                            'value above the ceiling takes a higher ceiling in the same edit; untested on hardware; '
+                            'the laptop VRM, cooling and power adapter were sized for the stock limit')
 
 
 @registry.register
@@ -438,6 +460,7 @@ def power(image, parser):
     notebook = isinstance(parser, BlackwellRom) and parser.notebook_power_layout()
     top, maximum_upper, default_lower, default_upper, minimum_evidence = None, 0x7FFFFFFF, None, None, None
     binding, profile_extra, maximum_note, default_note, minimum_note = None, {}, '', '', ''
+    base = None
     if notebook:
         tgp = rows[2]
         if not 0 <= tgp['minimum_raw'] <= tgp['default_raw'] <= tgp['maximum_raw']:
@@ -446,9 +469,14 @@ def power(image, parser):
             raise FormatError('override profiles of the notebook layout are unreviewed')
         policy_indices = (2,)
         minimum = minimum_upper = tgp['default_raw']
+        # The experimental base TGP (row 2 +73) bounds no other field: only a request that
+        # includes it keeps it between the rated value and the ceiling (api._keep_notebook_base).
+        base = parser.notebook_base_tgp()
         offsets, default_offsets, minimum_offsets = [tgp['offset'] + 21], [tgp['offset'] + 17], [tgp['offset'] + 13]
         minimum_scope = default_scope = 'notebook TGP policy row 2; no override profiles'
-        evidence = [dict(NOTEBOOK_POWER_EVIDENCE), dict(NOTEBOOK_SMI_EVIDENCE)]
+        # The owner's nvidia-smi reading is of the RTX 5080 Laptop GPU (row 2 5000/80000/175000 mW).
+        evidence = [dict(NOTEBOOK_POWER_EVIDENCE)] + (
+            [dict(NOTEBOOK_SMI_EVIDENCE)] if parser.legacy['device'] == 0x2C59 else [])
         default_evidence = evidence
     elif isinstance(parser, BlackwellRom):
         for i, kind in ((2, 1), (7, 13), (8, 12), (9, 11)):
@@ -596,8 +624,7 @@ def power(image, parser):
                   reason=ADA_NOTEBOOK_DEFAULT_REASON if notebook and ada(parser) else
                   AMPERE_NOTEBOOK_DEFAULT_REASON if notebook and ampere(parser) else
                   TURING_NOTEBOOK_DEFAULT_REASON if notebook and turing(parser) else
-                  'experimental: notebook default TGP (nvidia-smi Default Power Limit); the platform '
-                  'requests the running limit; not hardware-tested' if notebook else
+                  NOTEBOOK_DEFAULT_REASON if notebook else
                   'experimental: ' + top_profile_note(top, '%g W' % (rows[8]['default_raw'] / 1000)) +
                   'rated TGP limit used at boot without a client cap' if top else
                   'experimental: rated TGP limit used at boot without a client cap; ' + TURING_NOTE if turing(parser) else
@@ -613,7 +640,24 @@ def power(image, parser):
                   reason='experimental: encoded floor only; ' + minimum_note + untested +
                          'firmware acceptance and runtime minimum remain unknown' if untested else
                   'encoded floor only; firmware acceptance and runtime minimum remain unknown',
-                  **layout, **profile_extra, **flags)] + fixed_policy_rated(image, parser, rows, matching, top)
+                  **layout, **profile_extra, **flags)] + fixed_policy_rated(image, parser, rows, matching, top) + (
+        [] if base is None else [notebook_base_tgp(image, parser, tgp, base)])
+
+
+def notebook_base_tgp(image, parser, tgp, base):
+    """Experimental opt-in base TGP of a Blackwell notebook layout (row 2 +73, BlackwellRom.notebook_base_tgp).
+
+    Bounded by the stored rated value and ceiling of row 2. It bounds neither of them: a request with
+    it and them (ordering group board-power) keeps it between them in the result, and an edit without
+    it that leaves it outside them hides the field on the result, as BlackwellRom.notebook_base_tgp does.
+    """
+    return field('notebook_base_tgp_w', 'Notebook base TGP', 'W', base['value_raw'] / 1000,
+                 tgp['default_raw'] / 1000, tgp['maximum_raw'] / 1000, can_edit(image, parser),
+                 [dict(NOTEBOOK_BASE_TGP_EVIDENCE)], offsets=[base['offset']], encoding='<I', scale=1000,
+                 stored_units='mW', policy_indices=[2], value_semantics='stored-notebook-base-tgp',
+                 format_scope='notebook TGP policy row 2 +73; no override profiles', experimental=True,
+                 opt_in=True, ordering_group='board-power', encoding_bounds=(0, 0x7FFFFFFF / 1000),
+                 reason=NOTEBOOK_BASE_TGP_REASON, notebook_tgp=True)
 
 
 def fixed_policy_rated(image, parser, rows, matching, top=None):
@@ -787,10 +831,12 @@ STRUCTURAL_ROW_EVIDENCE = {
     'set_tested': False, 'runtime_get': False}
 NOTEBOOK_OCP_EVIDENCE = dict(
     STRUCTURAL_ROW_EVIDENCE, source='reviewed Blackwell notebook table layout',
-    scope='RTX 5080 Laptop GPU 98.03.5C.00.F2 (10de:2c59)',
+    scope='RTX 5080 Laptop GPU 98.03.5C.00.F2 (10de:2c59), RTX 5090 Laptop GPU 98.03.5C.00.72 (10de:2c18)',
     format='GB20x notebook rows13/14 type7; monitors 27/28',
     observation='rows 13/14 equal the GET-reviewed Max-Q rows byte for byte (range bytes excluded); monitors '
-                '27/28 -> power channels and devices byte-identical to the reviewed NVVDD/MSVDD outputs')
+                '27/28 -> power channels and devices byte-identical to the reviewed NVVDD/MSVDD outputs; any image '
+                'with the notebook power layout and the two-row rail table whose rows and chains match is '
+                'recognized, whatever its device; the chain is checked on GET-reviewed desktop IDs too')
 SINGLE_RAIL_OCP_EVIDENCE = dict(
     STRUCTURAL_ROW_EVIDENCE, format='GB20x single-rail row13 type7; monitor 26',
     observation='row13 monitor 26 -> power channel 26 (P+0x3c) and power device 9 (P+0x28) are byte-identical '
@@ -3437,7 +3483,8 @@ MAX_TEMP_SEMANTICS = 'stored-max-operating-temperature'
 # be lowered.
 MAX_TEMP_STOCK_C = {
     # GB20x
-    0x2B85: 90, 0x2BB1: 93, 0x2BB4: 92, 0x2C02: 88, 0x2C05: 88, 0x2C33: 96, 0x2C59: 89, 0x2D04: 87, 0x2F04: 85,
+    0x2B85: 90, 0x2BB1: 93, 0x2BB4: 92, 0x2C02: 88, 0x2C05: 88, 0x2C18: 89, 0x2C33: 96, 0x2C59: 89, 0x2D04: 87,
+    0x2F04: 85,
     # Turing (102 C: laptop and Max-Q products)
     0x1E02: 89, 0x1E07: 89, 0x1E30: 89, 0x1E81: 89, 0x1E84: 88, 0x1E87: 88, 0x1E90: 102, 0x1E91: 102, 0x1E93: 102,
     0x1F06: 89, 0x1F07: 89, 0x1F08: 86, 0x1F10: 102, 0x1F11: 102, 0x1F82: 92, 0x1F83: 95, 0x2182: 90, 0x2184: 91,
@@ -3464,8 +3511,8 @@ MAX_TEMP_CORPUS_EVIDENCE = {
     'observation': 'entry 0 is class 1 with byte 1 = 1 on every image and stores three equal temperatures: 90 C on '
                    'every RTX 5090, 88 C on the RTX 5080 and 5070 Ti, 85 C on the RTX 5070, 87 C on the RTX 5060 Ti, '
                    '92 C on the RTX PRO 6000 Max-Q, 93 C on the RTX PRO 6000 Workstation, 96 C on the RTX PRO 4000 '
-                   'SFF and 89 C on the RTX 5080 Laptop GPU; entries 1 and 4 store 105 C (entry 4: 103 C on the '
-                   'notebook); the notebook alone stores a second class 1 entry with byte 1 = 1, entry 2 at 87/75/87 '
+                   'SFF and 89 C on the RTX 5080 and 5090 Laptop GPUs; entries 1 and 4 store 105 C (entry 4: 103 C on '
+                   'the laptops); the laptops alone store a second class 1 entry with byte 1 = 1, entry 2 at 87/75/87 '
                    'C, whose role was not traced; the ASUS XOC and MSI Lightning images keep the temperatures and set '
                    'byte 0 of entries 0, 1 and 4 to 0'}
 MAX_TEMP_NVML_EVIDENCE = dict(
@@ -4080,14 +4127,19 @@ LPWR_DISABLED = {
 # Elsewhere a stock-disabled entry stores what an enabled entry stores switched off (GR rail gating 0xfe on
 # every family; Ada DIFR 0xfffffffe and 0xffffffee; Turing GR power gating 0xffffffe6 and MSCG 0xffffffec), so
 # the bytes cannot tell them apart: the switch covers the entries each reviewed product (PCI device) enables in
-# stock, and only while each of them stores one of LPWR_STOCK_FORMS once bit 0 is cleared.
+# stock, and only while each of them stores one of LPWR_STOCK_FORMS once bit 0 is cleared. On any other product
+# it covers the entries the image enables, while each of them stores one of LPWR_STOCK_FORMS; an image that
+# enables none (shipped so, or saved with Off) has no switch there, since Stock could not tell which to enable.
 TURING_GR_PG_DESKTOPS = (0x1E02, 0x1E07, 0x1E30, 0x1E81, 0x1E84, 0x1E87, 0x1F06, 0x1F07, 0x1F08)
 TURING_GR_PG_OTHERS = (0x1E90, 0x1E91, 0x1E93, 0x1F10, 0x1F11, 0x1F82, 0x1F83, 0x2182, 0x2184, 0x2187, 0x2191, 0x21C4)
 LPWR_STOCK = {
-    # GB20x: RTX PRO 4000 SFF and RTX 5080 Laptop GPU; GA102: RTX 3090, 3080, 3080 Ti, 3080 12GB, RTX A6000, A5000,
-    # A4500, A5500 (entries 0..1) and A40 (entry 0); not the RTX 3090 Ti, which ships it disabled.
-    'gr_rg': {0x2C33: (0,), 0x2C59: (0, 1, 2), 0x2204: (0, 1), 0x2206: (0, 1), 0x2208: (0, 1), 0x220A: (0, 1),
-              0x2230: (0, 1), 0x2231: (0, 1), 0x2232: (0, 1), 0x2233: (0, 1), 0x2235: (0,)},
+    # GB20x: RTX PRO 4000 SFF, RTX 5080 Laptop GPU and RTX 5090 Laptop GPU (their GR rail gating tables are
+    # byte-identical; each laptop rests on one image, 98.03.5C.00.F2 and 98.03.5C.00.72, so an image of either
+    # that ships entries 0..2 as 0xfe reads as Off, and Stock enables them); GA102: RTX 3090, 3080, 3080 Ti,
+    # 3080 12GB, RTX A6000, A5000, A4500, A5500 (entries 0..1) and A40 (entry 0); not the RTX 3090 Ti, which
+    # ships it disabled.
+    'gr_rg': {0x2C33: (0,), 0x2C59: (0, 1, 2), 0x2C18: (0, 1, 2), 0x2204: (0, 1), 0x2206: (0, 1), 0x2208: (0, 1),
+              0x220A: (0, 1), 0x2230: (0, 1), 0x2231: (0, 1), 0x2232: (0, 1), 0x2233: (0, 1), 0x2235: (0,)},
     # Ada: RTX 6000 Ada, RTX 5000 Ada (desktop and laptop), RTX 4500 and 4000 Ada, RTX 2000 Ada, RTX 4070 Ti SUPER,
     # RTX 4060 Ti (8 and 16 GB), RTX 4060, RTX 4080, 4070, 4060 and 4050 Laptop GPUs (entry 0).
     'difr': {device: (0,) for device in (0x26B1, 0x26B2, 0x2730, 0x27B1, 0x27B2, 0x28B0, 0x2705, 0x2803, 0x2805,
@@ -4099,6 +4151,11 @@ LPWR_STOCK = {
 }
 LPWR_STOCK_FORMS = {'gr_rg': (0xFE,), 'difr': (0xFFFFFFFE, 0xFFFFFFEE),
                     'gr_pg': (0xFFFFFFEE, 0xFFFFFFE6, 0xFFFFFFE4), 'ms': (0xFFFFFFFC, 0xFFFFFFEC)}
+# The family tables those forms were reviewed on, where a product LPWR_STOCK does not list gets a switch over the
+# entries the image enables. A table no corpus image of the family references (Ampere DIFR, Turing GR rail
+# gating and DIFR) keeps an enabled entry read-only.
+LPWR_ENABLED_ENTRY_TABLES = {'gb20x': ('gr_rg',), 'ampere': ('gr_rg',), 'ada': ('gr_rg', 'difr'),
+                             'turing': ('gr_pg', 'ms')}
 # Idle times: (key, table, header offset, switch, units, multiplier into units, stock stored value per family,
 # label). A family without a stock value lists no such field.
 LPWR_TIMES = (
@@ -4122,11 +4179,13 @@ LPWR_CORPUS_EVIDENCE = {
     'kind': 'structural-table', 'source': 'GB20x VBIOS corpus',
     'observation': 'each table has the same version, header and entry sizes and five entries on every image; GR power '
                    'gating is enabled on entries 0 and 1 (also 2 on the RTX 5080, RTX 5070 Ti, RTX PRO 4000 SFF and '
-                   'the notebook), MSCG on entries 0..2 (0..1 on the RTX PRO 6000 Workstation, RTX 5070 and RTX 5060 '
-                   'Ti), NVDEC/NVENC/OFA/NVJPG on every entry and DIFR on entry 0; disabled GR, MSCG and DIFR entries '
-                   'store 0xfffffe00, 0xfffff000 and 0xfffff800; GR rail gating is enabled only on the RTX PRO 4000 '
-                   'SFF (entry 0) and the notebook (entries 0..2); the DIFR words store 1000, 15 and 15 and the GR '
-                   'rail gating word 50 on every image'}
+                   'the RTX 5080 and 5090 Laptop GPUs), MSCG on entries 0..2 (0..1 on the RTX PRO 6000 Workstation, '
+                   'RTX 5070 and RTX 5060 Ti), NVDEC/NVENC/OFA/NVJPG on every entry and DIFR on entry 0; disabled GR, '
+                   'MSCG and DIFR entries store 0xfffffe00, 0xfffff000 and 0xfffff800; GR rail gating is enabled only '
+                   'on the RTX PRO 4000 SFF (entry 0) and the RTX 5080 and 5090 Laptop GPUs (entries 0..2; every LPWR '
+                   'table of the two laptops is byte-identical); disabled GR rail gating entries store 0xfc, or 0xfe '
+                   '(an enabled entry switched off) on entry 0 of the RTX 5090 and entries 0..1 of the RTX 5080 and '
+                   '5070 Ti; the DIFR words store 1000, 15 and 15 and the GR rail gating word 50 on every image'}
 LEGACY_LPWR_FIRMWARE_EVIDENCE = {
     'kind': 'static-firmware-analysis',
     'source': 'GSP-RM firmware 615.78.08 (gsp_tu10x.bin for Turing, gsp_ga10x.bin for Ampere and Ada), LPWR VBIOS '
@@ -4155,38 +4214,52 @@ LEGACY_LPWR_CORPUS_EVIDENCE = {
                    'words store 1000, 15 and 15 and the GR rail gating word 500 on every image'}
 LPWR_MIXED_REASON = ('read-only: the entries this switch covers are neither all enabled nor all disabled on this '
                      'image')
-LPWR_GR_RG_UNREVIEWED_REASON = ('read-only: GR rail gating is enabled on this image, but which entries this product '
-                                'enables in stock is not reviewed')
 LPWR_GR_RG_UNRECOGNIZED_REASON = ('read-only: a GR rail gating entry this product enables in stock does not store '
                                   'the reviewed value (0xff, or 0xfe when switched off)')
-LPWR_STOCK_UNREVIEWED_REASON = ('read-only: this feature is enabled on this image, but which entries this product '
-                                'enables in stock is not reviewed, and an entry shipped disabled looks like one '
-                                'switched off')
 LPWR_STOCK_UNRECOGNIZED_REASON = ('read-only: an entry of this feature that this product enables in stock does not '
                                   'store a reviewed value')
+# The same on a product LPWR_STOCK does not list, where only the image says which entries are enabled.
+LPWR_GR_RG_ENABLED_UNRECOGNIZED_REASON = ('read-only: a GR rail gating entry this image enables does not store the '
+                                          'reviewed value (0xff)')
+LPWR_ENABLED_UNRECOGNIZED_REASON = ('read-only: an entry of this feature that this image enables does not store a '
+                                    'reviewed value')
+LPWR_TABLE_UNREVIEWED_REASON = ('read-only: this feature is enabled on this image, but no reviewed image of this GPU '
+                                'family has this table')
+# lpwr_coverage of a switch on a product LPWR_STOCK does not list: it covers the entries the image enables.
+LPWR_ENABLED_ENTRIES = 'enabled-entries'
 LPWR_TIME_SWITCH_REASON = 'read-only: the switch this idle time belongs to is read-only on this image'
 LPWR_UNTESTED = ('acts only at idle or light load (inferred); low idle times save more power but can cause stutter '
                  'or, rarely, a black screen at idle; not hardware-tested')
 
 
 def lpwr_covered(parser, family, name, table):
-    """(entries the switch covers, read-only reason or None); no entries means no switch."""
+    """(entries the switch covers, read-only reason or None, structural); no entries means no switch.
+
+    Where stock-disabled entries store values of their own (LPWR_DISABLED), every other entry. Elsewhere
+    the entries a reviewed product enables in stock (LPWR_STOCK); on any other product (structural) the
+    entries the image enables, so an image that enables none has no switch, and only on the family tables
+    the forms were reviewed on (LPWR_ENABLED_ENTRY_TABLES; any other keeps them read-only). Either way an
+    entry that does not store a reviewed form (LPWR_STOCK_FORMS, bit 0 cleared) leaves the switch read-only.
+    """
     entries = table['entries']
     disabled = LPWR_DISABLED.get(family, {}).get(name)
     if disabled is not None:
         if name == 'difr':
             entries = entries[:1]
-        return [e for e in entries if e['value'] & ~1 not in disabled], None
+        return [e for e in entries if e['value'] & ~1 not in disabled], None, False
     gr_rg = name == 'gr_rg'
     stock = LPWR_STOCK.get(name, {}).get(parser.legacy['device'])
-    if stock is None:
-        enabled = [e for e in entries if e['value'] & 1]
-        reason = LPWR_GR_RG_UNREVIEWED_REASON if gr_rg else LPWR_STOCK_UNREVIEWED_REASON
-        return enabled, reason if enabled else None
-    covered = [entries[i] for i in stock if i < len(entries)]
-    if len(covered) != len(stock) or any(e['value'] & ~1 not in LPWR_STOCK_FORMS[name] for e in covered):
-        return covered, LPWR_GR_RG_UNRECOGNIZED_REASON if gr_rg else LPWR_STOCK_UNRECOGNIZED_REASON
-    return covered, None
+    if stock is not None:
+        covered = [entries[i] for i in stock if i < len(entries)]
+        if len(covered) != len(stock) or any(e['value'] & ~1 not in LPWR_STOCK_FORMS[name] for e in covered):
+            return covered, LPWR_GR_RG_UNRECOGNIZED_REASON if gr_rg else LPWR_STOCK_UNRECOGNIZED_REASON, False
+        return covered, None, False
+    covered = [e for e in entries if e['value'] & 1]
+    if covered and name not in LPWR_ENABLED_ENTRY_TABLES.get(family, ()):
+        return covered, LPWR_TABLE_UNREVIEWED_REASON, True
+    if any(e['value'] & ~1 not in LPWR_STOCK_FORMS[name] for e in covered):
+        return covered, LPWR_GR_RG_ENABLED_UNRECOGNIZED_REASON if gr_rg else LPWR_ENABLED_UNRECOGNIZED_REASON, True
+    return covered, None, True
 
 
 @registry.register
@@ -4201,10 +4274,12 @@ def lpwr_features(image, parser):
     stock-disabled entry stores a value of its own (LPWR_DISABLED), no switch covers it; the
     GB20x video engine switches cover every entry, so a ROM that ships them all disabled reads
     as Off and Stock would enable them (no reviewed image does). Where a stock-disabled entry
-    looks like a switched-off one (GR rail gating, Ada DIFR, Turing), the switch is offered
-    only on the products whose stock entries are reviewed (LPWR_STOCK). The idle times
-    (LPWR_TIMES) are absolute values in their units, 0.5x..4x the family's stock value, and
-    depend on their switch (depends_on). Every chain is written. Experimental, not
+    looks like a switched-off one (GR rail gating, Ada DIFR, Turing GR power gating and MSCG),
+    the switch covers the entries a reviewed product enables in stock (LPWR_STOCK), and on any
+    other product the entries the image enables (lpwr_coverage LPWR_ENABLED_ENTRIES, always
+    Stock): a copy saved with Off enables none of them, so it shows no switch there. The idle
+    times (LPWR_TIMES) are absolute values in their units, 0.5x..4x the family's stock value,
+    and depend on their switch (depends_on). Every chain is written. Experimental, not
     hardware-tested.
     """
     if not isinstance(parser, (BlackwellRom, TableRom)):
@@ -4220,7 +4295,7 @@ def lpwr_features(image, parser):
         table = parser.lpwr_table(name)
         if table is None:
             continue
-        covered, reason = lpwr_covered(parser, family, name, table)
+        covered, reason, structural = lpwr_covered(parser, family, name, table)
         if not covered:
             continue
         bits = {e['value'] & 1 for e in covered}
@@ -4233,6 +4308,17 @@ def lpwr_features(image, parser):
         groups = [copies(e['offset'], width) for e in covered]
         layout = ((0, tuple(struct.pack(fmt, e['value'] & ~1) for e, g in zip(covered, groups) for _ in g)),
                   (1, tuple(struct.pack(fmt, e['value'] | 1) for e, g in zip(covered, groups) for _ in g)))
+        indices = ', '.join(str(e['index']) for e in covered)
+        # A product LPWR_STOCK does not list: the entries this image enables, which an Off copy no longer has.
+        coverage = (f'experimental: bit 0 (enable) of the {label} entries this image enables (entries {indices} of '
+                    'its LPWR table; this product is not among the reviewed ones, and here an entry shipped disabled '
+                    'stores what an enabled entry stores switched off, so the switch covers the entries enabled in '
+                    'this image); 0 (Off) clears it, so the driver skips them, and 1 (Stock) keeps it set; every '
+                    'other bit and entry stays as stored; a copy saved with Off enables none of them and no longer '
+                    'shows this switch, so keep the original ROM to go back; ' if structural else
+                    f'experimental: bit 0 (enable) of the {label} entries this image enables in stock (entries '
+                    f'{indices} of its LPWR table); 0 (Off) clears it, so the driver skips them, and 1 (Stock) sets '
+                    'it again; every other bit and entry stays as stored; ')
         result.append(field(
             key, label, 'flag', state, 0 if editable else None, 1 if editable else None, editable,
             [dict(e) for e in evidence], offsets=[at for g in groups for at in g] if editable else (),
@@ -4240,10 +4326,8 @@ def lpwr_features(image, parser):
             writable_status=None if editable else 'unsupported', experimental=True, section=ADVANCED_SECTION,
             switch='stock-off', value_semantics=LPWR_SWITCH_SEMANTICS, lpwr_table=name,
             lpwr_entries=[e['index'] for e in covered],
-            reason=reason or f'experimental: bit 0 (enable) of the {label} entries this image enables in stock '
-                             f'(entries {", ".join(str(e["index"]) for e in covered)} of its LPWR table); 0 (Off) '
-                             'clears it, so the driver skips them, and 1 (Stock) sets it again; every other bit '
-                             f'and entry stays as stored; {effect}, at a little more idle power; ' + LPWR_UNTESTED))
+            **({'lpwr_coverage': LPWR_ENABLED_ENTRIES} if structural else {}),
+            reason=reason or coverage + f'{effect}, at a little more idle power; ' + LPWR_UNTESTED))
     for key, name, at, switch, units, multiplier, stocks, label in LPWR_TIMES:
         if switch not in switches or family not in stocks:
             continue

@@ -36,13 +36,17 @@ class Document:
         """(before, after) descriptors of each field the staged copy changes, in report order. A copy can also
         lose or gain fields (a lower fan channel count clears the last channels, a higher one enables stored
         channels): after is None for a field only the original has, before is None for one only the copy has,
-        listed last."""
+        listed last. A requested field the copy no longer lists (an idle power switch over the entries the ROM
+        enables, saved Off) shows the requested value."""
         if self.proposal is None:
             return []
         fields = self.proposal.manifest['after']['fields']
         after = {f['key']: f for f in fields}
         before = {f['key'] for f in self.report['fields']}
-        return ([(field, after.get(field['key'])) for field in self.report['fields']
+        requested = self.proposal.manifest['requested']
+        return ([(field, after.get(field['key']) or (dict(field, current=Decimal(requested[field['key']]))
+                                                     if field['key'] in requested else None))
+                 for field in self.report['fields']
                  if field['key'] not in after or field['current'] != after[field['key']]['current']] +
                 [(None, field) for field in fields if field['key'] not in before])
 

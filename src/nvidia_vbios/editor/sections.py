@@ -3,7 +3,7 @@
 FAN_CURVE_UNITS = ('temp_c', 'rpm', 'pct')
 # Vertical layout: section order, and field order inside each section.
 SECTIONS = (
-    ('power', ('power_max_w', 'power_default_w', 'power_min_w', 'board_fixed_rated_w',
+    ('power', ('power_max_w', 'power_default_w', 'power_min_w', 'board_fixed_rated_w', 'notebook_base_tgp_w',
                'slot_power_max_w', 'slot_power_rated_w') +
               tuple(f'connector_{n}_power_{side}_w' for n in range(1, 5) for side in ('max', 'rated')) +
               ('connector_sum_power_max_w', 'connector_sum_power_rated_w',
