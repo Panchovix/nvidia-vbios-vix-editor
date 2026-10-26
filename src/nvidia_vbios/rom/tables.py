@@ -1594,19 +1594,48 @@ class TableRom:
         Same table set and cooler row layout as GB20x (see BlackwellRom.fan_coolers),
         with an Ada cooler header of 6 bytes (list bytes 4..5). An Ada channel i is
         stored when its mapping names row i (byte 1), its control entry has byte 2 = i
-        and byte 5 = (control 0 byte 5 & ~3) | 1 << i, its speed entry has byte 1 = i,
-        and its policy byte 1 equals channel 0's. Both header bytes 0xff with every
-        channel enable 0 means no GPU-driven fan (laptops); returns None.
+        and byte 5 = (control 0 byte 5 & ~3) | 1 << i | the bits of the low extra
+        curves (below), its speed entry has byte 1 = i, and its policy byte 1 equals
+        channel 0's. Both header bytes 0xff with every channel enable 0 means no
+        GPU-driven fan (laptops); returns None.
 
         Ampere uses the same tables. Its speed table may be unused: enable 0 on
-        every channel (RTX 3080/3090 boards, RTX 3060 8GB); its entries are then
-        not compared, and a raised channel count keeps them disabled.
+        every channel (RTX 3080/3090 boards, RTX 3060 8GB, RTX 3050 6GB and 8GB);
+        its entries are then not compared, and a raised channel count keeps them
+        disabled.
 
         Rows carry the GB20x row limits, policy curve and speed value. Enabled
         policy entries past the two cooler rows (entry 2, and 3 on most images)
         store further curves, listed in extra_curves. Ampere boards that stop
         the fan store 0 % and 0 RPM as the row minimum. Turing: see
         _turing_fan_coolers.
+
+        An unlisted channel k may keep its policy entry enabled as an extra curve
+        (a low extra curve: entry 1, thermal channel 1, of the RTX 3050 6GB and
+        8GB) when its cooler row and mapping, control and speed entries are
+        disabled and bit k is set in the first policy mask (bytes 5..8) of every
+        enabled control entry. In GSP-RM 615.78.08 that mask names the policy
+        entries a control entry combines for its cooler (0x03 there, entries 0
+        and 1; 0x05 on single-channel RTX 3060s, entries 0 and 2), so the entry
+        serves every active channel as entries 2 and 3 do elsewhere. extra_curves
+        lists the low extra curves and the entries past the rows together, in
+        entry order.
+
+        An unlisted channel i may keep its policy entry enabled while its cooler
+        row and mapping, control and speed entries are disabled (an HP OEM RTX
+        3060 12 GB), only when the whole 51-byte entry equals an active
+        channel's and bit i is set in neither policy mask (bytes 5..8 and
+        9..12) of any enabled control entry. In GSP-RM 615.78.08 a control
+        entry names its cooler row in byte 2 and its policy entries in those
+        masks (0x05 on single-channel RTX 3060s, 0x0d/0x0e on the RTX 3080),
+        and a v0x20 policy entry names no cooler: an entry no enabled control
+        entry names is built and validated but drives no fan there (the PMU
+        side is unexamined), so most likely unused. Such a copy is neither
+        active nor an extra curve (a low extra curve has its bit in the first
+        mask, a copy in neither): its row names the channel in policy_copy_of,
+        and that channel's row lists the copy's policy entry offset in
+        policy_copy_offsets (None and [] elsewhere); writers keep it equal to
+        its source. Any other disagreement raises.
         """
         if self.family == 'turing':
             return self._turing_fan_coolers()
@@ -1633,6 +1662,13 @@ class TableRom:
             raise FormatError('unrecognized fan channel list')
         first_control, first_policy = tables['control'](0), tables['policy'](0)
         speed_used = self.family != 'ampere' or any(b[tables['speed'](i)] for i in range(n))
+        # The two policy masks of each enabled control entry; the low extra curves (see above) have their bit in
+        # every first mask, and every active channel's control entry sets their bits next to its own.
+        masks = [m for k in range(n) if b[tables['control'](k)] for m in read(b, '<II', tables['control'](k) + 5)]
+        low = [k for k in range(n) if k not in listed and b[tables['policy'](k)] and masks and
+               all(m >> k & 1 for m in masks[::2]) and
+               not any(b[tables[name](k)] for name in ('cooler', 'mapping', 'control', 'speed'))]
+        low_bits = sum(1 << k for k in low)
         rows = []
         for i in range(n):
             row, pol, mapped = tables['cooler'](i), tables['policy'](i), tables['mapping'](i)
@@ -1647,21 +1683,32 @@ class TableRom:
                              mapping_enable=b[mapped], mapping_row=b[mapped + 1],
                              control_offset=control, control_enable=b[control],
                              speed_offset=speed, speed_enable=b[speed], speed_rpm=read(b, '<H', speed + 2)[0],
+                             policy_copy_of=None, policy_copy_offsets=[],
                              stored=(b[pol + 1] == b[first_policy + 1] and b[mapped + 1] == i and
                                      b[control + 2] == i and
-                                     b[control + 5] == (b[first_control + 5] & 0xFC) | 1 << i and
+                                     b[control + 5] == (b[first_control + 5] & 0xFC) | 1 << i | low_bits and
                                      (b[speed + 1] == i or not speed_used))))
         if [r['index'] for r in rows if r['enable']] != listed:
             raise FormatError('fan channel list disagrees with the enabled rows')
         enables = ('policy_enable', 'mapping_enable', 'control_enable') + (('speed_enable',) if speed_used else ())
+        size = ADA_FAN_TABLES['policy'][3]
+        entry = lambda r: b[r['policy_offset']:r['policy_offset'] + size]
         for r in rows:
+            if r['index'] in low:
+                continue
             if any(bool(r[k]) != r['active'] for k in enables):
-                raise FormatError('fan channel enables disagree across the fan tables')
+                # An unused copy of an active channel's policy entry (see above), else a disagreement.
+                source = next((s for s in rows if s['active'] and entry(s) == entry(r)), None)
+                if (r['active'] or source is None or any(r[k] for k in enables if k != 'policy_enable') or
+                        any(m >> r['index'] & 1 for m in masks)):
+                    raise FormatError('fan channel enables disagree across the fan tables')
+                r['policy_copy_of'] = source['index']
+                source['policy_copy_offsets'].append(r['policy_offset'])
             if r['active'] and not r['stored']:
                 raise FormatError('an active fan channel is not stored in every fan table')
         policies = b[first_policy - 1]  # entry count, header byte 3
         extra = [dict(index=k, policy_offset=tables['policy'](k), **fan_curve(b, tables['policy'](k)))
-                 for k in range(n, policies) if b[tables['policy'](k)]]
+                 for k in low + list(range(n, policies)) if b[tables['policy'](k)]]
         return dict(offset=at, policy_offset=tables['policy'](0) - 4, mapping_offset=tables['mapping'](0) - 4,
                     control_offset=tables['control'](0) - 4, speed_offset=tables['speed'](0) - 4,
                     channels=listed, rows=rows, extra_curves=extra)

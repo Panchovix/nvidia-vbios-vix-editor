@@ -421,6 +421,8 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'fan_stop.flat': ('"{field}" es igual al umbral superior ({value} °C): con la parada en reposo activada no hay '
                    'histéresis, así que los ventiladores pueden pararse y arrancar a menudo cerca de esa temperatura. '
                    'Bájalo unos grados.'),
+ 'fan_stop.copy': ('Esta ROM guarda además una copia de los ajustes del ventilador {fan}, probablemente sin uso; el '
+                   'editor cambia los dos de la misma forma.'),
  'fan_stop.untested': 'Sin probar en hardware en tarjetas Ada ni Ampere.',
  'fan_stop.manual': 'Una herramienta de ventiladores que mantiene el control manual deja los ventiladores girando.',
  'field.connector_current_threshold_rated': ('Umbral de corriente del canal de conector {connector}, nominal '
@@ -511,6 +513,14 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                                   'plantilla revisada, así que la parada en reposo no se puede activar.'),
  'reason.fan_zero_rpm_temps_off': ('La parada en reposo es de solo lectura en esta ROM, así que sus umbrales '
                                    'quedan como están guardados.'),
+ 'reason.fan_policy_copy': ('Un canal de ventilador desactivado de esta ROM guarda una copia de los ajustes de otro '
+                            'ventilador, probablemente sin uso, que el editor cambia junto con ellos; fijar la '
+                            'cantidad de canales desactivaría esa copia o activaría su canal, así que la cantidad '
+                            'queda como está guardada.'),
+ 'reason.fan_low_extra': ('Esta ROM guarda una curva adicional de ventilador, usada para todos los ventiladores, en '
+                          'la entrada de un segundo canal de ventilador que desactiva; fijar la cantidad de canales '
+                          'desactivaría esa curva o activaría su canal, así que la cantidad queda como está '
+                          'guardada.'),
  'reason.generic': 'Edición no disponible para este campo.',
  'error.INVALID_IMAGE': 'Abre una ROM primero',
  'error.INVALID_CHANGES': 'Prepare una vista previa verificada antes de guardar',

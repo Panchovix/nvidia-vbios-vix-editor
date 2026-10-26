@@ -7,6 +7,7 @@ import re
 from ..editor.sections import (ADVANCED_SECTION, SECTION_NAMES, SECTIONS, field_section,  # noqa: F401
                                opt_in_field_keys, technical_field_keys)
 from ..editor.registry import (FACTORY_BOOST_REASON, FACTORY_OFFSET_FRACTION_REASON, FACTORY_UNREVIEWED_REASON,
+                               FAN_LOW_EXTRA_CHANNELS_REASON, FAN_POLICY_COPY_CHANNELS_REASON,
                                FAN_ZERO_RPM_MIXED_REASON, FAN_ZERO_RPM_NO_BLOCK_REASON, FAN_ZERO_RPM_TEMPS_OFF_REASON,
                                LPWR_ENABLED_ENTRIES, LPWR_ENABLED_UNRECOGNIZED_REASON,
                                LPWR_GR_RG_ENABLED_UNRECOGNIZED_REASON, LPWR_GR_RG_UNRECOGNIZED_REASON,
@@ -90,6 +91,8 @@ REASON_KEYS = {
     FAN_ZERO_RPM_MIXED_REASON: 'reason.fan_zero_rpm_mixed',
     FAN_ZERO_RPM_NO_BLOCK_REASON: 'reason.fan_zero_rpm_no_block',
     FAN_ZERO_RPM_TEMPS_OFF_REASON: 'reason.fan_zero_rpm_temps_off',
+    FAN_POLICY_COPY_CHANNELS_REASON: 'reason.fan_policy_copy',
+    FAN_LOW_EXTRA_CHANNELS_REASON: 'reason.fan_low_extra',
 }
 
 
@@ -329,8 +332,9 @@ def fan_stop_notes(field, family, language='en'):
     values it writes (fan_stop_template) and the blower risks; where the ROM ships with zero RPM off
     otherwise, the risks on a blower card; where the channel entries keep bit 4 clear
     (channel_bit4_clear), that no shipped ROM runs zero RPM with that flag form; each entry without
-    hysteresis (zero_rpm_flat_pairs); on Ada and Ampere that it is not hardware-tested there; and on
-    every board that a fan tool holding manual control keeps the fans running."""
+    hysteresis (zero_rpm_flat_pairs); each unused copy of a fan entry the editor writes too
+    (fan_policy_copies); on Ada and Ampere that it is not hardware-tested there; and on every board
+    that a fan tool holding manual control keeps the fans running."""
     if field.get('key') != 'fan_zero_rpm' or not field.get('editable'):
         return []
     text, notes = Messages(language), []
@@ -344,6 +348,7 @@ def fan_stop_notes(field, family, language='en'):
         notes.append(text('fan_stop.bit4'))
     notes += [text('fan_stop.flat', field=row_title({'key': flat['field']}, language)[0], value=number(flat['temp_c']))
               for flat in field.get('zero_rpm_flat_pairs', ())]
+    notes += [text('fan_stop.copy', fan=copy['copy_of'] + 1) for copy in field.get('fan_policy_copies', ())]
     if not template and family in ('ada', 'ampere'):
         notes.append(text('fan_stop.untested'))
     return notes + [text('fan_stop.manual')]

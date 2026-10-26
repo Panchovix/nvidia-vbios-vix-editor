@@ -580,6 +580,24 @@ def with_zero_rpm(blob, flags=(0x17, 0x07), pairs=((40, 50), (40, 50), (53, 63),
     return blob
 
 
+def with_policy_copy(blob, source=0, copy=1):
+    """Fan policy entry `copy` set to a byte-for-byte copy of entry `source` (51 bytes, enable included), in every
+    chain, as an HP OEM RTX 3060 12 GB stores the entry of its disabled second channel."""
+    at = backend(from_bytes(blob)).fan_coolers()['policy_offset'] + 4
+    return patched(blob, at + 0x33 * copy, blob[at + 0x33 * source:at + 0x33 * (source + 1)])
+
+
+def with_low_extra(blob, mask=0x0F):
+    """Fan policy entry 1 of a one-channel image enabled with its own curve (thermal channel 1, 95/100/103 C) and
+    byte 5 of the channel 1 control entry set to mask (0x0f: entries 0..3), in every chain, as the RTX 3050 6GB
+    and 8GB store an extra curve in the entry of their disabled second channel (mask 0x03 there)."""
+    rows = backend(from_bytes(blob)).fan_coolers()['rows']
+    at = rows[1]['policy_offset']
+    blob = patched(blob, at, b'\x01\x01')
+    blob = patched(blob, at + 18, struct.pack('<6H', 95 * 32, 1000, 100 * 32, 2000, 103 * 32, 3300))
+    return patched(blob, rows[0]['control_offset'] + 5, bytes((mask,)))
+
+
 def template_board(device=0x2230):
     """A one-channel Ampere image shaped like the RTX A-series blower boards (device 0x2230 is the RTX A6000):
     entries 0, 2 and 3 enabled with bytes 0..1 = 01 00 / 01 01 / 01 09, zeros and 0xff in bytes 30..46 and

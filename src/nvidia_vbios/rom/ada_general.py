@@ -19,9 +19,11 @@ PROBES = ('power_rows', 'clock_ranges', 'rail_limits', 'rail_equations', 'fan_co
 
 
 def _values(item):
-    """Parser output without file positions, which legitimately move."""
+    """Parser output without file positions (keys ending in offset or offsets, rail_entry), which legitimately
+    move."""
     if isinstance(item, dict):
-        return {k: _values(v) for k, v in item.items() if not (k.endswith('offset') or k == 'rail_entry')}
+        return {k: _values(v) for k, v in item.items()
+                if not (k.endswith(('offset', 'offsets')) or k == 'rail_entry')}
     if isinstance(item, list):
         return [_values(v) for v in item]
     return item

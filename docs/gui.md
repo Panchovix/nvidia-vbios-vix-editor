@@ -129,7 +129,10 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    there is no hysteresis, so the fans may stop and start often around it, and to set
    that lower threshold a few degrees below. A fan tool that holds manual control keeps
    the fans running whatever the switch says. A ROM whose fan entries disagree (one
-   RTX 3060) shows the field read-only as Mixed. On a copy where the switch wrote
+   RTX 3060) shows the field read-only as Mixed. An HP OEM RTX 3060 12 GB ROM keeps a
+   copy of its fan 1 settings, most likely unused, in the entry of a second fan channel
+   it disables: a note says the editor changes both the same way (curve points, zero RPM
+   and its thresholds), and **Fan channels** stays read-only. On a copy where the switch wrote
    fan-stop values, turning it off and changing its thresholds are separate saves. The
    **zero RPM lower and upper thresholds** of each fan and extra curve (Blackwell, Ada
    and Ampere) are the two temperatures stored with those bits: idle fans most likely
@@ -140,7 +143,7 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    and the row to change says its allowed range; change them together (on an RTX 3090,
    turning zero RPM on needs both upper thresholds lowered to 51.90625 °C, their point
    1, or less). Where the lower threshold is at or above point 1 (an RTX 3080's extra
-   curves, the RTX 3050, some RTX 4090 ROMs) its row is marked too: set it below the
+   curves, the GA106 RTX 3050, some RTX 4090 ROMs) its row is marked too: set it below the
    upper threshold in the same edit. A larger **Fan channels** count that turns on a
    stored fan whose upper threshold is above its point 1 with zero RPM on is refused:
    turn zero RPM off and save, change the count on that copy, then turn zero RPM on
@@ -225,7 +228,9 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    out the rows of the fans it turns off (the copy keeps them stored but off) and the
    change list shows their values as "not used"; a value typed in such a row comes back
    when the count turns its fan on again. A higher count lists the stored values of the
-   fans it turns on.
+   fans it turns on. An RTX 3050 6 GB or 8 GB ROM stores its extra curve (Extra fan
+   curve 1) in the entry of a second fan channel that it disables, so **Fan channels**
+   stays read-only there and its row says why.
    Voltage compatibility aliases, selector indices and stored boot values are
    not shown; `nvbios fields` lists them. The same goes for the generic input
    current and OCP placeholders (`current_limit_a`, `ocp_limit_a`) and the MSVDD

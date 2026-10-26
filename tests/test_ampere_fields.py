@@ -8,11 +8,12 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from nvidia_vbios.editor import edit, plan
-from nvidia_vbios.editor.registry import registry
+from nvidia_vbios.editor.registry import (FAN_LOW_EXTRA_CHANNELS_REASON, FAN_POLICY_COPY_CHANNELS_REASON,
+                                          FAN_ZERO_RPM_NO_BLOCK_REASON, fan_layouts, registry)
 from nvidia_vbios.rom import VbiosError, from_bytes, inspect_image, load
 from nvidia_vbios.rom.image import backend
-from test_ada_fields import (GV_HAL, checked_elsewhere, dram_points, fan_curves, fan_limits, messages, patched,
-                            zero_rpm_temps)
+from test_ada_fields import (GV_HAL, REFERENCE_BLOCK, checked_elsewhere, dram_points, fan_curves, fan_limits, messages,
+                             patched, with_low_extra, with_policy_copy, with_zero_rpm, zero_rpm_temps)
 from test_extended_fields import changed_bytes_within, curve_step, descriptors, fan_stop_refusals
 from test_rom_formats import synthetic_rom
 
@@ -675,6 +676,188 @@ class AmpereFanTests(unittest.TestCase):
                 lowered = edit(image, {key: 2100 for key in top})
                 self.assertEqual(backend(lowered.image).fan_coolers()['rows'][0]['rpm_maximum'], 2100)
                 self.assertEqual(edit(lowered.image, {key: 3300 for key in top}).blob, image.blob)
+
+    def test_an_unused_copy_of_the_fan_1_policy_entry_is_written_with_it(self):
+        # As on an HP OEM RTX 3060 12 GB: channel 2 is disabled in every table but the policy table, whose entry 1
+        # is byte for byte the channel 1 entry, and no enabled control entry sets bit 1 of byte 5 (0x0d here).
+        stock = with_zero_rpm(synthetic_rom(family='ampere', copies=2, fans=1), flags=(0x11, 0x01),
+                              pairs=((45, 55), (90, 95), (85, 90)))
+        image = from_bytes(with_policy_copy(stock))
+        parser = backend(image)
+        table = parser.fan_coolers()
+        source, copy = table['rows']
+        self.assertEqual((source['active'], copy['active'], copy['policy_copy_of'], source['policy_copy_offsets'],
+                          source['policy_copy_of'], copy['policy_copy_offsets']),
+                         (True, False, 0, [copy['policy_offset']], None, []))
+        self.assertEqual(([c['index'] for c in table['extra_curves']], table['channels']), ([2, 3], [0]))
+        fields = descriptors(image)
+        self.assertEqual((fields['fan_channels']['editable'], fields['fan_channels']['reason']),
+                         (False, FAN_POLICY_COPY_CHANNELS_REASON))
+        bindings = {b.descriptor['key']: b for b in registry.bindings(image, parser)[0]}
+        pairs = [(a, a - source['policy_offset'] + copy['policy_offset'])
+                 for a in parser.copy_offsets(source['policy_offset'], 0x33)]
+
+        def mirrored(blob):
+            return all(blob[a:a + 0x33] == blob[c:c + 0x33] for a, c in pairs)
+        # Every field inside the channel 1 entry also writes the copy, in both chains; the extra curves do not.
+        for key in ('fan_1_curve_1_temp_c', 'fan_1_curve_3_pct', 'fan_1_zero_rpm_high_temp_c'):
+            with self.subTest(key=key):
+                field = fields[key]
+                offsets = bindings[key].offsets
+                self.assertEqual(len(offsets), 4)
+                self.assertEqual(field['fan_policy_copies'], [{'entry': 1, 'copy_of': 0}])
+                self.assertIn('also keeps a copy of the channel 1 fan policy entry in entry 1 (fan channel 2, '
+                              'disabled), most likely unused, and the editor writes the same bytes there',
+                              field['reason'])
+                value = Decimal(str(field['current'])) - (1 if field['units'] != 'C' else Decimal(1) / 2)
+                result = edit(image, {key: value})
+                self.assertTrue(mirrored(result.blob) and result.blob != image.blob)
+                self.assertEqual({result.blob[a] for a in offsets}, {result.blob[offsets[0]]})
+                self.assertEqual(backend(result.image).fan_coolers()['rows'][1]['policy_copy_of'], 0)
+                self.assertEqual(edit(result.image, {key: field['current']}).blob, image.blob)
+        self.assertEqual(len(bindings['fan_extra_1_curve_1_temp_c'].offsets), 2)
+        self.assertNotIn('fan_policy_copies', fields['fan_extra_1_curve_1_temp_c'])
+        # Zero RPM: the copy's flag byte takes the same bits as its source (0x11 -> 0x17), the extra curves 0x07.
+        flag = fields['fan_zero_rpm']
+        self.assertEqual((flag['current'], flag['editable'], flag['fan_entries']), (0, True, [0, 1, 2, 3]))
+        on = edit(image, {'fan_zero_rpm': 1})
+        policy = table['policy_offset'] + 4
+        self.assertEqual([on.blob[c + 0x33 * k + 0x32] for k in range(4)
+                          for c in parser.copy_offsets(policy, 1)], [0x17] * 4 + [0x07] * 4)
+        self.assertTrue(mirrored(on.blob))
+        self.assertEqual(descriptors(on.image)['fan_zero_rpm']['current'], 1)
+        self.assertEqual(edit(on.image, {'fan_zero_rpm': 0}).blob, image.blob)
+        # Anything else stays refused: a copy one byte off, or a disabled entry enabled with its own curve.
+        for name, blob in (('flag byte', patched(image.blob, copy['policy_offset'] + 0x32, b'\x13')),
+                           ('curve point', patched(image.blob, copy['policy_offset'] + 18, struct.pack('<H', 50 * 32))),
+                           ('own entry', patched(stock, copy['policy_offset'], b'\x01')),
+                           ('enabled mapping', patched(image.blob, copy['mapping_offset'], b'\x01'))):
+            with self.subTest(refused=name):
+                broken = from_bytes(blob)
+                self.assertFalse(any(key.startswith('fan_') for key in descriptors(broken)))
+                self.assertTrue(any('fan channel enables disagree' in m for m in messages(broken)))
+        # Bit 1 in an enabled control entry's first mask: the control entry combines entry 1 for its cooler, so it is
+        # an extra curve (as on the RTX 3050 6GB and 8GB), not a copy; in the second mask (bytes 9..12) the copy rule
+        # refuses it.
+        masked = from_bytes(patched(image.blob, source['control_offset'] + 5, b'\x0f'))
+        table = backend(masked).fan_coolers()
+        self.assertEqual(([c['index'] for c in table['extra_curves']], table['rows'][1]['policy_copy_of']),
+                         ([1, 2, 3], None))
+        fields = descriptors(masked)
+        self.assertEqual(fields['fan_channels']['reason'], FAN_LOW_EXTRA_CHANNELS_REASON)
+        self.assertNotIn('fan_policy_copies', fields['fan_1_curve_1_temp_c'])
+        masked = from_bytes(patched(image.blob, source['control_offset'] + 9, b'\x03'))
+        self.assertFalse(any(key.startswith('fan_') for key in descriptors(masked)))
+        self.assertTrue(any('fan channel enables disagree' in m for m in messages(masked)))
+        # The copy's channel stored in every table with its own cooler configuration: a channel count would clear the
+        # copy's enable byte (the stored count) or enable its channel, so none is offered.
+        stored = from_bytes(patched(image.blob, copy['control_offset'] + 5, b'\x0e'))
+        table = backend(stored).fan_coolers()
+        self.assertEqual((table['rows'][1]['stored'], table['rows'][1]['policy_copy_of']), (True, 0))
+        self.assertEqual(fan_layouts(backend(stored), table), (1, 1, [], ()))
+        channels = descriptors(stored)['fan_channels']
+        self.assertEqual((channels['editable'], channels['reason']), (False, FAN_POLICY_COPY_CHANNELS_REASON))
+
+    def test_an_extra_fan_curve_in_a_disabled_channels_policy_entry(self):
+        # As on the RTX 3050 6GB and 8GB: channel 2 is disabled in every table but the policy table, whose entry 1
+        # holds its own curve (thermal channel 1) and is named in the first mask of the enabled control entry (0x0f
+        # here, 0x03 there): an extra curve at entry 1, numbered before the entries past the cooler rows.
+        stock = with_low_extra(synthetic_rom(family='ampere', copies=2, fans=1))
+        image = from_bytes(with_zero_rpm(stock, pairs=((40, 50), (60, 70), (53, 63), (60, 70))))
+        parser = backend(image)
+        table = parser.fan_coolers()
+        channel, low = table['rows']
+        self.assertEqual((table['channels'], [c['index'] for c in table['extra_curves']], channel['stored'],
+                          low['active'], low['policy_copy_of']), ([0], [1, 2, 3], True, False, None))
+        self.assertEqual(fan_layouts(parser, table), (1, 1, [], ()))
+        fields = descriptors(image)
+        self.assertEqual((fields['fan_channels']['current'], fields['fan_channels']['editable'],
+                          fields['fan_channels']['reason']), (1, False, FAN_LOW_EXTRA_CHANNELS_REASON))
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_channels': 2})
+        self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
+        extra = fields['fan_extra_1_curve_1_temp_c']
+        self.assertEqual((extra['current'], extra['fan_policy'], extra['fan_rows'], extra['editable']),
+                         (95.0, 1, [0], True))
+        self.assertEqual([fields[f'fan_extra_{m}_curve_1_temp_c']['fan_policy'] for m in (2, 3)], [2, 3])
+        # The extra curve takes its points in both chains and bounds the channel limits like the others.
+        entry = low['policy_offset']
+        result = edit(image, {'fan_extra_1_curve_1_temp_c': 90})
+        changed_bytes_within(self, image, result, parser.copy_offsets(entry + 18, 2), width=2)
+        self.assertEqual([c['index'] for c in backend(result.image).fan_coolers()['extra_curves']], [1, 2, 3])
+        self.assertEqual(edit(result.image, {'fan_extra_1_curve_1_temp_c': 95}).blob, image.blob)
+        self.assertEqual(fields['fan_extra_1_curve_3_rpm']['bounds']['maximum'], 3300)  # the channel maximum
+        # Zero RPM covers entry 1 with the channel and extra entries; 0 clears both bits and 1 restores the bytes.
+        flag = fields['fan_zero_rpm']
+        self.assertEqual((flag['current'], flag['editable'], flag['fan_entries']), (1, True, [0, 1, 2, 3]))
+        off = edit(image, {'fan_zero_rpm': 0})
+        flags = [e['policy_offset'] + 0x32 for e in [channel] + table['extra_curves']]
+        self.assertEqual([off.blob[c] for at in flags for c in parser.copy_offsets(at, 1)],
+                         [0x11] * 4 + [0x01] * 4)
+        self.assertEqual(descriptors(off.image)['fan_zero_rpm']['current'], 0)
+        self.assertEqual(edit(off.image, {'fan_zero_rpm': 1}).blob, image.blob)
+        self.assertEqual(fields['fan_extra_1_zero_rpm_high_temp_c']['current'], 70.0)
+        # Anything else stays refused: entry 1 left out of the mask (and not a copy of entry 0, so the enables
+        # disagree); channel 2 enabled in the mapping (fan test), control or speed table (in use here), or entry 1
+        # disabled, while the mask names it (entry 1 is then no extra curve, and the channel 1 control entry, whose
+        # mask names it, is not stored).
+        control = low['control_offset']
+        self.assertEqual([r['speed_enable'] for r in table['rows']], [1, 0])
+        for name, blob, error in (('not in the mask', patched(stock, channel['control_offset'] + 5, b'\x0d'),
+                                   'fan channel enables disagree'),
+                                  ('enabled mapping', patched(stock, low['mapping_offset'], b'\x01'),
+                                   'not stored in every fan table'),
+                                  ('enabled control', patched(patched(stock, control + 5, b'\x0e'), control, b'\x01'),
+                                   'not stored in every fan table'),
+                                  ('enabled speed', patched(stock, low['speed_offset'], b'\x01'),
+                                   'not stored in every fan table'),
+                                  ('disabled entry', patched(stock, entry, b'\x00'), 'not stored in every fan table')):
+            with self.subTest(refused=name):
+                broken = from_bytes(blob)
+                self.assertFalse(any(key.startswith('fan_') for key in descriptors(broken)))
+                self.assertTrue(any(error in m for m in messages(broken)))
+        # Without its bit in the mask, entry 1 byte for byte entry 0 is an unused copy (an HP OEM RTX 3060 12 GB).
+        copied = backend(from_bytes(patched(with_policy_copy(stock), channel['control_offset'] + 5, b'\x0d')))
+        self.assertEqual(copied.fan_coolers()['rows'][1]['policy_copy_of'], 0)
+
+    def test_zero_rpm_with_a_pair_the_editor_does_not_show(self):
+        # As on the RTX 3050 6GB: the channel entry and the extra curve at entry 1 store 52/55 C with zero RPM on
+        # (0x17) in a block GSP-RM accepts with byte 46 = 0xff, so no pair field is shown. 1 stays offered on a copy
+        # saved at 0 (bits clear: a nonzero pair in an accepted block), which comes back byte for byte; a zero lower
+        # is no such pair.
+        stock = with_low_extra(synthetic_rom(family='ampere', copies=2, fans=1))
+        block = REFERENCE_BLOCK[:-1] + b'\xff'
+        blob = with_zero_rpm(stock, pairs=((52, 55), (52, 55), (53, 63), (60, 70)), block=block)
+        image = from_bytes(blob)
+        fields = descriptors(image)
+        self.assertFalse([key for key in fields if '_zero_rpm_' in key])
+        self.assertEqual((fields['fan_zero_rpm']['current'], fields['fan_zero_rpm']['editable']), (1, True))
+        off = edit(image, {'fan_zero_rpm': 0})
+        flag = descriptors(off.image)['fan_zero_rpm']
+        self.assertEqual((flag['current'], flag['editable']), (0, True))
+        self.assertEqual(edit(off.image, {'fan_zero_rpm': 1}).blob, blob)
+        zero = with_zero_rpm(stock, flags=(0x11, 0x01), pairs=((0, 55), (0, 55), (0, 63), (0, 70)), block=block)
+        flag = descriptors(from_bytes(zero))['fan_zero_rpm']
+        self.assertEqual((flag['current'], flag['editable'], flag['reason'].startswith(FAN_ZERO_RPM_NO_BLOCK_REASON)),
+                         (0, False, True))
+        # The start rule: no field moves the 55 C upper, so point 1 stays at 55 C or more while zero RPM is on, and
+        # the refusal names turning zero RPM off (or leaving it off) instead of a pair to lower.
+        for source, request, field in ((image, {'fan_1_curve_1_temp_c': 50}, 'fan_1_curve_1_temp_c'),
+                                       (edit(off.image, {'fan_1_curve_1_temp_c': 50}).image, {'fan_zero_rpm': 1},
+                                        'fan_zero_rpm')):
+            with self.subTest(request=request):
+                with self.assertRaises(VbiosError) as exc:
+                    edit(source, request)
+                self.assertEqual((exc.exception.code, exc.exception.details['field'],
+                                  exc.exception.details['joint_fields']),
+                                 ('ZERO_RPM_ABOVE_CURVE', field, ['fan_1_curve_1_temp_c']))
+                self.assertIn('keep fan_1_curve_1_temp_c at 55 C or more', str(exc.exception))
+                self.assertIn('or turn fan_zero_rpm off in the same edit' if field != 'fan_zero_rpm' else
+                              'the zero RPM pair of this entry is not editable on this image, so its upper stays as '
+                              'stored), or leave fan_zero_rpm off', str(exc.exception))
+                self.assertNotIn('saved copy', str(exc.exception))
+        self.assertEqual(descriptors(edit(image, {'fan_zero_rpm': 0, 'fan_1_curve_1_temp_c': 50}).image)
+                         ['fan_1_curve_1_temp_c']['current'], 50)
 
 
 if __name__ == '__main__':

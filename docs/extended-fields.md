@@ -1416,7 +1416,8 @@ and every active channel is stored. Fan fields are offered only when that holds.
   is refused as `UNREPRESENTABLE_VALUE`), the speed at byte 20 + 4(K-1) (`<H`, RPM)
   and the level at byte 14 + (K-1) (`<B`, %). `fan_extra_M_curve_K_*` edit the
   enabled policy entries past the cooler rows, numbered M = 1.. in entry order (GB20x
-  entries 4 and 5, Ada and Ampere entry 2 and, on most images, 3). On the corpus the
+  entries 4 and 5, Ada and Ampere entry 2 and, on most images, 3; on the RTX 3050 6GB
+  and 8GB the extra curve is entry 1, see the Ampere fans). On the corpus the
   channel curves span 43-97 °C and the extra curves 92-108 °C; three Ampere boards
   store a point off a whole degree (49.90625, 51.90625 and 59.90625 °C).
   - Temperatures rise strictly: point K stays between its neighbors plus or minus
@@ -1504,7 +1505,10 @@ Byte `0x32`, the last byte of each 51-byte policy entry, is a flag byte.
   and 0xff there. On Ada, every GeForce image sets both bits; the RTX 4000, 4000 SFF,
   4500 and 2000 Ada store blocks the validator accepts with both bits clear
   (0x11/0x01), and the RTX 5000 and 6000 Ada store zeros and 0xff (0x01). On Ampere,
-  most GeForce images set both bits; an RTX 3080, an RTX 3060 Ti and the RTX 3050
+  most GeForce images set both bits (the RTX 3050 6GB and 8GB 0x17 on their channel
+  entry and on their extra curve at entry 1, the only Ada or Ampere extra curve that
+  keeps bit 4 set as the channel entries do; the 6GB stores its pairs, 52/55 °C, with
+  byte 46 = 0xff); an RTX 3080, an RTX 3060 Ti and the GA106 RTX 3050
   store accepted blocks with both bits clear; an RTX 3090, an RTX 3070 and the RTX
   3060 8GB set bit 1 alone (0x13/0x03), so GSP-RM checks their blocks at every boot
   (the channel entry of the RTX 3060 8GB stores 40/40 °C, an upper equal to its lower,
@@ -1524,8 +1528,9 @@ Byte `0x32`, the last byte of each 51-byte policy entry, is a flag byte.
   and stopped again after cooling down. Its entries store the same fan-stop
   temperatures as the RTX 5090 Founders Edition image (43/50 °C on the channel
   entries). Ada, Ampere and the Max-Q template are not hardware-tested.
-- **Field.** `fan_zero_rpm` covers the active channels' entries and the enabled curves
-  past the cooler rows, in every duplicate image chain (Ada, Ampere). Like the PWM
+- **Field.** `fan_zero_rpm` covers the active channels' entries and the extra curves
+  (the enabled curves past the cooler rows, and entry 1 of the RTX 3050 6GB and 8GB),
+  in every duplicate image chain (Ada, Ampere). Like the PWM
   frequency, a write also covers the stored channel entries a larger `fan_channels`
   count may enable (the third channel of the ASUS XOC and MSI Lightning images, whose
   bits already match), so the count and the flag can change in either order. It
@@ -1541,12 +1546,14 @@ Byte `0x32`, the last byte of each 51-byte policy entry, is a flag byte.
     clear (0x11/0x01 instead of 0x13/0x03), which loses only bit 1; keep the original
     image to return to its exact bytes.
   - The value 1 is offered only when every written entry already sets bit 1 (Ada,
-    Ampere), stores a block the validator accepts (on GB20x, Ada and Ampere: two
-    nonzero temperatures with the upper at least the lower, byte 46 other than 0xff,
-    word 44 nonzero, dword 38 >= dword 34 and word 42 nonzero), or a reviewed template
-    supplies one (below). An image that sets the bits without such a block (none in the
-    corpus) still offers 0, but the copy is then read-only at 0, so that change cannot
-    be undone in the editor.
+    Ampere), stores a block the validator accepts (two nonzero temperatures with the
+    upper at least the lower and word 44 nonzero; on GB20x also byte 46 other than
+    0xff, dword 38 >= dword 34 and word 42 nonzero; on Ada and Ampere, as the
+    validator has it, the dwords and word 42 only where byte 46 is not 0xff: the RTX
+    3050 6GB ships 52/55 °C with byte 46 = 0xff and both bits set, so a copy saved at
+    0 can go back to 1), or a reviewed template supplies one (below). An image that
+    sets the bits without such a block (none in the corpus) still offers 0, but the
+    copy is then read-only at 0, so that change cannot be undone in the editor.
   - Read-only: an entry with bit 2 alone (on GB20x, with either bit alone), entries
     that disagree about bit 1 (on GB20x, about either bit), chains that disagree, a
     stored channel entry whose bits differ from the enabled ones, and an entry without
@@ -1613,6 +1620,9 @@ Byte `0x32`, the last byte of each 51-byte policy entry, is a flag byte.
     fans may stop and start often around that temperature, and to set the lower a few
     degrees below (descriptor `zero_rpm_flat_pairs`: the lower field and the
     temperature of each such entry);
+  - where a disabled channel keeps a copy of an active channel's entry (an HP OEM
+    RTX 3060 12 GB, see the Ampere fans), that the editor writes the copy the same way
+    (descriptor `fan_policy_copies`);
   - on Ada and Ampere, that it is not hardware-tested there, and on every board that a
     fan tool that holds manual control keeps the fans running.
 - **Extension bindings.** An extension binding cannot write a fan-stop block, not even
@@ -1652,7 +1662,8 @@ Bytes 30..33 of a policy entry hold two `<H` temperatures in 1/32 °C, the lower
   (`fan_extra_M_...`, numbered as in the curve fields) gets a lower and an upper
   field, only where the entry stores a nonzero pair whose upper is at least its lower
   and byte 46 is not 0xff: nothing is offered or synthesized for zeros (a stock
-  template board gets its fields once a copy with the template is saved). Stored
+  template board gets its fields once a copy with the template is saved), and the RTX
+  3050 6GB, which stores 52/55 °C with byte 46 = 0xff on both entries, gets none. Stored
   channels that a larger `fan_channels` count enables keep their bytes and get their
   fields once enabled. Values are exact in 1/32 °C. An edit keeps the lower above 0 °C
   and below the upper. The upper stays at most point 1 of the same entry's fan curve
@@ -1663,7 +1674,7 @@ Bytes 30..33 of a policy entry hold two `<H` temperatures in 1/32 °C, the lower
   only come down to it.
   - Where the stored lower is at or above point 1, no upper is both above the lower
     and at most point 1: the extra curves of an RTX 3080 (100/105 °C under 95 and
-    97 °C), the RTX 3050 (50/55 °C under 43 °C) and three RTX 4090 partner images
+    97 °C), the GA106 RTX 3050 (50/55 °C under 43 °C) and three RTX 4090 partner images
     (60/70 °C on 60 °C). There the upper's range starts at what an edit that also
     lowers the lower allows, 0.0625 °C, so no field shows a minimum above its maximum
     (a read-only pair shows its range the same way, as on the RTX 3060 that mixes the
@@ -1708,14 +1719,18 @@ Bytes 30..33 of a policy entry hold two `<H` temperatures in 1/32 °C, the lower
     field to change, with the range it may take in this edit in `details.bounds`: the
     upper where it is editable and the request moves it or turns zero RPM on (an RTX
     3090 turned on alone names `fan_1_zero_rpm_high_temp_c`, at most 51.90625 °C),
-    point 1 where the upper stays (a GeForce point 1 lowered under its upper), and
-    `fan_zero_rpm` where the switch brings a template's upper that no field holds yet
-    (a template board whose point 1 is under the template's upper: point 1 goes back
-    up with the switch, and both can move lower together on the saved copy).
+    point 1 where the upper stays (a GeForce point 1 lowered under its upper; where no
+    field edits the upper, as on the RTX 3050 6GB, the message also names turning
+    `fan_zero_rpm` off in the same edit), and `fan_zero_rpm` where the switch brings an
+    upper that no field holds: a template's (a template board whose point 1 is under the
+    template's upper: point 1 goes back up with the switch, and both can move lower
+    together on the saved copy) or a stored pair the editor does not offer (a copy of
+    the RTX 3050 6GB saved with zero RPM off and point 1 lowered: point 1 goes back up
+    to 55 °C with the switch, or zero RPM stays off).
   - Where the lower of such an entry is at or above point 1, the message also says to
     set the lower below the new upper in the same edit, `details.joint_fields` lists
     the lower, and the upper's range starts at 0.0625 °C: turning zero RPM on with an
-    RTX 3080's extra curves at 95 and 97 °C and their lowers below, or the RTX 3050's
+    RTX 3080's extra curves at 95 and 97 °C and their lowers below, or the GA106 RTX 3050's
     uppers at 43 °C with their lowers below, passes. The window marks the lower too.
   - Entries the firmware does not run (disabled channel entries) are not checked until
     a larger `fan_channels` count enables one with its stored bytes; it is then
@@ -2383,16 +2398,50 @@ fixed HUB and DISP rows, which no field uses.
 
 **Fans.** The Ada tables and rules, except that the speed table may be unused
 (disabled on every channel: RTX 3080/3090 boards except the RTX 3080 Ti with two
-connector channels, RTX 3060 8GB). PWM frequency on 24 images with GPU-driven fans,
-channel count on 15 of the 16 that store a second channel (not that RTX 3080 Ti,
-whose extra curves top out at 4000 RPM, above both channel maxima).
-The A40 (passive) and the RTX 3050 6GB/8GB tables disagree and keep no fan field;
-laptops list no channel. Channel limits and curve points as on Ada; the speed value
-holds the maximum only where the speed table is enabled. Boards that stop the fan (RTX
+connector channels, RTX 3060 8GB, RTX 3050 6GB and 8GB). PWM frequency on 27 images
+with GPU-driven fans, channel count on 15 of the 17 that store a second channel (not
+that RTX 3080 Ti, whose extra curves top out at 4000 RPM, above both channel maxima,
+nor the HP OEM RTX 3060 12 GB below).
+The A40 (passive) tables disagree and keep no fan field; laptops list no channel. An
+HP OEM RTX 3060 12 GB (94.06.2F.00.ED) disables its second channel in the cooler,
+mapping, control and speed tables but keeps policy entry 1 enabled, byte for byte the
+channel 0 entry, while its enabled control entry masks entries 0 and 2 (byte 5 = 0x05;
+the single-channel RTX 3060s store the same with entry 1 disabled). In GSP-RM
+615.78.08 a control entry names its cooler row in byte 2 and its policy entries in two
+masks (bytes 5..8 and 9..12), and a v0x20 policy entry names no cooler, so an enabled
+entry that no enabled control entry names is built and validated but drives no fan
+there (what the PMU does with it was not examined). The editor reads entry 1 as such a
+copy, most likely unused: a copy is accepted only when the whole 51-byte entry equals
+an active channel's and no enabled control entry sets its bit in either mask, every
+write into the channel 0 entry (curve points, `fan_zero_rpm`, the zero RPM pair) goes
+to both entries in every chain, which also keeps the copy valid, no fan-stop template
+is offered and `fan_channels` stays read-only (a channel count writes every channel's
+enable bytes, which would disable the copy or turn its channel on). Should the fan
+controller use entry 1 after all, it holds the same values as entry 0. The RTX 3050
+6GB and 8GB (GA107) disable their second channel in the same tables and keep policy
+entry 1 enabled too, with its own curve (thermal channel 1, 95/100/103 °C), but their
+enabled control entry masks entries 0 and 1 (byte 5 = 0x03). In GSP-RM the first mask
+names the policy entries a control entry combines for its cooler, so entry 1 is an
+extra curve linked to the one fan, as entries 2 and 3 are on the other images. The
+editor accepts such an entry (a low extra curve) only when its channel is disabled in
+the cooler, mapping, control and speed tables and its bit is set in the first mask of
+every enabled control entry, and then expects the active channel's control entry to
+set that bit next to its own (a copy has its bit in neither mask). It lists entry 1 as
+`fan_extra_1`: its points stay inside the channel limits, which hold it,
+`fan_zero_rpm` covers it (both ship with zero RPM on) and so does a zero RPM pair
+where shown (on the 8GB; see Zero RPM for the 6GB), and `fan_channels` stays read-only
+(a channel count writes entry 1's enable byte, which would disable the curve or turn
+its channel on). An import maps `fan_extra_1` by key, so the extra curve 1 of another
+RTX 30 image (entry 2, also thermal channel 1) lands in entry 1 here and the other way
+round. Anything else that disagrees, such as entry 1 enabled while the mask leaves it
+out or its channel enabled in the mapping or control table, still keeps the fan fields
+hidden.
+Channel limits and curve points as on Ada; the speed value holds the maximum only
+where the speed table is enabled. Boards that stop the fan (RTX
 3080, 3090, GA104 3060 Ti, 3070, GA106 3050 and 3060 8GB) store 0 % and 0 RPM as
 minimum and curve start: those minimums rise only together with the first curve
-points, which stay editable. The GA103 3060 Ti, A4000 and A2000 curves top out below
-100 % (97, 81 and 95 %), so their level maximum also moves alone. `fan_zero_rpm` and the
+points, which stay editable. The GA103 3060 Ti, RTX 3050 8GB, A4000 and A2000 curves top
+out below 100 % (97, 96, 81 and 95 %), so their level maximum also moves alone. `fan_zero_rpm` and the
 zero RPM pairs: see [Zero RPM](#zero-rpm-fan_zero_rpm-opt-in) (on most GeForce images,
 off with flag bits alone or a reviewed template elsewhere, read-only on the RTX A2000 and
 the RTX 3060 with mixed bits).

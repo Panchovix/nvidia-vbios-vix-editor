@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.1.36
+
+- **HP OEM RTX 3060 12 GB: the fan fields can be edited.** On this ROM (94.06.2F.00.ED) the Fans card said that some
+  fields were not shown, because the ROM keeps a copy of the fan 1 settings in the entry of a second fan channel that it
+  disables. In the driver's GSP firmware no fan control entry names that copy, so it is most likely unused, and the
+  editor now writes both entries the same way, so they always hold the same values. The fan limits and curves, the PWM
+  frequency and **Fan zero RPM** with its thresholds can now be edited there, and **Fan channels** stays read-only.
+  **Fan 1 minimum level** and **Fan 1 maximum level**, the curve point levels, **Fan zero RPM** and its thresholds are
+  under **Show advanced XOC-style fields**. The stored minimum is 15 % (1000 RPM). Lowering **Fan 1 minimum level** and
+  **Fan 1 minimum speed** together with point 1 of the curve may let the fan go lower, but on an RTX 5080 a lowered
+  minimum did not lower the speed the fan ran at, so this may change nothing. **Fan zero RPM** can be turned on with the
+  fan-stop temperatures the ROM already stores (50 and 60 °C on fan 1), so the fan most likely stops below 50 °C at idle
+  and starts again above 60 °C. Neither change is tested on an RTX 30 card. A slower or stopped fan lets the card run
+  warmer, so watch the GPU and memory temperatures after the change. Reported in [issue
+  #22](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/22). For API users: the fields that write the fan 1
+  entry carry `fan_policy_copies`, and their offsets include the copy.
+
+- **RTX 3050 6 GB and 8 GB (GA107): the fan fields can be edited.** On these ROMs (94.07.91.00.59 and 94.07.68.00.5D)
+  the Fans card said that some fields were not shown, because the ROM keeps an extra fan curve in the entry of a second
+  fan channel that it disables, while other RTX 30 ROMs keep theirs after the fan entries. In the driver's GSP firmware
+  that entry is linked to the fan the same way as the other extra curves, so the editor now reads it as one: it shows as
+  **Extra fan curve 1**, from 95 °C up. The fan limits and curves, the extra curve, the PWM frequency and **Fan zero
+  RPM** can now be edited there, on the 8 GB also the zero RPM thresholds (the 6 GB stores its 52 and 55 °C in a form
+  the editor does not offer, so they stay as they are), and **Fan channels** stays read-only. **Fan 1 minimum level**
+  and **Fan 1 maximum level**, the curve point levels, **Fan zero RPM** and its thresholds are under **Show advanced
+  XOC-style fields**. Both ROMs ship with zero RPM on, so the fan most likely stands still at idle: turning **Fan zero
+  RPM** off should keep it turning, and turning it on again writes the stock values back. None of this is tested on an
+  RTX 3050. A slower or stopped fan lets the card run warmer, so watch the GPU and memory temperatures after the change.
+  For API users: on these ROMs `fan_extra_1` is fan policy entry 1 (`fan_policy: 1`).
+
 ## 0.1.35
 
 - **RTX 5080 and RTX 5090 Laptop GPU: raise the boot default, the base TGP and the ceiling together.** One user

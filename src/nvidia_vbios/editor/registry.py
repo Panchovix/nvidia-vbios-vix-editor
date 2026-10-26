@@ -2516,9 +2516,19 @@ def fan_layouts(parser, table):
       to the lowest channel above which every active channel has its own
       cooler configuration, channel 0's enable byte in every table and limits
       that hold the extra curves, so raising again restores it.
+    - Where a disabled channel keeps an unused copy of an active channel's
+      policy entry (TableRom.fan_coolers policy_copy_offsets), only the stored
+      count and no layout: the stored count's layout would clear the copy's
+      policy enable byte and a larger count would enable its channel.
+    - Where a disabled channel's policy entry holds an extra curve
+      (low_extra_curves), only the stored count and no layout too: a count
+      writes that entry's enable byte, which would disable the curve or give
+      it to a channel.
     """
     b, rows = parser.blob, table['rows']
     active = [r for r in rows if r['active']]
+    if policy_copy_rows(table) or low_extra_curves(table):
+        return len(active), len(active), [], ()
     frequency = active[0]['pwm_frequency_hz']
     identity = lambda r: (b[r['offset'] + 4:r['offset'] + 6], b[r['offset'] + 10])
     first = rows[0]
@@ -2569,10 +2579,32 @@ AMPERE_FAN_EVIDENCE = [
          format='Ampere fan tables: the Ada cooler, policy, mapping, control and speed tables at P+0x58/0x5c/0x64/'
                 '0xdc/0xe0 with the same headers and entry sizes',
          observation='header bytes 4..5 list exactly the rows with a nonzero byte 0 on the GPU-driven images; active '
-                     'rows hold 25000 or 27000 at bytes 11..13 and byte 13 is 0; the RTX 3080/3090 boards (not the '
-                     'RTX 3080 Ti with two connector channels) and the RTX 3060 8GB leave the speed table disabled on '
-                     'every channel; laptops list no channel and enable none; the passive A40 and the RTX 3050 '
-                     '6GB/8GB tables disagree and keep no fan field'),
+                     'rows hold 25000 or 27000 at bytes 11..13 and byte 13 is 0; the RTX 3080/3090 boards (not the RTX '
+                     '3080 Ti with two connector channels), the RTX 3060 8GB and the RTX 3050 6GB and 8GB leave the '
+                     'speed table disabled on every channel; laptops list no channel and enable none; the passive A40 '
+                     'tables disagree and keep no fan field; the RTX 3050 6GB and 8GB disable their second channel in '
+                     'every table but the policy table, whose entry 1 (thermal channel 1, a curve from 95 C) is '
+                     'enabled and named with entry 0 in the first policy mask of their one enabled control entry (byte '
+                     '5 = 0x03): an extra curve stored at entry 1, where the other images store theirs at entries 2 '
+                     'and 3, which the editor shows as fan_extra_1; an HP OEM RTX 3060 12 GB image disables its second '
+                     'channel in every table but the policy table, whose entry 1 is enabled and byte for byte the '
+                     'channel 0 entry, while no enabled control entry names entry 1 in its policy masks (byte 5 = '
+                     '0x05, as on the single-channel RTX 3060s, which disable entry 1; 0x0d/0x0e on the RTX 3080): a '
+                     'copy that drives no fan in GSP-RM (see the firmware entry), most likely unused, which the editor '
+                     'writes with its source'),
+    {'kind': 'static-firmware-analysis',
+     'source': 'GSP-RM firmware 615.78.08 (gsp_ga10x.bin): fan construct 0x12efa7c, control entry builder 0x12f135e '
+               'and validator 0x12f9130, v0x20 fan policy dispatch 0x1b0ab80',
+     'observation': 'with a v0x20 policy table and the fan capability byte the GA102-GA107 initializer sets, GSP-RM '
+                    'builds each control table (P+0xdc) entry whose byte 0 is 1: byte 1 must be 0, byte 2 names a '
+                    'cooler row that must exist, bytes 3..4 must be nonzero (200 on every image) and bytes 5..8 and '
+                    '9..12 are two nonempty masks of policy entries (the policies of the first share one control '
+                    'unit; the role of the second, 0x01 on every image, is unknown); the first names the enabled '
+                    'policy entries the control entry combines for its cooler, whatever their index (entries 0 and 1 '
+                    'on the RTX 3050 6GB and 8GB, 0 and 2 on the single-channel RTX 3060s); a v0x20 policy entry '
+                    'stores no cooler index and reaches a fan only through those masks, so an enabled entry that no '
+                    'enabled control entry names is built, validated and sent to the PMU with the others but linked '
+                    'to no fan in GSP-RM; what the PMU does with it was not examined', 'set_tested': False},
     ADA_FAN_EVIDENCE[1]]
 
 
@@ -2596,6 +2628,15 @@ TURING_FAN_EVIDENCE = [
 TURING_FAN_CHANNELS_REASON = ('read-only: the Turing fan policy and mapping entries of a disabled channel hold bytes '
                               'unlike the active ones and there is no control or speed table, so no other channel '
                               'count is offered')
+FAN_POLICY_COPY_CHANNELS_REASON = ('read-only: a disabled fan channel of this image keeps a copy of an active '
+                                   "channel's fan policy entry (curve, zero RPM temperatures and flags), most likely "
+                                   'unused, which the editor writes together with its source; a channel count writes '
+                                   "every channel's enable bytes, which would disable that copy or turn its channel "
+                                   'on, so the count stays as stored')
+FAN_LOW_EXTRA_CHANNELS_REASON = ('read-only: this image stores an extra fan curve, which serves every active channel, '
+                                 'in the fan policy entry of a disabled fan channel; a channel count writes every '
+                                 "channel's enable bytes, which would disable that curve or turn its channel on, so "
+                                 'the count stays as stored')
 
 
 def chain_copies(parser, offsets, size, layout=()):
@@ -2606,6 +2647,36 @@ def chain_copies(parser, offsets, size, layout=()):
     layout = tuple((value, tuple(chunk for chunk, group in zip(chunks, groups) for _ in group))
                    for value, chunks in layout)
     return [at for group in groups for at in group], layout
+
+
+def policy_mirrors(entry, at):
+    """at, inside the fan policy entry of `entry`, then the same place in each unused copy of that entry
+    (TableRom.fan_coolers policy_copy_offsets), which every write keeps equal to it; [at] elsewhere."""
+    return [at] + [copy + at - entry['policy_offset'] for copy in entry.get('policy_copy_offsets', ())]
+
+
+def policy_copy_rows(table):
+    """The rows of disabled channels that hold an unused copy of an active channel's fan policy entry."""
+    return [r for r in table['rows'] if r.get('policy_copy_of') is not None]
+
+
+def low_extra_curves(table):
+    """The extra curves stored in the fan policy entry of a disabled channel (TableRom.fan_coolers: entry 1 of the
+    RTX 3050 6GB and 8GB), not past the cooler rows."""
+    return [c for c in table['extra_curves'] if c['index'] < len(table['rows'])]
+
+
+def policy_copy_note(table, entries):
+    """(reason note, descriptor attributes) of a field written into fan policy entries that have unused
+    copies (policy_mirrors): fan_policy_copies names each copy's entry and source channel; ('', {}) without."""
+    copies = [r for r in policy_copy_rows(table)
+              if any(r['policy_offset'] in e.get('policy_copy_offsets', ()) for e in entries)]
+    if not copies:
+        return '', {}
+    named = ' and '.join(f"the channel {r['policy_copy_of'] + 1} fan policy entry in entry {r['index']} (fan channel "
+                         f"{r['index'] + 1}, disabled)" for r in copies)
+    return (f'; this image also keeps a copy of {named}, most likely unused, and the editor writes the same bytes '
+            'there', {'fan_policy_copies': [dict(entry=r['index'], copy_of=r['policy_copy_of']) for r in copies]})
 
 
 FAN_LIMIT_EVIDENCE = {
@@ -2665,17 +2736,18 @@ def fan_shaped(curve):
             all(fan_points(curve, unit)[-1] <= ceiling for unit, *_, ceiling in FAN_CURVE))
 
 
-def fan_field(writable, parser, key, label, units, current, lo, hi, shaped, at, encoding, scale, ceiling, noun,
+def fan_field(writable, parser, key, label, units, current, lo, hi, shaped, places, encoding, scale, ceiling, noun,
               evidence, reason, **extra):
-    """One fan limit or curve point, in stored units. It is editable when the image is (writable), its
-    row and curves hold the reviewed shape and it sits inside lo..hi. With lo == hi (a curve point flush
-    with its limit, a level maximum of 100 under a curve that reaches 100 %) a request for it alone
-    keeps its value, but it can move with its partners in a joint edit. Bounds stay numeric, so the
-    joint recheck refuses a request that breaks the order on the edited result."""
+    """One fan limit or curve point, in stored units, written at places (the value's offset, then the
+    same place in each unused policy entry copy: policy_mirrors) in every chain. It is editable when the
+    image is (writable), its row and curves hold the reviewed shape and it sits inside lo..hi. With lo ==
+    hi (a curve point flush with its limit, a level maximum of 100 under a curve that reaches 100 %) a
+    request for it alone keeps its value, but it can move with its partners in a joint edit. Bounds stay
+    numeric, so the joint recheck refuses a request that breaks the order on the edited result."""
     inside = shaped and lo <= current <= hi
     editable = inside and writable
     show = (lambda v: v / scale) if scale != 1 else (lambda v: v)
-    offsets, _ = chain_copies(parser, [at], struct.calcsize(encoding))
+    offsets, _ = chain_copies(parser, places, struct.calcsize(encoding))
     return field(key, label, units, show(current), show(lo), show(hi), editable, evidence,
                  offsets=offsets if editable else (), encoding=encoding if editable else '', scale=scale,
                  experimental=True, ordering_group=f'fan-{noun}' if editable else None,
@@ -2695,8 +2767,9 @@ def fan_limits(writable, parser, table, evidence):
     """Speed (RPM) and level (%) limits of each active fan channel, numbered from 1.
 
     The limits keep containing the stored curves: the channel's own policy curve and
-    every enabled policy curve past the cooler rows, and the speed limits also the
-    channel's enabled speed-table value. A minimum moves from 0 up to the lowest of
+    every extra curve (the enabled policy curves past the cooler rows and a low extra
+    curve, low_extra_curves), and the speed limits also the channel's enabled
+    speed-table value. A minimum moves from 0 up to the lowest of
     them and below the maximum; a maximum from the highest of them and above the
     minimum up to the ceiling. A limit moves past a curve only together with the
     curve points (fan_curves), in one joint edit. Each side is read-only when its
@@ -2720,7 +2793,7 @@ def fan_limits(writable, parser, table, evidence):
                 word = 'minimum' if side == 'min' else 'maximum'
                 result.append(fan_field(
                     writable, parser, f'fan_{n}_{side}_{unit}', f'Fan {n} {word} {noun}', units, current, lo, hi,
-                    shaped, r['offset'] + at, encoding, 1, ceiling, noun,
+                    shaped, [r['offset'] + at], encoding, 1, ceiling, noun,
                     [dict(FAN_LIMIT_EVIDENCE), dict(FAN_LIMIT_NVML), dict(FAN_LIMIT_HARDWARE)] +
                     [dict(e) for e in evidence],
                     f'experimental: {word} fan {noun} of channel {n}; the stored fan curves' +
@@ -2736,14 +2809,16 @@ def fan_limits(writable, parser, table, evidence):
 def fan_curves(writable, parser, table, evidence):
     """Points 1..3 of the stored fan curves: temperature (1/32 C), speed (RPM) and level (%).
 
-    The curves are each active channel's own policy entry and the enabled entries past
-    the cooler rows, numbered from 1 in entry order (extra curves). Temperatures rise
+    The curves are each active channel's own policy entry and the extra curves (the
+    enabled entries past the cooler rows and a low extra curve, low_extra_curves),
+    numbered from 1 in entry order. Temperatures rise
     strictly from 0 to 110 C; speeds and levels never fall and stay inside the limits:
     the channel's own row limits, or for an extra curve, which serves every active
     channel, the highest minimum and lowest maximum of the active rows. The row limits
     hold the curves the same way (fan_limits), so lowering a maximum below a curve
     takes the limit and the points above it in one joint edit. Every point stays inside
     the containment, so a stored point above it does not widen its neighbor's range.
+    A point is also written to each unused copy of its entry (policy_mirrors).
     """
     active = [r for r in table['rows'] if r['active']]
     if not active:
@@ -2758,6 +2833,7 @@ def fan_curves(writable, parser, table, evidence):
     result = []
     for prefix, name, owner, curve, limits, extra in curves:
         shaped = fan_shaped(curve) and all(low < high for low, high in limits.values())
+        copied, copies = policy_copy_note(table, [curve])
         for k in range(3):
             for unit, noun, units, stored_units, first, step, encoding, scale, ceiling in FAN_CURVE:
                 values = fan_points(curve, unit)
@@ -2767,13 +2843,14 @@ def fan_curves(writable, parser, table, evidence):
                 hi = min(values[k + 1] - gap, top) if k < 2 else top
                 result.append(fan_field(
                     writable, parser, f'{prefix}_curve_{k + 1}_{unit}', f'{name} point {k + 1} {noun}', units, values[k],
-                    lo, hi, shaped, curve['policy_offset'] + first + step * k, encoding, scale, ceiling, noun,
+                    lo, hi, shaped, policy_mirrors(curve, curve['policy_offset'] + first + step * k), encoding,
+                    scale, ceiling, noun,
                     [dict(FAN_LIMIT_EVIDENCE)] + [dict(e) for e in evidence],
                     f'experimental: {noun} of point {k + 1} of the stored {owner} fan curve; the points stay in '
                     'order and inside the fan limits' + (' of every active channel' if 'fan_channel' not in extra
-                                                         else '') + '; ' + fan_untested(parser),
+                                                         else '') + '; ' + fan_untested(parser) + copied,
                     stored_units=stored_units, value_semantics=f'stored-fan-curve-{noun}', fan_policy=curve['index'],
-                    **extra, **({'opt_in': True} if unit == 'pct' else {})))
+                    **extra, **copies, **({'opt_in': True} if unit == 'pct' else {})))
     return result
 
 
@@ -2813,6 +2890,8 @@ def fans(image, parser):
                          'every offered count can be undone byte for byte; not hardware-tested' if shared and most > least else
                          'active fan rows disagree or hold a value outside the reviewed shape' if not shared else
                          TURING_FAN_CHANNELS_REASON if turing(parser) else
+                         FAN_POLICY_COPY_CHANNELS_REASON if policy_copy_rows(table) else
+                         FAN_LOW_EXTRA_CHANNELS_REASON if low_extra_curves(table) else
                          'no other fan channel layout is stored in this table, or a stored channel\'s limits do not '
                          'hold the extra fan curves'),
             field('fan_pwm_frequency_hz', 'Fan PWM frequency', 'Hz', current,
@@ -2976,8 +3055,8 @@ FAN_ZERO_RPM_MANUAL_NOTE = '; a fan tool that holds manual control keeps the fan
 
 def fan_stop_owners(table):
     """(key prefix, label name, owner, entry, descriptor extras) of each fan policy entry GSP-RM runs: the
-    active channels' entries (fan_N, numbered from 1) and the enabled curves past the cooler rows
-    (fan_extra_M, numbered as in fan_curves)."""
+    active channels' entries (fan_N, numbered from 1) and the extra curves (fan_extra_M, numbered as in
+    fan_curves: the enabled curves past the cooler rows and a low extra curve, low_extra_curves)."""
     active = [r for r in table['rows'] if r['active']]
     return ([(f'fan_{r["index"] + 1}', 'Fan %d' % (r['index'] + 1), 'channel %d' % (r['index'] + 1), r,
               dict(fan_channel=r['index'], fan_rows=[r['index']])) for r in active] +
@@ -3013,11 +3092,14 @@ def fan_stop_template(parser, entries, state):
     The written entries must be the template's, with its bytes 0..1 and bytes 47..49 = 0. On the stock
     image (state 0, every block unset) 1 also writes the template block of each entry; on a copy with
     both bits set and the template's bytes 34..46 (its pair may have been edited) 0 writes the unset
-    block back, which restores the stock bytes. Writes go to every duplicate image chain.
+    block back, which restores the stock bytes. Writes go to every duplicate image chain. None where an
+    entry has an unused copy or is one (policy_copy_offsets): no template is reviewed for that layout.
     """
     donor, template, _ = FAN_STOP_TEMPLATES.get(parser.legacy['device'], (None, None, None))
     b = parser.blob
-    if (template is None or sorted(e['index'] for e in entries) != sorted(template) or
+    if (template is None or
+            any(e.get('policy_copy_offsets') or e.get('policy_copy_of') is not None for e in entries) or
+            sorted(e['index'] for e in entries) != sorted(template) or
             any(b[e['policy_offset']:e['policy_offset'] + 2] != template[e['index']][0] or
                 b[e['policy_offset'] + 47:e['policy_offset'] + 50] != bytes(3) for e in entries)):
         return None
@@ -3154,12 +3236,15 @@ ADA_FAN_ZERO_RPM_CORPUS_EVIDENCE = {
 AMPERE_FAN_ZERO_RPM_CORPUS_EVIDENCE = {
     'kind': 'structural-table', 'source': 'Ampere VBIOS corpus',
     'observation': 'most GeForce images set both bits on every enabled policy entry (0x17/0x07), the same in every '
-                   'image chain; an RTX 3080, an RTX 3060 Ti and the RTX 3050 store blocks GSP-RM accepts with both '
-                   'bits clear (0x11/0x01); an RTX 3090, an RTX 3070 and the RTX 3060 8GB set bit 1 alone '
-                   '(0x13/0x03), so GSP-RM checks their blocks at every boot; one RTX 3060 stores 0x13 on its '
-                   'channel entry and 0x07 on its extra curve; the RTX A2000 stores no usable block on its third '
-                   'entry (zeros, word 44 = 0); the RTX A1000, A4000, A4500, A5000, A5500 and A6000 store zeros and '
-                   '0xff with both bits clear (0x01)'}
+                   'image chain (0x17 on both entries of the RTX 3050 6GB and 8GB, whose extra curve, entry 1, is the '
+                   'only Ada or Ampere extra curve that sets bit 4 as the channel entries do, while every other one '
+                   'clears it; the 6GB stores 52/55 C with byte 46 = 0xff on both, a block GSP-RM accepts with bit 1 '
+                   'set); an RTX 3080, an RTX 3060 Ti and the GA106 RTX 3050 store blocks GSP-RM accepts with both '
+                   'bits clear (0x11/0x01); an RTX 3090, an RTX 3070 and the RTX 3060 8GB set bit 1 alone (0x13/0x03), '
+                   'so GSP-RM checks their blocks at every boot; one RTX 3060 stores 0x13 on its channel entry and '
+                   '0x07 on its extra curve; the RTX A2000 stores no usable block on its third entry (zeros, word 44 = '
+                   '0); the RTX A1000, A4000, A4500, A5000, A5500 and A6000 store zeros and 0xff with both bits clear '
+                   '(0x01)'}
 FAN_ZERO_RPM_MIXED_REASON = ('read-only: every enabled fan policy entry sets bit 1 of its flag byte (0x32) but only '
                              'some set bit 2, so zero RPM is on for some entries and off for others (one RTX 3060 '
                              'stores 0x13 on its channel entry and 0x07 on its extra curve); neither 0 nor 1 '
@@ -3173,8 +3258,9 @@ FAN_ZERO_RPM_NO_BLOCK_REASON = ('read-only: a fan policy entry stores no fan-sto
 
 def legacy_fan_stop(parser):
     """Ada and Ampere: what fan_zero_rpm reads and offers (legacy_fan_zero_rpm), or None without a
-    GPU-driven fan. A dict of the fan `table`, the written `entries` (the enabled ones and the stored
-    channel entries a larger channel count enables, `later`), the written channel entries (`rows`), their
+    GPU-driven fan. A dict of the fan `table`, the written `entries` (the enabled ones, the stored
+    channel entries a larger channel count enables, `later`, and the unused copies of channel entries,
+    policy_copy_of, which take their source's byte), the written channel entries (`rows`), their
     `flags`, the `state` (1, 0 or None), `mixed`, the read-only `reason` (None when the field is offered)
     and the template `companion`."""
     table = parser.fan_coolers()
@@ -3188,7 +3274,7 @@ def legacy_fan_stop(parser):
     shared = len({r['pwm_frequency_hz'] for r in active}) == 1 and all(b[r['offset'] + 13] == 0 for r in active)
     most = fan_layouts(parser, table)[1] if shared else len(active)
     later = table['rows'][len(active):most]
-    entries = table['rows'][:most] + list(table['extra_curves'])
+    entries = table['rows'][:most] + policy_copy_rows(table) + list(table['extra_curves'])
     flag = lambda e: b[e['policy_offset'] + FAN_POLICY_FLAG_OFFSET]
     forms = {flag(e) & FAN_ZERO_RPM_BITS for e in enabled}
     state = 1 if forms == {6} else 0 if forms in ({0}, {2}) else None
@@ -3208,10 +3294,11 @@ def legacy_fan_stop(parser):
     else:
         reason = None
     companion = fan_stop_template(parser, entries, state) if reason is None and not later else None
-    # Bit 1 already set means GSP-RM checks the entry's block at every boot.
+    # Bit 1 already set means GSP-RM checks the entry's block at every boot. Else a nonzero pair in a block it accepts
+    # (FAN_ZERO_RPM_NO_BLOCK_REASON), byte 46 = 0xff included: the RTX 3050 6GB ships 52/55 C so with both bits set.
+    usable = lambda at: struct.unpack_from('<H', b, at + 30)[0] > 0 and fan_stop_accepted(b, at)
     if reason is None and state == 0 and not companion and not all(
-            flag(e) & 2 or fan_stop_parameters(b, e['policy_offset']) and fan_stop_accepted(b, e['policy_offset'])
-            for e in entries):
+            flag(e) & 2 or usable(e['policy_offset']) for e in entries):
         reason = FAN_ZERO_RPM_NO_BLOCK_REASON
     return dict(table=table, entries=entries, later=later, rows=table['rows'][:most], flags=[flag(e) for e in entries],
                 state=state, mixed=forms == {2, 6}, reason=reason, companion=companion)
@@ -3228,10 +3315,12 @@ def legacy_fan_zero_rpm(image, parser):
     and bit 2 on some only (an RTX 3060) read as mixed: current None with flag_state 'mixed', read-only.
     So do entries that disagree about bit 1 or set bit 2 alone, and chains that disagree. 1 sets both
     bits and is offered where every written entry already sets bit 1 (GSP-RM checks its block at every
-    boot), stores a block GSP-RM accepts (fan_stop_accepted) or a reviewed template supplies one
+    boot), stores a nonzero pair in a block GSP-RM accepts (fan_stop_accepted; byte 46 may be 0xff, as
+    on the RTX 3050 6GB, so its stock bytes come back after 0) or a reviewed template supplies one
     (fan_stop_template). 0 clears both bits on an image that reads 1 and bit 2 alone otherwise, so a
     stock image comes back byte for byte; a copy saved at 1 of a board that stores bit 1 alone comes
-    back with both bits clear. Each entry keeps its other flag bits. Opt-in; not hardware-tested.
+    back with both bits clear. Each entry keeps its other flag bits; an unused copy of a channel entry
+    (policy_copy_of, an HP OEM RTX 3060 12 GB) is written like its source. Opt-in; not hardware-tested.
     """
     info = legacy_fan_stop(parser)
     if info is None:
@@ -3245,6 +3334,7 @@ def legacy_fan_zero_rpm(image, parser):
     note, template = fan_stop_template_info(parser, companion if editable else None)
     notes, extra = (fan_zero_rpm_notes(parser, info['table'], info['rows'], state, note) if reason is None else
                     ('', {}))
+    copied, copies = policy_copy_note(info['table'], entries)
     evidence = [LEGACY_FAN_ZERO_RPM_FIRMWARE_EVIDENCE,
                 ADA_FAN_ZERO_RPM_CORPUS_EVIDENCE if ada(parser) else AMPERE_FAN_ZERO_RPM_CORPUS_EVIDENCE]
     evidence += [FAN_STOP_TEMPLATES[parser.legacy['device']][2]] if template else []
@@ -3254,7 +3344,7 @@ def legacy_fan_zero_rpm(image, parser):
                   layout=layout if editable else (), companion=companion if editable and companion else (),
                   writable_status=None if editable else 'unsupported', experimental=True, opt_in=True,
                   value_semantics='stored-fan-zero-rpm', fan_entries=[e['index'] for e in entries],
-                  **({'flag_state': 'mixed'} if info['mixed'] else {}),
+                  **({'flag_state': 'mixed'} if info['mixed'] else {}), **copies,
                   **({'fan_stop_template': template} if template else {}), **(extra if editable else {}),
                   reason=reason or ('experimental, opt-in: bits 1 and 2 of the flag byte (0x32) of every enabled fan '
                                     'policy entry (the channel entries and the enabled curves past them), in every '
@@ -3262,8 +3352,8 @@ def legacy_fan_zero_rpm(image, parser):
                                     'default (inferred); 1 sets both, 0 clears bit 2, and bit 1 too on an image '
                                     'where both are set, so a stock image comes back byte for byte (a copy saved '
                                     'at 1 of a board that stores bit 1 alone comes back with both clear); each '
-                                    'entry keeps its other flag bits; not hardware-tested on Ada or Ampere' + notes +
-                                    FAN_ZERO_RPM_MANUAL_NOTE))]
+                                    'entry keeps its other flag bits; not hardware-tested on Ada or Ampere' + copied +
+                                    notes + FAN_ZERO_RPM_MANUAL_NOTE))]
 
 
 FAN_ZERO_RPM_TEMPS_FIRMWARE_EVIDENCE = {
@@ -3303,9 +3393,10 @@ AMPERE_FAN_ZERO_RPM_TEMPS_CORPUS_EVIDENCE = {
     'observation': 'most GeForce images store a rising nonzero pair and byte 46 = 0 on each enabled entry, the same '
                    'in every image chain, with flag bits 1 and 2 set (0x17/0x07): 38.875-55/55-60 C on the channel '
                    'entries, 50-67/67-75 C on the extra curves; others store pairs with both bits clear (0x11/0x01: '
-                   'an RTX 3080, an RTX 3060 Ti, the RTX 3050 and RTX A2000) or bit 1 alone (0x13/0x03: an RTX 3090, '
-                   'an RTX 3070, the RTX 3060 8GB), and one RTX 3060 mixes 0x13 and 0x07; the RTX A1000, A4000, '
-                   'A4500, A5000, A5500 and A6000 store 0/0 and byte 46 = 0xff'}
+                   'an RTX 3080, an RTX 3060 Ti, the GA106 RTX 3050 and RTX A2000) or bit 1 alone (0x13/0x03: an RTX '
+                   '3090, an RTX 3070, the RTX 3060 8GB), and one RTX 3060 mixes 0x13 and 0x07; the RTX 3050 6GB '
+                   'stores 52/55 C with byte 46 = 0xff on both enabled entries (0x17), so no pair is offered there; '
+                   'the RTX A1000, A4000, A4500, A5000, A5500 and A6000 store 0/0 and byte 46 = 0xff'}
 FAN_ZERO_RPM_TEMPS_HARDWARE = {
     'kind': 'hardware-test', 'set_tested': True,
     'source': 'owner report: an edited image loaded as an override (Windows loader)',
@@ -3326,10 +3417,11 @@ def fan_zero_rpm_temperatures(image, parser):
     The driver decodes the pair with the zero RPM flag bits (bits 1 and 2 of byte 0x32) and
     byte 46 and passes them on together; idle fans most likely stop below the lower value and
     start again above the upper one (on one RTX 5080 a raised upper value kept them stopped).
-    Each active channel entry and each enabled curve past the cooler rows (the extra curves,
-    numbered as in fan_curves) gets its own pair of fields, offered only where it stores
-    parameters (fan_stop_parameters): none is synthesized for zeros (the stock RTX PRO 6000
-    Max-Q, RTX 5000/6000 Ada and RTX A-series; a copy with the fan_zero_rpm template has them).
+    Each active channel entry and each extra curve (the enabled curves past the cooler rows and a
+    low extra curve, low_extra_curves, numbered as in fan_curves) gets its own pair of fields,
+    offered only where it stores parameters (fan_stop_parameters): none is synthesized for zeros
+    (the stock RTX PRO 6000 Max-Q, RTX 5000/6000 Ada and RTX A-series; a copy with the
+    fan_zero_rpm template has them), nor for a pair with byte 46 = 0xff (the RTX 3050 6GB).
     An edit keeps the pair rising, from 1/32 C; the upper stays at most point 1 of the same
     entry's fan curve (bytes 18..19, the start temperature rule edit() also keeps on every entry
     with both bits set) and 110 C (an editor limit). Where the stored lower is at or above point 1
@@ -3340,8 +3432,9 @@ def fan_zero_rpm_temperatures(image, parser):
     stored values together. The fields are editable where the entry stores a block GSP-RM
     accepts (fan_stop_accepted): on GB20x whatever the flag bits, on Ada and Ampere where
     fan_zero_rpm is offered (legacy_fan_stop), whatever the bits, so the upper can move in the
-    edit that turns zero RPM on; writes go to every duplicate image chain. Turing images store no
-    pair (zeros and 0xff at the same place in their 54-byte entries) and get no field. Opt-in.
+    edit that turns zero RPM on; writes go to every duplicate image chain and to each unused copy
+    of the entry (policy_mirrors). Turing images store no pair (zeros and 0xff at the same place in
+    their 54-byte entries) and get no field. Opt-in.
     """
     if not isinstance(parser, (BlackwellRom, TableRom)) or turing(parser):
         return []
@@ -3369,6 +3462,7 @@ def fan_zero_rpm_temperatures(image, parser):
         low, high = struct.unpack_from('<HH', parser.blob, at)
         first = struct.unpack_from('<H', parser.blob, entry['policy_offset'] + 18)[0]  # curve point 1
         accepted = fan_stop_accepted(parser.blob, entry['policy_offset'])
+        copied, copies = policy_copy_note(table, [entry])
         inside = high <= FAN_ZERO_RPM_TEMP_CEILING and offered and accepted
         editable = inside and writable
         top = min(first, FAN_ZERO_RPM_TEMP_CEILING)
@@ -3382,7 +3476,7 @@ def fan_zero_rpm_temperatures(image, parser):
         for side, word, current, lo, hi, offset in (
                 ('low', 'lower', low, FAN_ZERO_RPM_TEMP_FLOOR, high - 1, at),
                 ('high', 'upper', high, FAN_ZERO_RPM_TEMP_FLOOR + 1 if stuck else low + 1, top, at + 2)):
-            offsets, _ = chain_copies(parser, [offset], 2)
+            offsets, _ = chain_copies(parser, policy_mirrors(entry, offset), 2)
             result.append(field(
                 f'{prefix}_zero_rpm_{side}_temp_c', f'{name} zero RPM {word} temperature', 'C', current / 32,
                 lo / 32, hi / 32, editable, [dict(e) for e in evidence],
@@ -3392,12 +3486,14 @@ def fan_zero_rpm_temperatures(image, parser):
                 encoding_bounds=(0, FAN_ZERO_RPM_TEMP_CEILING / 32) if editable else None,
                 writable_status=None if editable else 'unsupported',
                 value_semantics=f'stored-fan-zero-rpm-{word}-temperature', fan_policy=entry['index'], **extra,
+                **copies,
                 reason=f'experimental, opt-in: the {word} of the two temperatures (bytes 30..33) of the {owner} fan '
                        'policy entry, which the driver reads with the zero RPM flag bits; idle fans most likely stop '
                        'below the lower and start again above the upper one, and other fan policies and sensors may '
                        'still decide what the fans do; the lower stays above 0 C and below the upper, the upper at '
                        'most point 1 of the same entry\'s fan curve and 110 C (an editor limit), and with zero RPM on '
-                       f'an edit that leaves the upper above point 1 is refused; {tested}{notes[side]}' if inside else
+                       f'an edit that leaves the upper above point 1 is refused; {tested}{copied}{notes[side]}'
+                       if inside else
                        FAN_ZERO_RPM_TEMPS_OFF_REASON if not offered else
                        f'read-only: the {owner} fan policy entry stores a fan-stop block GSP-RM would refuse with '
                        'bit 1 set (word 44 or word 42 zero, or dword 38 below dword 34)' if not accepted else

@@ -1108,7 +1108,7 @@ class PresentationNumberTests(unittest.TestCase):
 
     def test_zero_rpm_mixed_state_reasons_and_notes(self):
         from nvidia_vbios.gui.presentation import fan_stop_notes, read_only_reason, value_text, zero_rpm_channels_hint
-        from test_ada_fields import template_board, with_zero_rpm
+        from test_ada_fields import template_board, with_low_extra, with_policy_copy, with_zero_rpm
         from test_extended_fields import descriptors
         from nvidia_vbios.rom import from_bytes
         blob = synthetic_rom(copies=2, fans=2)
@@ -1166,6 +1166,23 @@ class PresentationNumberTests(unittest.TestCase):
                          ['This ROM ships with zero RPM o', 'With zero RPM on, the fan chan',
                           'A fan tool that holds manual c'])
         self.assertEqual(fan_stop_notes(flag, 'ampere'), [])          # read-only: the reason says it
+        # A ROM that keeps a copy of the fan 1 entry (an HP OEM RTX 3060 12 GB): the switch says the editor writes
+        # both, and the read-only channel count says why.
+        copied = descriptors(from_bytes(with_policy_copy(with_zero_rpm(
+            synthetic_rom(family='ampere', copies=2, fans=1), flags=(0x11, 0x01),
+            pairs=((45, 55), (90, 95), (85, 90))))))
+        self.assertIn('This ROM also keeps a copy of the fan 1 settings, most likely unused; the editor changes both '
+                      'the same way.', fan_stop_notes(copied['fan_zero_rpm'], 'ampere'))
+        self.assertIn('copia de los ajustes del ventilador 1, probablemente sin uso',
+                      ' '.join(fan_stop_notes(copied['fan_zero_rpm'], 'ampere', 'es')))
+        self.assertTrue(read_only_reason(copied['fan_channels']).endswith('so the count stays as stored.'))
+        self.assertTrue(read_only_reason(copied['fan_channels'], 'es').endswith('queda como está guardada.'))
+        # A ROM that stores an extra fan curve in the entry of a disabled channel (an RTX 3050 6GB or 8GB): the
+        # read-only channel count says why.
+        low = descriptors(from_bytes(with_low_extra(synthetic_rom(family='ampere', copies=2, fans=1))))
+        self.assertTrue(read_only_reason(low['fan_channels']).startswith('This ROM stores an extra fan curve, used for '
+                                                                         'every fan, in the entry of a second fan'))
+        self.assertTrue(read_only_reason(low['fan_channels'], 'es').startswith('Esta ROM guarda una curva adicional'))
         # The hint for a fan channel count the start temperature rule refuses.
         self.assertEqual([zero_rpm_channels_hint(v) for v in ('separate-edits', 'none', None)],
                          ['zero_rpm_channels_hint', 'zero_rpm_channels_locked_hint', None])

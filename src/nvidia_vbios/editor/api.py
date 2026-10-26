@@ -166,7 +166,7 @@ def _celsius(raw):
 
 def _zero_rpm_start(image, output, fans, reviewed, changes, ran):
     """The start temperature rule, on the edited result of a GB20x, Ada or Ampere image (fans: its fan tables;
-    ran: the fan policy entries GSP-RM ran in the source, its active channels and the curves past them).
+    ran: the fan policy entries GSP-RM ran in the source, its active channels and extra curves).
 
     With zero RPM on (bits 1 and 2 of the flag byte both set), the upper (start) zero RPM temperature
     of an enabled fan policy entry (bytes 32..33) stays at most point 1 of the same entry's fan curve
@@ -177,7 +177,9 @@ def _zero_rpm_start(image, output, fans, reviewed, changes, ran):
     upper and point 1 is exempt, so stock images that ship the upper above point 1 keep working. The
     refusal names the field to change, with the range it may take in this edit: the upper where it
     is editable and the request moves it or turns zero RPM on (with the lower where that is at or
-    above point 1), else point 1; fan_channels where the count enables the entry, with what works.
+    above point 1), else point 1; fan_zero_rpm where it turns on an upper no field holds (a template's
+    or a stored pair no field edits, as on the RTX 3050 6GB, where a refusal of point 1 also names
+    turning the switch off); fan_channels where the count enables the entry, with what works.
     """
     word = lambda blob, at: struct.unpack_from('<H', blob, at)[0]
     sides = dict(zip(ZERO_RPM_PAIR_SEMANTICS, ('lower', 'upper')))
@@ -245,15 +247,22 @@ def _zero_rpm_start(image, output, fans, reviewed, changes, ran):
             key, bounds = first_key, {'minimum': upper / 32,
                                       'maximum': (min(second - 1, FAN_ZERO_RPM_TEMP_CEILING) if upper < second else
                                                   FAN_ZERO_RPM_TEMP_CEILING) / 32}
+            # No editable upper (the RTX 3050 6GB stores its pair with byte 46 = 0xff): the switch is the other way.
+            off = (upper_key is None and 'fan_zero_rpm' not in changes and switch is not None and
+                   switch.descriptor['editable'])
             fix = (f'keep {first_key} at {_celsius(upper)} C or more' +
                    ('' if upper < second else f" with {first_key.replace('_curve_1_', '_curve_2_')} above it") +
-                   (f', or {lowered} in the same edit' if upper_key else ''))
+                   (f', or {lowered} in the same edit' if upper_key else
+                    ', or turn fan_zero_rpm off in the same edit' if off else ''))
         else:
-            # fan_zero_rpm turns zero RPM on with an upper no field holds yet (the template's): the switch is
-            # what goes, unless point 1 stays at or above that upper in the same edit.
+            # fan_zero_rpm turns zero RPM on with an upper no field holds: the template's, which gets one on the saved
+            # copy, or a stored pair no field edits (a copy of the RTX 3050 6GB saved at 0). The switch is what goes,
+            # unless point 1 stays at or above that upper in the same edit.
             key, bounds = ('fan_zero_rpm' if 'fan_zero_rpm' in changes else None), None
-            fix = (f'keep {first_key} at {_celsius(upper)} C or more in this edit (both can move lower together '
-                   'on the saved copy)' if first_key else 'neither temperature of this entry is editable here')
+            fix = (f'keep {first_key} at {_celsius(upper)} C or more in this edit ' +
+                   ('(both can move lower together on the saved copy)' if written else
+                    '(the zero RPM pair of this entry is not editable on this image, so its upper stays as stored)') +
+                   ', or leave fan_zero_rpm off' if first_key else 'neither temperature of this entry is editable here')
         name = ((upper_key or first_key or '').split('_zero_rpm_')[0].split('_curve_')[0] or
                 f"fan policy entry {entry['index']}")
         what = (f'{upper_key}, {_celsius(upper)} C' if upper_key else
@@ -899,9 +908,11 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     # the channel list/enable bytes, the row limits of the active channels,
     # the points of the enabled curves, the policy entry flag bytes (0x32)
     # fan_zero_rpm covers, the fan-stop blocks its reviewed template writes and
-    # the zero RPM temperature pairs (bytes 30..33) of the enabled entries. They
-    # must still decode and agree afterwards. Tables that do not decode or agree
-    # accept no change at all.
+    # the zero RPM temperature pairs (bytes 30..33) of the enabled entries, and
+    # the same bytes of an unused copy of a channel's policy entry, which those
+    # bindings declare with their source (policy_mirrors). They must still
+    # decode and agree afterwards (a copy stays equal to its source). Tables
+    # that do not decode or agree accept no change at all.
     regions = parser.fan_regions() if hasattr(parser, 'fan_regions') else []
     if regions:
         try:

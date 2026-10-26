@@ -130,8 +130,12 @@ funcionando sin las dependencias gráficas.
    a menudo cerca de esa temperatura, y que bajes ese umbral inferior unos grados. Una
    herramienta de ventiladores que mantiene el control manual deja los ventiladores
    girando diga lo que diga el interruptor. Una ROM cuyas entradas de ventilador no
-   coinciden (una RTX 3060) muestra el campo de solo lectura como Mixto. En una copia
-   donde el interruptor escribió valores de parada, desactivarlo y cambiar sus
+   coinciden (una RTX 3060) muestra el campo de solo lectura como Mixto. Una ROM de
+   una RTX 3060 12 GB OEM de HP guarda una copia de los ajustes del ventilador 1,
+   probablemente sin uso, en la entrada de un segundo canal de ventilador que la ROM
+   desactiva: una nota dice que el editor cambia los dos de la misma forma (puntos de la
+   curva, parada en reposo y sus umbrales), y **Canales de ventilador** queda de solo
+   lectura. En una copia donde el interruptor escribió valores de parada, desactivarlo y cambiar sus
    umbrales se guardan por separado. Los **umbrales inferior y superior de la parada
    en reposo** de cada ventilador y curva adicional (Blackwell, Ada y Ampere) son las
    dos temperaturas guardadas junto a esos bits: lo más probable es que los
@@ -143,7 +147,7 @@ funcionando sin las dependencias gráficas.
    indica su rango permitido; cámbialos juntos (en una RTX 3090, activar la parada
    requiere bajar ambos umbrales superiores a 51,90625 °C, su punto 1, o menos). Donde
    el umbral inferior está en el punto 1 o por encima (las curvas adicionales de una
-   RTX 3080, la RTX 3050, algunas ROM de RTX 4090) su fila también se marca: bájalo por
+   RTX 3080, la RTX 3050 GA106, algunas ROM de RTX 4090) su fila también se marca: bájalo por
    debajo del umbral superior en la misma edición. Una cantidad mayor de **Canales de
    ventilador** que activa un ventilador guardado cuyo umbral superior está por encima
    de su punto 1 con la parada activada se rechaza: desactiva la parada y guarda,
@@ -250,8 +254,10 @@ de canales y cambia los límites, las curvas o la parada en reposo en la copia. 
 cantidad menor deja en gris las filas de los ventiladores que apaga (la copia los guarda,
 pero apagados) y la lista de cambios muestra sus valores como "no se usa"; un valor escrito
 en esas filas vuelve cuando la cantidad enciende otra vez su ventilador. Una cantidad
-mayor muestra los valores guardados de los ventiladores que enciende. Ada y
-Ampere no heredan esa conversión. Los techos de
+mayor muestra los valores guardados de los ventiladores que enciende. Una ROM de RTX
+3050 6 GB u 8 GB guarda su curva adicional (curva adicional 1) en la entrada de un
+segundo canal de ventilador que desactiva, así que **Canales de ventilador** queda de
+solo lectura y su fila dice por qué. Los techos de
 salida OCP revisados se expresan en mA, pero editarlos no demuestra que el firmware
 los aplique. Un techo de ecuación REL/ALT/OV tampoco es un voltaje evaluado ni
 un offset runtime. **Voltaje mínimo (VMIN)** (experimental) es el valor guardado de la
@@ -288,7 +294,7 @@ entre los campos avanzados (REL 1068,75 mV y ALT 1093,75 mV en la mayoría de la
 tarjetas, OV 1125 mV); ahí REL y ALT además se mantienen como mínimo en el voltaje de
 arranque y en VMIN más sus términos encadenados, y VMIN puede subir por encima del REL
 anterior si REL sube en la misma edición (VMIN más sus términos encadenados queda como
-máximo en REL). La GUI guarda
+máximo en REL). Ada y Ampere no heredan la conversión de memoria de Blackwell. La GUI guarda
 el archivo completo y no normaliza los bancos
 implícitamente. Los formatos desconocidos o no editables permiten sólo inspección.
 Las firmas criptográficas no se verifican ni regeneran.

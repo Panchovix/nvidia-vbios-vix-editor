@@ -398,6 +398,8 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
                    'form no shipped ROM runs zero RPM with; whether the fans stop is untested.'),
  'fan_stop.flat': ('"{field}" equals the upper threshold ({value} °C): with zero RPM on there is no hysteresis, so '
                    'the fans may stop and start often around that temperature. Set it a few degrees lower.'),
+ 'fan_stop.copy': ('This ROM also keeps a copy of the fan {fan} settings, most likely unused; the editor changes both '
+                   'the same way.'),
  'fan_stop.untested': 'Not tested on hardware on Ada or Ampere cards.',
  'fan_stop.manual': 'A fan tool that holds manual control keeps the fans running.',
  'field.connector_current_threshold_rated': 'Connector channel {connector} current threshold, rated (advanced, '
@@ -479,6 +481,12 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
                                   'third entry of the RTX A2000 stores zeros) and no reviewed template applies, '
                                   'so zero RPM cannot be turned on.'),
  'reason.fan_zero_rpm_temps_off': 'Zero RPM is read-only in this ROM, so its thresholds stay as stored.',
+ 'reason.fan_policy_copy': ('A disabled fan channel of this ROM keeps a copy of another fan\'s settings, most '
+                            'likely unused, which the editor changes together with them; setting the channel count '
+                            'would switch that copy off or turn its channel on, so the count stays as stored.'),
+ 'reason.fan_low_extra': ('This ROM stores an extra fan curve, used for every fan, in the entry of a second fan '
+                          'channel that it disables; setting the channel count would switch that curve off or turn '
+                          'its channel on, so the count stays as stored.'),
  'reason.generic': 'Editing unavailable for this field.',
  'error.INVALID_IMAGE': 'Open a ROM first',
  'error.INVALID_CHANGES': 'Stage a verified preview before saving',

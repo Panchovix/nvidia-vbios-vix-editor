@@ -123,6 +123,13 @@ temperature is refused with `SEPARATE_EDIT_REQUIRED`. An editable switch also ca
 `channel_bit4_clear: true` where a written channel entry keeps bit 4 of its flag byte clear (with 1
 it holds a flag form no shipped ROM runs zero RPM with) and `zero_rpm_flat_pairs` (`field`, the
 lower field, and `temp_c`) for each enabled entry that stores the same lower and upper temperature.
+Where a disabled fan channel keeps a copy of an active channel's policy entry (an HP OEM RTX 3060 12
+GB), the switch, that channel's curve points and its zero RPM pair carry `fan_policy_copies`
+(`entry`, the copy's policy entry, and `copy_of`, the channel it copies): their offsets include the
+same bytes of the copy in every chain, so it stays equal to its source, and `fan_entries` lists it.
+On the RTX 3050 6GB and 8GB the extra curve is policy entry 1, the entry of a second channel they
+disable: `fan_extra_1_*` carry `fan_policy: 1`, `fan_entries` lists entry 1 after the channel entry,
+and `fan_channels` is read-only.
 The zero RPM temperature pairs (`fan_N_zero_rpm_*_temp_c`, `fan_extra_M_zero_rpm_*_temp_c`) share
 the `fan-temperature` ordering group with the curve temperatures, and an upper's maximum is point 1
 of its own curve; where the stored lower is at or above point 1, the upper's minimum is 0.0625 °C,
@@ -132,10 +139,11 @@ With zero RPM on, `edit` refuses a result that leaves an enabled entry's upper a
 curve with `ZERO_RPM_ABOVE_CURVE`, unless GSP-RM ran that entry in the source with both bits set
 and the same upper and point 1. Its message names the upper and point 1 of each entry, their values
 and what to change; `details.field` is the field to change (the upper where editable and moved or
-turned on, `fan_zero_rpm` where it brings a template's upper, `fan_channels` where a larger count
-enables a stored entry, else point 1), `details.bounds` its range in this edit (`null` for the
-switch and the count), `details.joint_fields` the fields of the entries named (the lower too where
-it is at or above point 1) and `details.fan_policies` their policy entry indices. A refusal of
+turned on, `fan_zero_rpm` where it brings a template's upper or a stored one no field edits,
+`fan_channels` where a larger count enables a stored entry, else point 1), `details.bounds` its
+range in this edit (`null` for the switch and the count), `details.joint_fields` the fields of the
+entries named (the lower too where it is at or above point 1) and `details.fan_policies` their
+policy entry indices. A refusal of
 `fan_channels` adds `details.channel_count`: `separate-edits` (turn zero RPM off, raise the count,
 then turn zero RPM on with that upper lowered, each in its own edit) or `none` (the count cannot be
 raised on that image). See `extended-fields.md`.
