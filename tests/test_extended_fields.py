@@ -2290,6 +2290,13 @@ class FanCoolerTests(unittest.TestCase):
             b[row[i]['control_offset'] + 2] = i
             b[row[i]['control_offset'] + 5] = 0x30 | 1 << i
             b[row[i]['speed_offset'] + 1] = i
+
+        def raise_minimums(b, i):
+            # 30 % and 1200 RPM, with the row's own curve starting there; the extra curves keep 20 % and 1050 RPM.
+            for at in (row[i]['offset'] + 2, row[i]['policy_offset'] + 14):
+                b[at] = 30
+            for at in (row[i]['offset'] + 14, row[i]['policy_offset'] + 20):
+                struct.pack_into('<H', b, at, 1200)
         cases = {'row 2 copies row 0': (lambda b: copy_row0(b, 2), 2),
                  'row 2 other frequency': (lambda b: b.__setitem__(slice(row[2]['offset'] + 11, row[2]['offset'] + 14),
                                                                    (25000).to_bytes(3, 'little')), 2),
@@ -2306,9 +2313,11 @@ class FanCoolerTests(unittest.TestCase):
                                                                                     bytes((0xFB, 2))),
                                                         b.__setitem__(row[3]['offset'] + 10, 0xFA)), 3),
                  'stored row 3': (lambda b: store(b, 3), 4),
-                 # The extra curves serve every active channel: row 2's limits must hold them.
+                 # The extra curves serve every active channel: row 2's maximums must hold them. They may start
+                 # below its minimums, as below the active ones.
                  'row 2 maximum below the extra curves': (lambda b: struct.pack_into('<H', b, row[2]['offset'] + 16, 3400), 2),
-                 'row 2 level minimum above the extra curves': (lambda b: b.__setitem__(row[2]['offset'] + 2, 30), 2)}
+                 'row 2 level maximum below the extra curves': (lambda b: b.__setitem__(row[2]['offset'] + 3, 90), 2),
+                 'row 2 minimums above the extra curves': (lambda b: raise_minimums(b, 2), 3)}
         for name, (change, most) in cases.items():
             with self.subTest(case=name):
                 b = bytearray(blob)
@@ -2327,6 +2336,21 @@ class FanCoolerTests(unittest.TestCase):
                 edit(edited, {'fan_channels': count})
             self.assertEqual(exc.exception.code, code)
 
+    def test_extra_curves_below_the_minimums_keep_the_stored_channel(self):
+        # Extra curve points lowered below every row minimum (fan_limits allows it) keep the stored idle row
+        # available, and zero RPM still writes its entry, so the count raised later finds its bits in step.
+        image = from_bytes(synthetic_blackwell(fans=True))
+        low = edit(image, {'fan_extra_1_curve_1_rpm': 400, 'fan_extra_2_curve_1_rpm': 400}).image
+        fields = descriptors(low)
+        self.assertEqual((fields['fan_channels']['bounds']['minimum'], fields['fan_channels']['bounds']['maximum'],
+                          fields['fan_zero_rpm']['fan_entries']), (1, 3, [0, 1, 2, 4, 5]))
+        on = edit(low, {'fan_zero_rpm': 1}).image
+        back = edit(on, {'fan_extra_1_curve_1_rpm': 1050, 'fan_extra_2_curve_1_rpm': 1050}).image
+        three = edit(back, {'fan_channels': 3})
+        self.assertEqual([three.blob[at] for at in self.zero_rpm_offsets(three.blob)], [0x06] * 5)
+        self.assertEqual((descriptors(three.image)['fan_zero_rpm']['current'],
+                          descriptors(three.image)['fan_zero_rpm']['editable']), (1, True))
+
     def test_single_channel_without_stored_channels_is_read_only(self):
         blob = bytearray(synthetic_blackwell(fans=True))
         t = self.table(blob)
@@ -2339,7 +2363,7 @@ class FanCoolerTests(unittest.TestCase):
         single = descriptors(from_bytes(repair_fixture(b)))['fan_channels']
         self.assertEqual((single['current'], single['editable']), (1, False))
         self.assertEqual(single['reason'], "no other fan channel layout is stored in this table, or a stored channel's "
-                                           'limits do not hold the extra fan curves')
+                                           'maximums sit below the extra fan curves')
 
     def test_tables_lists_and_shared_values_gate_the_fields(self):
         blob = synthetic_blackwell(fans=True)
@@ -2582,6 +2606,19 @@ class FanCoolerTests(unittest.TestCase):
         self.assertEqual(fields['fan_2_max_rpm']['bounds']['encoding_maximum'], 32767)
         self.assertEqual([e['kind'] for e in fields['fan_1_min_rpm']['evidence']][:2],
                          ['structural-table', 'read-only-nvml-correlation'])
+        # GSP-RM checks each curve and each row only against itself; the limits also cite the control unit.
+        firmware = [e for e in fields['fan_1_min_rpm']['evidence'] if e['kind'] == 'static-firmware-analysis']
+        self.assertEqual(len(firmware), 2)
+        self.assertIn('no load, validation or export path compares curve points with the row limits',
+                      firmware[0]['observation'])
+        self.assertIn(firmware[0], fields['fan_extra_1_curve_1_rpm']['evidence'])
+        # The enabled speed-table value (2300 RPM) is named in the speed limits only; a temperature only rises.
+        self.assertIn('and the speed-table value', fields['fan_1_min_rpm']['reason'])
+        self.assertNotIn('speed-table value', fields['fan_1_min_pct']['reason'])
+        for key in ('fan_1_curve_1_temp_c', 'fan_extra_1_curve_1_temp_c'):
+            self.assertIn('the temperatures rise strictly from point to point, from 0 to 110 C', fields[key]['reason'])
+            self.assertNotIn('limits', fields[key]['reason'])
+            self.assertNotIn('minimums', fields[key]['reason'])
         self.assertFalse(any(key.startswith(('fan_3_', 'fan_4_')) for key in fields))
         # Each limit writes only its own bytes and reverts byte for byte.
         for key, value, at, width in (('fan_1_min_rpm', 900, rows[0] + 14, 2), ('fan_2_max_rpm', 4000, rows[1] + 16, 2),

@@ -92,8 +92,8 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `input_policy_9_max_raw` | Row 9 raw maximum; units unknown | Read-only, only when row 9 is unrecognized |
 | `fan_channels` | Active fan channels across the five fan tables | Experimental, Blackwell, Ada and Ampere, up to the stored channels; read-only on Turing |
 | `fan_pwm_frequency_hz` | PWM frequency of every active fan channel | Experimental, Blackwell, Ada, Ampere and Turing, 21-28 kHz |
-| `fan_N_min/max_rpm`, `fan_N_min/max_pct` | Speed (RPM) and level (%) limits of active fan channel N, numbered from 1 | Experimental, Blackwell, Ada, Ampere and Turing; move alone only as far as the stored fan curves, past them together with the curve points; level limits opt-in |
-| `fan_N_curve_K_temp_c/rpm/pct`, `fan_extra_M_curve_K_temp_c/rpm/pct` | Point K (1..3) of channel N's stored fan curve or of extra curve M: temperature (°C, 1/32 °C steps), speed (RPM), level (%) | Experimental, Blackwell, Ada, Ampere and Turing; points stay in order and inside the limits; levels opt-in |
+| `fan_N_min/max_rpm`, `fan_N_min/max_pct` | Speed (RPM) and level (%) limits of active fan channel N, numbered from 1 | Experimental, Blackwell, Ada, Ampere and Turing; move alone only as far as the stored fan curves (a minimum as far as the channel's own curve: the extra curves may sit below it), past them together with the curve points; level limits opt-in |
+| `fan_N_curve_K_temp_c/rpm/pct`, `fan_extra_M_curve_K_temp_c/rpm/pct` | Point K (1..3) of channel N's stored fan curve or of extra curve M: temperature (°C, 1/32 °C steps), speed (RPM), level (%) | Experimental, Blackwell, Ada, Ampere and Turing; points stay in order and inside the limits (an extra curve from 0 up to the lowest channel maximum, so it may sit below the minimums); levels opt-in |
 | `power_default_w` | Rated TGP value used at boot | Experimental; Blackwell, Ada, Ampere, Turing |
 | `max_operating_temp_c` | Maximum operating temperature: the three temperatures (1/32 °C) of one thermal policy entry (P+0x50; GB20x entry 0, Turing, Ampere and Ada the entry header byte 9 names), written together | Experimental, GB20x, Ada, Ampere and Turing; 40 °C up to the product's stock value + 3 °C (only lower on products without a reviewed stock value); read-only where that entry is disabled or not named (XOC-style images) and on Ampere and Ada laptops (a lower limit of the same kind); never imported |
 | `gpc_offset_min/max_mhz`, `memory_offset_min_mhz` | Clock offset range in MHz (NVML scale) | Experimental, reviewed Blackwell and Ada; Ampere and Turing by analogy |
@@ -1344,7 +1344,7 @@ and every active channel is stored. Fan fields are offered only when that holds.
   counts that can be undone byte for byte:
   - Lowering the count drops the last channels in all five tables. It goes down only
     while each channel it clears has its own cooler configuration, channel 0's
-    enable byte in every table and limits that hold the extra curves (below), so
+    enable byte in every table and maximums at or above the extra curves (below), so
     raising again rebuilds it exactly. The Matrix lowered to 2 then has the same
     list and enables as the Astral XOC image, which
     keeps the third channel stored but off. Its other bytes stay its own: the cooler enable
@@ -1353,14 +1353,17 @@ and every active channel is stored. Fan fields are offered only when that holds.
   - Raising the count enables the next stored channels, each with channel 0's enable
     byte in every table. The cooler row must also have its own configuration (row
     bytes 4..5 and 10 unlike every earlier row), the active PWM frequency, byte
-    13 = 0 and speed and level limits that hold every enabled extra curve: those
-    curves serve every active channel, so an extra curve edited past a stored row
-    keeps that row off. The scan stops at the first channel that does not qualify.
+    13 = 0 and speed and level maximums at or above every enabled extra curve: those
+    curves serve every active channel, so an extra curve raised above a stored row's
+    maximum keeps that row off. The extra curves may start below a stored row's
+    minimums, as below the active ones. The scan stops at the first channel that
+    does not qualify.
   - Lowering and raising again restores the original bytes.
   - Resulting limits: Matrix, Astral XOC and Lightning 3; FE, 5080, 5070 Ti, 5070
     and Workstation 2; Max-Q and 5060 Ti 1, read-only, because their second
     channel holds only placeholder entries; SFF 1, read-only, because its extra
-    curves (3600-7300 RPM) do not fit its stored second row (1375-3375 RPM).
+    curves (3600-7300 RPM) top out above the 3375 RPM maximum of its stored second
+    row (1375-3375 RPM).
 - **PWM frequency.** Cooler row bytes 11..13 hold the PWM frequency in Hz. It is
   25000 on the active rows of the 5090 Matrix and the Asus XOC images, and 27000
   elsewhere. On the Matrix, mVolt's BIOS override view shows the same 25 kHz and 3
@@ -1380,10 +1383,17 @@ and every active channel is stored. Fan fields are offered only when that holds.
   (expected value in parentheses): RTX 5080 (1050-3500 RPM) 73 % -> 2556 (2555),
   79 % -> 2761-2774 (2765); RTX PRO 4000 SFF (3600-7300) 92 % -> 6887 (6877), 84 % ->
   6438 (6454); RTX 5070 Ti (1050-3200) 68 % -> 2206-2213 (2217); RTX PRO 6000 Max-Q
-  (1000-3350) 96 % -> 3213 (3216), 90 % -> 3010 (3014). The driver's 30-100 % range
-  does not follow byte 2 (10-30 on the corpus), so the meaning of the level bytes is
-  unconfirmed. Hardware test on that RTX 5080 (both channels, fans under manual
-  control): with the speed maximum raised from 3500 to 4000 RPM, 72 % gave 2820 RPM
+  (1000-3350) 96 % -> 3213 (3216), 90 % -> 3010 (3014). Static analysis of GSP-RM
+  615.78.08 (with the GA102-GA107 settings) shows the same map: bit 0 of the policy
+  flag byte (0x32), set on every enabled entry of the corpus but those of the ASUS
+  XOC and MSI Lightning images (0x16/0x06), selects a control that clamps a manual
+  percent to 30-100 %, turns it into an RPM target on that line and reports the
+  speeds on the same scale, using only the speed limits. GSP-RM validates the level
+  bytes and sends them to the fan controller, but uses them itself only where bit 0
+  is clear (a manual percent then sets the PWM as a share of the level maximum). The
+  driver's 30-100 % range does not follow byte 2 (10-30 on the corpus), so the
+  meaning of the level bytes is unconfirmed. Hardware test on that RTX 5080 (both
+  channels, fans under manual control): with the speed maximum raised from 3500 to 4000 RPM, 72 % gave 2820 RPM
   and 30 % gave 1050 RPM, as the linear map predicts; with the level minimum lowered
   from 20 to 10 %, the driver's fan range stayed 30-100 %. In that test, the 30 % setting
   matched the unchanged 1050 RPM row minimum. A lowered minimum did not lower the fans on another
@@ -1394,22 +1404,33 @@ and every active channel is stored. Fan fields are offered only when that holds.
   limits, the curve points and other boards are not hardware-tested.
   `fan_N_min_rpm`, `fan_N_max_rpm`, `fan_N_min_pct` and `fan_N_max_pct`
   (N = row index + 1, active channels only) edit these bytes:
-  - A minimum may go from 0 up to the lowest first point of the channel's curve and
-    of every enabled extra curve, and below its maximum. A maximum may go from the
-    highest top point of those curves, and above its minimum, up to 32767 RPM (the
-    signed 16-bit range of the driver's fan-curve RPM values) or 100 %. The speed
-    limits also keep the channel's speed-table value (speed entry bytes 2..3, when
-    that entry is enabled) inside them: it is 0.51-0.79 of the row maximum on the
-    corpus, and its meaning is unknown. Alone, a limit can therefore widen, or narrow
-    as far as the stored curves and the speed value, but never cut into them.
+  - A minimum may go from 0 up to the first point of the channel's own curve, and
+    below its maximum. The enabled extra curves may start below it: a stock RTX 3090
+    blower image stores both of its extra curves at 1000/2203/3541 RPM and 30/55/80 %,
+    starting below its 3000 RPM / 60 % minimums, so the firmware accepts them there.
+    In GSP-RM 615.78.08 the policy validator checks each curve only against itself
+    (temperatures rising strictly, levels and RPMs never falling), the cooler row
+    validator each row only against itself (each maximum not below its minimum, the
+    level maximum at most 100 %), and no load, validation or export path compares curve
+    points with the row limits. The fan controller most likely runs the highest
+    request of the curves that serve a fan, inside the row limits, but its code is
+    encrypted, so this is not verified. A maximum may go from the highest
+    top point of the channel's curve and of every enabled extra curve, and above its
+    minimum, up to 32767 RPM (the signed 16-bit range of the driver's fan-curve RPM
+    values) or 100 %. The speed limits also keep the channel's speed-table value
+    (speed entry bytes 2..3, when that entry is enabled) inside them: it is 0.51-0.79
+    of the row maximum on the corpus, and its meaning is unknown. Alone, a limit can
+    therefore widen, or narrow as far as the curves that hold it and the speed value,
+    but never cut into them.
   - A side with no room (a level maximum of 100 with a curve reaching 100 %, or the
     0 % / 0 RPM minimum of an Ampere board that stops its fan) stays editable with
     equal bounds: alone it keeps its value, and it moves together with the curve
     points (below). Each side is read-only when the row or a curve holds another
     shape (curve temperatures not rising strictly, speeds or levels falling,
-    minimum not below maximum, a curve or the speed value outside the limits, a
-    maximum or a curve above the ceiling). Bounds are always numeric, so a joint
-    request that breaks the order is refused on the edited result.
+    minimum not below maximum, the channel's curve or the speed value below the
+    minimum, a curve or the speed value above the maximum, a maximum or a curve
+    above the ceiling). Bounds are always numeric, so a joint request that breaks
+    the order is refused on the edited result.
 - **Curve points.** `fan_N_curve_K_temp_c`, `fan_N_curve_K_rpm` and `fan_N_curve_K_pct`
   (K = 1..3) edit point K of channel N's own policy entry: the temperature at byte
   18 + 4(K-1) (`<H`, 1/32 °C; the field is in °C, so 60.5 is stored as 1936 and 60.01
@@ -1426,15 +1447,17 @@ and every active channel is stored. Fan fields are offered only when that holds.
   - Speeds and levels never fall: point K stays between its neighbors (equal is
     allowed) and inside the containment, from its floor for point 1 up to its
     ceiling for point 3. A channel curve is contained by its own row limits; an extra curve
-    serves every active channel, so it is contained by the highest minimum and the
-    lowest maximum of the active rows. The ceilings stay 32767 RPM and 100 %.
+    serves every active channel, so it stays at or below the lowest maximum of the
+    active rows, from 0 up: it may sit below their minimums. The ceilings stay 32767
+    RPM and 100 %.
   - A point is read-only when its curve holds another shape (as above, or a value
     above its ceiling) or when it sits outside its bounds; a point with no room
     stays editable like a limit. A stored point above the containment does not
     widen its neighbor's range. On the corpus every point is editable except the
-    top speeds of the RTX 4080 Super's extra curves, which top out above its second
-    channel's maximum. The level points are opt-in, like the level limits.
-  - **Lowering a maximum.** A limit and the curves contain each other, so a maximum
+    top speeds of the extra curves of the RTX 4080 Super and an RTX 3080 Ti, which
+    top out above a channel maximum. The level points are opt-in, like the level
+    limits.
+  - **Lowering a maximum.** A maximum and the curves contain each other, so a maximum
     goes below a stored curve only in one request that also moves every point above
     the new maximum, of the channel's curve and of every extra curve; the fields
     share the `fan-speed` group, so the request is checked on the edited result. For
@@ -1443,18 +1466,19 @@ and every active channel is stored. Fan fields are offered only when that holds.
     set to 3000 are accepted together; the maximum alone, or with the channel's own
     curve only, is refused (`OUT_OF_BOUNDS`). The maximum never goes below the
     channel's enabled speed-table value. Raising a minimum works the same way with
-    the first points. Fields with no room take part too: a level maximum of 100
+    the points of the channel's own curve below it; the extra curves may stay below
+    the new minimum. Fields with no room take part too: a level maximum of 100
     lowers with the top level points, the 0 RPM minimum of a board that stops its
-    fan rises with the first speed points, and the same keys undo a request in one
-    edit, points left flush with the new limit included.
+    fan rises with the first speed point of its curve, and the same keys undo a
+    request in one edit, points left flush with the new limit included.
   - The level fields are opt-in (behind the GUI's advanced toggle) because their
     meaning is unconfirmed. Byte 3 is 100 on every active row, so `fan_N_max_pct`
     moves alone only where the curves top out lower (RTX 5060 Ti 81 %, RTX 5070
     92 %); elsewhere it lowers with the top level points.
 - `fan_channels` and a channel limit, curve point, `fan_zero_rpm` or zero RPM
   temperature are refused together (`SEPARATE_EDIT_REQUIRED`): the count adds or
-  removes channel fields, changes the limits the extra curves must fit and which
-  policy entries the zero-RPM flag reads, so save it first and edit the limits,
+  removes channel fields, changes the maximums the extra curves must stay under and
+  which policy entries the zero-RPM flag reads, so save it first and edit the limits,
   curves, flag and temperatures on the copy.
   The PWM frequency combines with them.
 - **Preserved.** Speed values, the other policy entry bytes and the remaining bytes.
@@ -1513,9 +1537,11 @@ Byte `0x32`, the last byte of each 51-byte policy entry, is a flag byte.
   3060 8GB set bit 1 alone (0x13/0x03), so GSP-RM checks their blocks at every boot
   (the channel entry of the RTX 3060 8GB stores 40/40 °C, an upper equal to its lower,
   which the validator accepts); one RTX 3060 stores 0x13 on its channel entry and 0x07
-  on its extra curve; the RTX A2000 stores no usable block on its third entry (zeros,
-  word 44 = 0); the RTX A1000, A4000, A4500, A5000, A5500 and A6000 store zeros and
-  0xff (0x01). No blower board ships with fan stop on.
+  on its extra curve, and a stock RTX 3090 blower image 0x13 on both channel entries
+  and 0x07 on both extra curves; the RTX A2000 stores no usable block on its third
+  entry (zeros, word 44 = 0); the RTX A1000, A4000, A4500, A5000, A5500 and A6000
+  store zeros and 0xff (0x01). No blower board ships with fan stop on its channel
+  entries (the RTX 3090 blower image sets it on its extra curves only).
 - **Owner reports.** The contribution came with owner reports for images outside the
   reviewed corpus: the fans stand still at idle on the Palit GameRock RTX 5090, the
   ASUS TUF RTX 5090 and the ASUS TUF RTX 5070 Ti (0x17/0x07), and keep turning at
@@ -1558,10 +1584,10 @@ Byte `0x32`, the last byte of each 51-byte policy entry, is a flag byte.
     that disagree about bit 1 (on GB20x, about either bit), chains that disagree, a
     stored channel entry whose bits differ from the enabled ones, and an entry without
     an accepted block where no template applies (the RTX A2000, whose third entry
-    stores zeros). The RTX 3060
-    that stores 0x13 and 0x07 is read-only too: zero RPM is on for one entry and off
-    for the other, so the field has no value (`current` `null`, `flag_state`
-    `mixed`); the GUI shows it as Mixed.
+    stores zeros). The RTX 3060 and the RTX 3090 blower image that store 0x13 and
+    0x07 are read-only too: zero RPM is on for some entries and off for the others,
+    so the field has no value (`current` `null`, `flag_state` `mixed`); the GUI
+    shows it as Mixed.
   - The window shows the field, like the other 0/1 fields, as a switch behind the
     advanced toggle.
 - **Templates for blower boards that store no block.** The RTX PRO 6000 Max-Q and
@@ -1699,8 +1725,9 @@ Bytes 30..33 of a policy entry hold two `<H` temperatures in 1/32 °C, the lower
     accepts and `fan_zero_rpm` is offered on the image, whatever the bits, so an
     upper can be lowered in the same edit that turns zero RPM on (an RTX 3090:
     55 °C above point 1 at 51.90625 °C; an RTX 3060 Ti: 60 °C above 43 °C). Where
-    `fan_zero_rpm` is read-only (the RTX A2000 and the RTX 3060 with mixed bits) the
-    pairs are read-only too. Writes go to every duplicate image chain.
+    `fan_zero_rpm` is read-only (the RTX A2000, and the RTX 3060 and the RTX 3090
+    blower image with mixed bits) the pairs are read-only too. Writes go to every
+    duplicate image chain.
 - **Start temperature rule.** With zero RPM on, the upper (start) temperature of an
   enabled entry may be at most point 1 of the same entry's fan curve, so idle fans
   never stay stopped past the temperature where their curve starts them. `edit`
@@ -2398,8 +2425,8 @@ fixed HUB and DISP rows, which no field uses.
 
 **Fans.** The Ada tables and rules, except that the speed table may be unused
 (disabled on every channel: RTX 3080/3090 boards except the RTX 3080 Ti with two
-connector channels, RTX 3060 8GB, RTX 3050 6GB and 8GB). PWM frequency on 27 images
-with GPU-driven fans, channel count on 15 of the 17 that store a second channel (not
+connector channels, RTX 3060 8GB, RTX 3050 6GB and 8GB). PWM frequency on 28 images
+with GPU-driven fans, channel count on 16 of the 18 that store a second channel (not
 that RTX 3080 Ti, whose extra curves top out at 4000 RPM, above both channel maxima,
 nor the HP OEM RTX 3060 12 GB below).
 The A40 (passive) tables disagree and keep no fan field; laptops list no channel. An
@@ -2427,7 +2454,7 @@ editor accepts such an entry (a low extra curve) only when its channel is disabl
 the cooler, mapping, control and speed tables and its bit is set in the first mask of
 every enabled control entry, and then expects the active channel's control entry to
 set that bit next to its own (a copy has its bit in neither mask). It lists entry 1 as
-`fan_extra_1`: its points stay inside the channel limits, which hold it,
+`fan_extra_1`: its points stay at or below the channel maximum, which holds it,
 `fan_zero_rpm` covers it (both ship with zero RPM on) and so does a zero RPM pair
 where shown (on the 8GB; see Zero RPM for the 6GB), and `fan_channels` stays read-only
 (a channel count writes entry 1's enable byte, which would disable the curve or turn
@@ -2437,14 +2464,22 @@ round. Anything else that disagrees, such as entry 1 enabled while the mask leav
 out or its channel enabled in the mapping or control table, still keeps the fan fields
 hidden.
 Channel limits and curve points as on Ada; the speed value holds the maximum only
-where the speed table is enabled. Boards that stop the fan (RTX
+where the speed table is enabled. A stock RTX 3090 blower image (PG132 SKU 10,
+94.02.26.48.D6) stores both extra curves at 1000/2203/3541 RPM and 30/55/80 %,
+starting below its 3000 RPM / 60 % row minimums, the only image of the corpus whose
+extra curves start below a minimum: the channel curves alone hold the minimums, so
+its minimums, every extra curve point and its channel count (1 or 2; a stored
+channel needs only its maximums at or above the extra curves) are editable, while
+`fan_zero_rpm` (0x13 on the channel entries, 0x07 on the extra curves) and its zero
+RPM pairs stay read-only. Boards that stop the fan (RTX
 3080, 3090, GA104 3060 Ti, 3070, GA106 3050 and 3060 8GB) store 0 % and 0 RPM as
-minimum and curve start: those minimums rise only together with the first curve
-points, which stay editable. The GA103 3060 Ti, RTX 3050 8GB, A4000 and A2000 curves top
+minimum and curve start: those minimums rise only together with point 1 of their
+own curve, which stays editable (the extra curves, also at 0, may stay there). The
+GA103 3060 Ti, RTX 3050 8GB, A4000 and A2000 curves top
 out below 100 % (97, 96, 81 and 95 %), so their level maximum also moves alone. `fan_zero_rpm` and the
 zero RPM pairs: see [Zero RPM](#zero-rpm-fan_zero_rpm-opt-in) (on most GeForce images,
 off with flag bits alone or a reviewed template elsewhere, read-only on the RTX A2000 and
-the RTX 3060 with mixed bits).
+on the RTX 3060 and RTX 3090 blower images with mixed bits).
 
 **Thermal policy table (P+0x50) and factory clock record (P+0x98).** As on Ada, except
 that the thermal policy header is 10 bytes (11 on Ada); see [Maximum operating

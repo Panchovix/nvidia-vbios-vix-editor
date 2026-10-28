@@ -16,8 +16,8 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.fan_pwm_frequency_hz': 'Frecuencia PWM de los ventiladores (experimental)',
  'field.fan_channels': 'Canales de ventilador (experimental)',
  'field.fan_zero_rpm': 'Parada de ventiladores en reposo (avanzado, experimental)',
- 'reason.fan_layout': 'Esta tabla no guarda otra disposición de canales de ventilador, o los límites de un canal '
-                       'guardado no contienen las curvas adicionales.',
+ 'reason.fan_layout': 'Esta tabla no guarda otra disposición de canales de ventilador, o los máximos de un canal '
+                       'guardado quedan por debajo de las curvas adicionales.',
  'field.fan_min_rpm': 'Velocidad mínima del ventilador {fan} (experimental)',
  'field.fan_max_rpm': 'Velocidad máxima del ventilador {fan} (experimental)',
  'field.fan_min_pct': 'Nivel mínimo del ventilador {fan} (avanzado, experimental)',
@@ -194,8 +194,8 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'zero_rpm_channels_locked_hint': ('Una cantidad mayor activa un ventilador guardado cuyo umbral superior de parada en '
                                    'reposo está por encima del punto 1 de su curva, y la parada en reposo es de solo '
                                    'lectura en esta ROM, así que la cantidad no se puede subir'),
- 'fan_curve_min_hint': ('Las curvas tienen puntos por debajo de este mínimo (bajan hasta {value} {units}). '
-                        'Sube esos puntos en la misma edición: {points}.'),
+ 'fan_curve_min_hint': ('La curva de este ventilador tiene puntos por debajo de este mínimo (bajan hasta {value} '
+                        '{units}). Sube esos puntos en la misma edición: {points}.'),
  'fan_curve_max_hint': ('Las curvas tienen puntos por encima de este máximo (llegan hasta {value} {units}). '
                         'Baja esos puntos en la misma edición: {points}.'),
  'fan_curve_readonly_hint': ('Algunos puntos que bloquean el cambio son de solo lectura en esta imagen: {points}. '

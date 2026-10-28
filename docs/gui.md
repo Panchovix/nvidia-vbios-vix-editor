@@ -217,11 +217,12 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    and show decimals only when they need them. A limit moves only as far as the
    stored curves: to lower a maximum below them, type the new maximum and the curve
    points above it, including those of the extra curves, and they are checked and
-   saved together as one copy. To raise a minimum, also raise every curve point
-   below it. If a curve blocks a limit, the row names the points that still need
-   changing, including extra curves, using the values currently typed. For example,
-   two fans and two extra curves starting at 1000 RPM require six changes to raise
-   both minima to 1200 RPM: both minima and the first point of all four curves.
+   saved together as one copy. To raise a minimum, also raise the points of that
+   fan's own curve below it; the extra curves may stay below a minimum. If a curve
+   blocks a limit, the row names the points that still need changing (for a maximum
+   including the extra curves), using the values currently typed. For example, two
+   fans and two extra curves starting at 1000 RPM require four changes to raise both
+   minima to 1200 RPM: both minima and the first point of both fan curves.
    No values are adjusted automatically. The minimum and maximum level (%) of each channel
    and the curve levels appear with the advanced fields. Save a new channel count
    before changing channel limits, curves or zero RPM on the copy. A lower count greys

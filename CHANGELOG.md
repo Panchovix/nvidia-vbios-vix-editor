@@ -3,6 +3,11 @@
 One line per change. What each change does, where it applies and what was tested is in the
 [changelog details](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/changelog-details.md).
 
+## 0.1.37
+
+- HP OEM RTX 3060 12 GB: zero RPM can't stop the fan (hardware result).
+- Fans: extra fan curves may sit below the fan minimums, so the RTX 3090 blower's minimums and channel count can be edited.
+
 ## 0.1.36
 
 - HP OEM RTX 3060 12 GB: the fan fields can be edited.

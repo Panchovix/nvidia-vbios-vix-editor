@@ -2507,15 +2507,17 @@ def fan_layouts(parser, table):
     - Raising enables the next stored channels only: stored in every table
       (see BlackwellRom.fan_coolers), with their own cooler configuration
       (row bytes 4..5 and 10 unlike every earlier row), the shared PWM
-      frequency, byte 13 = 0 and speed and level limits that hold every
-      enabled extra curve (those curves serve every active channel, so an
-      edited extra curve cannot end up outside a channel enabled later). They
-      take channel 0's enable byte in each table.
+      frequency, byte 13 = 0 and speed and level maximums at or above every
+      enabled extra curve (those curves serve every active channel and stay at
+      or below the lowest active maximum, fan_curves, so an edited extra curve
+      cannot end up above a channel enabled later; like the active minimums, a
+      stored channel's minimums may sit above them). They take channel 0's
+      enable byte in each table.
     - Lowering clears the last channels in all five tables, as the two-channel
       ASUS XOC image does for the Matrix's third channel. It is offered only down
       to the lowest channel above which every active channel has its own
-      cooler configuration, channel 0's enable byte in every table and limits
-      that hold the extra curves, so raising again restores it.
+      cooler configuration, channel 0's enable byte in every table and maximums
+      at or above the extra curves, so raising again restores it.
     - Where a disabled channel keeps an unused copy of an active channel's
       policy entry (TableRom.fan_coolers policy_copy_offsets), only the stored
       count and no layout: the stored count's layout would clear the copy's
@@ -2532,10 +2534,9 @@ def fan_layouts(parser, table):
     frequency = active[0]['pwm_frequency_hz']
     identity = lambda r: (b[r['offset'] + 4:r['offset'] + 6], b[r['offset'] + 10])
     first = rows[0]
-    holds = lambda r: all(r[low] <= fan_points(c, unit)[0] and fan_points(c, unit)[-1] <= r[high]
-                          for c in table['extra_curves']
-                          for unit, low, high in (('rpm', 'rpm_minimum', 'rpm_maximum'),
-                                                  ('pct', 'level_minimum', 'level_maximum')))
+    # The extra curves may start below a channel's minimums (fan_limits); only its maximums hold them.
+    holds = lambda r: all(fan_points(c, unit)[-1] <= r[high] for c in table['extra_curves']
+                          for unit, high in (('rpm', 'rpm_maximum'), ('pct', 'level_maximum')))
     enables = (('offset', 'enable'), ('policy_offset', 'policy_enable'), ('mapping_offset', 'mapping_enable'),
                ('control_offset', 'control_enable'), ('speed_offset', 'speed_enable'))
     most = len(active)
@@ -2686,10 +2687,44 @@ FAN_LIMIT_EVIDENCE = {
     'observation': 'on every active row of the GB20x, Ada and Ampere corpus the row limits hold the channel\'s own '
                    'policy curve (row minimum <= lowest curve point, highest curve point <= row maximum); the '
                    'enabled policy curves past the cooler rows fit too, except on one Ada board whose second '
-                   'channel tops out below them; every curve rises strictly in temperature, RPM and level '
+                   'channel and one Ampere board whose two channels top out below them, and on a stock RTX 3090 '
+                   'blower image, which stores both extra curves at 1000/2203/3541 RPM and 30/55/80 %, starting below '
+                   'its 3000 RPM / 60 % row minimums; every curve rises strictly in temperature, RPM and level '
                    '(channel curves 43-97 C, the other curves 92-108 C, three Ampere boards with a point off a '
                    'whole degree); every enabled speed entry holds 0.51-0.79 of its row maximum RPM; byte 3 is '
-                   '100; duplicate chains hold the same bytes; Ampere boards that stop the fan store 0 % and 0 RPM'}
+                   '100; duplicate chains hold the same bytes; Ampere boards that stop the fan store 0 % and 0 RPM',
+    'inferred': 'the firmware accepts extra curves that start below the row minimums (that stock image ships them); '
+                'the fan controller most likely runs the highest request of the curves that serve a fan and holds it '
+                'inside the row limits, so a fan most likely never runs below its row minimum, whatever an extra '
+                'curve requests; the fan controller code is encrypted, so this is not verified'}
+# GSP-RM on the v0x20 fan tables (GB20x, Ada and Ampere; not the Turing v0x10 policy table): the curve points
+# (limits and curves) and the control unit with its manual percent (limits).
+FAN_CURVE_FIRMWARE_EVIDENCE = {
+    'kind': 'static-firmware-analysis',
+    'source': 'GSP-RM firmware 615.78.08 (gsp_ga10x.bin): v0x20 fan policy, cooler row and control entry validators, '
+              'fan policy export and fan controller load, read with the GA102-GA107 chip settings',
+    'observation': 'the fan policy validator checks each curve only against itself: temperatures rise strictly and '
+                   'levels and RPMs never fall, with no point compared with 100 % or with an RPM range; the cooler row '
+                   'validator checks each row only against itself: each maximum not below its minimum and the level '
+                   'maximum at most 100 %, with no lower bound on either minimum; the control entry validator reads '
+                   "neither curve points nor row limits; the policy export sends a curve's first and last points as "
+                   'its own minimum and maximum, and the load sends the cooler rows, policies and control entries to '
+                   'the fan controller without cross-checks; no load, validation or export path compares curve points '
+                   'with the row limits; the fan controller code is encrypted and was not examined',
+    'set_tested': False}
+FAN_CONTROL_FIRMWARE_EVIDENCE = {
+    'kind': 'static-firmware-analysis',
+    'source': 'GSP-RM firmware 615.78.08 (gsp_ga10x.bin): v0x20 fan policy entry parser, fan control unit, manual '
+              'control and status of the fan cooler, read with the GA102-GA107 chip settings',
+    'observation': 'bit 0 of the policy flag byte (0x32) sets the control unit, which the policies a control entry '
+                   'combines must share; with bit 0 set (every enabled entry of the corpus but those of the ASUS XOC '
+                   'and MSI Lightning images, 0x16/0x06), a manual percent is clamped to 30-100 % and sets an RPM '
+                   'target linearly from the row minimum RPM at 30 % to the row maximum at 100 %, and the measured '
+                   'and target RPM are reported on the same scale; with bit 0 clear, a manual percent sets the PWM as '
+                   'a share of the level maximum, and the PWM between the level minimum and maximum is reported as '
+                   '30-100 %; the level limits are validated and always sent to the fan controller, but with bit 0 '
+                   'set GSP-RM uses only the RPM limits for manual control and status',
+    'set_tested': False}
 FAN_LIMIT_NVML = dict(NVML_CAPTURE, relation='the driver fan percent maps linearly from 30 % = row minimum RPM to '
                                                '100 % = row maximum RPM',
                       observed='RTX 5080 (1050-3500 RPM): 73 % -> 2556 RPM, 79 % -> 2761-2774 (2555 and 2765 '
@@ -2766,15 +2801,18 @@ def fan_untested(parser, note='not hardware-tested'):
 def fan_limits(writable, parser, table, evidence):
     """Speed (RPM) and level (%) limits of each active fan channel, numbered from 1.
 
-    The limits keep containing the stored curves: the channel's own policy curve and
-    every extra curve (the enabled policy curves past the cooler rows and a low extra
-    curve, low_extra_curves), and the speed limits also the channel's enabled
-    speed-table value. A minimum moves from 0 up to the lowest of
-    them and below the maximum; a maximum from the highest of them and above the
-    minimum up to the ceiling. A limit moves past a curve only together with the
-    curve points (fan_curves), in one joint edit. Each side is read-only when its
-    row and curves hold another shape (fan_shaped).
+    A minimum stays at or below the channel's own policy curve and, for speed, the
+    channel's enabled speed-table value; the extra curves (the enabled policy curves
+    past the cooler rows and a low extra curve, low_extra_curves) may start below it,
+    as on a stock RTX 3090 blower image. A maximum stays at or above every curve, the
+    extra ones included, and the enabled speed-table value. A minimum moves from 0 up
+    to the lowest of its curve and value and below the maximum; a maximum from the
+    highest point of every curve and that value, and above the minimum, up to the
+    ceiling. A limit moves past a curve only together with the curve points
+    (fan_curves), in one joint edit. Each side is read-only when its row and curves
+    hold another shape (fan_shaped).
     """
+    firmware = [] if turing(parser) else [FAN_CURVE_FIRMWARE_EVIDENCE, FAN_CONTROL_FIRMWARE_EVIDENCE]
     result = []
     for r in table['rows']:
         if not r['active']:
@@ -2787,7 +2825,10 @@ def fan_limits(writable, parser, table, evidence):
                          (r['level_minimum'], r['level_maximum']))
             points = [fan_points(c, unit) for c in curves]
             held = [r['speed_rpm']] if unit == 'rpm' and r['speed_enable'] else []
-            floor, top = min([p[0] for p in points] + held), max([p[-1] for p in points] + held)
+            # The channel's own curve (points[0]) holds the minimum; the extra curves only the maximum.
+            floor, top = min([points[0][0]] + held), max([p[-1] for p in points] + held)
+            value = ' and the speed-table value' if held else ''
+            below = ', while the extra curves may start below it' if table['extra_curves'] else ''
             for side, current, at, lo, hi in (('min', low, low_at, 0, min(floor, high - 1)),
                                               ('max', high, high_at, max(top, low + 1), ceiling)):
                 word = 'minimum' if side == 'min' else 'maximum'
@@ -2795,11 +2836,12 @@ def fan_limits(writable, parser, table, evidence):
                     writable, parser, f'fan_{n}_{side}_{unit}', f'Fan {n} {word} {noun}', units, current, lo, hi,
                     shaped, [r['offset'] + at], encoding, 1, ceiling, noun,
                     [dict(FAN_LIMIT_EVIDENCE), dict(FAN_LIMIT_NVML), dict(FAN_LIMIT_HARDWARE)] +
-                    [dict(e) for e in evidence],
-                    f'experimental: {word} fan {noun} of channel {n}; the stored fan curves' +
-                    (' and the speed-table value' if unit == 'rpm' and not turing(parser) else '') +
-                    ' stay inside the limits, so a '
-                    'limit moves past a curve only with its points in one edit; ' +
+                    [dict(e) for e in firmware + list(evidence)],
+                    f'experimental: {word} fan {noun} of channel {n}; ' +
+                    (f"the minimum stays at or below the channel's own fan curve{value}{below}, so it moves past "
+                     'that curve only with its points in one edit; ' if side == 'min' else
+                     f'the maximum stays at or above every stored fan curve{value}, so it moves past a curve only '
+                     'with its points in one edit; ') +
                     fan_untested(parser, FAN_LIMIT_TESTED.get((side, unit), 'not hardware-tested')),
                     stored_units=units, value_semantics=f'stored-fan-{word}-{noun}', fan_rows=[r['index']],
                     fan_channel=r['index'], **({'opt_in': True} if unit == 'pct' else {})))
@@ -2814,22 +2856,24 @@ def fan_curves(writable, parser, table, evidence):
     numbered from 1 in entry order. Temperatures rise
     strictly from 0 to 110 C; speeds and levels never fall and stay inside the limits:
     the channel's own row limits, or for an extra curve, which serves every active
-    channel, the highest minimum and lowest maximum of the active rows. The row limits
-    hold the curves the same way (fan_limits), so lowering a maximum below a curve
-    takes the limit and the points above it in one joint edit. Every point stays inside
-    the containment, so a stored point above it does not widen its neighbor's range.
+    channel, 0 up to the lowest maximum of the active rows (a stock RTX 3090 blower
+    image starts its extra curves below its row minimums). The row limits hold the
+    curves the same way (fan_limits), so lowering a maximum below a curve takes the
+    limit and the points above it in one joint edit, and raising a minimum above a
+    channel curve takes that curve's points below it. Every point stays inside the
+    containment, so a stored point above it does not widen its neighbor's range.
     A point is also written to each unused copy of its entry (policy_mirrors).
     """
     active = [r for r in table['rows'] if r['active']]
     if not active:
         return []
-    shared = {'rpm': (max(r['rpm_minimum'] for r in active), min(r['rpm_maximum'] for r in active)),
-              'pct': (max(r['level_minimum'] for r in active), min(r['level_maximum'] for r in active))}
+    shared = {'rpm': (0, min(r['rpm_maximum'] for r in active)), 'pct': (0, min(r['level_maximum'] for r in active))}
     curves = [(f'fan_{r["index"] + 1}', f'Fan {r["index"] + 1} curve', f'channel {r["index"] + 1}', r,
                {'rpm': (r['rpm_minimum'], r['rpm_maximum']), 'pct': (r['level_minimum'], r['level_maximum'])},
                dict(fan_channel=r['index'], fan_rows=[r['index']])) for r in active]
     curves += [(f'fan_extra_{m}', f'Extra fan curve {m}', f'extra {m}', c, shared,
                 dict(fan_rows=[r['index'] for r in active])) for m, c in enumerate(table['extra_curves'], 1)]
+    firmware = [] if turing(parser) else [FAN_CURVE_FIRMWARE_EVIDENCE]
     result = []
     for prefix, name, owner, curve, limits, extra in curves:
         shaped = fan_shaped(curve) and all(low < high for low, high in limits.values())
@@ -2845,10 +2889,12 @@ def fan_curves(writable, parser, table, evidence):
                     writable, parser, f'{prefix}_curve_{k + 1}_{unit}', f'{name} point {k + 1} {noun}', units, values[k],
                     lo, hi, shaped, policy_mirrors(curve, curve['policy_offset'] + first + step * k), encoding,
                     scale, ceiling, noun,
-                    [dict(FAN_LIMIT_EVIDENCE)] + [dict(e) for e in evidence],
-                    f'experimental: {noun} of point {k + 1} of the stored {owner} fan curve; the points stay in '
-                    'order and inside the fan limits' + (' of every active channel' if 'fan_channel' not in extra
-                                                         else '') + '; ' + fan_untested(parser) + copied,
+                    [dict(FAN_LIMIT_EVIDENCE)] + [dict(e) for e in firmware + list(evidence)],
+                    f'experimental: {noun} of point {k + 1} of the stored {owner} fan curve; ' +
+                    ('the temperatures rise strictly from point to point, from 0 to 110 C' if unit == 'temp_c' else
+                     'the points stay in order and inside the fan limits' if 'fan_channel' in extra else
+                     'the points stay in order and at or below the lowest maximum of the active channels, and may '
+                     'sit below their minimums') + '; ' + fan_untested(parser) + copied,
                     stored_units=stored_units, value_semantics=f'stored-fan-curve-{noun}', fan_policy=curve['index'],
                     **extra, **copies, **({'opt_in': True} if unit == 'pct' else {})))
     return result
@@ -2892,8 +2938,8 @@ def fans(image, parser):
                          TURING_FAN_CHANNELS_REASON if turing(parser) else
                          FAN_POLICY_COPY_CHANNELS_REASON if policy_copy_rows(table) else
                          FAN_LOW_EXTRA_CHANNELS_REASON if low_extra_curves(table) else
-                         'no other fan channel layout is stored in this table, or a stored channel\'s limits do not '
-                         'hold the extra fan curves'),
+                         'no other fan channel layout is stored in this table, or a stored channel\'s maximums sit '
+                         'below the extra fan curves'),
             field('fan_pwm_frequency_hz', 'Fan PWM frequency', 'Hz', current,
                   FAN_PWM_BAND_HZ[0] if in_band else None, FAN_PWM_BAND_HZ[1] if in_band else None, editable,
                   [dict(e) for e in evidence], offsets=pwm_offsets if editable else (),
@@ -3241,14 +3287,15 @@ AMPERE_FAN_ZERO_RPM_CORPUS_EVIDENCE = {
                    'clears it; the 6GB stores 52/55 C with byte 46 = 0xff on both, a block GSP-RM accepts with bit 1 '
                    'set); an RTX 3080, an RTX 3060 Ti and the GA106 RTX 3050 store blocks GSP-RM accepts with both '
                    'bits clear (0x11/0x01); an RTX 3090, an RTX 3070 and the RTX 3060 8GB set bit 1 alone (0x13/0x03), '
-                   'so GSP-RM checks their blocks at every boot; one RTX 3060 stores 0x13 on its channel entry and '
-                   '0x07 on its extra curve; the RTX A2000 stores no usable block on its third entry (zeros, word 44 = '
-                   '0); the RTX A1000, A4000, A4500, A5000, A5500 and A6000 store zeros and 0xff with both bits clear '
-                   '(0x01)'}
+                   'so GSP-RM checks their blocks at every boot; one RTX 3060 (0x13 on its channel entry, 0x07 on its '
+                   'extra curve) and a stock RTX 3090 blower image (0x13 on both channel entries, 0x07 on both extra '
+                   'curves) mix the two forms; the RTX A2000 stores no usable block on its third entry (zeros, word '
+                   '44 = 0); the RTX A1000, A4000, A4500, A5000, A5500 and A6000 store zeros and 0xff with both bits '
+                   'clear (0x01)'}
 FAN_ZERO_RPM_MIXED_REASON = ('read-only: every enabled fan policy entry sets bit 1 of its flag byte (0x32) but only '
                              'some set bit 2, so zero RPM is on for some entries and off for others (one RTX 3060 '
-                             'stores 0x13 on its channel entry and 0x07 on its extra curve); neither 0 nor 1 '
-                             'describes that, and the editor changes neither')
+                             'and a stock RTX 3090 blower image store 0x13 on their channel entries and 0x07 on '
+                             'their extra curves); neither 0 nor 1 describes that, and the editor changes neither')
 FAN_ZERO_RPM_NO_BLOCK_REASON = ('read-only: a fan policy entry stores no fan-stop block GSP-RM accepts (a nonzero '
                                 'pair at bytes 30..33 with the upper at least the lower, word 44 nonzero and, with '
                                 'byte 46 other than 0xff, dword 38 >= dword 34 and word 42 nonzero; the third entry of '

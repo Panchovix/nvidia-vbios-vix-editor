@@ -1225,28 +1225,19 @@ class GtkSmokeTests(unittest.TestCase):
                         for n, key in enumerate(minima):
                             self.assertIn('invalid', window.rows[key]['row'].get_css_classes())
                             self.assertIn('1000 RPM', delta(key))
-                            for blocker in (own[n],) + extras:
-                                self.assertIn(title(blocker), delta(key))
-                            self.assertNotIn(title(own[1-n]), delta(key))
+                            self.assertIn(title(own[n]), delta(key))
+                            # A minimum is held by the channel's own curve only: the extra curves may stay below it.
+                            for other in (own[1-n],) + extras:
+                                self.assertNotIn(title(other), delta(key))
                             self.assertNotEqual(delta(key), window.text('order_hint'))
                         # The backend reports one owner; its range remains alongside the curve hint.
                         owner = 'fan_1_min_rpm'
                         self.assertIn(window.text('range_hint', minimum='0', maximum='1000', units='RPM'), delta(owner))
                         for key in own:
                             window.entries[key].set_text('1200')
-                        until(lambda: not window.verifying)
-                        self.assertFalse(window.lookup_action('save').get_enabled())
-                        for key in minima:
-                            for blocker in extras:
-                                self.assertIn(title(blocker), delta(key))
-                            for blocker in own:
-                                self.assertNotIn(title(blocker), delta(key))
-                        for key in extras:
-                            window.entries[key].set_text('1200')
                         until(lambda: not window.verifying and not window.dirty)
                         self.assertTrue(window.lookup_action('save').get_enabled())
-                        self.assertEqual(window.controller.document.changes,
-                                         {key: '1200' for key in minima + own + extras})
+                        self.assertEqual(window.controller.document.changes, {key: '1200' for key in minima + own})
                         for key in minima:
                             self.assertNotIn('invalid', window.rows[key]['row'].get_css_classes())
                         # The last points explain a reduced maximum, with no first-point blame.

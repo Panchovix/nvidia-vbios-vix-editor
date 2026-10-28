@@ -16,7 +16,7 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'field.fan_pwm_frequency_hz': 'Fan PWM frequency (experimental)',
  'field.fan_channels': 'Fan channels (experimental)',
  'field.fan_zero_rpm': 'Fan zero RPM (advanced, experimental)',
- 'reason.fan_layout': "This table stores no other fan channel layout, or a stored channel's limits do not hold the "
+ 'reason.fan_layout': "This table stores no other fan channel layout, or a stored channel's maximums sit below the "
                        'extra fan curves.',
  'field.fan_min_rpm': 'Fan {fan} minimum speed (experimental)',
  'field.fan_max_rpm': 'Fan {fan} maximum speed (experimental)',
@@ -185,7 +185,7 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'zero_rpm_channels_locked_hint': ('A larger count turns on a stored fan whose zero RPM upper threshold is above point '
                                    '1 of its curve, and zero RPM is read-only in this ROM, so the count cannot be '
                                    'raised'),
- 'fan_curve_min_hint': ('Fan curves have points below this minimum (down to {value} {units}). '
+ 'fan_curve_min_hint': ("This fan's curve has points below this minimum (down to {value} {units}). "
                         'Raise those points in the same edit: {points}.'),
  'fan_curve_max_hint': ('Fan curves have points above this maximum (up to {value} {units}). '
                         'Lower those points in the same edit: {points}.'),

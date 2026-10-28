@@ -3,6 +3,43 @@
 What each change does, where it applies, what was tested and its risks. CHANGELOG.md lists the same
 changes, one line each, in the same order.
 
+## 0.1.37
+
+- **HP OEM RTX 3060 12 GB: zero RPM can't stop the fan (hardware result).** One user tested the 0.1.36 fan fields on
+  this card (94.06.2F.00.ED) on Windows with driver 621.01. With **Fan zero RPM** on, and also with **Fan 1 minimum
+  level**, **Fan 1 minimum speed** and the speed of point 1 of the curve at 0, the fan stayed at about 1200 RPM at 30
+  °C, the same as with the stock ROM, which asks for 1000 RPM there. Raising point 1 of the curve to 2000 RPM and 45 %
+  raised the idle speed to about 2000 RPM, so the fan settings reach the card and the floor of about 1200 RPM most
+  likely comes from the fan itself. Nothing changed in the editor. Reported in [issue
+  #22](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/22).
+
+- **Fans: extra fan curves may sit below the fan minimums, so the RTX 3090 blower's minimums and channel count can be
+  edited.** A stock RTX 3090 blower ROM (94.02.26.48.D6) runs both fans between 3000 and 5000 RPM and 60 and 100 %,
+  and keeps its two extra fan curves, which start at 95 and 97 °C, at 1000/2203/3541 RPM and 30/55/80 %, starting
+  below those minimums. The editor kept every fan minimum at or below the start of every curve, extra curves included,
+  so on that ROM **Fan 1 minimum speed**, **Fan 2 minimum speed**, both minimum levels, the low points of the extra
+  curves and **Fan channels** were read-only. Now only a fan's own curve (and the speed-table value where the ROM uses
+  one) bounds its minimum, the points of an extra curve go from 0 up to the lowest fan maximum, and a stored fan
+  channel needs only its maximums above the extra curves; the maximums still stay above every curve. When a curve
+  blocks a raised minimum, the Fans card now names only the points of that fan's own curve. Static analysis of the
+  driver's GSP firmware found no check of fan curve points against the fan limits, and the stock ROM shows that the
+  driver accepts extra curves below the minimums, but the fan controller most likely never runs a fan below its
+  minimum. One user reported that on that card the fan reads 42 % at idle and runs about 3333 RPM at a manual 30 %,
+  which the driver turns into a 3000 RPM target (the minimum speed), so something holds it higher, possibly the 60 %
+  minimum level or the fan itself. To try for about 2000 RPM, lower **Fan 1 minimum speed** and **Fan 2 minimum
+  speed** to 2000 RPM, both minimum levels to 30 % and point 1 of both fan curves to 2000 RPM and 40 % in one edit
+  (the levels are under **Show advanced XOC-style fields**). This may let the fan idle near 2000 RPM, but on an RTX
+  5080 a lowered minimum did not lower the speed the fan ran at, and an HP OEM RTX 3060 12 GB fan stayed at about 1200
+  RPM, so it may change nothing. None of this is tested on an RTX 3090. **Fan zero RPM** stays read-only there,
+  because its fan entries mix the zero RPM bits. A slower fan lets the card run warmer, so watch the GPU and memory
+  temperatures after the change. On other ROMs the first points of the extra curves can now go lower, and on an RTX
+  3080 Ti and an RTX 4500 Ada a minimum can now rise to its own curve. Reported in [issue
+  #24](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/24). For API users: the maximum of `fan_N_min_rpm`
+  and `fan_N_min_pct` comes from the channel's own curve, `fan_extra_M_curve_1_rpm` and `fan_extra_M_curve_1_pct` have
+  0 as their minimum, and `fan_channels` checks only the maximums of a stored channel against the extra curves.
+  Importing fans now copies extra curves that start below the target's minimums, and the fan limit and curve fields of
+  GB20x, Ada and Ampere ROMs carry two new static-firmware-analysis evidence entries.
+
 ## 0.1.36
 
 - **HP OEM RTX 3060 12 GB: the fan fields can be edited.** On this ROM (94.06.2F.00.ED) the Fans card said that some

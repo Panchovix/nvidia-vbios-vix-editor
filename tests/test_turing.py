@@ -835,6 +835,10 @@ class TuringFanTests(unittest.TestCase):
         keys = ['fan_pwm_frequency_hz'] + fan_limits(2) + fan_curves(2, 0)
         self.assertEqual(sorted(k for k, f in fields.items() if f['editable']), sorted(POWER + keys))
         self.assertTrue(all(turing_evidence(fields[k]) for k in keys))
+        # The GSP-RM fan analysis covers the v0x20 tables only; Turing has no speed table to name.
+        self.assertFalse([k for k in keys
+                          if any(e['kind'] == 'static-firmware-analysis' for e in fields[k]['evidence'])])
+        self.assertNotIn('speed-table value', fields['fan_1_min_rpm']['reason'])
         for key in keys:
             self.assertIn('not hardware-tested on Turing', fields[key]['reason'])
             self.assertNotIn('; not hardware-tested; not hardware-tested', fields[key]['reason'])

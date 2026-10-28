@@ -69,7 +69,7 @@ REASON_KEYS = {
     'domain identity and MHz conversion are unvalidated': 'reason.clock',
     'Same field as the MHz control; edit that control.': 'table_alias',
     'Equivalent representation; use the main control.': 'field_alias',
-    "no other fan channel layout is stored in this table, or a stored channel's limits do not hold the extra fan "
+    "no other fan channel layout is stored in this table, or a stored channel's maximums sit below the extra fan "
     'curves': 'reason.fan_layout',
     MAX_TEMP_DISABLED_REASON: 'reason.max_temp_disabled',
     MAX_TEMP_UNEQUAL_REASON: 'reason.max_temp_unequal',
@@ -365,8 +365,10 @@ def fan_curve_hint(field, fields, values, language='en'):
     """Explain curve points blocking a fan limit, using all pending stored values.
 
     The report already associates each curve with its fan rows, including shared
-    extra curves. This is guidance only: the backend still validates the edit and
-    may also constrain it by the opposite limit, encoding or stored speed.
+    extra curves. Those block a maximum only: a minimum is held by the channel's own
+    curve, and the extra curves may sit below it. This is guidance only: the backend
+    still validates the edit and may also constrain it by the opposite limit,
+    encoding or stored speed.
     """
     match = FAN_KEY.fullmatch(field.get('key', ''))
     channel = field.get('fan_channel')
@@ -384,8 +386,8 @@ def fan_curve_hint(field, fields, values, language='en'):
     blocked = []
     for curve in fields:
         point = FAN_CURVE_KEY.fullmatch(curve.get('key', ''))
-        if (point is None or point.group(4) != unit or
-                channel not in curve.get('fan_rows', ())):
+        if (point is None or point.group(4) != unit or channel not in curve.get('fan_rows', ()) or
+                side == 'min' and curve.get('fan_channel') != channel):
             continue
         value = parse_number(values.get(curve['key'], curve.get('current')))
         if value is not None and (value < amount if side == 'min' else value > amount):

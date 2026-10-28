@@ -88,6 +88,23 @@ def recomputed(blob):
     return bytes(blob)
 
 
+def assert_written(test, image, result, changes):
+    """result wrote each requested value at every chain copy of its field, and changed no other byte but the
+    integrity bytes."""
+    parser = backend(image)
+    bindings = {b.descriptor['key']: b for b in registry.bindings(image, parser)[0]}
+    allowed = {at for r in result.manifest['integrity_repairs']
+               for at in range(r['offset'], r['offset'] + (48 if 'sha384' in r['kind'] else 1))}
+    for key, value in changes.items():
+        binding = bindings[key]
+        size = struct.calcsize(binding.encoding)
+        test.assertEqual(tuple(binding.offsets), tuple(parser.copy_offsets(binding.offsets[0], size)), key)
+        test.assertEqual({struct.unpack_from(binding.encoding, result.blob, at)[0] for at in binding.offsets}, {value},
+                         key)
+        allowed.update(at for start in binding.offsets for at in range(start, start + size))
+    test.assertLessEqual({i for i, (a, b) in enumerate(zip(image.blob, result.blob)) if a != b}, allowed)
+
+
 class AmpereStructureTests(unittest.TestCase):
     def test_efi_less_chain_and_the_ga10x_npds_stamp(self):
         # A GA104 legacy ID (0x2484) with data images stamped 0x2200, without EFI image.
@@ -677,6 +694,55 @@ class AmpereFanTests(unittest.TestCase):
                 self.assertEqual(backend(lowered.image).fan_coolers()['rows'][0]['rpm_maximum'], 2100)
                 self.assertEqual(edit(lowered.image, {key: 3300 for key in top}).blob, image.blob)
 
+    def test_extra_curves_may_start_below_the_channel_minimums(self):
+        # As on a stock RTX 3090 blower image: both channels run from 2500 RPM and 60 %, where their own curves start
+        # (2500/2900/3300 RPM, 60/75/100 %), while the extra curves (entries 2 and 3) start at 1000 RPM and 20 %. Only
+        # the channel curves hold the minimums; the extra curves stay at or below the lowest maximum and may sit below
+        # the minimums.
+        blob = synthetic_rom(family='ampere', copies=2, fans=2, fan_speed=False)
+        for row in backend(from_bytes(blob)).fan_coolers()['rows']:
+            for at, data in ((row['offset'] + 2, bytes((60,))), (row['offset'] + 14, struct.pack('<H', 2500)),
+                             (row['policy_offset'] + 14, bytes((60, 75, 100))),
+                             (row['policy_offset'] + 20, struct.pack('<H', 2500)),
+                             (row['policy_offset'] + 24, struct.pack('<H', 2900))):
+                blob = patched(blob, at, data)
+        image = from_bytes(blob)
+        fields = descriptors(image)
+        bounds = lambda key: (fields[key]['current'], fields[key]['bounds']['minimum'],
+                              fields[key]['bounds']['maximum'], fields[key]['editable'])
+        for n in (1, 2):
+            self.assertEqual([bounds(f'fan_{n}_{side}') for side in ('min_rpm', 'min_pct', 'max_rpm')],
+                             [(2500, 0, 2500, True), (60, 0, 60, True), (3300, 3300, 32767, True)])
+            self.assertIn('the extra curves may start below it', fields[f'fan_{n}_min_rpm']['reason'])
+            # The speed table is disabled, so the reasons do not name its value.
+            for side in ('min', 'max'):
+                self.assertNotIn('speed-table value', fields[f'fan_{n}_{side}_rpm']['reason'])
+        for m in (1, 2):
+            self.assertEqual([bounds(f'fan_extra_{m}_curve_{k}') for k in ('1_rpm', '1_pct', '3_rpm', '3_pct')],
+                             [(1000, 0, 2000, True), (20, 0, 50, True), (3300, 2000, 3300, True), (100, 50, 100, True)])
+            self.assertIn('may sit below their minimums', fields[f'fan_extra_{m}_curve_1_rpm']['reason'])
+        # A minimum still moves past its own curve only with it.
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_1_min_rpm': 2600})
+        self.assertEqual((exc.exception.code, exc.exception.details['bounds']['maximum']), ('OUT_OF_BOUNDS', 2500))
+        lower = {'fan_1_min_rpm': 2000, 'fan_1_min_pct': 30, 'fan_1_curve_1_rpm': 2000, 'fan_1_curve_1_pct': 40}
+        result = edit(image, lower)
+        assert_written(self, image, result, lower)
+        self.assertEqual(edit(result.image, {key: fields[key]['current'] for key in lower}).blob, image.blob)
+        # An extra curve point goes below every minimum alone, but not above the lowest maximum.
+        below = {'fan_extra_1_curve_1_rpm': 500, 'fan_extra_2_curve_1_pct': 10}
+        lowered = edit(image, below)
+        assert_written(self, image, lowered, below)
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_extra_1_curve_3_rpm': 3400})
+        self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        # The channel count stays offered, before and after: a stored channel needs only its maximums at or above
+        # the extra curves, which may start below its minimums.
+        self.assertEqual(bounds('fan_channels'), (2, 1, 2, True))
+        count = descriptors(lowered.image)['fan_channels']
+        self.assertEqual((count['bounds']['minimum'], count['bounds']['maximum'], count['editable']), (1, 2, True))
+        self.assertEqual(edit(edit(image, {'fan_channels': 1}).image, {'fan_channels': 2}).blob, image.blob)
+
     def test_an_unused_copy_of_the_fan_1_policy_entry_is_written_with_it(self):
         # As on an HP OEM RTX 3060 12 GB: channel 2 is disabled in every table but the policy table, whose entry 1
         # is byte for byte the channel 1 entry, and no enabled control entry sets bit 1 of byte 5 (0x0d here).
@@ -780,7 +846,7 @@ class AmpereFanTests(unittest.TestCase):
         self.assertEqual((extra['current'], extra['fan_policy'], extra['fan_rows'], extra['editable']),
                          (95.0, 1, [0], True))
         self.assertEqual([fields[f'fan_extra_{m}_curve_1_temp_c']['fan_policy'] for m in (2, 3)], [2, 3])
-        # The extra curve takes its points in both chains and bounds the channel limits like the others.
+        # The extra curve takes its points in both chains and bounds the channel maximum like the others.
         entry = low['policy_offset']
         result = edit(image, {'fan_extra_1_curve_1_temp_c': 90})
         changed_bytes_within(self, image, result, parser.copy_offsets(entry + 18, 2), width=2)

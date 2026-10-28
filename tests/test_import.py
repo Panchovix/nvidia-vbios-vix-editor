@@ -161,21 +161,27 @@ class ImportTests(unittest.TestCase):
                 self.assertEqual(values(result.image)['fan_channels'], 2)
 
     def test_a_refused_unit_is_reported_whole_and_none_of_it_applied(self):
-        # With one channel the donor's extra curves start at 900 RPM; here fan 2 still has a 1050 RPM minimum.
+        # With one channel the donor's extra curves top out at 4000 RPM; here fan 2 still has a 3500 RPM maximum.
         # The temperature that comes with them is part of the same curve.
-        low = {'fan_1_min_rpm': 900, 'fan_1_curve_1_rpm': 900, 'fan_extra_1_curve_1_rpm': 900,
-               'fan_extra_2_curve_1_rpm': 900}
+        high = {'fan_1_max_rpm': 4000, 'fan_1_curve_3_rpm': 4000, 'fan_extra_1_curve_3_rpm': 4000,
+                'fan_extra_2_curve_3_rpm': 4000}
         donor = donor_of(self.blob, {'fan_channels': 1},
-                         dict(low, fan_1_curve_1_temp_c=45.0, fan_pwm_frequency_hz=25000))
+                         dict(high, fan_1_curve_1_temp_c=45.0, fan_pwm_frequency_hz=25000))
         report, result = import_fields(self.target, donor, ['fans'])
         refused = {e['field']: e['code'] for e in report['skipped'] if e['reason'] == 'refused'}
-        self.assertEqual(refused, {key: 'OUT_OF_BOUNDS' for key in [*low, 'fan_1_curve_1_temp_c']})
+        self.assertEqual(refused, {key: 'OUT_OF_BOUNDS' for key in [*high, 'fan_1_curve_1_temp_c']})
         self.assertEqual(next(e['reason'] for e in report['skipped'] if e['field'] == 'fan_channels'),
                          'board_specific')
         self.assertEqual(report['changes'], {'fan_pwm_frequency_hz': 25000})
         after = values(result.image)
-        self.assertEqual((after['fan_pwm_frequency_hz'], after['fan_1_min_rpm'], after['fan_1_curve_1_temp_c']),
-                         (25000, 1050, 50.0))
+        self.assertEqual((after['fan_pwm_frequency_hz'], after['fan_1_max_rpm'], after['fan_1_curve_1_temp_c']),
+                         (25000, 3500, 50.0))
+        # Extra curves may start below a channel minimum: a 900 RPM start comes whole, fan 2 keeps its 1050 RPM.
+        low = {'fan_1_min_rpm': 900, 'fan_1_curve_1_rpm': 900, 'fan_extra_1_curve_1_rpm': 900,
+               'fan_extra_2_curve_1_rpm': 900}
+        report, result = import_fields(self.target, donor_of(self.blob, {'fan_channels': 1}, low), ['fans'])
+        self.assertEqual(report['changes'], low)
+        self.assertEqual(values(result.image)['fan_2_min_rpm'], 1050)
 
     def test_each_skipped_field_has_its_reason(self):
         donor = FakeDonor(self.target, {

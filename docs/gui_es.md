@@ -242,12 +242,14 @@ temperaturas avanzan de a 1/32 °C (`60.5` sirve, `60.01` no) y muestran decimal
 cuando hacen falta. Un límite solo llega hasta las curvas guardadas: para bajar un
 máximo por debajo de ellas, escribe el nuevo máximo y los puntos de curva que
 quedan por encima, también los de las curvas adicionales, y se comprueban y guardan
-juntos en una sola copia. Para subir un mínimo, sube también todos los puntos que
-queden por debajo. Si una curva bloquea un límite, la fila nombra los puntos que
-faltan por cambiar, incluidas las curvas adicionales, usando los valores escritos.
-Por ejemplo, dos ventiladores y dos curvas adicionales que empiezan en 1000 RPM
-requieren seis cambios para subir ambos mínimos a 1200 RPM: los dos mínimos y el
-primer punto de las cuatro curvas. Ningún valor se ajusta automáticamente.
+juntos en una sola copia. Para subir un mínimo, sube también los puntos de la curva
+propia de ese ventilador que queden por debajo; las curvas adicionales pueden quedar
+por debajo de un mínimo. Si una curva bloquea un límite, la fila nombra los puntos
+que faltan por cambiar (para un máximo, también los de las curvas adicionales),
+usando los valores escritos. Por ejemplo, dos ventiladores y dos curvas adicionales
+que empiezan en 1000 RPM requieren cuatro cambios para subir ambos mínimos a
+1200 RPM: los dos mínimos y el primer punto de las dos curvas de los ventiladores.
+Ningún valor se ajusta automáticamente.
 El nivel mínimo y máximo (%) de cada canal y los niveles
 de las curvas aparecen con los campos avanzados. Guarda primero una nueva cantidad
 de canales y cambia los límites, las curvas o la parada en reposo en la copia. Una
