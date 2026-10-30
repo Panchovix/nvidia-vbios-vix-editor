@@ -103,6 +103,46 @@ class LanguageTests(unittest.TestCase):
         for language in ('en', 'es'):
             self.assertIn('XOC', field_label({'key': 'nvvdd_rel_alt_follow_ov'}, language))
 
+    def test_rel_floor_and_flat_voltage_labels_sit_under_their_partners(self):
+        from nvidia_vbios.editor.sections import SECTIONS
+        labels = {(key, language): field_label({'key': key}, language)
+                  for key in ('nvvdd_rel_equation_min_mv', 'msvdd_rel_equation_min_mv', 'nvvdd_rel_alt_follow_ov_mv')
+                  for language in ('en', 'es')}
+        self.assertEqual(labels, {('nvvdd_rel_equation_min_mv', 'en'): 'NVVDD REL floor',
+                                  ('nvvdd_rel_equation_min_mv', 'es'): 'Piso REL de NVVDD',
+                                  ('msvdd_rel_equation_min_mv', 'en'): 'MSVDD REL floor',
+                                  ('msvdd_rel_equation_min_mv', 'es'): 'Piso REL de MSVDD',
+                                  ('nvvdd_rel_alt_follow_ov_mv', 'en'): 'NVVDD flat voltage (REL = ALT = OV)',
+                                  ('nvvdd_rel_alt_follow_ov_mv', 'es'): 'Voltaje plano de NVVDD (REL = ALT = OV)'})
+        voltage = dict(SECTIONS)['voltage']
+        for partner, key in (('nvvdd_rel_equation_max_mv', 'nvvdd_rel_equation_min_mv'),
+                             ('msvdd_rel_equation_max_mv', 'msvdd_rel_equation_min_mv'),
+                             ('nvvdd_rel_alt_follow_ov', 'nvvdd_rel_alt_follow_ov_mv'),
+                             ('msvdd_rel_max_mv', 'msvdd_rel_fixed_mv'), ('msvdd_rel_fixed_mv', 'msvdd_alt_fixed_mv')):
+            self.assertEqual(voltage.index(key), voltage.index(partner) + 1)
+        # The Ampere MSVDD fixed values (opt-in) take the NVVDD labels with their rail.
+        self.assertEqual(field_label({'key': 'msvdd_alt_fixed_mv', 'opt_in': True}),
+                         'MSVDD ALT fixed voltage (advanced, experimental)')
+        self.assertEqual(field_label({'key': 'msvdd_rel_fixed_mv', 'opt_in': True}, 'es'),
+                         'Voltaje fijo REL de MSVDD (avanzado, experimental)')
+        # Their read-only reasons name the rows the user changes instead, in both languages; on a ROM without ALT
+        # only REL follows OV.
+        from nvidia_vbios.editor.registry import (FOLLOW_OV_CLAMP_REASON, FOLLOW_OV_REL_CLAMP_REASON,
+                                                  FOLLOW_OV_SWITCH_OFF_REASON)
+        alone = {'en': 'REL follows OV in this ROM, so REL and OV share',
+                 'es': 'En esta ROM REL sigue a OV, así que REL y OV comparten'}
+        for language, flat, switch in (('en', 'NVVDD flat voltage (REL = ALT = OV)', 'NVVDD REL and ALT follow OV'),
+                                       ('es', 'Voltaje plano de NVVDD (REL = ALT = OV)',
+                                        'REL y ALT de NVVDD siguen a OV')):
+            with self.subTest(language=language):
+                self.assertIn(flat, read_only_reason({'reason': FOLLOW_OV_CLAMP_REASON}, language))
+                self.assertIn(switch, read_only_reason({'reason': FOLLOW_OV_SWITCH_OFF_REASON}, language))
+                rel = read_only_reason({'reason': FOLLOW_OV_REL_CLAMP_REASON}, language)
+                self.assertTrue(rel.startswith(alone[language]) and flat in rel, rel)
+        # A refused REL floor above its ceiling is explained by the voltage order hint.
+        self.assertIn('VMIN < REL floor ≤ REL ≤ ALT', Messages()('order_hint_voltage'))
+        self.assertIn('VMIN < piso REL ≤ REL ≤ ALT', Messages('es')('order_hint_voltage'))
+
 
 if __name__ == '__main__':
     unittest.main()

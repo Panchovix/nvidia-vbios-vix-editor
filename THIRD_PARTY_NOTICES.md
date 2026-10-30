@@ -79,7 +79,7 @@ nvgpu `bios.h` structure definitions (MIT). No NVIDIA source file is included.
 
 nvbios.exe and nvbios-gui.exe are free software under the GNU General Public License
 v3.0 or later (`LICENSE`). Their source code is at
-https://github.com/Panchovix/nvidia-vbios-vix-editor: tag `v0.1.37` is this release,
+https://github.com/Panchovix/nvidia-vbios-vix-editor: tag `v0.1.38` is this release,
 including `tools/release/`, the scripts that build these programs.
 
 The MSYS2 packages above are unmodified UCRT64 builds, at the versions listed. MSYS2

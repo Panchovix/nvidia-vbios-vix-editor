@@ -344,6 +344,54 @@ class ExtendedFieldTests(unittest.TestCase):
             edit(image, {'coefficient': 1000000}, field_registry=custom)
         self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
 
+    def test_rel_floor_is_the_clamp_minimum_and_moves_with_its_ceiling(self):
+        # The floor stays at most the OV value, the clamp minimum of the rail's OV equation: 900 mV in the fixture.
+        self.assertEqual(descriptors(from_bytes(extended_fixture()))['nvvdd_rel_equation_min_mv']['bounds']['maximum'],
+                         900)
+        # OV clamped to 1200 mV on both rails, the OV value of every GB20x image.
+        blob = bytearray(extended_fixture())
+        for item in backend(from_bytes(bytes(blob))).rail_equations():
+            if item['role'] == 'OV':
+                struct.pack_into('<ff', blob, item['equation_offset'] + 3, 1200000, 1200000)
+        image = from_bytes(repair_fixture(blob))
+        fields = descriptors(image)
+        floor, ceiling = fields['nvvdd_rel_equation_min_mv'], fields['nvvdd_rel_equation_max_mv']
+        self.assertEqual((floor['current'], floor['bounds']['minimum'], floor['bounds']['maximum'], floor['editable'],
+                          floor['experimental'], floor.get('opt_in')), (900, 850, 1000, True, True, None))
+        self.assertEqual((floor['bounds']['encoding_maximum'], ceiling['bounds']['encoding_maximum']),
+                         (1200, 0x7FFFFFFF / 1000))
+        self.assertEqual((floor['ordering_group'], ceiling['ordering_group']), ('nvvdd-rel-clamp', 'nvvdd-rel-clamp'))
+        self.assertEqual(floor['equation_offset'], ceiling['equation_offset'])
+        self.assertIn('REL is the higher of the chip value and this floor, up to the REL ceiling', floor['reason'])
+        at = floor['equation_offset']
+        result = edit(image, {'nvvdd_rel_equation_min_mv': 950})
+        self.assertEqual([e['offset'] for e in result.manifest['edits']], [at + 3])
+        changed_bytes_within(self, image, result, [at + 3])
+        self.assertEqual(struct.unpack_from('<ff', result.blob, at + 3), (950000, 1000000))
+        after = descriptors(result.image)
+        self.assertEqual((after['nvvdd_rel_equation_min_mv']['current'],
+                          after['nvvdd_rel_equation_max_mv']['bounds']['minimum']), (950, 950))
+        self.assertEqual(after['msvdd_rel_equation_min_mv'], fields['msvdd_rel_equation_min_mv'])
+        # Alone the floor stays at most the stored ceiling; requested together, the pair is checked on the result,
+        # and the floor stays at most OV.
+        for changes in ({'nvvdd_rel_equation_min_mv': 1001}, {'nvvdd_rel_equation_min_mv': 849},
+                        {'nvvdd_rel_equation_min_mv': 1100, 'nvvdd_rel_equation_max_mv': 1050},
+                        {'nvvdd_rel_equation_min_mv': 1201, 'nvvdd_rel_equation_max_mv': 1300}):
+            with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
+                edit(image, changes)
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        for floor_mv, ceiling_mv in ((1100, 1125), (850, 880), (1200, 1300)):
+            result = edit(image, {'nvvdd_rel_equation_min_mv': floor_mv, 'nvvdd_rel_equation_max_mv': ceiling_mv})
+            self.assertEqual(struct.unpack_from('<ff', result.blob, at + 3), (floor_mv * 1000, ceiling_mv * 1000))
+        msvdd = fields['msvdd_rel_equation_min_mv']
+        result = edit(image, {'msvdd_rel_equation_min_mv': 990})
+        changed_bytes_within(self, image, result, [msvdd['equation_offset'] + 3])
+        # Only the canonical binding writes the clamp minimum.
+        probe = custom_registry('probe', [at + 3], encoding='<f', scale=1000, bounds={'minimum': 0, 'maximum': 2000})
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'probe': 950}, field_registry=probe)
+        self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+
     def test_ada_capabilities_never_claim_runtime_applied(self):
         image = from_bytes(synthetic_rom(copies=2))
         result = plan(image, {'power_max_w': 100, 'nvvdd_rel_equation_max_mv': 1100})
@@ -1068,8 +1116,10 @@ class FixedPolicyRatedTests(unittest.TestCase):
         self.assertEqual((field['current'], field['bounds']['minimum'], field['bounds']['maximum']), (70, 30, 100))
         self.assertTrue(field['opt_in'] and field['experimental'] and field['editable'])
         self.assertEqual((field['policy_indices'], field['ordering_group']), ([2, 7], 'board-power'))
-        # The XOC-style REL/ALT selector field is opt-in too (read-only here: no legacy directory).
-        self.assertEqual(opt_in_field_keys(report), {'board_fixed_rated_w', 'nvvdd_rel_alt_follow_ov'})
+        # The XOC-style REL/ALT selector field and its flat voltage are opt-in too (read-only here: no legacy
+        # directory).
+        self.assertEqual(opt_in_field_keys(report), {'board_fixed_rated_w', 'nvvdd_rel_alt_follow_ov',
+                                                     'nvvdd_rel_alt_follow_ov_mv'})
         for language in ('en', 'es'):
             self.assertIn('XOC', field_label(field, language))
         result = edit(image, {'board_fixed_rated_w': 90})

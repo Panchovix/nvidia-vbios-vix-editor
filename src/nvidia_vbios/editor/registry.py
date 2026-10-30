@@ -731,20 +731,26 @@ def fixed_policy_rated(image, parser, rows, matching, top=None):
 @registry.register
 def voltage(image, parser):
     result = []
+    try:
+        follow = follow_ov_roles(parser, parser.rail_equations())
+    except FormatError:
+        follow = set()
     for rail in parser.rail_limits():
         label = rail['rail_name_inferred']
         key = label.lower() + '_rel_max_mv'
         offsets = [rail['maximum_offset']] if isinstance(parser, BlackwellRom) else parser.copy_offsets(rail['maximum_offset'], 4)
         known_kind = rail['equation_type'] in (1, 7) if isinstance(parser, BlackwellRom) else rail['editable_ceiling']
         reason = 'float32 exact encoding required; runtime voltage may follow unchanged temperature curve'
-        if isinstance(parser, TableRom) and not known_kind:
+        if (label, 'REL') in follow:
+            reason = follow_ov_reason(follow)
+        elif isinstance(parser, TableRom) and not known_kind:
             reason = 'read-only: ' + ada_equation_reason(rail['equation_kind'])
         elif experimental_flag(image, parser, key):
             reason = ('experimental: float32 exact encoding required; not hardware-tested on this board; runtime '
                       'voltage may follow unchanged temperature curve')
         result.append(field(key, label + ' REL equation ceiling', 'mV',
                             rail['output_maximum_uv'] / 1000, rail['output_minimum_uv'] / 1000,
-                            0x7FFFFFFF / 1000, can_edit(image, parser) and known_kind,
+                            0x7FFFFFFF / 1000, can_edit(image, parser) and known_kind and (label, 'REL') not in follow,
                             [{'kind': 'reviewed-voltage-output-equation', 'source': SOURCE,
                               'format': 'GB20x rail v30/object 14' if isinstance(parser, BlackwellRom) else
                                         'Ada single logic rail v20, VFE quadratic temperature equation' if ada(parser)
@@ -888,9 +894,188 @@ def rail_identity(parser, item, *, ocp=False):
             'api_index_scope': 'saved Linux GET mask bits; no live GPU association' if reviewed else 'unknown'}
 
 
+REL_FLOOR_SEMANTICS = 'stored-equation-output-floor'
+# Lowest REL floor offered: the lowest REL value of any image of the family (GB20x: the RTX PRO 4000 SFF clamp
+# minimum; Ada: the 830 mV constant REL of an RTX 5000 Ada image).
+REL_FLOOR_MV = {'gb20x': 850, 'ada': 830}
+REL_FLOOR_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'GB20x VBIOS corpus',
+    'format': 'GB20x VFE equation (25 bytes) selected at rail row +0x0d: clamp minimum float32 uV at byte 3, '
+              'maximum at byte 7; the evaluated REL is the equation clamped to them (plus its next equation)',
+    'observation': 'every GB20x REL equation is a type 7 polynomial of the fused leakage (IDDQ), but the NVVDD one '
+                   'of the vendor XOC images, which select the OV constant; clamped to 875..900 mV (RTX PRO 6000 '
+                   'Max-Q), 850..850 mV (RTX PRO 4000 SFF), 900..1080 mV (RTX PRO 6000 Workstation), 900 to '
+                   '1100..1120 mV (GeForce) and 960..1025 mV (notebooks); with the clamp maximum raised to 1125 mV '
+                   'the driver reported REL 990 to 1000 mV on three RTX PRO 6000 Max-Q (the chip value), so the GSP '
+                   'applies an edited clamp',
+    'set_tested': False}
+REL_FLOOR_REASON = (
+    'experimental: the clamp minimum (floor) of the REL equation; REL is the higher of the chip value and this '
+    'floor, up to the REL ceiling (the clamp maximum); the floor stays at most the OV value of the rail, so REL and '
+    'VMIN (kept below REL) stay at or below OV; the chip value comes from the fused leakage (about 990 to '
+    '1000 mV on RTX PRO 6000 Max-Q boards with a raised ceiling); a tuning tool\'s runtime voltage offset still adds '
+    'on drivers that apply it, while on drivers that ignore runtime rail offsets on RTX 50 cards the VBIOS is the '
+    'way to raise REL; not hardware-tested (raising the clamp maximum of the same equation is: it let REL reach the '
+    'chip value); more voltage means more heat, power and wear; removing the override brings the card back')
+ADA_REL_FLOOR_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'Ada VBIOS corpus',
+    'format': 'Ada VFE equation (25 bytes) selected at rail row byte 4: clamp minimum float32 uV at byte 3, maximum '
+              'at byte 7, in every chain; the evaluated REL is the equation clamped to them',
+    'observation': 'the temperature-derated REL equations (float quadratics on the sensed temperature, falling 2.7 '
+                   'to 5.7 mV per degree C, no next equation) are clamped to 900..940 mV (RTX 4000 SFF Ada) up to '
+                   '1060..1100 mV (RTX 4070); with those clamps their value stays above the maximum up to about '
+                   '97 C and reaches the minimum at about 105 to 110 C; on an RTX 2000 Ada a raised clamp maximum '
+                   'moved the evaluated REL (hardware test)',
+    'set_tested': False}
+ADA_REL_FLOOR_REASON = (
+    'experimental: the clamp minimum (floor) of the REL equation, in every chain; REL is the value of a temperature '
+    'equation that falls as the GPU heats up (with the stock clamps, above about 97 C), kept between this floor and '
+    'the REL ceiling (the clamp maximum), so the floor is the REL of a hot GPU, and a floor equal to the ceiling '
+    'holds REL there at every temperature; the floor stays at most the OV value of the rail, so REL and VMIN (kept '
+    'below REL) stay at or below OV; not hardware-tested (raising the clamp maximum of the same equation is: on an '
+    'RTX 2000 Ada it moved the evaluated REL); more voltage means more heat, power and wear; removing the override '
+    'brings the card back')
+
+
+# The NVVDD REL, ALT and OV clamp fields (ceilings and REL floor) while REL, and ALT where the image has it, follow
+# OV (follow_ov_roles): writing the clamp of that shared constant would break it. The GUI translates both
+# (presentation.REASON_KEYS).
+FOLLOW_OV_CLAMP_REASON = 'read-only: REL and ALT follow OV: set the flat value with nvvdd_rel_alt_follow_ov_mv'
+FOLLOW_OV_REL_CLAMP_REASON = 'read-only: REL follows OV: set the flat value with nvvdd_rel_alt_follow_ov_mv'
+
+
+def follow_ov_reason(follow):
+    """The read-only reason of a clamp field while REL follows OV (follow_ov_roles), with ALT or without."""
+    return FOLLOW_OV_CLAMP_REASON if ('NVVDD', 'ALT') in follow else FOLLOW_OV_REL_CLAMP_REASON
+
+
+def follow_ov_roles(parser, records):
+    """The (rail, role) pairs of the NVVDD REL and ALT selectors that select a constant OV equation (REL and ALT
+    follow OV: nvvdd_rel_alt_follow_ov at 1, the vendor XOC images), with OV itself; empty otherwise."""
+    roles = {r['role']: r for r in records if r['logical_rail_id'] == 'NVVDD'}
+    ov = roles['OV']
+    if ov['absent'] or ov['equation_offset'] is None or parser.constant_equation(ov['equation_offset']) is None:
+        return set()
+    shared = {role for role in ('REL', 'ALT') if not roles[role]['absent'] and
+              roles[role]['selector_raw'] == ov['selector_raw']}
+    return {('NVVDD', role) for role in shared | {'OV'}} if shared else set()
+
+
+def stock_vmin(parser, rail, what):
+    """Ada and Ampere: (the highest value in uV, reason note naming what) of a rail VMIN that the checks of an edit
+    do not keep below REL, or (None, None). That is a VMIN set per chip, a stock tree root or per-chip equation
+    (TableRom.rail_vmin highest_uv: its range plus what its chained equations add), and on the RTX 4090 95.02.3C
+    images the stock VMIN that the memory clock constant keeps (vmin_clone_companion) plus what VMIN's chained
+    equations add, which the VMIN field keeps within its range; the fields that can take REL below its stored value
+    (the Ada REL floor, the flat follow-OV value) stay at or above it instead. None for another pinned VMIN, another
+    shape, an unbounded one, GB20x and Turing."""
+    if not isinstance(parser, TableRom):
+        return None, None
+    try:
+        item = next((v for v in parser.rail_vmin() if v['logical_rail_id'] == rail), {})
+    except FormatError:
+        return None, None
+    if item.get('tree', {}).get('state') == 'stock' and item.get('highest_uv') is not None:
+        stock = item['highest_uv']
+        return stock, (f'VMIN is set per chip on this image and reaches {stock / 1000:g} mV with what its chained '
+                       f'equations add, so the {what} stays at or above that (or the stored value, if lower) while '
+                       'VMIN is not fixed (nvvdd_vmin_mv)')
+    if item.get('clone') and item.get('added_uv'):
+        stock = item['clone']['stock_uv'] + item['added_uv'][1]
+        return stock, (f"the memory clock constant keeps the stock VMIN ({item['clone']['stock_uv'] / 1000:g} mV), "
+                       f'which reaches {stock / 1000:g} mV with what its chained equations add, so the {what} stays '
+                       'at or above that (or the stored value, if lower)')
+    return None, None
+
+
+def rel_clamp_group(parser, item, top=0x7FFFFFFF / 1000, lowest=None):
+    """The ordering group of a GB20x or Ada rail's REL ceiling and floor: requested together, both are checked on
+    the joint result, from the lowest floor offered up to the encoding limit (the floor: from lowest, which keeps
+    a VMIN set per chip below it, up to top, its OV cap)."""
+    if lowest is None:
+        lowest = min(REL_FLOOR_MV[parser.family if isinstance(parser, TableRom) else 'gb20x'],
+                     item['output_minimum_uv'] / 1000)
+    return dict(ordering_group=item['logical_rail_id'].lower() + '-rel-clamp', encoding_bounds=(lowest, top))
+
+
+def rel_floor(image, parser, item, records, ceiling, follow, evidence):
+    """{rail}_rel_equation_min_mv on GB20x and Ada: the clamp minimum of the REL equation (equation_roles item), in
+    every chain on Ada.
+
+    The evaluated REL is the equation's value (GB20x: the chip value; Ada: a temperature equation) clamped to
+    [floor, ceiling], so a floor above that value is the evaluated REL. Editable with the REL ceiling of the rail
+    (ceiling: its editable state; on Ada a temperature-derated REL, which has no next equation, so nothing adds to
+    the clamped value) while REL does not select the rail's OV equation; from REL_FLOOR_MV of the family (or the
+    stored floor, if lower) up to the stored ceiling and at most the OV value: the clamp minimum of the rail's OV
+    equation, its 1200 mV constant on every GB20x and Ada image (or the stored floor, if higher), so REL, and VMIN
+    below it, stay at or below OV. On Ada a VMIN set per chip also keeps the floor at or above its highest value
+    (stock_vmin; or the stored floor, if lower). With the ceiling in one ordering group (rel_clamp_group), whose
+    encoding bounds keep both limits. On Ada a constant REL takes its value through nvvdd_rel_fixed_mv instead.
+    """
+    rail, table = item['logical_rail_id'], isinstance(parser, TableRom)
+    ov = next(r for r in records if r['logical_rail_id'] == rail and r['role'] == 'OV')
+    known = item['output_minimum_uv'] is not None and item.get('output_unit_code') == 2
+    current = item['output_minimum_uv'] / 1000 if known else None
+    if item['absent'] or not item['layout_recognized']:
+        reason = 'read-only: ' + ('selector denotes absence' if item['absent'] else
+                                  ada_equation_reason(item['equation_kind']) if table else
+                                  item.get('diagnostic', 'unrecognized REL equation'))
+    elif item['selector_raw'] == ov['selector_raw']:
+        reason = (follow_ov_reason(follow) if (rail, 'REL') in follow else
+                  'read-only: REL selects the OV equation of this rail')
+    elif table and not item['editable_ceiling']:
+        kind = item['equation_kind']
+        reason = ('read-only: the REL equation is a constant: set its value with nvvdd_rel_fixed_mv'
+                  if kind == 'constant' else 'read-only: ' + ada_equation_reason(kind))
+    elif not ov['layout_recognized']:
+        reason = 'read-only: the OV equation is absent or not a recognized voltage equation, so it gives no upper bound'
+    else:
+        reason = None
+    editable = ceiling and reason is None
+    top = max(ov['output_minimum_uv'] / 1000, current) if editable else None
+    # A VMIN set per chip raises the lowest floor offered (or the stored floor, if lower).
+    offered = REL_FLOOR_MV[parser.family if table else 'gb20x']
+    stock, note = stock_vmin(parser, rail, 'floor') if editable else (None, None)
+    raised = stock is not None and stock / 1000 > offered
+    lowest = min(stock / 1000 if raised else offered, current) if editable else None
+    offsets = ()
+    if editable:
+        at = item['equation_offset'] + 3
+        offsets = parser.copy_offsets(at, 4) if table else [at]
+    if reason is None:
+        reason = ((ADA_REL_FLOOR_REASON + ('; ' + note if raised else '')) if table else
+                  REL_FLOOR_REASON)
+    return field(rail.lower() + '_rel_equation_min_mv', f'{rail} REL equation output floor', 'mV', current,
+                 lowest, min(item['output_maximum_uv'] / 1000, top) if editable else None, editable,
+                 [dict(e) for e in evidence] + [dict(ADA_REL_FLOOR_EVIDENCE if table else REL_FLOOR_EVIDENCE)],
+                 offsets=offsets, encoding='<f' if editable else '',
+                 scale=1000, stored_units='uV' if known else None,
+                 writable_status=None if editable else 'unsupported', experimental=True,
+                 value_semantics=REL_FLOOR_SEMANTICS, rail_identity=rail_identity(parser, item),
+                 selector={'raw': item['selector_raw'], 'width_bits': item['selector_width_bits'],
+                           'offset': item['selector_offset'], 'absent': item['absent']},
+                 equation_offset=item['equation_offset'], equation_type=item.get('equation_type'),
+                 runtime_role_candidate='REL', reason=reason,
+                 **(rel_clamp_group(parser, item, top, lowest) if editable else {}))
+
+
+def rel_clamps(image, parser):
+    """The editable GB20x and Ada REL ceiling and floor of each rail (equation_roles, ordering group
+    rel_clamp_group), reviewed so that a ceiling and a floor requested together are checked on the joint result:
+    a result whose clamp minimum ends above its maximum has neither and is refused. Not registered: equation_roles
+    lists them."""
+    if not (isinstance(parser, BlackwellRom) or ada(parser)):
+        return []
+    keys = {f'{rail}_rel_equation_{side}_mv' for rail in ('nvvdd', 'msvdd') for side in ('max', 'min')}
+    return [b for b in equation_roles(image, parser) if b.descriptor['key'] in keys and
+            b.descriptor.get('ordering_group')]
+
+
 @registry.register
 def equation_roles(image, parser):
     records = parser.rail_equations()
+    # The NVVDD roles that share a constant OV equation take no clamp edit (follow_ov_roles).
+    follow = follow_ov_roles(parser, records)
     result = []
     for item in records:
         prefix = item['logical_rail_id'].lower()
@@ -916,13 +1101,17 @@ def equation_roles(image, parser):
             if not item['absent']:
                 reason = 'read-only: ' + VMIN_SLOT_REASONS[parser.family if isinstance(parser, TableRom) else 'gb20x']
         elif isinstance(parser, TableRom) and not item['absent']:
-            if not item.get('editable_ceiling'):
+            if (item['logical_rail_id'], item['role']) in follow:
+                reason = follow_ov_reason(follow)  # the OV constant: no ceiling edit anyway
+            elif not item.get('editable_ceiling'):
                 reason = 'read-only: ' + ada_equation_reason(item.get('equation_kind'))
             elif editable:
                 flags = experimental_flag(image, parser, key)
                 if flags:
                     reason = ('experimental: equation clamp only; not hardware-tested on this board; evaluated '
                               'voltage and runtime offset remain unknown')
+        elif (item['logical_rail_id'], item['role']) in follow and editable:
+            editable, reason = False, follow_ov_reason(follow)
         shared = [{'logical_rail_id': other['logical_rail_id'], 'role': other['role'],
                    'selector_index': other['selector_raw']}
                   for other in records if item['equation_offset'] is not None and
@@ -936,6 +1125,8 @@ def equation_roles(image, parser):
             offsets = [item['maximum_offset']] if isinstance(parser, BlackwellRom) else parser.copy_offsets(item['maximum_offset'], 4)
         selector = {'raw': item['selector_raw'], 'width_bits': item['selector_width_bits'],
                     'offset': item['selector_offset'], 'absent': item['absent']}
+        # GB20x and Ada REL: the clamp maximum (this ceiling) and minimum (rel_floor) form one ordering group.
+        clamp = (isinstance(parser, BlackwellRom) or ada(parser)) and item['role'] == 'REL'
         result.append(field(key, label, 'mV',
                             current, item['output_minimum_uv'] / 1000 if value_known else None,
                             0x7FFFFFFF / 1000 if known else None, editable, evidence,
@@ -950,7 +1141,10 @@ def equation_roles(image, parser):
                             runtime_offset={'units': 'uV', 'type': 'int32', 'signed': True,
                                             'current': None, 'writable': 'unknown'},
                             reason=reason, **flags,
-                            **({'equation_kind': item['equation_kind']} if 'equation_kind' in item else {})))
+                            **({'equation_kind': item['equation_kind']} if 'equation_kind' in item else {}),
+                            **(rel_clamp_group(parser, item) if clamp and editable else {})))
+        if clamp:
+            result.append(rel_floor(image, parser, item, records, editable, follow, evidence))
         result.append(field(f'{prefix}_{role}_selector_index', f"{item['logical_rail_id']} {item['role']} selector", 'index',
                             item['selector_raw'], None, None, False, evidence, writable_status='unsupported' if
                             item['selector_raw'] is not None else 'unknown',
@@ -974,7 +1168,8 @@ VMIN_SEMANTICS = 'stored-evaluated-vmin'
 VMIN_FIXED_SEMANTICS = 'stored-vmin-fixed-switch'
 FOLLOW_OV_SEMANTICS = 'stored-rail-selector-layout'
 FIXED_SEMANTICS = 'stored-fixed-equation-value'
-# The fixed REL and ALT fields, and on Turing the evaluated VMIN, are checked together on a joint result.
+# The NVVDD fixed REL and ALT fields (on Ampere each rail's: {rail}-rel-alt), and on Turing the evaluated VMIN and
+# the flat follow-OV value, are checked together on a joint result.
 FIXED_GROUP = 'nvvdd-rel-alt'
 # Lowest VMIN offered: no voltage device minimum is decoded, so a fixed reviewed floor.
 VMIN_FLOOR_MV = {'gb20x': 450, 'ada': 400, 'ampere': 400, 'turing': 400}
@@ -1338,10 +1533,37 @@ ADA_FOLLOW_OV_EVIDENCE = {
     'observation': 'every parseable image selects a constant 1200 mV OV equation and keeps REL < ALT < VMIN = OV - 1; '
                    'no Ada image points REL or ALT at OV; row byte 10 holds 2, the REL index, on every image: its '
                    'meaning is unknown and the field leaves it', 'set_tested': False}
+AMPERE_FOLLOW_OV_EVIDENCE = dict(
+    AMPERE_STRUCTURAL_EVIDENCE, source=SOURCE,
+    format='Ampere NVVDD rail row (row 0) REL +4 and ALT +5 (u8) in the legacy image of every chain; the constant VFE '
+           'equation (24 bytes) OV +6 selects: clamp minimum and maximum and constant (bytes 3, 7 and 11), written in '
+           'every chain',
+    observation='every image selects a constant 1100 mV OV equation on each rail and keeps REL < ALT (if present) < '
+                'VMIN = OV - 1; no Ampere image points REL or ALT at OV; no other rail row selector or evaluated VMIN '
+                'byte (row byte 7), VFE equation or clock programming, FLL or voltage policy entry uses the NVVDD OV '
+                'constant; row byte 10 holds 2 on the NVVDD row and 3 on the MSVDD row, whatever equation that index '
+                'holds: its meaning is unknown and the fields leave it')
+TURING_FOLLOW_OV_EVIDENCE = dict(
+    TURING_STRUCTURAL_EVIDENCE, source=SOURCE,
+    format='Turing rail row (nvgpu 1x) REL +4 and ALT +5 (u8) in the legacy image of both banks; the constant VFE '
+           'equation (24 bytes) OV +6 selects: clamp minimum and maximum and constant (bytes 3, 7 and 11), written in '
+           'both banks; the clock programming 3.5 (C+0x0c), FLL descriptor 1.0 (C+0x10) and voltage policy 1x '
+           '(P+0x70) entries read at their nvgpu layouts',
+    observation='every image selects a constant 1125 mV OV equation that no other rail row selector (boot voltage +8 '
+                'and VMIN limit +9 included), VFE equation or clock programming, FLL or voltage policy entry uses; '
+                'the Galax HOF XOC image points REL and ALT at it (REL = ALT = OV = 1125 mV) and leaves its stock REL '
+                'and ALT constants unused')
+# The follow-OV switch and flat value on Ada, Ampere and Turing: the family's selector and OV equation evidence and
+# its rail layout (with the GB20x vendor images as an analogy).
+FOLLOW_OV_TABLE_EVIDENCE = {'ada': (ADA_FOLLOW_OV_EVIDENCE, ADA_VOLTAGE_EVIDENCE),
+                            'ampere': (AMPERE_FOLLOW_OV_EVIDENCE, AMPERE_VOLTAGE_EVIDENCE),
+                            'turing': (TURING_FOLLOW_OV_EVIDENCE, TURING_VOLTAGE_EVIDENCE)}
 
 
 def ada_follow_ov(image, parser):
-    """rail_follow_ov on Ada: the u8 REL/ALT selectors of the rail row, in the legacy image of every chain."""
+    """rail_follow_ov on Ada, Ampere and Turing: the u8 REL/ALT selectors of the NVVDD rail row, in the legacy image
+    of every chain, and the flat value they then share with OV (follow_ov_voltage). On Ampere and Turing the legacy
+    image is outside the tables checksum_padding_reviewed covers, so its padding is checked here."""
     info = parser.rail_fixed()
     selectors, ov = info['selectors'], info['selectors']['OV']
     moved = ['REL'] + ([] if selectors['ALT'] == 0xFF else ['ALT'])
@@ -1354,6 +1576,9 @@ def ada_follow_ov(image, parser):
                   'of the original selectors, so the editor cannot restore them (edit the original image instead)')
     elif state is None or info['ov_uv'] is None:
         reason = 'read-only: the NVVDD REL, ALT and OV selectors or the OV equation hold another shape'
+    elif not ada(parser) and not parser.padded(info['rail_entry']):
+        reason = ('read-only: the legacy image holding the rail table lacks the reviewed checksum padding, so its '
+                  'checksum is not repaired; the other fields stay editable')
     else:
         reason = None
     # The step to OV depends on the stored REL: a compare REL on fused inputs can sit well below it.
@@ -1369,34 +1594,41 @@ def ada_follow_ov(image, parser):
         copies = len(offsets) // len(moved)
         layout = ((0, tuple(bytes((selectors[role],)) for role in moved for _ in range(copies))),
                   (1, (bytes((ov,)),) * len(offsets)))
+    own, rail = FOLLOW_OV_TABLE_EVIDENCE[parser.family]
+    vendor = 'the Galax HOF XOC RTX 2080 Ti image and ' if turing(parser) else ''
+    # Turing: the flat value also stays at or above the stored boot voltage and the highest VMIN (fixed_voltage).
+    floor = turing_floor(parser, info['boot_uv']) if turing(parser) else None
     return [field('nvvdd_rel_alt_follow_ov', 'REL and ALT follow OV (XOC-style flat voltage limit)', 'flag', state,
                   0 if editable else None, 1 if editable else None, editable,
-                  [dict(ADA_FOLLOW_OV_EVIDENCE), dict(FOLLOW_OV_EVIDENCE, use='GB20x analogy'),
-                   dict(ADA_VOLTAGE_EVIDENCE)],
+                  [dict(own), dict(FOLLOW_OV_EVIDENCE, use='GB20x analogy'), dict(rail)],
                   offsets=offsets, encoding='<B' if editable else '', scale=1, layout=layout,
                   writable_status=None if editable else 'unsupported', experimental=True, opt_in=True,
                   value_semantics=FOLLOW_OV_SEMANTICS,
                   rail_identity=rail_identity(parser, {'logical_rail_id': 'NVVDD', 'rail_index': 0}),
                   reason=reason or f'experimental, opt-in: 1 points the NVVDD {names} at the OV equation '
                                    f"({info['ov_uv'] / 1000:g} mV) in every chain: {flat}, a flat voltage limit, as "
-                                   'the ASUS XOC and MSI Lightning RTX 5090 images do (confirmed on one RTX 5090); '
-                                   f'{stored}raising REL lets the GPU request a higher voltage on its VF curve, and '
-                                   'the board power and thermal limits still apply; the value 1 cannot be undone in '
-                                   'the copy; not hardware-tested on Ada')]
+                                   f'{vendor}the ASUS XOC and MSI Lightning RTX 5090 images do (confirmed on one RTX '
+                                   f'5090); {stored}raising REL lets the GPU request a higher voltage on its VF '
+                                   'curve, and the board power and thermal limits still apply; the value 1 cannot be '
+                                   'undone in the copy; ' + (TURING_UNTESTED if turing(parser) else
+                                                             f'not hardware-tested on {parser.family.capitalize()}')),
+            follow_ov_voltage(image, parser, moved, None, state, info['ov_uv'], None if state == 1 else reason, True,
+                              floor)]
 
 
 @registry.register
 def rail_follow_ov(image, parser):
     """XOC-style flat NVVDD voltage limit: REL and ALT select the OV equation (1) or their own (0).
 
-    Opt-in, GB20x and Ada. On GB20x the rail table sits in the legacy image, whose
-    objects 0x21/0x35, directory digest and checksum the editor repairs; on Ada its
-    u8 selectors are written in the legacy image of every chain (ada_follow_ov).
-    The value 1 can be written while REL, ALT (if present) and OV select distinct
-    equations, OV a constant voltage. The value 1 is read-only: the image keeps no
-    record of the original REL and ALT selectors, so the editor cannot restore them.
+    Opt-in, every family. On GB20x the rail table sits in the legacy image, whose
+    objects 0x21/0x35, directory digest and checksum the editor repairs; on Ada, Ampere
+    and Turing the u8 selectors of the NVVDD row are written in the legacy image of every
+    chain (ada_follow_ov). The value 1 can be written while REL, ALT (if present) and OV
+    select distinct equations, OV a constant voltage. The value 1 is read-only: the image
+    keeps no record of the original REL and ALT selectors, so the editor cannot restore them.
+    The flat value they then share with OV comes with it (follow_ov_voltage).
     """
-    if ada(parser):
+    if isinstance(parser, TableRom):
         return ada_follow_ov(image, parser)
     if not isinstance(parser, BlackwellRom):
         return []
@@ -1444,7 +1676,146 @@ def rail_follow_ov(image, parser):
                                    'flat voltage limit; the rail table is in the legacy image, whose object hashes, '
                                    'directory digest and checksum the edit repairs; the value 1 cannot be undone in '
                                    'the copy; confirmed on one RTX 5090 (the edited copy loaded as an override without '
-                                   'problems)')]
+                                   'problems)'),
+            follow_ov_voltage(image, parser, moved, ov, state, ov_value, None if state == 1 else reason, owned)]
+
+
+FOLLOW_OV_VOLTAGE_SEMANTICS = 'stored-follow-ov-voltage'
+# The flat follow-OV value per family: from the lowest REL value of any image of the family (GB20x and Ada:
+# REL_FLOOR_MV) up to 130 % of its stock OV constant (1200 mV; Ampere 1100 mV, Turing 1125 mV), or the stored value,
+# if outside.
+FOLLOW_OV_VOLTAGE_MV = {'gb20x': (850, 1560), 'ada': (830, 1560), 'ampere': (900, 1430), 'turing': (950, 1462)}
+# Its read-only reason until the switch is saved; the GUI translates it (presentation.REASON_KEYS).
+FOLLOW_OV_SWITCH_OFF_REASON = ('read-only while nvvdd_rel_alt_follow_ov is 0: set it to 1, save, open the copy, then '
+                               'set this value')
+FOLLOW_OV_VOLTAGE_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'GB20x VBIOS corpus',
+    'format': 'GB20x VFE equation (25 bytes): type (byte 0), variable (byte 1), next link (bytes 2 | 24 << 8), clamp '
+              'minimum and maximum (bytes 3 and 7), constant and slopes (bytes 11, 15 and 19), output unit (byte 23); '
+              'NVVDD rail row selectors REL +0x0d, ALT +0x0f and OV +0x11 in the legacy image',
+    'observation': 'the NVVDD OV selector picks a constant 1200 mV equation on every GB20x image; only that selector '
+                   'uses it on the RTX 5090, 5070 and 5060 Ti images (REL and ALT too on the vendor XOC ones); the '
+                   'MSVDD row word +0x15 also selects it on the two-rail RTX PRO 6000, RTX PRO 4000 SFF and notebook '
+                   'images; the u16 values of the clock programming table include its index on those images, the '
+                   'RTX PRO 6000 Workstation, the RTX 5080 and the RTX 5070 Ti, and those of the FLL table on all '
+                   'of them but the RTX 5080 and 5070 Ti; every image keeps its unused VFE slots (type 0) clean at '
+                   'the end of the table',
+    'set_tested': False}
+ADA_FOLLOW_OV_VOLTAGE_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'Ada VBIOS corpus',
+    'format': 'Ada VFE equation (25 bytes) selected at rail row byte 6 (OV): clamp minimum and maximum (bytes 3 and '
+              '7) and constant (byte 11), written in every chain',
+    'observation': 'every parseable Ada image selects a constant 1200 mV OV equation (zero slopes, no next equation) '
+                   'that no other rail row selector, evaluated VMIN byte (row byte 7), VFE equation or clock '
+                   'programming, FLL or voltage policy entry uses; row byte 20 holds 4 on every image, whatever its '
+                   'OV index (4 on the images without ALT), as byte 10 holds 2, the REL index: their meaning is '
+                   'unknown, and the field leaves them',
+    'set_tested': False}
+
+
+def follow_ov_voltage(image, parser, moved, ov, state, value, blocked, owned, floor=None):
+    """nvvdd_rel_alt_follow_ov_mv: one NVVDD value for REL = ALT = OV while REL and ALT follow OV.
+
+    rail_follow_ov (ada_follow_ov) passes its roles (moved: REL and, when present, ALT), the OV record (GB20x), state,
+    the OV constant (value), the switch's read-only reason while it is not 1 (blocked), whether the rail table is
+    legacy object 0x21 (owned; True on Ada, Ampere and Turing, whose flat value writes no rail table byte) and on
+    Turing floor, the stored boot voltage or the highest VMIN (turing_floor; None while VMIN is unbounded). current
+    is the OV constant, also while the switch is 0. The field is editable on a copy that stores the switch at 1,
+    saved apart from it (SEPARATE_EDIT_REQUIRED). The parser's follow_ov_equation tells where the value goes: the
+    minimum, maximum and value of the OV constant while nothing else uses it (Ada, Ampere, Turing: in every chain),
+    else, on GB20x only, a constant equation the first edit writes into the first unused VFE slot, from the OV
+    equation's variable and output bytes, with the NVVDD REL, ALT and OV selectors moved to it (companion bytes);
+    the shared equation keeps its bytes, and a later edit finds the copy dedicated. Elsewhere an OV equation anything
+    else uses keeps the field read-only. From FOLLOW_OV_VOLTAGE_MV[family][0] up to [1] (or the stored value); on
+    Ada and Ampere also at least the highest value of a VMIN set per chip (stock_vmin); on Turing at least floor,
+    in the ordering group of the fixed values and VMIN (FIXED_GROUP).
+    """
+    table = isinstance(parser, TableRom)
+    current = value / 1000 if value is not None else None
+    lowest, highest = FOLLOW_OV_VOLTAGE_MV[parser.family if table else 'gb20x']
+    if current is not None:
+        lowest, highest = min(lowest, current), max(highest, current)
+    encoding = lowest, highest
+    target = None
+    if state == 1 and value is not None and owned:
+        try:
+            target = parser.follow_ov_equation()
+        except FormatError as exc:
+            target = str(exc)
+        reason = 'read-only: ' + target if isinstance(target, str) else None
+    elif state == 1:
+        reason = ('read-only: the OV equation is not a constant voltage equation' if value is None else
+                  'read-only: the rail table is not the exact legacy-image object 0x21 of a valid legacy directory, '
+                  'so its hashes cannot be repaired')
+    elif state == 0 and blocked is None:
+        reason = FOLLOW_OV_SWITCH_OFF_REASON
+    else:
+        reason = blocked
+    if reason is None and turing(parser):
+        # As the fixed REL and ALT values: at least the stored boot voltage and the highest VMIN.
+        if floor is None:
+            reason = ('read-only: the VMIN equation or its chained equations have no bounded value, so the value '
+                      'cannot be kept above VMIN')
+        elif current < floor / 1000:
+            reason = (f'read-only: the stored value is below {floor / 1000:g} mV, the stored boot voltage or the '
+                      'highest VMIN (VMIN plus what its chained equations add)')
+        else:
+            lowest = max(lowest, floor / 1000)
+    # Ada and Ampere: at least the highest value of a VMIN set per chip (or the stored value, if lower).
+    stock, note = stock_vmin(parser, 'NVVDD', 'value') if reason is None else (None, None)
+    raised = stock is not None and stock / 1000 > lowest
+    if raised:
+        lowest = min(stock / 1000, current)
+    editable = reason is None and can_edit(image, parser)
+    slot = None if reason is not None or target['dedicated'] else target['slot']
+    alt = len(moved) == 2
+    offsets, companion = (), ()
+    if editable:
+        at = target['offset'] if slot is None else target['slot_offset']
+        offsets = [at + 3, at + 7, at + 11]
+        if table:
+            offsets = [copy for start in offsets for copy in parser.copy_offsets(start, 4)]
+        if slot is not None:
+            # The rest of the copy (type 1, the OV equation's variable, no next link, zero slopes, its output byte)
+            # and the NVVDD REL, ALT and OV selectors, moved to it.
+            e, word = parser.blob[target['offset']:target['offset'] + 25], struct.pack('<H', slot)
+            companion = ((None, ((at, bytes((1, e[1], 0xFF))), (at + 15, bytes(8) + bytes((e[23], 0xFF))),
+                                 *((r['selector_offset'], word) for r in moved + [ov]))),)
+    if reason is None:
+        where = (f"the edit writes the minimum, maximum and value of the constant OV equation (equation "
+                 f"{target['index']}){' in every chain' if table else ''}" if slot is None else
+                 f"the OV equation (equation {target['index']}) is shared with other tables or the other rail on "
+                 'this board, so the first edit writes a dedicated constant equation with the value into the first '
+                 f"unused VFE slot ({slot}) and points the NVVDD {'REL, ALT' if alt else 'REL'} and OV selectors at "
+                 f'it, and the shared equation stays at {value / 1000:g} mV; the GPC curve offset takes the first '
+                 'unused slot too, so change it in a separate edit')
+        reason = (f"experimental, opt-in: one value for {'REL = ALT = OV' if alt else 'REL = OV'} while the NVVDD "
+                  f"{'REL and ALT selectors follow' if alt else 'REL selector follows'} OV; {where}; " +
+                  ('' if table else 'above 1250 mV is beyond the GB20x VFE voltage variable range (450-1250 mV), so '
+                                    'the VF curve might not use it; ') +
+                  ('it stays at or above the stored boot voltage and the highest VMIN (VMIN plus what its chained '
+                   'equations add); ' if turing(parser) else '') +
+                  (note + '; ' if raised else '') +
+                  'board power and current limits still apply; more voltage means more heat, power and wear; ' +
+                  (TURING_UNTESTED if turing(parser) else
+                   f'not hardware-tested on {parser.family.capitalize()}' if table else
+                   'not hardware-tested (the follow-OV switch itself loaded fine on an RTX 5090)') +
+                  '; removing the override brings the card back')
+    if table:
+        own, rail = FOLLOW_OV_TABLE_EVIDENCE[parser.family]
+        evidence = ([ADA_FOLLOW_OV_VOLTAGE_EVIDENCE] if ada(parser) else []) + [
+            own, dict(FOLLOW_OV_EVIDENCE, use='GB20x analogy'), rail]
+    else:
+        evidence = [FOLLOW_OV_VOLTAGE_EVIDENCE, FOLLOW_OV_EVIDENCE, LEGACY_DIRECTORY_EVIDENCE, SELECTOR_EVIDENCE]
+    return field('nvvdd_rel_alt_follow_ov_mv', 'NVVDD flat voltage (REL = ALT = OV)', 'mV', current,
+                 lowest if editable else None, highest if editable else None, editable, [dict(e) for e in evidence],
+                 offsets=offsets, encoding='<f' if editable else '', scale=1000, stored_units='uV',
+                 companion=companion, writable_status=None if editable else 'unsupported', experimental=True,
+                 opt_in=True, value_semantics=FOLLOW_OV_VOLTAGE_SEMANTICS,
+                 rail_identity=rail_identity(parser, {'logical_rail_id': 'NVVDD', 'rail_index': 0}),
+                 vfe_copy_slot=slot, reason=reason,
+                 # Turing: checked with VMIN (and the fixed values) on a joint result, as the fixed values are.
+                 **(dict(ordering_group=FIXED_GROUP, encoding_bounds=encoding) if turing(parser) and editable else {}))
 
 
 ADA_FIXED_EVIDENCE = {
@@ -1466,95 +1837,120 @@ TURING_FIXED_EVIDENCE = dict(
                 'RTX 2080 image), OV 1125 mV on every image, the ASUS XOC image included; the Galax HOF XOC image '
                 'selects the OV equation for REL and ALT instead; the values match the commonly reported Turing '
                 'voltage caps (not verified here)')
+AMPERE_FIXED_EVIDENCE = dict(
+    AMPERE_STRUCTURAL_EVIDENCE, source=SOURCE,
+    format='Ampere rail row selectors REL (+4) and ALT (+5) of each rail name constant VFE equations: value = clamp '
+           'maximum (the stock images also store it as the minimum), no slope, no link and no reference from another '
+           'equation; clamp maximum (byte 7) and constant (byte 11) written in every chain, clamp minimum (byte 3) '
+           'kept',
+    observation='REL 900 to 1087.5 mV and OV 1100 mV on every rail of every image, ALT 1100 mV on the desktop '
+                'GeForce images (absent on the workstation and laptop ones), each with minimum = maximum = constant; '
+                'the two rails of the GA102 images select equations of their own')
+
+
+def turing_floor(parser, boot_uv):
+    """Turing: the lowest fixed or flat NVVDD value (uV): the stored boot voltage or the highest evaluated VMIN (its
+    clamp plus what its chained equations can add), whichever is higher; None while VMIN has no bounded value."""
+    vmin = next((v for v in parser.rail_vmin() if v['logical_rail_id'] == 'NVVDD'), None)
+    if vmin is None or not vmin['pinned'] or vmin['added_uv'] is None:
+        return None
+    return max(vmin['value_uv'] + vmin['added_uv'][1], boot_uv)
 
 
 @registry.register
 def fixed_voltage(image, parser):
-    """Fixed NVVDD REL and ALT values (Ada, Turing): a constant equation's constant and clamp maximum, in every chain.
+    """Fixed REL and ALT values (Ada and Turing NVVDD, every Ampere rail): a constant equation's constant and clamp
+    maximum, in every chain.
 
     A field is listed for a constant REL or ALT equation (Turing: for every REL or ALT
     selector, read-only with the reason unless constant) and is editable when
-    TableRom.rail_fixed reports it fixed and OV is a constant. The value goes from the
-    clamp minimum, the stored value, which the edit keeps (so it can be written back),
-    up to the OV value; REL stays at most the lowest ALT value and ALT at least the
-    highest REL value. Both fields form one ordering group. The Turing fields are
-    opt-in (their effect is untested); there both also stay at or above the stored
-    boot voltage and the highest evaluated VMIN (its clamp plus what its chained
-    equations can add), the VMIN field joins the ordering group, and ALT needs a
-    constant REL.
+    TableRom.rail_fixed reports it fixed and the rail's OV is a constant. The value goes
+    from the clamp minimum, the stored value, which the edit keeps (so it can be written
+    back), up to the OV value; REL stays at most the lowest ALT value and ALT at least
+    the highest REL value. The fields of a rail form one ordering group ({rail}-rel-alt).
+    While the NVVDD REL follows OV (follow_ov_roles) its fields name the flat value. The
+    Ampere and Turing fields are opt-in (their effect is untested); on Turing both also
+    stay at or above the stored boot voltage and the highest evaluated VMIN (its clamp
+    plus what its chained equations can add), the VMIN field joins the ordering group,
+    and ALT needs a constant REL.
     """
-    if not (ada(parser) or turing(parser)):
+    if not isinstance(parser, TableRom):
         return []
-    tu = turing(parser)
-    info = parser.rail_fixed()
-    roles, ov = info['roles'], info['ov_uv']
-    floor = None
-    if tu:
-        vmin = next((v for v in parser.rail_vmin() if v['logical_rail_id'] == 'NVVDD'), None)
-        if vmin is not None and vmin['pinned'] and vmin['added_uv'] is not None:
-            floor = max(vmin['value_uv'] + vmin['added_uv'][1], info['boot_uv'])
+    tu, opt_in = turing(parser), not ada(parser)
+    records = parser.rail_equations()
+    follow = follow_ov_roles(parser, records)
     result = []
-    for role, other in (('REL', 'ALT'), ('ALT', 'REL')):
-        item, partner = roles[role], roles[other]
-        if item is None or item['equation_kind'] != 'constant' and not tu:
-            continue
-        lower, upper = item['minimum_uv'], ov
-        if role == 'REL' and partner is not None:
-            upper = None if partner['lowest_uv'] is None or ov is None else min(ov, partner['lowest_uv'])
-        elif role == 'ALT':
-            lower = None if partner['highest_uv'] is None else max(lower, partner['highest_uv'])
-        if tu:
-            lower = None if lower is None or floor is None else max(lower, floor)
-        current = item['value_uv'] if item['equation_kind'] == 'constant' else None
-        # Bounds are reported whenever they exist, so a joint result outside them is refused.
-        bounded = current is not None and None not in (ov, lower, upper)
-        if not item['fixed']:
-            reason = f'read-only: the NVVDD {role} equation ' + item['diagnostic']
-        elif tu and role == 'ALT' and partner['equation_kind'] != 'constant':
-            reason = 'read-only: the REL equation is not a constant, so ALT cannot be kept at or above it'
-        elif ov is None:
-            reason = 'read-only: the OV equation is not a constant voltage, so it gives no upper bound'
-        elif tu and floor is None:
-            reason = ('read-only: the VMIN equation or its chained equations have no bounded value, so the value '
-                      'cannot be kept above VMIN')
-        elif not bounded:
-            reason = f'read-only: the {other} equation list has no bounded value, so REL <= ALT cannot be kept'
-        elif current != int(current) or item['minimum_uv'] != int(item['minimum_uv']):
-            reason = f'read-only: the stored value ({current} uV) is not a whole uV, so it could not be restored'
-        elif not lower <= current <= upper:
-            reason = f'read-only: the stored value is outside {lower / 1000:g} mV up to {upper / 1000:g} mV'
-        else:
-            floors = (['the highest REL value'] if role == 'ALT' else []) + ([
-                'the stored boot voltage', 'the highest VMIN (VMIN plus what its chained equations add)'] if tu else [])
-            span = (f'from its clamp minimum up to the OV value ({ov / 1000:g} mV)' +
-                    (' and at most the lowest ALT value' if role == 'REL' and partner is not None else ''))
-            if floors:
-                span += ', and at least ' + (', '.join(floors[:-1]) + ' and ' if floors[1:] else '') + floors[-1]
-            reason = None
-        editable = reason is None and can_edit(image, parser)
-        offsets = ()
-        if editable:
-            offsets = parser.copy_offsets(item['maximum_offset'], 4) + parser.copy_offsets(item['value_offset'], 4)
-        if reason is None:
-            reason = (f"experimental{', opt-in' if tu else ''}: the NVVDD {role} equation is a constant; the edit "
-                      'writes its constant and clamp maximum in every chain and keeps its clamp minimum, the lowest '
-                      f'value offered; {span}; raising {role} lets the GPU request a higher voltage on its VF curve, '
-                      'and the board power and thermal limits still apply; ' +
-                      ('more voltage means more heat, power and wear; ' + TURING_UNTESTED if tu else
-                       'not hardware-tested on Ada'))
-        result.append(field(f'nvvdd_{role.lower()}_fixed_mv', f'NVVDD {role} fixed voltage', 'mV',
-                            current / 1000 if current is not None else None,
-                            lower / 1000 if bounded else None, upper / 1000 if bounded else None, editable,
-                            [dict(TURING_FIXED_EVIDENCE), dict(TURING_VOLTAGE_EVIDENCE)] if tu else
-                            [dict(ADA_FIXED_EVIDENCE), dict(ADA_VOLTAGE_EVIDENCE)],
-                            offsets=offsets, encoding='<f' if editable else '', scale=1000, stored_units='uV',
-                            writable_status=None if editable else 'unsupported', experimental=True,
-                            value_semantics=FIXED_SEMANTICS, equation_offset=item['equation_offset'],
-                            rail_identity=rail_identity(parser, {'logical_rail_id': 'NVVDD', 'rail_index': 0}),
-                            runtime_role_candidate={'ALT': 'VOP'}.get(role, role), reason=reason,
-                            **({'opt_in': True} if tu else {}),
-                            **(dict(ordering_group=FIXED_GROUP, encoding_bounds=(item['minimum_uv'] / 1000,
-                                                                                  ov / 1000)) if editable else {})))
+    for index, rail in sorted({(r['rail_index'], r['logical_rail_id']) for r in records}):
+        info = parser.rail_fixed(index)
+        roles, ov = info['roles'], info['ov_uv']
+        floor = turing_floor(parser, info['boot_uv']) if tu else None
+        for role, other in (('REL', 'ALT'), ('ALT', 'REL')):
+            item, partner = roles[role], roles[other]
+            if item is None or item['equation_kind'] != 'constant' and not tu:
+                continue
+            lower, upper = item['minimum_uv'], ov
+            if role == 'REL' and partner is not None:
+                upper = None if partner['lowest_uv'] is None or ov is None else min(ov, partner['lowest_uv'])
+            elif role == 'ALT':
+                lower = None if partner['highest_uv'] is None else max(lower, partner['highest_uv'])
+            if tu:
+                lower = None if lower is None or floor is None else max(lower, floor)
+            current = item['value_uv'] if item['equation_kind'] == 'constant' else None
+            # Bounds are reported whenever they exist, so a joint result outside them is refused.
+            bounded = current is not None and None not in (ov, lower, upper)
+            if (rail, role) in follow:
+                reason = follow_ov_reason(follow)
+            elif not item['fixed']:
+                reason = f'read-only: the {rail} {role} equation ' + item['diagnostic']
+            elif tu and role == 'ALT' and partner['equation_kind'] != 'constant':
+                reason = 'read-only: the REL equation is not a constant, so ALT cannot be kept at or above it'
+            elif ov is None:
+                reason = 'read-only: the OV equation is not a constant voltage, so it gives no upper bound'
+            elif tu and floor is None:
+                reason = ('read-only: the VMIN equation or its chained equations have no bounded value, so the value '
+                          'cannot be kept above VMIN')
+            elif not bounded:
+                reason = f'read-only: the {other} equation list has no bounded value, so REL <= ALT cannot be kept'
+            elif current != int(current) or item['minimum_uv'] != int(item['minimum_uv']):
+                reason = f'read-only: the stored value ({current} uV) is not a whole uV, so it could not be restored'
+            elif not lower <= current <= upper:
+                reason = f'read-only: the stored value is outside {lower / 1000:g} mV up to {upper / 1000:g} mV'
+            else:
+                floors = (['the highest REL value'] if role == 'ALT' else []) + ([
+                    'the stored boot voltage', 'the highest VMIN (VMIN plus what its chained equations add)']
+                    if tu else [])
+                span = (f'from its clamp minimum up to the OV value ({ov / 1000:g} mV)' +
+                        (' and at most the lowest ALT value' if role == 'REL' and partner is not None else ''))
+                if floors:
+                    span += ', and at least ' + (', '.join(floors[:-1]) + ' and ' if floors[1:] else '') + floors[-1]
+                reason = None
+            editable = reason is None and can_edit(image, parser)
+            offsets = ()
+            if editable:
+                offsets = parser.copy_offsets(item['maximum_offset'], 4) + parser.copy_offsets(item['value_offset'], 4)
+            if reason is None:
+                reason = (f"experimental{', opt-in' if opt_in else ''}: the {rail} {role} equation is a constant; the "
+                          'edit writes its constant and clamp maximum in every chain and keeps its clamp minimum, the '
+                          f'lowest value offered; {span}; raising {role} lets the GPU request a higher voltage on its '
+                          'VF curve, and the board power and thermal limits still apply; ' +
+                          ('more voltage means more heat, power and wear; ' + TURING_UNTESTED if tu else
+                           'more voltage means more heat, power and wear; not hardware-tested on Ampere' if opt_in else
+                           'not hardware-tested on Ada'))
+            evidence = ((TURING_FIXED_EVIDENCE, TURING_VOLTAGE_EVIDENCE) if tu else
+                        (AMPERE_FIXED_EVIDENCE, AMPERE_VOLTAGE_EVIDENCE) if opt_in else
+                        (ADA_FIXED_EVIDENCE, ADA_VOLTAGE_EVIDENCE))
+            result.append(field(f'{rail.lower()}_{role.lower()}_fixed_mv', f'{rail} {role} fixed voltage', 'mV',
+                                current / 1000 if current is not None else None,
+                                lower / 1000 if bounded else None, upper / 1000 if bounded else None, editable,
+                                [dict(e) for e in evidence],
+                                offsets=offsets, encoding='<f' if editable else '', scale=1000, stored_units='uV',
+                                writable_status=None if editable else 'unsupported', experimental=True,
+                                value_semantics=FIXED_SEMANTICS, equation_offset=item['equation_offset'],
+                                rail_identity=rail_identity(parser, {'logical_rail_id': rail, 'rail_index': index}),
+                                runtime_role_candidate={'ALT': 'VOP'}.get(role, role), reason=reason,
+                                **({'opt_in': True} if opt_in else {}),
+                                **(dict(ordering_group=rail.lower() + '-rel-alt',
+                                        encoding_bounds=(item['minimum_uv'] / 1000, ov / 1000)) if editable else {})))
     return result
 
 

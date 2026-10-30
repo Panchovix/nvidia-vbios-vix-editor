@@ -35,8 +35,15 @@ XOC-style fields**.
   stored value in the equation, so the copy can be set back exactly. Whether the card then runs at a higher
   voltage is not known: the VF curve and the other limits still apply, and more voltage means more heat, power
   and wear. The Galax HOF XOC image points REL and ALT at the OV equation (REL = ALT = OV = 1125 mV); the editor
-  shows those values read-only there, fixed fields included, and keeps VMIN editable. On a stock image, setting
-  ALT and REL fixed to 1125 mV in one edit gives the same evaluated values (not tested on Turing hardware).
+  shows those values read-only there, fixed fields included, and keeps VMIN and the flat voltage below editable.
+  On a stock image, setting ALT and REL fixed to 1125 mV in one edit gives the same evaluated values (not tested
+  on Turing hardware).
+- **REL and ALT follow OV** (advanced): `nvvdd_rel_alt_follow_ov`, a switch that points REL and ALT at the OV
+  equation, as the Galax HOF XOC image does (REL = ALT = OV). Save it on its own and keep the original image to
+  go back. On the saved copy (and on the HOF XOC image) `nvvdd_rel_alt_follow_ov_mv` sets that one voltage, from
+  950 to 1462 mV (OV is 1125 mV), at least the boot voltage and VMIN plus what its chained equations add. As
+  with the fixed values, whether the card then runs at a higher voltage is not known, and more voltage means
+  more heat, power and wear.
 - **Clock offset ranges**: `gpc_offset_max_mhz` / `gpc_offset_min_mhz` (core) and `memory_offset_max_mhz` /
   `memory_offset_min_mhz`, the ranges an overclocking tool may use. They do not change the clocks by themselves.
 - **Factory clock offsets**: `factory_gpc_offset_mhz` (-500..+500 MHz) and `factory_memory_offset_mhz`
@@ -57,16 +64,17 @@ XOC-style fields**.
   the targets, jump thresholds and hysteresis of its GPC, DRAM and VID controllers, and Stock/Off switches for GR
   power gating and MSCG (idle power saving) on the products whose stock entries were reviewed (every Turing image
   examined). That the driver uses these tables is not proven; see `extended-fields.md`.
-- **Read-only**: the OV voltage limit (1125 mV), the REL/ALT/OV equation and selector fields, the boot voltage
-  and the number of fan channels.
+- **Read-only**: the OV voltage limit (1125 mV; the flat voltage sets it once REL and ALT follow OV), the
+  REL/ALT/OV equation and selector fields, the boot voltage and the number of fan channels.
 - Not every image has every field: Max-Q and laptop images have no slot or connector rows and no GPU-driven fan;
   the GTX 1630 and Gigabyte GTX 1650 images keep their slot and connector rows disabled (class 0), so they
   show no slot field, while the MSI GTX 1650 image has an active slot row (63 W rated, 74 W maximum); the ASUS
   RTX 2080 Ti XOC image disables the
   current thresholds and the NVVDD limit, so they have no field there; the Quadro RTX 8000 stores its clock
   ranges as 0..0 (read-only); one RTX 2080 image lacks the checksum padding of the image that holds the clock
-  table, so its clock ranges are read-only; the GTX 1650 SUPER fan tables disagree and give no fan field; the
-  MSI GTX 1650 stores RPM limits of 0, so only its fan percent limits are editable.
+  and rail tables, so its clock ranges and the follow-OV switch are read-only; the GTX 1650 SUPER fan tables
+  disagree and give no fan field; the MSI GTX 1650 stores RPM limits of 0, so only its fan percent limits are
+  editable.
 - The tables are decoded by structure, checked on the 25 Turing images examined (desktop, laptop, Max-Q, Quadro,
   TITAN and two XOC images, TU102 to TU117). Edits are written to both banks of the image, and the checksum of
   each touched image is repaired. Bounds keep the stored order (minimum <= rated <= maximum, a fan curve inside
@@ -101,12 +109,12 @@ setup so the module is rebuilt with the Turing chips.
 1. **Before anything**, save the stock power limits: `nvidia-smi -q -d POWER > before.txt`, and save your
    card's ROM (for example `nvflash --save original.rom`, or GPU-Z on Windows).
 2. **Unmodified image**: export it without changes, `nvbios normalize original.rom original-loader.bin`, and
-   load `original-loader.bin`. Reboot (Linux) or restart the GPU (Windows). The card should work as before,
-   and on Linux `journalctl -k -b | grep vbios_override` should show `selected: ... staged for GSP`. This
-   shows that the loader takes the file and the card still starts with it, not that GSP uses it: the
-   unmodified file holds the same bytes as the card's own VBIOS, so on Windows **Verify** reports a match
-   either way. On Windows, also load the unmodified e0-end file
-   (`nvbios normalize original.rom original-e0end.bin --representation turing-e0-end-v1`), restart the GPU
+   load `original-loader.bin`. Reboot (Linux) or restart Windows. The card should
+   work as before, and on Linux `journalctl -k -b | grep vbios_override` should show
+   `selected: ... staged for GSP`. This shows that the loader takes the file and the card still starts with
+   it, not that GSP uses it: the unmodified file holds the same bytes as the card's own VBIOS, so on Windows
+   **Verify** reports a match either way. On Windows, also load the unmodified e0-end file
+   (`nvbios normalize original.rom original-e0end.bin --representation turing-e0-end-v1`), restart Windows
    and click **Verify**: that file differs from the card's own VBIOS (two flag bytes, no type-0x70 image), so
    `override-active` means the driver runs it and `override-not-active` means it does not.
 3. **Power-limit edit**, the first real test: in the editor, change one power value by a visible amount

@@ -38,8 +38,15 @@ Todos los campos Turing están marcados como experimentales. Los marcados como *
   copia puede volver exactamente al original. No se sabe si la tarjeta corre entonces a más voltaje: la curva VF
   y los demás límites siguen aplicando, y más voltaje significa más calor, más potencia y más desgaste. La imagen
   Galax HOF XOC apunta REL y ALT a la ecuación de OV (REL = ALT = OV = 1125 mV); ahí el editor muestra esos
-  valores como solo lectura, también los campos fijos, y deja VMIN editable. En una imagen de fábrica, poner ALT
-  y REL fijos en 1125 mV en una misma edición da los mismos valores evaluados (sin probar en hardware Turing).
+  valores como solo lectura, también los campos fijos, y deja editables VMIN y el voltaje plano de más abajo. En
+  una imagen de fábrica, poner ALT y REL fijos en 1125 mV en una misma edición da los mismos valores evaluados
+  (sin probar en hardware Turing).
+- **REL y ALT siguen a OV** (avanzado): `nvvdd_rel_alt_follow_ov`, un interruptor que apunta REL y ALT a la
+  ecuación de OV, como hace la imagen Galax HOF XOC (REL = ALT = OV). Guárdalo solo y conserva la imagen original
+  para volver atrás. En la copia guardada (y en la imagen HOF XOC) `nvvdd_rel_alt_follow_ov_mv` fija ese único
+  voltaje, de 950 a 1462 mV (OV es 1125 mV), como mínimo el voltaje de arranque y VMIN más lo que suman sus
+  ecuaciones encadenadas. Como con los valores fijos, no se sabe si la tarjeta corre entonces a más voltaje, y
+  más voltaje significa más calor, más potencia y más desgaste.
 - **Rangos de offset de reloj**: `gpc_offset_max_mhz` / `gpc_offset_min_mhz` (núcleo) y `memory_offset_max_mhz` /
   `memory_offset_min_mhz`, los rangos que puede usar una herramienta de overclock. Por sí solos no cambian los
   relojes.
@@ -63,17 +70,19 @@ Todos los campos Turing están marcados como experimentales. Los marcados como *
   los interruptores De fábrica/Desactivado del power gating de GR y del MSCG (ahorro en reposo) en los productos
   cuyas entradas de fábrica se revisaron (todas las imágenes Turing examinadas). No está probado que el driver use
   estas tablas; ver `extended-fields.md`.
-- **Solo lectura**: el límite de voltaje OV (1125 mV), los campos de ecuación y de selector de REL/ALT/OV, el
-  voltaje de arranque y la cantidad de canales de ventilador.
+- **Solo lectura**: el límite de voltaje OV (1125 mV; el voltaje plano lo fija cuando REL y ALT siguen a OV), los
+  campos de ecuación y de selector de REL/ALT/OV, el voltaje de arranque y la cantidad de canales de
+  ventilador.
 - No todas las imágenes tienen todos los campos: las Max-Q y las de portátil no tienen filas de slot ni de
   conector ni ventilador controlado por la GPU; las imágenes de GTX 1630 y de GTX 1650 de Gigabyte tienen
   desactivadas sus filas de slot y de conector (clase 0), así que no muestran campos de slot, mientras que
   la imagen de GTX 1650 de MSI tiene una fila de slot activa (63 W nominal, 74 W máximo); la imagen ASUS RTX
   2080 Ti XOC desactiva los umbrales de corriente y el límite NVVDD, así que ahí no tienen campo; la Quadro RTX
   8000 guarda sus rangos de reloj como 0..0 (solo lectura); una imagen de RTX 2080 no tiene el relleno de la
-  suma de comprobación en la imagen que contiene la tabla de relojes, así que sus rangos de reloj son de solo
-  lectura; las tablas de ventilador de la GTX 1650 SUPER no concuerdan y no dan campo de ventilador; la GTX
-  1650 de MSI guarda límites de RPM en 0, así que solo sus límites de ventilador en porcentaje son editables.
+  suma de comprobación en la imagen que contiene las tablas de relojes y del riel, así que sus rangos de reloj y
+  el interruptor de seguir a OV son de solo lectura; las tablas de ventilador de la GTX 1650 SUPER no concuerdan
+  y no dan campo de ventilador; la GTX 1650 de MSI guarda límites de RPM en 0, así que solo sus límites de
+  ventilador en porcentaje son editables.
 - Las tablas se decodifican por su estructura, comprobada en las 25 imágenes Turing examinadas (escritorio,
   portátil, Max-Q, Quadro, TITAN y dos imágenes XOC, de TU102 a TU117). El cambio se escribe en los dos bancos
   de la imagen y se repara la suma de comprobación de cada imagen tocada. Los límites mantienen el orden guardado
@@ -110,13 +119,13 @@ vuelve a ejecutar la configuración para que se recompile el módulo con los chi
 1. **Antes de nada**, guarda los límites de fábrica: `nvidia-smi -q -d POWER > antes.txt`, y guarda la ROM
    de tu tarjeta (por ejemplo `nvflash --save original.rom`, o GPU-Z en Windows).
 2. **Imagen sin modificar**: expórtala sin cambios, `nvbios normalize original.rom original-loader.bin`, y
-   carga `original-loader.bin`. Reinicia (Linux) o reinicia la GPU (Windows). La tarjeta debería funcionar
-   como antes, y en Linux `journalctl -k -b | grep vbios_override` debería mostrar
+   carga `original-loader.bin`. Reinicia (Linux) o reinicia Windows. La tarjeta
+   debería funcionar como antes, y en Linux `journalctl -k -b | grep vbios_override` debería mostrar
    `selected: ... staged for GSP`. Esto muestra que el cargador acepta el archivo y que la tarjeta arranca con
    él, no que el GSP lo use: el archivo sin modificar tiene los mismos bytes que la VBIOS de la tarjeta, así
    que en Windows **Verificar** da coincidencia en ambos casos. En Windows, carga también el archivo e0-end
    sin modificar (`nvbios normalize original.rom original-e0end.bin --representation turing-e0-end-v1`),
-   reinicia la GPU y pulsa **Verificar**: ese archivo difiere de la VBIOS de la tarjeta (dos bytes de marcas,
+   reinicia Windows y pulsa **Verificar**: ese archivo difiere de la VBIOS de la tarjeta (dos bytes de marcas,
    sin la imagen de tipo 0x70), así que `override-active` significa que el driver lo usa y
    `override-not-active` que no.
 3. **Cambio de límite de potencia**, la primera prueba real: en el editor, cambia un valor de potencia de

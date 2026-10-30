@@ -12,7 +12,7 @@ import re
 import struct
 from .errors import FormatError
 from .structure import (VFE_CRITERION_EQUATION, VFE_UNCLAMPED, dram_points, fan_curve, gpc_curve_slot, scan_images,
-                        parse_bit, vfe_clamp_state, vfe_range, vfe_tree)
+                        parse_bit, vfe_clamp_state, vfe_free_slot, vfe_range, vfe_tree)
 
 def unpack(blob, fmt, at):
     size = struct.calcsize(fmt)
@@ -1277,6 +1277,49 @@ class BlackwellRom:
             return "is an equation tree whose root has an unreviewed output clamp"
         return dict(state="stock" if state == "unclamped" else "pinned", kind="min-max" if b[at] == 2 else "compare",
                     pinned_uv=value, nodes=len(nodes), stock_clamp=VFE_UNCLAMPED)
+
+    def follow_ov_equation(self):
+        """Where one NVVDD value for REL = ALT = OV (the flat follow-OV voltage) lives, or a diagnostic string.
+
+        The NVVDD OV selector (row +0x11) picks equation E, a constant voltage equation (constant_equation).
+        E is dedicated when no rail row word (RAIL_SELECTORS) but the NVVDD REL, ALT and OV selectors selects
+        it, no VFE equation references it and no table names it (equation_index_names): the value then goes
+        into E. Otherwise (the MSVDD row word +0x15 and the clock programming and FLL tables of the RTX PRO 6000,
+        RTX PRO 4000 SFF and notebook images, the clock programming table of the RTX 5080 and 5070 Ti) a copy
+        of E with the value goes into the first unused VFE slot (type 0, the slot a GPC curve offset takes too),
+        which must be clean (vfe_free_slot) and used by nothing, and those three selectors move to it, so E
+        keeps its bytes. Tables that cannot be read rule out both. Returns index, offset, value_uv and
+        dedicated, and for a copy slot and slot_offset.
+        """
+        b = self.blob
+        rail, vfe = self.pointer("P", 0x68), self.pointer("P", 0x20)
+        rows = [rail + 5 + 65 * i for i in range(self.rail_count(rail))]
+        if b[vfe:vfe + 5] != bytes((0x30, 14, 29, 255, 25)) or self.object_for(vfe)["id"] != 0x14:
+            raise FormatError("unvalidated Blackwell VFE output layout")
+        equations = vfe + b[vfe + 1] + b[vfe + 2] * b[vfe + 3]
+        count = b[vfe + 5] | b[vfe + 10] << 8
+        self.object_for(vfe, equations + 25 * count - vfe)
+        index = unpack(b, "<H", rows[0] + 0x11)[0]
+        value = self.constant_equation(equations + 25 * index) if index < count else None
+        if value is None:
+            return "the OV equation is not a constant voltage equation"
+        refs = self.equation_references(equations, count)
+        if refs is None:
+            return "the VFE table holds an equation kind the editor does not read"
+        try:
+            names = self.equation_index_names()
+        except FormatError as exc:
+            return f"{exc}, so other users of the OV equation cannot be ruled out"
+        own = {rows[0] + offset for offset in (0x0D, 0x0F, 0x11)}
+        used = refs | set(names) | {unpack(b, "<H", row + offset)[0] for row in rows for offset in RAIL_SELECTORS
+                                    if row + offset not in own}
+        result = dict(index=index, offset=equations + 25 * index, value_uv=value, dedicated=index not in used)
+        if result["dedicated"]:
+            return result
+        slot = next((i for i in range(count) if not b[equations + 25 * i]), None)
+        if slot is None or slot in used or b[equations + 25 * slot:equations + 25 * slot + 25] != vfe_free_slot(25):
+            return "the OV equation is shared and the first unused VFE slot is missing, not clean or used"
+        return dict(result, slot=slot, slot_offset=equations + 25 * slot)
 
     def rail_limits(self):
         b = self.blob

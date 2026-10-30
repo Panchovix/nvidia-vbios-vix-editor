@@ -3,6 +3,11 @@
 One line per change. What each change does, where it applies and what was tested is in the
 [changelog details](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/changelog-details.md).
 
+## 0.1.38
+
+- Blackwell: REL floor, and one NVVDD voltage for REL = ALT = OV once they follow OV (experimental).
+- Ada, Ampere and Turing: one NVVDD voltage once REL and ALT follow OV; Ada REL floor; Ampere fixed REL/ALT (experimental).
+
 ## 0.1.37
 
 - HP OEM RTX 3060 12 GB: zero RPM can't stop the fan (hardware result).

@@ -18,9 +18,9 @@ from ..rom.tables import ADVANCED_TABLES, PROFILE_BYTES, TableRom, checksum_tail
 from .registry import (registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
                        fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
                        fixed_voltage, dram_offset_points, gpc_curve_offset, max_operating_temperature,
-                       factory_clocks, perf_cf_controllers, lpwr_features, LPWR_ENABLED_ENTRIES, VMIN_SEMANTICS,
-                       VMIN_FIXED_SEMANTICS,
-                       FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS, DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS,
+                       factory_clocks, perf_cf_controllers, lpwr_features, rel_clamps, LPWR_ENABLED_ENTRIES,
+                       VMIN_SEMANTICS, VMIN_FIXED_SEMANTICS, FOLLOW_OV_SEMANTICS, FOLLOW_OV_VOLTAGE_SEMANTICS,
+                       FIXED_SEMANTICS, REL_FLOOR_SEMANTICS, DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS,
                        MAX_TEMP_SEMANTICS, FACTORY_SEMANTICS, ADVANCED_SEMANTICS, PERF_CF_CONTROLLERS, fxp_percent,
                        FAN_ZERO_RPM_BITS, FAN_ZERO_RPM_TEMP_CEILING, FAN_ZERO_RPM_TEMP_FLOOR, fan_stop_accepted,
                        fan_stop_parameters)
@@ -31,11 +31,13 @@ ZERO_RPM_PAIR_SEMANTICS = ('stored-fan-zero-rpm-lower-temperature', 'stored-fan-
 REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
                       fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
                       fixed_voltage, dram_offset_points, gpc_curve_offset, max_operating_temperature, factory_clocks,
-                      perf_cf_controllers, lpwr_features)
+                      perf_cf_controllers, lpwr_features, rel_clamps)
 # Fields that change otherwise preserved rail bytes, each only through its reviewed binding:
 # the evaluated VMIN equation and the switch that restores a VMIN tree root's stock clamp, the
-# XOC-style NVVDD REL/ALT selectors and the fixed Ada/Turing REL/ALT values.
-RAIL_EXCEPTIONS = (VMIN_SEMANTICS, VMIN_FIXED_SEMANTICS, FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS)
+# XOC-style NVVDD REL/ALT selectors and the flat value they then share with OV, the fixed Ada/Ampere/Turing
+# REL/ALT values and the GB20x and Ada REL floors.
+RAIL_EXCEPTIONS = (VMIN_SEMANTICS, VMIN_FIXED_SEMANTICS, FOLLOW_OV_SEMANTICS, FOLLOW_OV_VOLTAGE_SEMANTICS,
+                   FIXED_SEMANTICS, REL_FLOOR_SEMANTICS)
 # Layout fields whose bytes no other check rereads through the canonical parser: only the
 # reviewed complete binding (offsets, encoding, scale and layout) may write them.
 COMPLETE_BINDING_SEMANTICS = (RAIL_EXCEPTIONS + (DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS, MAX_TEMP_SEMANTICS) +
@@ -353,6 +355,14 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     reviewed = _reviewed(image, parser)
     canonical = {key: reviewed[key] for key in changes
                  if key in available and key in reviewed and _same(available[key], reviewed[key])}
+    # Moving the REL/ALT selectors changes which equation the voltage fields bind; the flat follow-OV value is
+    # read-only until the copy stores them moved, so with the switch editable this comes before the read-only check
+    # (a read-only switch fails there).
+    voltages = sorted(k for k in changes if k in available and available[k].descriptor.get('units') == 'mV')
+    if ('nvvdd_rel_alt_follow_ov' in changes and 'nvvdd_rel_alt_follow_ov' in available and voltages and
+            reviewed.get('nvvdd_rel_alt_follow_ov', available['nvvdd_rel_alt_follow_ov']).descriptor['editable']):
+        raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change nvvdd_rel_alt_follow_ov and the voltage fields in separate '
+                         'edits', details={'fields': ['nvvdd_rel_alt_follow_ov'] + voltages})
     # No extension binding with a reviewed key, whatever its offsets or
     # encoding, can unlock a field the reviewed resolver marks read-only.
     for key in changes:
@@ -380,11 +390,6 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     if 'fan_channels' in changes and per_channel:
         raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change fan_channels and the fan limits, curves or zero-RPM flag '
                          'in separate edits', details={'fields': ['fan_channels'] + per_channel})
-    # Moving the REL/ALT selectors changes which equation the voltage fields bind.
-    voltages = sorted(k for k in changes if k in available and available[k].descriptor.get('units') == 'mV')
-    if 'nvvdd_rel_alt_follow_ov' in changes and voltages:
-        raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change nvvdd_rel_alt_follow_ov and the voltage fields in separate '
-                         'edits', details={'fields': ['nvvdd_rel_alt_follow_ov'] + voltages})
     # A VMIN tree root's value and its fixed switch write the same clamp bytes.
     pairs = sorted(key for key in changes if key in reviewed and
                    reviewed[key].descriptor['value_semantics'] == VMIN_FIXED_SEMANTICS and
@@ -393,10 +398,11 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
         raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change ' + ', '.join(pairs) + ' and the VMIN value in separate '
                          'edits: both write the clamp of the VMIN equation',
                          details={'fields': [k for key in pairs for k in (key[:-len('fixed')] + 'mv', key)]})
-    # A VMIN that copies its equation into the first unused VFE slot (Ada, a constant shares it) and the GPC
-    # curve offset, which takes that slot too.
+    # A VMIN that copies its equation into the first unused VFE slot (Ada, a constant shares it), the flat
+    # follow-OV value that copies a shared OV constant there (GB20x) and the GPC curve offset, which takes that
+    # slot too.
     cloned = sorted(k for k in changes if k in reviewed and reviewed[k].companion and
-                    reviewed[k].descriptor['value_semantics'] == VMIN_SEMANTICS)
+                    reviewed[k].descriptor['value_semantics'] in (VMIN_SEMANTICS, FOLLOW_OV_VOLTAGE_SEMANTICS))
     if cloned and 'gpc_curve_offset_mhz' in changes:
         raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change ' + ', '.join(cloned) + ' and gpc_curve_offset_mhz in '
                          'separate edits: on this ROM both use the first unused VFE slot',
@@ -770,12 +776,24 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                 raise VbiosError('OUT_OF_BOUNDS', f'{article} clock offset range must not collapse to '
                                  '0..0 (it would read as disabled and become read-only)',
                                  details={'clock_row': right['row'], 'domain': right['domain']})
-    # Only the canonical REL/ALT follow-OV field moves the NVVDD REL and ALT selectors.
+    # Only the canonical REL/ALT follow-OV field moves the NVVDD REL and ALT selectors, and the flat follow-OV
+    # value that copies a shared OV constant into an unused VFE slot moves them with the OV selector.
     moved = ({('NVVDD', 'REL'), ('NVVDD', 'ALT')} if any(b.descriptor['value_semantics'] == FOLLOW_OV_SEMANTICS
                                                          for b in canonical.values()) else set())
-    # Only the canonical fixed REL/ALT fields change an equation's constant (with its clamp maximum).
-    fixed_bytes = {at for binding in canonical.values() if binding.descriptor['value_semantics'] == FIXED_SEMANTICS
+    flat_copy = {at for binding in canonical.values()
+                 if binding.descriptor['value_semantics'] == FOLLOW_OV_VOLTAGE_SEMANTICS and binding.companion
+                 for start in binding.offsets for at in range(start, start + 4)}
+    flat_copy |= _companion_bytes(canonical.values(), FOLLOW_OV_VOLTAGE_SEMANTICS)
+    if flat_copy:
+        moved |= {('NVVDD', 'REL'), ('NVVDD', 'ALT'), ('NVVDD', 'OV')}
+    # Only the canonical fixed REL/ALT fields change an equation's constant (with its clamp maximum), a GB20x or Ada
+    # REL floor its clamp minimum and the flat follow-OV value the clamp and constant of the OV constant; an equation
+    # whose clamp minimum (byte 3) is declared may change its output minimum.
+    fixed_bytes = {at for binding in canonical.values()
+                   if binding.descriptor['value_semantics'] in (FIXED_SEMANTICS, REL_FLOOR_SEMANTICS,
+                                                                FOLLOW_OV_VOLTAGE_SEMANTICS)
                    for start in binding.offsets for at in range(start, start + 4)}
+    minimum = lambda at: ('output_minimum_uv',) if at is not None and at + 3 in fixed_bytes else ()
     try:
         source_rails = parser.rail_limits()
     except FormatError:
@@ -791,7 +809,7 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
             if (source_rail['rail_name_inferred'], 'REL') in moved:
                 continue  # the declared selector bytes alone changed; its old equation is checked below
             # The coefficient bytes are compared instead, except a declared fixed-value constant.
-            values = ('output_maximum_uv', 'equation_coefficients')
+            values = ('output_maximum_uv', 'equation_coefficients') + minimum(source_rail.get('equation_offset'))
             source_fixed = {k: v for k, v in source_rail.items() if k not in values}
             target_fixed = {k: v for k, v in target_rail.items() if k not in values}
             at = source_rail['maximum_offset'] + 4
@@ -819,8 +837,9 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
             if len(source_roles) != len(target_roles):
                 raise VbiosError('PRESERVED_FIELD_CHANGED', 'rail role identity changed')
             for left, right in zip(source_roles, target_roles):
-                left_fixed = {k: v for k, v in left.items() if k != 'output_maximum_uv'}
-                right_fixed = {k: v for k, v in right.items() if k != 'output_maximum_uv'}
+                values = ('output_maximum_uv',) + minimum(left['equation_offset'])
+                left_fixed = {k: v for k, v in left.items() if k not in values}
+                right_fixed = {k: v for k, v in right.items() if k not in values}
                 if (left['logical_rail_id'], left['role']) not in moved and left_fixed != right_fixed:
                     raise VbiosError('PRESERVED_FIELD_CHANGED', 'role selectors, boot and equation minima must be preserved')
                 at = left['equation_offset']
@@ -836,7 +855,8 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                     raise VbiosError('PRESERVED_FIELD_CHANGED', 'the boot voltage equation bytes must be preserved',
                                      details={'rail': item['logical_rail_id']})
     # The rail table (legacy image; Ada/Ampere/Turing: of every chain) changes only at the REL/ALT selector
-    # bytes of the canonical follow-OV binding; the role checks above cover its selectors and boot values again.
+    # bytes of the canonical follow-OV binding and the REL/ALT/OV selectors the flat follow-OV value's copy
+    # moves; the role checks above cover its selectors and boot values again.
     try:
         rail, length = parser.rail_table()
         tables = [rail] if isinstance(parser, BlackwellRom) else parser.copy_offsets(rail, length)
@@ -844,6 +864,7 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
         tables, length = [], 0
     follow = {at for binding in canonical.values() if binding.descriptor['value_semantics'] == FOLLOW_OV_SEMANTICS
               for start in binding.offsets for at in range(start, start + struct.calcsize(binding.encoding))}
+    follow |= flat_copy
     if any(image.blob[i] != output.blob[i] and i not in follow for start in tables for i in range(start, start + length)):
         raise VbiosError('PRESERVED_FIELD_CHANGED', 'rail table bytes must be preserved')
     # The evaluated VMIN selector stays, and its equation changes only at the floats
@@ -889,7 +910,8 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                                  'its copy must be preserved', details={'rail': left['logical_rail_id']})
     # The GPC curve root equation and the VFE slot of its offset (linked or first unused) change only
     # at the bytes the canonical gpc_curve_offset_mhz binding declares, in every chain, and at the
-    # copy and link bytes of a canonical VMIN binding that clones its equation into that unused slot.
+    # copy and link bytes of a canonical VMIN binding that clones its equation into that unused slot
+    # or of the flat follow-OV value's copy.
     try:
         source_curve = parser.gpc_curve() if hasattr(parser, 'gpc_curve') else None
     except FormatError:
@@ -897,7 +919,7 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     if source_curve is not None:
         curve_bytes = {at for binding in canonical.values() if binding.descriptor['value_semantics'] == GPC_CURVE_SEMANTICS
                        for start in binding.offsets for at in range(start, start + struct.calcsize(binding.encoding))}
-        curve_bytes |= clone_bytes
+        curve_bytes |= clone_bytes | flat_copy
         size, starts = source_curve['size'], (source_curve['root_offset'], source_curve['slot_offset'])
         if not isinstance(parser, BlackwellRom):
             starts = [copy for at in starts for copy in parser.copy_offsets(at, size)]

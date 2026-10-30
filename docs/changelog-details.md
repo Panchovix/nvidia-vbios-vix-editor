@@ -3,6 +3,55 @@
 What each change does, where it applies, what was tested and its risks. CHANGELOG.md lists the same
 changes, one line each, in the same order.
 
+## 0.1.38
+
+- **Blackwell: REL floor, and one NVVDD voltage for REL = ALT = OV once they follow OV (experimental).** REL is the
+  chip's own value, from its fused leakage, kept between the floor and the ceiling of its equation. **NVVDD REL
+  floor** and **MSVDD REL floor** now set that floor, next to the ceiling: a floor above the chip value becomes the
+  REL. On RTX PRO 6000 Max-Q boards with a raised ceiling the driver reported REL at about 990 to 1000 mV, the chip
+  value, and a floor can set it higher. This matters on RTX 50 cards where the driver ignores runtime rail offsets; a
+  tuning tool's offset still adds where the driver applies it. The floor goes from 850 mV up to the ceiling and at
+  most OV (1200 mV), so REL and VMIN stay at or below OV; raise both in one edit to go past the stored ceiling. With
+  **Show advanced XOC-style fields**, **NVVDD flat voltage (REL = ALT = OV)** sets one value for REL, ALT and OV, from
+  850 to 1560 mV (stock 1200 mV), on a copy saved with **NVVDD REL and ALT follow OV** on (save the switch, open the
+  copy, then set the value) and on the ASUS XOC and MSI Lightning ROMs. On the RTX 5090, 5070 and 5060 Ti it changes
+  the OV equation itself. On the RTX PRO 6000, RTX PRO 4000 SFF, laptops, RTX 5080 and 5070 Ti, where other tables or
+  the MSVDD rail may use that equation, the first save writes a copy of it into the first unused VFE slot and points
+  REL, ALT and OV at the copy, so the others keep 1200 mV; on those boards save it and the GPC curve offset in
+  separate copies. While REL and ALT follow OV, the NVVDD REL, ALT and OV ceilings and the NVVDD REL floor are
+  read-only. Above 1250 mV the value is beyond the range of the VFE voltage variable, so the VF curve might not use
+  it, and the board power and current limits still apply. Neither field is tested on hardware (the follow-OV switch
+  alone loaded fine on an RTX 5090). More voltage means more heat, power and wear; removing the override brings the
+  card back. For API users: `nvvdd_rel_equation_min_mv` and `msvdd_rel_equation_min_mv` form the ordering groups
+  `nvvdd-rel-clamp` and `msvdd-rel-clamp` with their ceilings, and `nvvdd_rel_alt_follow_ov_mv` reports in
+  `vfe_copy_slot` the slot a copy takes.
+
+- **Ada, Ampere and Turing: one NVVDD voltage once REL and ALT follow OV; Ada REL floor; Ampere fixed REL/ALT
+  (experimental).** On Ada, **NVVDD REL floor** sets the floor of a REL that follows the temperature (the RTX 4090
+  95.02.18, 4080 SUPER, 4070, 4070 SUPER and most RTX Ada workstation ROMs): REL falls as the GPU heats up, from
+  about 97 °C with the stock clamps, so the floor is the REL of a hot GPU; it goes from 830 mV up to the ceiling and
+  at most OV (1200 mV), and a fixed REL keeps its own field. **NVVDD REL and ALT follow OV**, under **Show advanced
+  XOC-style fields**, now also works on Ampere (the NVVDD rail; the MSVDD rail of the GA102 boards keeps its own) and
+  Turing, and on a copy saved with it on, **NVVDD flat voltage (REL = ALT = OV)** sets one value for REL, ALT and OV
+  on all three: 830 to 1560 mV on Ada (OV 1200 mV), 900 to 1430 mV on Ampere (OV 1100 mV) and 950 to 1462 mV on
+  Turing (OV 1125 mV; there also at least the boot voltage and VMIN plus its chained terms). On every Ada, Ampere and
+  Turing ROM nothing else uses the OV equation, so the value goes into it, in every copy of the tables. Where each
+  chip sets its own VMIN, the flat voltage and the Ada REL floor stay at or above the highest VMIN it can reach until
+  **NVVDD minimum voltage (VMIN)** is fixed: 979 mV on the RTX 4060 Ti, 989 mV on the RTX 4060 and 1140.5 mV on the
+  RTX 5000 Ada, whose floor then only goes up, so REL does not end below VMIN. On the RTX 4090 95.02.3C ROMs the
+  flat voltage stays at or above 926 mV, the stock VMIN that their memory clock voltage floor keeps plus its chain.
+  The Galax HOF XOC RTX 2080 Ti ROM
+  already points REL and ALT at OV: there the switch reads on and the voltage can be set directly. One RTX 2080 ROM,
+  whose image holding the rail table lacks the checksum padding, keeps the switch read-only. On Ampere, **NVVDD
+  REL/ALT fixed voltage** and, on the two-rail GA102 boards, **MSVDD REL/ALT fixed voltage** (advanced) set the
+  constant REL and ALT of each rail, as on Ada and Turing, up to OV: REL goes from its stored 900 to 1087.5 mV up to
+  1100 mV, and an ALT already at 1100 mV (GeForce boards) stays there. While REL follows OV, the NVVDD fixed values
+  are read-only on every family: the flat voltage sets them. None of it is tested on hardware; more voltage means
+  more heat, power and wear, and removing the override brings the card back. For API users: the new keys
+  `msvdd_rel_fixed_mv` and `msvdd_alt_fixed_mv` form the ordering group `msvdd-rel-alt`; on Turing
+  `nvvdd_rel_alt_follow_ov_mv` joins `nvvdd-rel-alt` with `nvvdd_vmin_mv`, and the Turing clock programming 3.5, FLL
+  1.0 and voltage policy 1x tables are read to rule out other users of the OV equation.
+
 ## 0.1.37
 
 - **HP OEM RTX 3060 12 GB: zero RPM can't stop the fan (hardware result).** One user tested the 0.1.36 fan fields on

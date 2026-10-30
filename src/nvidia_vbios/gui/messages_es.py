@@ -180,7 +180,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'unexpected': 'Error inesperado en la ventana del editor, por favor repórtalo: {message} [{code}]',
  'not_a_number': 'Introduce un número',
  'order_hint': 'Rompe el orden mínimo ≤ nominal ≤ máximo de su grupo',
- 'order_hint_voltage': 'Rompe el orden VMIN < REL ≤ ALT; cambia estos valores juntos',
+ 'order_hint_voltage': 'Rompe el orden VMIN < piso REL ≤ REL ≤ ALT; cambia estos valores juntos',
  'order_hint_fan': ('Los límites y puntos de las curvas deben quedar dentro de sus rangos permitidos; '
                      'cambia los valores relacionados juntos'),
  'zero_rpm_hint': ('Con la parada en reposo activada, el umbral superior no puede quedar por encima del punto 1 '
@@ -439,6 +439,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                'los mide el VRM, no los shunts, y no se escalan.',
  'shunt_real': 'Unos {value} {units} reales con un shunt x{factor}',
  'field.equation': 'Techo de ecuación {role} de {rail}',
+ 'field.rel_floor': 'Piso REL de {rail}',
  'field.vmin': 'Voltaje mínimo (VMIN) de {rail} (experimental)',
  'field.vmin_fixed': 'VMIN fijo de {rail} (experimental)',
  'field.vmin_slot': 'Techo de la ecuación del slot VMIN de la info del riel {rail} (no es el VMIN evaluado)',
@@ -446,6 +447,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.fixed_advanced': 'Voltaje fijo {role} de {rail} (avanzado, experimental)',
  'field.nvvdd_rel_alt_follow_ov': ('REL y ALT de NVVDD siguen a OV (límite de voltaje plano estilo XOC; avanzado, '
                                    'experimental)'),
+ 'field.nvvdd_rel_alt_follow_ov_mv': 'Voltaje plano de NVVDD (REL = ALT = OV)',
  'field.power_default_w': 'Potencia por defecto al arrancar (experimental)',
  'field.input_current_rated_ma': 'Límite de corriente de entrada de 12 V, nominal (experimental)',
  'field.input_current_max_ma': 'Techo de corriente de entrada de 12 V (experimental)',
@@ -521,6 +523,13 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                           'la entrada de un segundo canal de ventilador que desactiva; fijar la cantidad de canales '
                           'desactivaría esa curva o activaría su canal, así que la cantidad queda como está '
                           'guardada.'),
+ 'reason.follow_ov_clamp': ('En esta ROM REL y ALT siguen a OV, así que REL, ALT y OV comparten un solo voltaje: '
+                            'fíjalo en "Voltaje plano de NVVDD (REL = ALT = OV)", que aparece con los campos '
+                            'avanzados.'),
+ 'reason.follow_ov_rel_clamp': ('En esta ROM REL sigue a OV, así que REL y OV comparten un solo voltaje: fíjalo en '
+                                '"Voltaje plano de NVVDD (REL = ALT = OV)", que aparece con los campos avanzados.'),
+ 'reason.follow_ov_switch_off': ('Activa "REL y ALT de NVVDD siguen a OV", guarda la copia y ábrela para fijar este '
+                                 'valor.'),
  'reason.generic': 'Edición no disponible para este campo.',
  'error.INVALID_IMAGE': 'Abre una ROM primero',
  'error.INVALID_CHANGES': 'Prepare una vista previa verificada antes de guardar',
@@ -550,9 +559,11 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'error.SEPARATE_EDIT_REQUIRED': ('Guarda estos cambios en copias separadas. La cantidad de canales de ventilador '
                                   'va antes que los límites, las curvas o la parada en reposo de los ventiladores, y '
                                   'el ajuste REL/ALT siguen a OV antes que los voltajes. En algunas ROM de RTX 4090 el '
-                                  'VMIN y el offset de la curva GPC también se guardan por separado, y lo mismo '
-                                  'desactivar la parada en reposo y cambiar sus umbrales en una copia donde la parada '
-                                  'escribió valores de parada. Guarda uno y luego abre la copia para cambiar el resto'),
+                                  'VMIN y el offset de la curva GPC también se guardan por separado, al igual que el '
+                                  'voltaje plano de NVVDD y el offset de la curva GPC en algunas ROM Blackwell, y lo '
+                                  'mismo desactivar la parada en reposo y cambiar sus umbrales en una copia donde la '
+                                  'parada escribió valores de parada. Guarda uno y luego abre la copia para cambiar el '
+                                  'resto'),
  'cli_usage': 'uso: ',
  'cli_positionals': 'argumentos posicionales',
  'cli_options': 'opciones',

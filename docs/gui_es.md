@@ -103,10 +103,14 @@ funcionando sin las dependencias gráficas.
    NVVDD y la corriente de entrada de 12 V, rotulada "umbral"), el límite de
    corriente de salida NVVDD de Turing y Ampere (en Ampere puede ser lo que limita
    un portátil por debajo de un techo de potencia subido; sin probar, y el VRM se
-   dimensionó para el valor de fábrica), los voltajes fijos REL/ALT de Turing y, en
-   Blackwell y Ada, **REL y ALT de NVVDD siguen a OV** (un interruptor: activado
+   dimensionó para el valor de fábrica), los voltajes fijos REL/ALT de Turing y Ampere y
+   **REL y ALT de NVVDD siguen a OV** (un interruptor: activado
    da el límite de voltaje plano estilo XOC; guárdalo solo y conserva la imagen
-   original para volver atrás) y, en Blackwell, Ada y Ampere, **Parada de
+   original para volver atrás; en la copia guardada,
+   **Voltaje plano de NVVDD (REL = ALT = OV)**, justo debajo, fija ese voltaje, de 850
+   a 1560 mV, en Ada de 830 a 1560 mV, en Ampere de 900 a 1430 mV, en Turing de 950 a
+   1462 mV, y nunca bajo el VMIN más alto donde cada chip fija el suyo) y, en
+   Blackwell, Ada y Ampere, **Parada de
    ventiladores en reposo** (un interruptor para los bits que permiten que los
    ventiladores se detengan en reposo, probado en hardware en una RTX 5090, no en Ada,
    Ampere ni en la RTX PRO 6000 Max-Q; experimental). En las tarjetas blower que no
@@ -262,7 +266,14 @@ segundo canal de ventilador que desactiva, así que **Canales de ventilador** qu
 solo lectura y su fila dice por qué. Los techos de
 salida OCP revisados se expresan en mA, pero editarlos no demuestra que el firmware
 los aplique. Un techo de ecuación REL/ALT/OV tampoco es un voltaje evaluado ni
-un offset runtime. **Voltaje mínimo (VMIN)** (experimental) es el valor guardado de la
+un offset runtime. En Blackwell, **Piso REL de NVVDD** y **Piso REL de MSVDD**
+(experimental, bajo cada techo REL) fijan el REL más bajo: el REL es el valor propio
+del chip mantenido entre el piso y el techo, así que un piso por encima de ese valor
+pasa a ser el REL; sube ambos juntos para pasar del techo guardado, hasta OV (1200 mV).
+En Ada, **Piso REL de NVVDD** hace lo mismo donde el REL sigue a la temperatura (baja
+cuando la GPU se calienta), desde 830 mV (o, donde cada chip fija su propio VMIN, desde
+el VMIN más alto que puede alcanzar): el piso es entonces el REL de una GPU caliente.
+**Voltaje mínimo (VMIN)** (experimental) es el valor guardado de la
 ecuación que el driver evalúa como VMIN; en Ada el driver le suma sus términos
 encadenados (+90 mV en una RTX 2000 Ada), así que el valor llega hasta el REL más
 bajo menos lo máximo que esos términos pueden sumar (753 mV en esa placa). El
@@ -296,7 +307,10 @@ entre los campos avanzados (REL 1068,75 mV y ALT 1093,75 mV en la mayoría de la
 tarjetas, OV 1125 mV); ahí REL y ALT además se mantienen como mínimo en el voltaje de
 arranque y en VMIN más sus términos encadenados, y VMIN puede subir por encima del REL
 anterior si REL sube en la misma edición (VMIN más sus términos encadenados queda como
-máximo en REL). Ada y Ampere no heredan la conversión de memoria de Blackwell. La GUI guarda
+máximo en REL). Las imágenes Ampere la tienen para cada riel (también MSVDD en las GA102 de
+dos rieles), también entre los campos avanzados: REL sube hasta OV (1100 mV), y un ALT que ya
+está en 1100 mV (tarjetas GeForce) se queda ahí. Ada y Ampere no heredan la conversión de
+memoria de Blackwell. La GUI guarda
 el archivo completo y no normaliza los bancos
 implícitamente. Los formatos desconocidos o no editables permiten sólo inspección.
 Las firmas criptográficas no se verifican ni regeneran.

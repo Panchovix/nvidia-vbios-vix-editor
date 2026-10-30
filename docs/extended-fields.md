@@ -69,13 +69,15 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | IDs (`*` stands for the `nvvdd` or `msvdd` prefix) | Meaning | Offline support |
 | --- | --- | --- |
 | `*_rel_equation_max_mv` | VFE output clamp maximum addressed by REL selector | Reviewed Blackwell; Ada temperature-derated REL |
+| `*_rel_equation_min_mv` | VFE output clamp minimum (REL floor) addressed by REL selector: REL is the equation's value (GB20x: the chip value; Ada: a temperature value) clamped to the floor and the ceiling | Experimental, GB20x and Ada (NVVDD, every chain, a temperature-derated REL); editable with the REL ceiling while REL does not select the OV equation; 850 mV (Ada 830 mV and at least the highest VMIN set per chip; or the stored floor) up to the ceiling and at most OV (1200 mV), ordering group `*-rel-clamp` with it |
 | `*_alt_equation_max_mv` | VFE output clamp maximum addressed by ALT selector | Reviewed Blackwell when present; Ada temperature-derated ALT (experimental) |
 | `*_ov_equation_max_mv` | VFE output clamp maximum addressed by OV selector | Reviewed Blackwell |
 | `*_vmin_equation_max_mv` | VFE output clamp maximum addressed by the rail INFO VMIN slot (GB20x row+`0x21`, Ada/Ampere row byte 11); **not** the evaluated VMIN | Read-only |
 | `*_vmin_mv` | Evaluated minimum voltage (VMIN): the equation at GB20x row+`0x13`, Ada/Ampere row byte 7, Turing row byte 9 | Experimental, constant (GB20x) or clamp-pinned (Ada/Ampere/Turing) equations, kept below the lowest REL value; on the RTX 4090 95.02.3C images through a copy of the shared equation; a tree root (GB20x, Ampere) or per-chip equation (Ada) that nothing else names takes a value in its clamp, `current` `null` while stock |
 | `*_vmin_fixed` | 1 while `*_vmin_mv` pins the clamp of a VMIN tree root or per-chip equation, 0 for its stock clamp (VMIN set per chip) | Experimental, GB20x, Ada and Ampere where `*_vmin_mv` is a tree root or per-chip equation; only 1 -> 0, which writes the stock clamp back byte for byte |
-| `nvvdd_rel_alt_follow_ov` | 1 when the NVVDD REL and ALT selectors (REL alone without ALT) point at the OV equation (XOC-style) | Experimental, opt-in, GB20x and Ada; only 0 -> 1 |
-| `nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv` | Value of a constant NVVDD REL or ALT equation: its constant and clamp maximum | Experimental, Ada and Turing (opt-in); from the clamp minimum up to the OV value, REL <= ALT; on Turing also at least the boot voltage and the highest VMIN |
+| `nvvdd_rel_alt_follow_ov` | 1 when the NVVDD REL and ALT selectors (REL alone without ALT) point at the OV equation (XOC-style) | Experimental, opt-in, GB20x, Ada, Ampere and Turing; only 0 -> 1 |
+| `nvvdd_rel_alt_follow_ov_mv` | One NVVDD value for REL = ALT = OV while they follow OV: the OV constant, or a copy of it in the first unused VFE slot where other tables or the MSVDD row use it | Experimental, opt-in, GB20x, Ada, Ampere and Turing (in place only on Ada, Ampere and Turing); on a copy saved with `nvvdd_rel_alt_follow_ov` 1 and on the vendor XOC images; 850-1560 mV (Ada 830-1560 mV and Ampere 900-1430 mV, both at least the highest VMIN set per chip; Turing 950-1462 mV and at least the boot voltage and the highest VMIN) |
+| `nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv`, `msvdd_rel_fixed_mv`, `msvdd_alt_fixed_mv` | Value of a constant REL or ALT equation: its constant and clamp maximum | Experimental, Ada (NVVDD), Ampere (every rail, opt-in) and Turing (NVVDD, opt-in); from the clamp minimum up to the rail's OV value, REL <= ALT; on Turing also at least the boot voltage and the highest VMIN |
 | `fan_zero_rpm` | Bits 1\|2 of byte `0x32` of every enabled fan policy entry: 1 both set, 0 bit 2 clear (inferred meaning: the fans may stand still at low temperature) | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); 1 only where the entries store a fan-stop block the firmware accepts or a reviewed template supplies one (RTX PRO 6000 Max-Q, RTX 5000/6000 Ada, RTX A1000-A6000); read-only when the entries disagree, an entry sets bit 2 alone, or no block or template applies (RTX A2000) |
 | `fan_N_zero_rpm_low_temp_c`, `fan_N_zero_rpm_high_temp_c`, `fan_extra_M_zero_rpm_*_temp_c` | The two temperatures at bytes 30..33 (1/32 °C) of a channel's or an extra curve's fan policy entry, read with the zero RPM bits (inferred meaning: idle fans stop below the lower and start above the upper) | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); only where the entry stores a nonzero pair (the upper at least the lower) and byte 46 is not 0xff; editable where the entry's block passes the firmware validator, on Ada and Ampere where `fan_zero_rpm` is offered; an edit keeps lower > 0, lower < upper <= point 1 of the same curve and 110 °C; with zero RPM on, an edit may not leave the upper above point 1 (`ZERO_RPM_ABOVE_CURVE`) |
 | `*_rel/alt/ov/vmin_selector_index` | Full stored selector index | Read-only |
@@ -388,6 +390,52 @@ contiguous. The per-kind constructors and any later link check were not traced.
   `before` and `after` are hex strings. The `gpc_curve_offset_mhz` reason on these
   images says to change VMIN in a separate edit.
 
+## REL floor (`nvvdd_rel_equation_min_mv`, `msvdd_rel_equation_min_mv`)
+
+Every GB20x REL equation (row+`0x0d`) is a type 7 polynomial of the chip's fused leakage
+(IDDQ), but the NVVDD one of the vendor XOC images (they select the OV constant), and the
+evaluated REL is that value clamped to the equation's output minimum and maximum (+3 and
++7): 875..900 mV on the RTX PRO 6000 Max-Q, 850..850 mV on the RTX PRO 4000 SFF, 900..1080
+mV on the RTX PRO 6000 Workstation, 900 to 1100..1120 mV on the GeForce images and
+960..1025 mV on the notebooks. The REL ceiling
+(`*_rel_equation_max_mv`) writes the maximum: with it at 1125 mV the driver reported REL 990
+to 1000 mV on three RTX PRO 6000 Max-Q, the chip value. The floor writes the minimum (float32
+uV at +3, nothing else): REL is then the higher of the chip value and the floor, up to the
+ceiling, so a floor above the chip value is the REL. A tuning tool's runtime voltage offset
+still adds on drivers that apply it; on RTX 50 cards, drivers that ignore runtime rail offsets
+leave the VBIOS as the way to raise REL.
+
+The floor is editable with its rail's REL ceiling while REL does not select the rail's OV
+equation (on a copy whose REL follows OV it would write the OV constant, see below). It goes
+from 850 mV, the lowest REL floor of any GB20x image (or the stored floor, if lower), up to the
+stored ceiling and at most the rail's OV value, the clamp minimum of its OV equation (its
+1200 mV constant on every GB20x image; or the stored floor, if higher), so REL, and VMIN below
+it, stay at or below OV; a higher NVVDD voltage needs REL and ALT to follow OV (see below).
+Floor and ceiling form one ordering group (`nvvdd-rel-clamp`, `msvdd-rel-clamp`): requested
+together they are checked on the result, so both can be raised in one edit, and a floor above
+the ceiling or above OV is refused. A higher floor raises the lowest REL value, which bounds
+VMIN. An import treats it like the ceiling, and the two come together.
+Experimental: the floor is not hardware-tested (the ceiling is); more voltage means more heat,
+power and wear, and removing the override brings the card back.
+
+**Ada.** `nvvdd_rel_equation_min_mv` writes the clamp minimum (+3) of the NVVDD REL equation
+(row byte 4) in every chain, where REL is the temperature-derated shape the REL ceiling edits:
+a float quadratic on the sensed temperature with no next equation. Its value falls 2.7 to 5.7
+mV per °C; with the stock clamps (900..940 mV on the RTX 4000 SFF Ada up to 1060..1100 mV on
+the RTX 4070) it stays above the maximum up to about 97 °C and reaches the minimum at about
+105 to 110 °C. So the floor is the REL of a hot GPU, and a floor equal to the ceiling holds REL
+there at every temperature. It goes from 830 mV, the lowest REL of any Ada image (the constant
+REL of an RTX 5000 Ada image), up to the ceiling and at most OV (1200 mV on every Ada image),
+with the ceiling in the `nvvdd-rel-clamp` group, as on GB20x. Where each chip sets its own
+VMIN, no stored value stands for it, so the checks that keep VMIN below REL cannot hold it: the
+floor then stays at or above the highest VMIN of the board (its range plus what its chained
+terms add) until VMIN is fixed. On the RTX 5000 Ada that is 1140.5 mV, above its stored 1040 mV
+floor, which there only goes up. A constant REL (the newer RTX 4090 image, the RTX 4080, the
+RTX 4000 Ada and one RTX 5000 Ada image) takes its value through `nvvdd_rel_fixed_mv` instead,
+which the floor's reason names, and a compare REL (RTX 4060 family, RTX 4070 Ti SUPER, laptops)
+keeps both read-only. Not hardware-tested (on an RTX 2000 Ada a raised ceiling moved the
+evaluated REL).
+
 ## REL and ALT follow OV (`nvvdd_rel_alt_follow_ov`, opt-in)
 
 The ASUS RTX 5090 XOC images and the MSI RTX 5090 Lightning image reach
@@ -423,6 +471,27 @@ the source image to go back. The field is edited alone among the voltage fields
 binds. Confirmed on one RTX 5090: the edited copy loaded as an override without
 problems. Other GB20x boards have not run it.
 
+**Flat value (`nvvdd_rel_alt_follow_ov_mv`, opt-in).** It reads the OV constant (1200 mV
+on every GB20x image) and, on a copy that stores the switch at 1 and on the vendor XOC
+images, sets one value for REL = ALT = OV, from 850 to 1560 mV (130 % of the stock
+constant). Save the switch first and open the copy: requested with the switch it is refused
+with `SEPARATE_EDIT_REQUIRED`. On the RTX 5090, 5070 and 5060 Ti images only the NVVDD OV
+selector uses that constant, and the value goes into its minimum, maximum and constant (+3,
++7, +11). On the RTX PRO 6000, RTX PRO 4000 SFF, notebook, RTX 5080 and 5070 Ti images the
+clock programming table (with the FLL table, and the MSVDD row word +`0x15` on the two-rail
+ones) may name the same equation, so the first edit writes a constant equation with the
+value (type 1, the OV equation's variable and output bytes, no next link, zero slopes) into
+the first unused VFE slot and points the NVVDD REL, ALT and OV selectors at it; the shared
+equation keeps its bytes, and later values go into the copy. The descriptor's
+`vfe_copy_slot` names that slot (`null` when the value goes in place). The GPC curve offset
+takes the first unused slot too: whichever is saved first takes it and the other the next
+one, and requesting both in one edit on such an image is refused with
+`SEPARATE_EDIT_REQUIRED`. While REL (and ALT) select a constant OV equation, the NVVDD REL,
+ALT and OV ceilings and the REL floor are read-only: they would change the clamp of that
+shared constant. Above 1250 mV the value is beyond the GB20x VFE voltage variable range
+(450 to 1250 mV), so the VF curve might not use it; board power and current limits still
+apply, and more voltage means more heat, power and wear. Not hardware-tested.
+
 **Ada.** The same field moves the u8 REL and ALT selectors (row bytes 4 and 5) of
 the Ada rail row. That row also lies in the legacy image, which has no object
 directory on Ada: the field writes both selectors in every chain and repairs each
@@ -442,6 +511,43 @@ evaluated VMIN may then go up to 1200 mV less what its chained equations add
 (939 mV on the RTX 4080). Row byte 10 holds 2, the REL index, on every Ada image; its
 meaning is unknown and this field leaves it. No Ada vendor image is known to do
 this, and no Ada board has run it: not hardware-tested on Ada.
+
+The flat value works on the Ada copy too, from 830 to 1560 mV, and where each chip sets
+its own VMIN at least the highest VMIN of the board until VMIN is fixed (979 mV on the RTX
+4060 Ti, 989 mV on the RTX 4060, 1140.5 mV on the RTX 5000 Ada), as for the floor. On
+every parseable Ada image the OV constant is used by nothing else (no other rail row
+selector or evaluated VMIN byte, VFE equation, clock programming, FLL or voltage policy
+entry), so the value goes into its minimum, maximum and constant in every chain; no copy
+is written on Ada, so an image whose OV equation something else names keeps the field
+read-only. Row byte 20 holds 4 on every Ada image, whatever its OV index (the OV index on
+the images without ALT); its meaning is unknown, it is not counted as a selector, and the
+field leaves it. While REL follows OV the NVVDD REL and OV ceilings, `nvvdd_rel_max_mv`
+and the REL floor are read-only, as on GB20x. Not hardware-tested on Ada.
+
+**Ampere and Turing.** The switch moves the REL and ALT selectors (row bytes 4 and 5) of
+the Ampere NVVDD row (the MSVDD row of the two-rail GA102 images keeps its own) and of the
+Turing 1x row, in the legacy image of every chain. On these families the legacy image is
+not among the tables whose padding every field needs, so the switch checks it itself: on
+the RTX 2080 image whose legacy image lacks the padding it stays read-only. Every Ampere
+image selects a constant 1100 mV OV equation on each rail, every Turing image a 1125 mV
+one, and 0 -> 1 is offered on all of them but that RTX 2080 and the Galax HOF XOC image,
+whose REL and ALT already select OV: it reads 1, read-only. The parser accepts REL = OV
+(ALT absent or = OV, VMIN slot = OV - 1) on the Ampere NVVDD row only. The flat
+value goes into the OV constant in every chain, as on Ada, from 900 to 1430 mV on Ampere
+and from 950 to 1462 mV on Turing (the lowest REL of the family's images up to 130 % of
+its OV); on Turing it also stays at or above the stored boot voltage and the highest
+VMIN (its clamp plus what its chained equations add) and joins the `nvvdd-rel-alt`
+ordering group, as the fixed REL and ALT values do. Nothing else uses the OV constant on
+any image of either corpus: no other rail row selector (on Turing the boot voltage and
+VMIN limit bytes included), evaluated VMIN byte or VFE equation, and no clock
+programming, FLL or voltage policy entry. On Turing those tables are read at the nvgpu
+layouts: clock programming 3.5 (C+`0x0c`: the VF and secondary VF sub-entries; bytes 3
+and 4 hold PLL parameters there), FLL descriptor 1.0 (C+`0x10`: entry byte 9, and header
+byte 6 only with a 7-byte header; a 6-byte one has no margin equation) and voltage policy
+1x (P+`0x70`). Ampere row byte 10 holds 2 on the NVVDD row and 3 on the MSVDD row,
+whatever equation that index holds; it is not counted as a selector. While REL follows
+OV the NVVDD REL, ALT and OV ceilings, `nvvdd_rel_max_mv` and the NVVDD fixed values are
+read-only with the follow reason. Not hardware-tested on Ampere or Turing.
 
 ## Fixed REL and ALT values (`nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv`)
 
@@ -468,7 +574,17 @@ copy whose REL and ALT follow OV it is read-only, and it is saved apart from
 VF curve; the board power and thermal limits still apply, and the VMIN bound rises
 with the lowest REL value. Row byte 10 (the REL index on every image) reads the same
 equation, as it did when a REL ceiling (a temperature-derated REL) was raised on the
-RTX 2000 Ada. Experimental: no board has run a fixed value.
+RTX 2000 Ada. Experimental: no board has run a fixed value. While the NVVDD REL follows
+OV its fixed fields are read-only with the follow reason: the flat value sets that constant.
+
+Ampere uses the same fields, opt-in, on every rail: `nvvdd_rel_fixed_mv` and
+`nvvdd_alt_fixed_mv`, and on the two-rail GA102 images `msvdd_rel_fixed_mv` and
+`msvdd_alt_fixed_mv`, each rail in its own ordering group (`nvvdd-rel-alt`,
+`msvdd-rel-alt`), written in every chain. REL is a constant on every image (900 to
+1087.5 mV) and ALT (1100 mV) on the desktop GeForce ones; OV is 1100 mV on every rail,
+so REL goes up to 1100 mV and an ALT already at OV keeps its value (the flat follow-OV
+value goes higher). An equation another rail's row also selects keeps the field
+read-only. The VMIN rules are Ada's. Not hardware-tested on Ampere.
 
 Turing uses the same fields, opt-in, on the REL and ALT constants its 1x rail row
 selects (1068.75 and 1093.75 mV on most images, OV 1125 mV; see
@@ -957,8 +1073,9 @@ and 0, so it cannot lower the curve.
   may differ only at the bytes of the reviewed binding, whatever the field registry,
   or at the copy and link bytes of a VMIN edit on the RTX 4090 95.02.3C images, which
   takes the same first unused slot (one or the other per edit, see
-  [Shared VMIN equation on RTX 4090 95.02.3C](#shared-vmin-equation-on-rtx-4090-95023c)).
-  Turing is not covered. Not hardware-tested.
+  [Shared VMIN equation on RTX 4090 95.02.3C](#shared-vmin-equation-on-rtx-4090-95023c)),
+  or at the copy a GB20x flat follow-OV value writes there (`nvvdd_rel_alt_follow_ov_mv`,
+  likewise in a separate edit). Turing is not covered. Not hardware-tested.
 
 ### Factory GPC and memory offsets (`factory_gpc_offset_mhz`, `factory_memory_offset_mhz`) and rated boost (`factory_rated_boost_mhz`)
 
@@ -1095,7 +1212,8 @@ group (with `board_fixed_rated_w`, and on the GB20x notebook layout with
 `notebook_base_tgp_w`, see [Notebook images](#notebook-images-rtx-5080-and-rtx-5090-laptop-gpu));
 the two input-current fields form `input-current-12v`; each output-OCP rail's
 rated and maximum fields form `nvvdd-output-ocp` or `msvdd-output-ocp`; the slot
-power fields form `slot-power`; and the fan fields form `fan-speed` (every RPM limit and
+power fields form `slot-power`; each GB20x rail's REL ceiling and floor, and the Ada NVVDD
+ones, form `nvvdd-rel-clamp` or `msvdd-rel-clamp`; and the fan fields form `fan-speed` (every RPM limit and
 curve speed), `fan-level` (every % limit and curve level) and `fan-temperature` (every
 curve temperature and zero RPM temperature), across channels, because the extra curves
 serve every channel and an upper zero RPM temperature stays at most point 1 of its own
@@ -2409,9 +2527,11 @@ selectors and order rule on every rail. VFE equations are 24 bytes with a u8 cou
 (header byte 5) and u8 links. REL and OV are `constant` equations on all 35 images
 (REL 900-1087.5 mV, OV 1100 mV); ALT is constant (1100 mV) on the 18 desktop
 GeForce images and absent (selector 0xff) on the 17 workstation and laptop images.
-Every voltage field is therefore
-read-only: a ceiling-only edit would not change the voltage, and writing the
-constant itself is an unreviewed kind of edit.
+The REL, ALT and OV ceiling fields are therefore read-only: a ceiling-only edit would
+not change the voltage. The opt-in fixed REL and ALT values of each rail write the
+constant itself (see [Fixed REL and ALT values](#fixed-rel-and-alt-values-nvvdd_rel_fixed_mv-nvvdd_alt_fixed_mv)),
+and the opt-in NVVDD follow-OV switch and flat value move REL and ALT to OV and set
+it (see [REL and ALT follow OV](#rel-and-alt-follow-ov-nvvdd_rel_alt_follow_ov-opt-in)).
 
 **Clocks (C+8).** Header `40`, size `0b` or `0c`, `0d 0a 03`, rails `01` or `02`,
 `03 e8 03`; 13-byte rows with one 3-byte rail sub-entry per rail, of which exactly
@@ -2579,7 +2699,9 @@ links. REL, ALT and OV are `constant` equations on all 25 images (REL 1068.75 mV
 2080 image, absent on the Quadro RTX 8000 and six Max-Q and laptop images; OV 1125 mV),
 so the REL/ALT/OV ceiling fields, selectors and boot voltage are read-only, as on Ampere.
 On the HOF XOC image the fixed REL and ALT fields are read-only too (their equation is
-also OV's) and VMIN stays editable.
+OV's) and VMIN and the flat follow-OV value stay editable. `nvvdd_rel_alt_follow_ov` and
+`nvvdd_rel_alt_follow_ov_mv` (opt-in) point REL and ALT at OV and set it, as on Ada (see
+[REL and ALT follow OV](#rel-and-alt-follow-ov-nvvdd_rel_alt_follow_ov-opt-in)).
 An edit may not change the equation the boot voltage selector picks.
 `nvvdd_rel_fixed_mv` and `nvvdd_alt_fixed_mv` (opt-in) set the REL or ALT constant as
 on Ada (see [Fixed REL and ALT values](#fixed-rel-and-alt-values-nvvdd_rel_fixed_mv-nvvdd_alt_fixed_mv)): the
@@ -2629,8 +2751,9 @@ under [Zero RPM temperatures](#zero-rpm-temperatures-fan_n_zero_rpm_low_temp_c-f
 **Checksum padding.** The checksum padding is checked on the images of the edited
 tables in the second E0 image (power, VFE, fans: padded on all 25 images). The clock
 table sits in the legacy image, which lacks the padding on one RTX 2080 image: its
-clock fields alone stay read-only, with that reason. Writes go to both banks and
-repair the checksum of each touched image.
+clock fields and the follow-OV switch (the rail table sits there too) alone stay
+read-only, with that reason. Writes go to both banks and repair the checksum of each
+touched image.
 
 **Thermal policy table (P+0x50) and factory clock record (P+0x98).** Both sit in the
 second E0 image (10-byte thermal header, 6-byte factory record header) and are written

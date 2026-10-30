@@ -64,7 +64,9 @@ editable.
 | `power_default_w`, `input_current_*_ma`, `*_output_ocp_rated_ma`, `slot_power_*_w`, `connector_N_power_*_w`, `connector_sum_power_*_w`, `connector_N_current_threshold_*_ma`, `board_fixed_rated_w`, `notebook_base_tgp_w`, clock offset ranges, `nvvdd_vmin_mv`, fan fields | W, mA, MHz, mV, Hz, RPM, %, °C | see `extended-fields.md` | Experimental, not hardware-tested (Turing board and connector power: one RTX 2080 Ti, see `turing.md`; the GB20x notebook `power_default_w` and `notebook_base_tgp_w`, raised together with `power_max_w`: one RTX 5090 Laptop GPU, see `extended-fields.md`); `board_fixed_rated_w`, the GB20x notebook `notebook_base_tgp_w` (row 2 +73) and the Ada/Ampere `input_current_*_ma`, Ada/Ampere/Turing `slot_current_threshold_*_ma`, Ampere/Turing `connector_N_current_threshold_*_ma` and Ada `nvvdd_power_threshold_*_w` hardware thresholds (`policy_class: "hardware-threshold"`) are opt-in (`opt_in: true`), as are the Turing `nvvdd_output_ocp_*_ma` (row 13, class 10), the Ampere one (row 13, class 0) and the Ada/GB20x `connector_N_power_*_w`; `connector_N_power_*_w` are the Ampere/Turing external connector-channel policies (a sense channel, not a physical connector) and, on Ada and GB20x, the auxiliary power connector input policy (`power_input: "auxiliary-connector"`; Ada hardware current thresholds on the same input, which have no field, in `threshold_rows`), and `connector_N_current_threshold_*_ma` the current threshold row on the same channel; `connector_sum_power_*_w` is the Ampere policy on their sum, where one row caps it |
 | `power_max_w` | W | mW, uint32 | Ada V3x 30/32/53, 30/34/5b and 30/2c/4b; Ampere V3x 30/2c/47, 30/2c/43 and 30/32/47 (every Ampere field is experimental); Turing V3x 30/2c/42 and 30/27/42 (experimental, see `turing.md`); GB20x V40 40/38-or-3d/66 |
 | `nvvdd_rel_max_mv` | mV | uV, exact float32 | Ada single logic rail V20; GB20x V30; Ampere and Turing read-only (constant equations) |
-| `nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv` | mV | uV, exact float32 (constant and clamp maximum; the clamp minimum is kept) | Constant Ada and Turing REL/ALT equations; experimental (opt-in on Turing); ordering group `nvvdd-rel-alt`, with `nvvdd_vmin_mv` on Turing |
+| `nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv`, `msvdd_rel_fixed_mv`, `msvdd_alt_fixed_mv` | mV | uV, exact float32 (constant and clamp maximum; the clamp minimum is kept) | Constant Ada and Turing NVVDD and Ampere (every rail) REL/ALT equations; experimental (opt-in on Ampere and Turing); ordering group `nvvdd-rel-alt` (`msvdd-rel-alt`), with `nvvdd_vmin_mv` and `nvvdd_rel_alt_follow_ov_mv` on Turing |
+| `nvvdd_rel_equation_min_mv`, `msvdd_rel_equation_min_mv` | mV | uV, exact float32 (REL clamp minimum) | GB20x and Ada REL floor (Ada: NVVDD, every chain), experimental; editable with the REL ceiling while REL does not select the OV equation; up to the ceiling and at most the OV equation's clamp minimum (1200 mV), on Ada at least the highest value of a VMIN set per chip (or the stored floor, if lower); ordering group `nvvdd-rel-clamp` or `msvdd-rel-clamp` with `*_rel_equation_max_mv`, whose encoding bounds keep both limits: a floor above the stored ceiling needs `*_rel_equation_max_mv` in the same request (the hidden alias `nvvdd_rel_max_mv` is not in the group) |
+| `nvvdd_rel_alt_follow_ov_mv` | mV | uV, exact float32 (minimum, maximum and constant of the OV constant, or of its copy) | GB20x, Ada, Ampere and Turing (in place only, every chain, on Ada, Ampere and Turing), experimental, opt-in; one value for REL = ALT = OV on a copy saved with `nvvdd_rel_alt_follow_ov` 1 (see below) |
 | `*_vmin_mv` on a VMIN set per chip, `*_vmin_fixed` | mV; flag | uV, exact float32 (clamp minimum and maximum, every chain); the switch writes stored clamp bytes (`layout`) | Experimental, GB20x and Ampere tree roots and Ada per-chip equations; `current` `null` while stock; the switch offers only 1 -> 0 (see below) |
 | `msvdd_rel_max_mv` | mV | uV, exact float32 | GB20x; Ampere two-rail GA102 read-only (constant equations); Ada exposes one rail and refuses MSVDD |
 | `dram_max_table_mhz` | table MHz | signed int16 | GB20x clock V50 with reviewed identity descriptors; Ada/Ampere GV HAL clocks table and Turing v0x35 clocks table, experimental |
@@ -107,6 +109,31 @@ stock image at those bytes. Requesting both in one edit fails with
 no other equation (criterion links included), rail row word or byte, clock programming
 entry, FLL entry, voltage policy entry or, on GB20x, P+`0x104` entry; a table at another
 layout keeps it read-only. Not hardware-tested; see `extended-fields.md`.
+
+### Flat follow-OV value
+
+`nvvdd_rel_alt_follow_ov_mv` (opt-in) reads the constant the NVVDD OV selector picks,
+also while `nvvdd_rel_alt_follow_ov` is 0, and is editable where that switch is stored at 1:
+request the switch, save, then the value on the copy (both in one request fail with
+`SEPARATE_EDIT_REQUIRED`). Where only the NVVDD REL, ALT and OV selectors use that constant,
+the value goes into its minimum, maximum and constant. Where a rail row word, another equation
+or a table also names it (the rule of a VMIN set per chip; a table at another layout keeps the
+field read-only), the binding instead writes a constant equation into the first unused VFE
+slot and carries `companion` bytes that point the three selectors at it; `vfe_copy_slot` names
+that slot, `null` when the value goes in place. The GPC curve offset uses the same first
+unused slot, so a request with both fails with `SEPARATE_EDIT_REQUIRED` there. On Ada, Ampere
+and Turing no copy is written: the value goes into the OV constant, in every chain, only where
+nothing else names it (no other rail row selector or evaluated VMIN byte, equation or table),
+else the field stays read-only. Its range is 850-1560 mV on GB20x, 830-1560 mV on Ada,
+900-1430 mV on Ampere and 950-1462 mV on Turing, where it also stays at or above the stored boot
+voltage and the highest VMIN and joins the `nvvdd-rel-alt` ordering group with `nvvdd_vmin_mv`.
+On Ada and Ampere, while VMIN is set per chip (a stock tree root or per-chip equation, no single
+stored value), the flat value and the Ada REL floor also stay at or above the highest value that
+VMIN reaches with its chained equations (or the stored value, if lower) until `nvvdd_vmin_mv`
+fixes VMIN. On the RTX 4090 95.02.3C images, whose memory clock constant keeps the stock VMIN,
+the flat value stays at or above that stock VMIN plus its chain (926 mV). While REL or ALT select a constant OV equation, the NVVDD REL, ALT and OV ceilings
+(and `nvvdd_rel_max_mv`), the NVVDD REL floor and the NVVDD fixed REL and ALT values are
+read-only.
 
 ### Fan zero RPM and the start temperature rule
 
@@ -323,12 +350,14 @@ unambiguous ownership. Every hash owner intersecting a write is repaired.
 The legacy image carries its own directory of the same format (digest at
 `legacy+0x209`); `integrity.legacy_directory` reports its hashes without
 changing `integrity.valid`. A write inside the legacy image (only the opt-in
-`nvvdd_rel_alt_follow_ov`) requires that directory to verify, repairs every legacy
+`nvvdd_rel_alt_follow_ov`, and the selectors `nvvdd_rel_alt_follow_ov_mv` moves to a copy)
+requires that directory to verify, repairs every legacy
 object it touches, its digest and the legacy image checksum, and must reparse
 valid; those repairs carry `"directory": "legacy"` in the manifest.
-On Ada the rail table lies in the legacy image of every chain, without an object
-directory: `nvvdd_rel_alt_follow_ov` writes its selectors in each chain and repairs
-each legacy image checksum, which needs the reviewed checksum padding.
+On Ada, Ampere and Turing the rail table lies in the legacy image of every chain, without an
+object directory: `nvvdd_rel_alt_follow_ov` writes its selectors in each chain and repairs
+each legacy image checksum, which needs the reviewed checksum padding (on Ampere and Turing
+the switch checks it itself and stays read-only without it; the other fields do not need it).
 The examined portable Blackwell EFI GOP explicitly allows identity `0000:0000`;
 NVIDIA/chip identities remain checked on legacy, metadata and NPDS images.
 Unknown directory/envelope versions do not become editable merely because they
@@ -358,13 +387,15 @@ and OCP remain unchanged. When no profile matches the base (ASUS XOC-style image
 `power_default_w`, `board_fixed_rated_w`, `input_current_max_ma` and `input_current_rated_ma` bind to the profile
 reached at the top level of the ROM's selection table and write only its entries; the base maximum and rated
 values stay unchanged (see `extended-fields.md`). Ada power uses its header's TGP index rather than a
-fixed board row. Ada REL editing changes only the clamp maximum and preserves
-its temperature equation coefficients and sensed-temperature input. The evaluated
+fixed board row. Ada REL editing changes only the clamp maximum (the ceiling) and
+minimum (the floor) and preserves its temperature equation coefficients and sensed-temperature input. The evaluated
 VMIN equation and the NVVDD REL/ALT selectors change only through the canonical
-`*_vmin_mv`, `*_vmin_fixed` and `nvvdd_rel_alt_follow_ov` bindings, and the constant and clamp maximum
-of a constant Ada or Turing REL/ALT equation only through `nvvdd_rel_fixed_mv` and
-`nvvdd_alt_fixed_mv`, at their declared bytes; the rail table of every chain
-changes nowhere else.
+`*_vmin_mv`, `*_vmin_fixed` and `nvvdd_rel_alt_follow_ov` bindings (the REL/ALT/OV
+selectors also through the copy of `nvvdd_rel_alt_follow_ov_mv`), the constant and clamp maximum
+of a constant Ada, Ampere or Turing REL/ALT equation only through the `*_rel_fixed_mv` and
+`*_alt_fixed_mv` fields, a GB20x or Ada REL clamp minimum only through `*_rel_equation_min_mv`, and the
+OV constant's clamp and value only through `nvvdd_rel_alt_follow_ov_mv`, at their declared
+bytes; the rail table of every chain changes nowhere else.
 
 ## Architecture gate and sources
 
@@ -417,7 +448,8 @@ new independently reviewed fields. A resolver receives `(image, parser)`, return
 bindings with descriptor/evidence, exact encoding/scale and bounded offsets, and
 must establish the format and units before marking a field editable. A built-in
 binding may also carry `companion` raw bytes written with its value (the Ada VMIN
-copy on the RTX 4090 95.02.3C images, the fan-stop template blocks of `fan_zero_rpm`);
+copy on the RTX 4090 95.02.3C images, the fan-stop template blocks of `fan_zero_rpm`, the
+copy of a shared OV constant and its selectors for `nvvdd_rel_alt_follow_ov_mv`);
 only the reviewed binding may write them, and a request through any other binding that
 carries them fails with `INVALID_FIELD_EVIDENCE`. The fan table guard admits the
 `fan_zero_rpm` blocks only for the value requested, only when it changes the field and

@@ -142,7 +142,8 @@ class ControllerTests(unittest.TestCase):
         editable = [f['key'] for f in controls(doc.report) if f['editable']]
         self.assertEqual(editable[:3], ['power_max_w', 'power_default_w', 'power_min_w'])
         self.assertIn('gpc_offset_max_mhz', editable)
-        self.assertFalse(any(key.endswith('_mv') for key in editable))
+        # The constant REL and ALT take only their opt-in fixed values.
+        self.assertFalse(any(key.endswith('_mv') and not key.endswith('_fixed_mv') for key in editable))
 
     def test_fan_channel_count_and_channel_limits_are_separate_copies(self):
         source = self.root / 'fans.rom'

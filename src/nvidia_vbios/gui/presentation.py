@@ -9,6 +9,7 @@ from ..editor.sections import (ADVANCED_SECTION, SECTION_NAMES, SECTIONS, field_
 from ..editor.registry import (FACTORY_BOOST_REASON, FACTORY_OFFSET_FRACTION_REASON, FACTORY_UNREVIEWED_REASON,
                                FAN_LOW_EXTRA_CHANNELS_REASON, FAN_POLICY_COPY_CHANNELS_REASON,
                                FAN_ZERO_RPM_MIXED_REASON, FAN_ZERO_RPM_NO_BLOCK_REASON, FAN_ZERO_RPM_TEMPS_OFF_REASON,
+                               FOLLOW_OV_CLAMP_REASON, FOLLOW_OV_REL_CLAMP_REASON, FOLLOW_OV_SWITCH_OFF_REASON,
                                LPWR_ENABLED_ENTRIES, LPWR_ENABLED_UNRECOGNIZED_REASON,
                                LPWR_GR_RG_ENABLED_UNRECOGNIZED_REASON, LPWR_GR_RG_UNRECOGNIZED_REASON,
                                LPWR_MIXED_REASON, LPWR_STOCK_UNRECOGNIZED_REASON, LPWR_TABLE_UNREVIEWED_REASON,
@@ -27,7 +28,7 @@ FIELD_KEYS = frozenset(('power_min_w', 'power_max_w', 'nvvdd_rel_max_mv', 'msvdd
                         'memory_offset_min_mhz', 'dram_min_table_mhz',
                         'input_current_policy7_limit_ma', 'slot_power_rated_w', 'slot_power_max_w',
                         'board_fixed_rated_w', 'notebook_base_tgp_w', 'fan_pwm_frequency_hz', 'fan_channels',
-                        'nvvdd_rel_alt_follow_ov',
+                        'nvvdd_rel_alt_follow_ov', 'nvvdd_rel_alt_follow_ov_mv',
                         'fan_zero_rpm',
                         'slot_current_threshold_rated_ma', 'slot_current_threshold_max_ma',
                         'nvvdd_power_threshold_rated_w', 'nvvdd_power_threshold_max_w',
@@ -93,6 +94,9 @@ REASON_KEYS = {
     FAN_ZERO_RPM_TEMPS_OFF_REASON: 'reason.fan_zero_rpm_temps_off',
     FAN_POLICY_COPY_CHANNELS_REASON: 'reason.fan_policy_copy',
     FAN_LOW_EXTRA_CHANNELS_REASON: 'reason.fan_low_extra',
+    FOLLOW_OV_CLAMP_REASON: 'reason.follow_ov_clamp',
+    FOLLOW_OV_REL_CLAMP_REASON: 'reason.follow_ov_rel_clamp',
+    FOLLOW_OV_SWITCH_OFF_REASON: 'reason.follow_ov_switch_off',
 }
 
 
@@ -104,7 +108,7 @@ def field_label(field, language='en'):
         return text('field.input_threshold_' + key[len('input_current_'):])
     if key in FIELD_KEYS:
         return text('field.' + key)
-    # An opt-in output current limit (Turing or Ampere row 13) or fixed voltage (Turing) is shown with the
+    # An opt-in output current limit (Turing or Ampere row 13) or fixed voltage (Turing, Ampere) is shown with the
     # advanced fields.
     advanced = '_advanced' if field.get('opt_in') else ''
     for rail in ('nvvdd', 'msvdd'):
@@ -120,6 +124,9 @@ def field_label(field, language='en'):
         if key == f'{rail}_vmin_equation_max_mv':
             # The rail INFO VMIN slot; the evaluated VMIN is {rail}_vmin_mv.
             return text('field.vmin_slot', rail=rail.upper())
+        if key == f'{rail}_rel_equation_min_mv':
+            # The clamp minimum of the REL equation, beside its ceiling (*_rel_equation_max_mv).
+            return text('field.rel_floor', rail=rail.upper())
         for role in ('rel', 'alt', 'ov'):
             if key == f'{rail}_{role}_equation_max_mv':
                 return text('field.equation', role=role.upper(), rail=rail.upper())

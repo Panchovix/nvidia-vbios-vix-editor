@@ -13,7 +13,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from nvidia_vbios.editor import edit, normalize_manifest, plan
-from nvidia_vbios.editor.registry import registry
+from nvidia_vbios.editor.registry import FOLLOW_OV_CLAMP_REASON, FOLLOW_OV_REL_CLAMP_REASON, TURING_UNTESTED, registry
 from nvidia_vbios.families import architecture
 from nvidia_vbios.gui.controller import loader_messages, open_document, save_document, stage_document
 from nvidia_vbios.rom import FormatError, VbiosError, from_bytes, inspect_image, load, normalize
@@ -165,6 +165,28 @@ def synthetic_turing(*, device=0x1F06, efi_image=True, notebook=False, header=0x
     struct.pack_into('<H', tail, 0x30, 1)
     tail[0x34:0x36] = bytes((0x70, 0x80))
     return bytes(bank) * copies + bytes(tail)
+
+
+def turing_index_tables(blob, *, vf=0xFF, fll=0xFF, fll_header=7, version=0x35):
+    """The tables that name VFE equations on a synthetic Turing image (rails=True), in the second E0 image of each
+    bank: clock programming (C+0x0c) with the nvgpu 3.5 header and one entry whose PLL index (byte 3) and slave
+    domains hold 3, the OV index, and whose VF sub-entry (byte 25) names vf, its secondary one (26..27) nothing; FLL
+    (C+0x10, v0x10) with a fll_header-byte header (0xff margin byte when 7) and one entry of type 3 naming fll at
+    byte 9, frequency controller 3; voltage policy (P+0x70, v0x10) with one single-rail entry."""
+    programming = (bytes((version, 10, 13, 1, 3, 4, 1, 1, 2, 1)) + bytes((0, 0xE8, 3, 3, 0)) + bytes(8) +
+                   bytes((3, 0, 0)) * 4 + bytes((vf, 0xFF, 0xFF)))
+    fll_table = (bytes((0x10, fll_header, 15, 1, 0, 0)) + (b'\xff' if fll_header == 7 else b'') +
+                 bytes((3, 0, 0, 0, 0, 0, 0xFF, 0, 0, fll, 3)) + bytes(4))
+    policy = bytes((0x10, 5, 17, 1, 0, 1)) + bytes(16)
+
+    def change(bank, chain):
+        legacy, data = chain[0]['start'], chain[-2]['start']
+        efi = chain[1]['size'] if chain[1]['type'] == 3 else 0
+        for token, offset, at, table in (('C', 0x0C, data + 0x1000, programming), ('C', 0x10, data + 0x1100, fll_table),
+                                         ('P', 0x70, data + 0x1200, policy)):
+            struct.pack_into('<I', bank, legacy + (256 if token == 'P' else 600) + offset, at - legacy - efi)
+            bank[at:at + len(table)] = table
+    return patch_banks(blob, change)
 
 
 def turing_fan_tables(bank, data, point, fans):
@@ -584,7 +606,8 @@ class TuringVoltageTests(unittest.TestCase):
         self.assertIn('rail row byte 9', vmin['reason'])
         self.assertIn('not hardware-tested on Turing', vmin['reason'])
         self.assertTrue(vmin['evidence'][0]['format'].startswith('Turing rail row byte 9'))
-        self.assertEqual(sorted(k for k, f in fields.items() if f['editable']), sorted(POWER + VOLTAGES))
+        self.assertEqual(sorted(k for k, f in fields.items() if f['editable']),
+                         sorted(POWER + VOLTAGES + ['nvvdd_rel_alt_follow_ov']))
         self.assertEqual(messages(self.image), ['requested table is absent'])  # the clock table
 
     def test_vmin_edit_writes_the_clamp_in_both_banks(self):
@@ -727,16 +750,21 @@ class TuringVoltageTests(unittest.TestCase):
                 self.assertEqual((field['current'], field['editable']), (1125, False))
                 self.assertEqual(fields[f'nvvdd_{role}_selector_index']['current'], 3)
         self.assertFalse(fields['nvvdd_rel_max_mv']['editable'])
-        for key, others in (('nvvdd_rel_fixed_mv', 'ALT and OV'), ('nvvdd_alt_fixed_mv', 'REL and OV')):
+        # The fixed values are the shared OV constant: the flat value sets it.
+        for key in ('nvvdd_rel_fixed_mv', 'nvvdd_alt_fixed_mv', 'nvvdd_rel_equation_max_mv',
+                    'nvvdd_ov_equation_max_mv'):
             with self.subTest(key=key):
-                self.assertEqual((fields[key]['current'], fields[key]['editable']), (1125, False))
-                self.assertIn(f'is also selected by {others}', fields[key]['reason'])
+                self.assertEqual((fields[key]['current'], fields[key]['editable'], fields[key]['reason']),
+                                 (1125, False, FOLLOW_OV_CLAMP_REASON))
         vmin = fields['nvvdd_vmin_mv']
         self.assertEqual((vmin['current'], vmin['editable']), (692.5, True))
         self.assertEqual((vmin['bounds']['minimum'], vmin['bounds']['maximum']), (400, 1050))  # REL - 75 mV
         self.assertIsNone(fields['msvdd_rel_max_mv']['current'])
-        self.assertNotIn('nvvdd_rel_alt_follow_ov', fields)  # GB20x and Ada only
-        self.assertEqual(sorted(k for k, f in fields.items() if f['editable']), sorted(POWER + ['nvvdd_vmin_mv']))
+        # The follow-OV switch reads 1 (read-only); the flat value is the OV constant.
+        self.assertEqual((fields['nvvdd_rel_alt_follow_ov']['current'], fields['nvvdd_rel_alt_follow_ov']['editable']),
+                         (1, False))
+        self.assertEqual(sorted(k for k, f in fields.items() if f['editable']),
+                         sorted(POWER + ['nvvdd_vmin_mv', 'nvvdd_rel_alt_follow_ov_mv']))
         self.assertEqual(backend(edit(image, {'nvvdd_vmin_mv': 700}).image).rail_vmin()[0]['value_uv'], 700000)
         for key, value, code in (('nvvdd_vmin_mv', 1051, 'OUT_OF_BOUNDS'),
                                  ('nvvdd_rel_fixed_mv', 1100, 'FIELD_READ_ONLY')):
@@ -755,6 +783,69 @@ class TuringVoltageTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertFalse(sloped[key]['editable'])
         self.assertEqual(sloped['nvvdd_rel_equation_max_mv']['equation_kind'], 'shared')
+
+    def test_rel_and_alt_follow_ov_then_one_flat_value(self):
+        field = descriptors(self.image)['nvvdd_rel_alt_follow_ov']
+        self.assertEqual((field['current'], field['editable'], field['opt_in']), (0, True, True))
+        self.assertIn('the Galax HOF XOC RTX 2080 Ti image and the ASUS XOC', field['reason'])
+        # Both write tables the signed hash list covers, as every Turing field.
+        self.assertTrue(field['reason'].endswith('; ' + TURING_UNTESTED), field['reason'])
+        with self.assertRaises(VbiosError) as exc:
+            edit(self.image, {'nvvdd_rel_alt_follow_ov': 1, 'nvvdd_rel_alt_follow_ov_mv': 1150})
+        self.assertEqual(exc.exception.code, 'SEPARATE_EDIT_REQUIRED')
+        followed = edit(self.image, {'nvvdd_rel_alt_follow_ov': 1})
+        changed_within(self, self.image, followed, self.parser.copy_offsets(self.row + 4, 2), width=2)
+        self.assertEqual(followed.blob[self.row + 4:self.row + 10], bytes((3, 3, 3, 0, 2, 4)))  # BOOT, VMIN as stored
+        flat = descriptors(followed.image)['nvvdd_rel_alt_follow_ov_mv']
+        self.assertEqual((flat['current'], flat['editable'], flat['bounds']['minimum'], flat['bounds']['maximum'],
+                          flat['ordering_group']), (1125, True, 950, 1462, 'nvvdd-rel-alt'))
+        self.assertIn('at or above the stored boot voltage and the highest VMIN', flat['reason'])
+        self.assertIn(TURING_UNTESTED, flat['reason'])
+        ov = descriptors(followed.image)['nvvdd_ov_equation_max_mv']['equation_offset']
+        offsets = [copy for k in (3, 7, 11) for copy in self.parser.copy_offsets(ov + k, 4)]
+        result = edit(followed.image, {'nvvdd_rel_alt_follow_ov_mv': 1150})
+        self.assertEqual(sorted(e['offset'] for e in result.manifest['edits']), sorted(offsets))
+        changed_within(self, followed.image, result, offsets)
+        for copy in self.parser.copy_offsets(ov, 24):
+            self.assertEqual(struct.unpack_from('<5f', result.blob, copy + 3), (1150000, 1150000, 1150000, 0, 0))
+        for value in (949, 1463):
+            with self.subTest(value=value), self.assertRaises(VbiosError) as exc:
+                edit(followed.image, {'nvvdd_rel_alt_follow_ov_mv': value})
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        # A raised VMIN lifts the lowest value (VMIN plus its +75 mV chain); both go lower together, in one edit.
+        raised = edit(followed.image, {'nvvdd_vmin_mv': 1000}).image
+        self.assertEqual(descriptors(raised)['nvvdd_rel_alt_follow_ov_mv']['bounds']['minimum'], 1075)
+        with self.assertRaises(VbiosError) as exc:
+            edit(raised, {'nvvdd_rel_alt_follow_ov_mv': 1000})
+        self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        lowered = descriptors(edit(raised, {'nvvdd_rel_alt_follow_ov_mv': 1000, 'nvvdd_vmin_mv': 900}).image)
+        self.assertEqual((lowered['nvvdd_rel_alt_follow_ov_mv']['current'], lowered['nvvdd_vmin_mv']['current']),
+                         (1000, 900))
+        # The legacy image holds the rail table: without its checksum padding the switch stays read-only.
+        fields = descriptors(from_bytes(patched(self.image.blob, self.parser.legacy['end'] - 2, b'\x00')))
+        self.assertFalse(fields['nvvdd_rel_alt_follow_ov']['editable'])
+        self.assertIn('lacks the reviewed checksum padding', fields['nvvdd_rel_alt_follow_ov']['reason'])
+        self.assertTrue(fields['nvvdd_rel_fixed_mv']['editable'])
+
+    def test_tables_naming_vfe_equations_at_the_nvgpu_turing_layouts(self):
+        for header in (6, 7):
+            with self.subTest(fll_header=header):
+                names = backend(from_bytes(turing_index_tables(self.image.blob, vf=6, fll=5, fll_header=header))
+                                ).equation_index_names()
+                # The VF and minimum frequency equations; not the PLL index, a slave domain, the frequency controller
+                # or (6-byte FLL header) the first FLL entry's type, which hold 3, the OV index.
+                self.assertLessEqual({5, 6}, set(names))
+                self.assertNotIn(3, names)
+        # With REL and ALT on OV, the flat value goes into the OV constant only while no table names it.
+        followed = patched(self.image.blob, self.row + 4, b'\x03\x03')
+        self.assertTrue(descriptors(from_bytes(turing_index_tables(followed, vf=6)))['nvvdd_rel_alt_follow_ov_mv']
+                        ['editable'])
+        for name, blob, text in (('named', turing_index_tables(followed, vf=3), 'clock programming table also names'),
+                                 ('layout', turing_index_tables(followed, version=0x40), 'cannot be ruled out')):
+            with self.subTest(name):
+                field = descriptors(from_bytes(blob))['nvvdd_rel_alt_follow_ov_mv']
+                self.assertEqual((field['current'], field['editable']), (1125, False))
+                self.assertIn(text, field['reason'])
 
     def test_a_shared_vmin_equation_stays_read_only(self):
         # Equation 6 now continues into the VMIN equation 4.
@@ -940,8 +1031,9 @@ def joint_edit(test, image):
     fields = descriptors(image)
     chosen, used, spans = {}, set(), {}
     for key, field in fields.items():
-        # The Advanced section (switches and the fields that depend on them) has its own corpus test.
-        if not field['editable'] or field.get('section') == 'advanced':
+        # The Advanced section (switches and the fields that depend on them) has its own corpus test; the follow-OV
+        # switch is a separate edit from the voltage fields.
+        if not field['editable'] or field.get('section') == 'advanced' or key == 'nvvdd_rel_alt_follow_ov':
             continue
         binding = bindings[key]
         spans[key] = {at for o in binding.offsets for at in range(o, o + struct.calcsize(binding.encoding))}

@@ -173,7 +173,7 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'unexpected': 'Unexpected error in the editor window, please report it: {message} [{code}]',
  'not_a_number': 'Enter a number',
  'order_hint': 'Breaks the floor ≤ rated ≤ ceiling order of its group',
- 'order_hint_voltage': 'Breaks the VMIN < REL ≤ ALT order; change these values together',
+ 'order_hint_voltage': 'Breaks the VMIN < REL floor ≤ REL ≤ ALT order; change these values together',
  'order_hint_fan': 'Fan limits and curve points must stay within their allowed ranges; change related values together',
  'zero_rpm_hint': ('With zero RPM on, the upper threshold may not be above point 1 of the same fan curve; '
                    'change them together'),
@@ -413,12 +413,14 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
                'not by the shunts, and are not scaled.',
  'shunt_real': 'About {value} {units} real with a x{factor} shunt',
  'field.equation': '{rail} {role} equation ceiling',
+ 'field.rel_floor': '{rail} REL floor',
  'field.vmin': '{rail} minimum voltage (VMIN, experimental)',
  'field.vmin_fixed': '{rail} fixed VMIN (experimental)',
  'field.vmin_slot': '{rail} rail INFO VMIN-slot equation ceiling (not the evaluated VMIN)',
  'field.fixed': '{rail} {role} fixed voltage (experimental)',
  'field.fixed_advanced': '{rail} {role} fixed voltage (advanced, experimental)',
  'field.nvvdd_rel_alt_follow_ov': 'NVVDD REL and ALT follow OV (XOC-style flat voltage limit; advanced, experimental)',
+ 'field.nvvdd_rel_alt_follow_ov_mv': 'NVVDD flat voltage (REL = ALT = OV)',
  'field.power_default_w': 'Boot default board power (experimental)',
  'field.input_current_rated_ma': '12 V input current limit, rated (experimental)',
  'field.input_current_max_ma': '12 V input current ceiling (experimental)',
@@ -487,6 +489,12 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'reason.fan_low_extra': ('This ROM stores an extra fan curve, used for every fan, in the entry of a second fan '
                           'channel that it disables; setting the channel count would switch that curve off or turn '
                           'its channel on, so the count stays as stored.'),
+ 'reason.follow_ov_clamp': ('REL and ALT follow OV in this ROM, so REL, ALT and OV share one voltage: set it in '
+                            '"NVVDD flat voltage (REL = ALT = OV)", shown with the advanced fields.'),
+ 'reason.follow_ov_rel_clamp': ('REL follows OV in this ROM, so REL and OV share one voltage: set it in "NVVDD flat '
+                                'voltage (REL = ALT = OV)", shown with the advanced fields.'),
+ 'reason.follow_ov_switch_off': ('Turn on "NVVDD REL and ALT follow OV", save the copy and open it to set this '
+                                 'value.'),
  'reason.generic': 'Editing unavailable for this field.',
  'error.INVALID_IMAGE': 'Open a ROM first',
  'error.INVALID_CHANGES': 'Stage a verified preview before saving',
@@ -514,7 +522,8 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'error.SEPARATE_EDIT_REQUIRED': ('Save these changes in separate copies. The fan channel count goes before the '
                                   'fan limits, curves or zero RPM, and the REL/ALT follow OV setting before the '
                                   'voltages. On some RTX 4090 ROMs VMIN and the GPC curve offset also need separate '
-                                  'saves, and so do zero RPM off and its thresholds on a copy where zero RPM wrote '
+                                  'saves, as do the NVVDD flat voltage and the GPC curve offset on some Blackwell '
+                                  'ROMs, and so do zero RPM off and its thresholds on a copy where zero RPM wrote '
                                   'fan-stop values. Save one, then open the copy to change the rest'),
  'cli_usage': 'usage: ',
  'cli_positionals': 'positional arguments',

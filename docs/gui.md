@@ -106,10 +106,14 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    the connector current; on Ada the NVVDD output power and the 12 V input
    current, labelled "threshold"), the Turing and Ampere NVVDD output current
    limit (on Ampere it may be what caps a laptop below a raised power ceiling;
-   untested, and the VRM was sized for the stock value), the Turing fixed REL/ALT
-   voltages and, on Blackwell and Ada, **NVVDD REL and ALT follow
+   untested, and the VRM was sized for the stock value), the Turing and Ampere fixed
+   REL/ALT voltages and **NVVDD REL and ALT follow
    OV** (a switch: on gives the flat XOC-style voltage limit; save it on its own,
-   and keep the original image to go back) and, on Blackwell, Ada and Ampere, **Fan
+   and keep the original image to go back; on the saved copy
+   **NVVDD flat voltage (REL = ALT = OV)**, right under it, sets that voltage, 850 to
+   1560 mV, on Ada 830 to 1560 mV, on Ampere 900 to 1430 mV, on Turing 950 to 1462 mV, and
+   never below the highest VMIN where each chip sets its own) and,
+   on Blackwell, Ada and Ampere, **Fan
    zero RPM** (a switch for the flag bits that let the fans stand still at idle,
    hardware-tested on one RTX 5090, not on Ada, Ampere or the RTX PRO 6000 Max-Q;
    experimental). On blower boards that store no fan-stop values (RTX PRO 6000
@@ -237,7 +241,14 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    current and OCP placeholders (`current_limit_a`, `ocp_limit_a`) and the MSVDD
    ceiling of single-rail images while their value is unknown: no VBIOS row backs them.
    Each equation ceiling, including ALT, is an
-   expression bound, not an evaluated VOP reading or runtime offset. **Minimum
+   expression bound, not an evaluated VOP reading or runtime offset. On Blackwell,
+   **NVVDD REL floor** and **MSVDD REL floor** (experimental, under each REL ceiling)
+   set the lowest REL: REL is the chip's own value kept between the floor and the
+   ceiling, so a floor above it becomes the REL; raise both together to go past the
+   stored ceiling, up to OV (1200 mV). On Ada, **NVVDD REL floor** does the same where
+   REL follows the temperature (it falls as the GPU heats up), from 830 mV (or, where
+   each chip sets its own VMIN, from the highest VMIN it can reach): the floor
+   is then the REL of a hot GPU. **Minimum
    voltage (VMIN)** (experimental) is the stored value of the equation the driver
    evaluates as VMIN; on Ada the driver adds its chained terms (+90 mV on an RTX
    2000 Ada), so the value goes up to the lowest REL value less the most those terms
@@ -268,7 +279,9 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    advanced fields (REL 1068.75 mV and ALT 1093.75 mV on most boards, OV 1125 mV); there
    REL and ALT also stay at or above the boot voltage and VMIN plus its chained terms,
    and VMIN can be raised past the old REL when REL is raised with it (VMIN plus its chain
-   stays at most REL). The full
+   stays at most REL). Ampere images get it for each rail (MSVDD too on the two-rail GA102
+   boards), also with the advanced fields: REL goes up to OV (1100 mV), and an ALT already at
+   1100 mV (GeForce boards) stays there. The full
    source SHA256 and integrity scope are in the saved manifest.
    Ada/Ampere do not inherit the Blackwell memory conversion.
 3. The preview is live. Typing marks the row, shows original → new value and the

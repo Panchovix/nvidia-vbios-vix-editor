@@ -11,6 +11,7 @@ from nvidia_vbios.editor import IMPORT_SECTIONS, VbiosError, edit, import_fields
 from nvidia_vbios.editor.sections import field_section, technical_field_keys
 from nvidia_vbios.rom import from_bytes
 from nvidia_vbios.rom.image import backend
+from test_extended_fields import repair_fixture
 from test_rom_formats import synthetic_blackwell, synthetic_rom
 
 # Fan 1's maximum lowered with every curve point above it: alone it would be below the stored curves.
@@ -256,6 +257,43 @@ class ImportTests(unittest.TestCase):
         refused = next(e for e in report['skipped'] if e['field'] == 'fan_1_curve_1_temp_c')
         self.assertEqual((refused['code'], 'partners' in refused), ('ZERO_RPM_ABOVE_CURVE', False))
         self.assertNotIn((hint, 'detail'), import_summary(report, fields))
+
+    def test_a_rel_floor_comes_with_its_ceiling(self):
+        # A rail's REL clamp minimum and maximum form one ordering group: a floor above this ROM's ceiling comes with
+        # the donor's ceiling, and neither comes without the other. The floor stays at most OV: here the MSVDD OV
+        # equation is clamped to 1200 mV, the OV value of every GB20x image.
+        blob = bytearray(self.blob)
+        ov = next(r for r in backend(self.target).rail_equations()
+                  if (r['logical_rail_id'], r['role']) == ('MSVDD', 'OV'))
+        struct.pack_into('<ff', blob, ov['equation_offset'] + 3, 1200000, 1200000)
+        blob = repair_fixture(blob)
+        target = from_bytes(blob, 'board.rom')
+        raised = {'msvdd_rel_equation_max_mv': 1125, 'msvdd_rel_equation_min_mv': 1100}
+        report, result = import_fields(target, donor_of(blob, raised), ['voltage'])
+        self.assertEqual(report['changes'], raised)
+        self.assertEqual({key: values(result.image)[key] for key in raised}, raised)
+        for floor, reason in ((dict(current=1100.0, editable=False), 'read_only_in_donor'),
+                              (dict(current=1250.0), 'out_of_bounds')):
+            donor = FakeDonor(target, {'msvdd_rel_equation_max_mv': dict(current=1300.0),
+                                       'msvdd_rel_equation_min_mv': floor})
+            report, result = import_fields(target, donor, ['voltage'])
+            self.assertIsNone(result)
+            self.assertEqual({e['field']: e['reason'] for e in report['skipped']},
+                             {'msvdd_rel_equation_min_mv': reason, 'msvdd_rel_equation_max_mv': 'held_back'})
+
+    def test_an_ada_rel_floor_comes_with_its_ceiling_too(self):
+        blob = synthetic_rom(copies=2)  # REL clamped to 915..955 mV, OV 1200 mV
+        target = from_bytes(blob, 'board.rom')
+        raised = {'nvvdd_rel_equation_max_mv': 1100, 'nvvdd_rel_equation_min_mv': 1000}
+        report, result = import_fields(target, donor_of(blob, raised), ['voltage'])
+        self.assertEqual(report['changes'], raised)
+        self.assertEqual({key: values(result.image)[key] for key in raised}, raised)
+        donor = FakeDonor(target, {'nvvdd_rel_equation_max_mv': dict(current=1100.0),
+                                   'nvvdd_rel_equation_min_mv': dict(current=1000.0, editable=False)})
+        report, result = import_fields(target, donor, ['voltage'])
+        self.assertIsNone(result)
+        self.assertEqual({e['field']: e['reason'] for e in report['skipped']},
+                         {'nvvdd_rel_equation_min_mv': 'read_only_in_donor', 'nvvdd_rel_equation_max_mv': 'held_back'})
 
     def test_other_families_are_refused_and_other_products_warned(self):
         for other in (synthetic_rom(), synthetic_rom(family='ampere')):

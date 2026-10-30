@@ -97,12 +97,16 @@ ADA_VMIN_OFFSET = 7
 ADA_ROW_SELECTOR_BYTES = range(4, 0x1F)
 # VFE variable type of a fused input (nvgpu SINGLE_SENSED_FUSE): the input of a per-chip VMIN equation.
 VFE_FUSE_VARIABLE = 4
-# Ada and Ampere tables outside the VFE and rail tables that name VFE equations (TableRom.equation_index_names):
-# name -> BIT pointer, and per family the reviewed (version, header size, entry size).
+# Ada, Ampere and Turing tables outside the VFE and rail tables that name VFE equations
+# (TableRom.equation_index_names): name -> BIT pointer, and per family the reviewed (version, header sizes, entry
+# size). Turing has the nvgpu clock programming 3.5 table (secondary VF sub-entries after the VF ones), FLL
+# descriptor 1.0 with a 6-byte header (no frequency margin equation) or a 7-byte one, and voltage policy 1x.
 EQUATION_INDEX_POINTERS = {'clock programming': ('C', 0x0C), 'FLL': ('C', 0x10), 'voltage policy': ('P', 0x70)}
 EQUATION_INDEX_LAYOUTS = {
-    'ada': {'clock programming': (0x40, 8, 15), 'FLL': (0x10, 8, 16), 'voltage policy': (0x10, 5, 19)},
-    'ampere': {'clock programming': (0x40, 8, 13), 'FLL': (0x10, 7, 15), 'voltage policy': (0x10, 5, 17)},
+    'ada': {'clock programming': (0x40, (8,), 15), 'FLL': (0x10, (8,), 16), 'voltage policy': (0x10, (5,), 19)},
+    'ampere': {'clock programming': (0x40, (8,), 13), 'FLL': (0x10, (7,), 15), 'voltage policy': (0x10, (5,), 17)},
+    'turing': {'clock programming': (0x35, (10,), 13), 'FLL': (0x10, (6, 7), 15),
+               'voltage policy': (0x10, (5,), 17)},
 }
 # Clocks table (BIT C+8) v0x40 with the GV HAL (header byte 6 = 3). nvgpu fixes the
 # GV row order; each row is also gated by its usage (0 fixed, 1 master), the low
@@ -983,7 +987,7 @@ class TableRom:
         self.owner(vfe, base - vfe + 25 * count)
         return row, vfe, base, count, self._selectors(row, count)
 
-    def _selectors(self, row, count):
+    def _selectors(self, row, count, nvvdd=True):
         b = self.blob
         if self.family == 'turing':
             # nvgpu 1x row; Turing images keep REL < ALT (if present) < BOOT = OV - 1, VMIN = OV + 1
@@ -1000,8 +1004,8 @@ class TableRom:
         selectors = {role: b[row + offset] for role, offset in ADA_ROLE_OFFSETS}
         rel, alt, ov, vmin = (selectors[k] for k in ('REL', 'ALT', 'OV', 'VMIN'))
         ordered = rel < vmin and vmin == ov - 1 and (alt == 0xFF or rel < alt < vmin)
-        # The Ada follow-OV edit points REL and ALT (if present) at the OV equation.
-        followed = self.family == 'ada' and rel == ov and alt in (0xFF, ov) and vmin == ov - 1
+        # The Ada and Ampere follow-OV edit points the NVVDD REL and ALT (if present) at the OV equation.
+        followed = nvvdd and rel == ov and alt in (0xFF, ov) and vmin == ov - 1
         if 0xFF in (rel, ov, vmin) or ov >= count or not (ordered or followed):
             family = 'Ada' if self.family == 'ada' else 'Ampere'
             raise FormatError(f'unvalidated {family} rail selectors (expected REL < ALT < VMIN = OV - 1)')
@@ -1014,7 +1018,7 @@ class TableRom:
         second is named MSVDD by inference only (the GPC clock row runs on rail
         0; XBAR, DRAM and DISP on rail 1). Turing: one 14-byte 1x row (NVVDD).
         The Ampere and Turing VFE count is u8 header byte 5. Every rail keeps the
-        selector order of _selectors.
+        selector order of _selectors (the follow-OV order on the NVVDD row only).
         """
         if self.family not in ('ampere', 'turing'):
             row, vfe, base, count, selectors = self._ada_rail()
@@ -1039,7 +1043,7 @@ class TableRom:
             raise FormatError(f'{name} VFE table has no equations')
         self.owner(vfe, base - vfe + 24 * count)
         rows = [rail + 5 + size * i for i in range(rails)]
-        return ([(i, AMPERE_RAIL_NAMES[i], row, self._selectors(row, count)) for i, row in enumerate(rows)],
+        return ([(i, AMPERE_RAIL_NAMES[i], row, self._selectors(row, count, i == 0)) for i, row in enumerate(rows)],
                 vfe, base, count)
 
     def _role_offsets(self):
@@ -1275,16 +1279,17 @@ class TableRom:
                     idle_memory_mhz=other[0])
 
     def equation_index_names(self):
-        """Ada and Ampere: VFE equation index -> [table] for the tables outside the VFE and rail tables that name
-        equations, read in the primary chain (integrity requires identical chains) at their reviewed layouts
-        (EQUATION_INDEX_LAYOUTS), each as a superset where the index bytes are not pinned down:
+        """Ada, Ampere and Turing: VFE equation index -> [table] for the tables outside the VFE and rail tables
+        that name equations, read in the primary chain (integrity requires identical chains) at their reviewed
+        layouts (EQUATION_INDEX_LAYOUTS), each as a superset where the index bytes are not pinned down:
 
         - clock programming (C+0x0c): entry bytes 3 and 4 (Ada: | bytes 13 and 14 << 8), the VF equation
-          the GPC curve reads and the byte after it, and every byte of the VF sub-entries (the last
-          count x size bytes of an entry), alone and with the next one as u16;
+          the GPC curve reads and the byte after it (v0x40 only: Turing v0x35 holds PLL parameters there), and
+          every byte of the VF sub-entries (the last count x size bytes of an entry; v0x35 adds the secondary VF
+          sub-entries, nvgpu sec_vfe_idx and FLL DVCO offset equation), alone and with the next one as u16;
         - FLL (C+0x10, nvgpu fll_descriptor 1.0): header byte 6, the frequency margin equation (Ada: |
-          byte 7 << 8), and entry byte 9, the minimum frequency equation (Ada: also | byte 10 << 8 and |
-          byte 15 << 8);
+          byte 7 << 8; a 6-byte Turing header has none), and entry byte 9, the minimum frequency equation (Ada:
+          also | byte 10 << 8 and | byte 15 << 8);
         - voltage policy (P+0x70): the four param0 bytes of every entry but a single-rail one (type 1,
           which names a voltage domain only), alone and as u16 pairs: nvgpu reads split-rail delta
           equations there.
@@ -1292,7 +1297,7 @@ class TableRom:
         An absent table names nothing; FormatError when a table is not at its reviewed layout.
         """
         if self.family not in EQUATION_INDEX_LAYOUTS:
-            raise FormatError('tables naming VFE equations are reviewed on Ada and Ampere only')
+            raise FormatError('tables naming VFE equations are reviewed on Ada, Ampere and Turing only')
         b, names, ada = self.blob, {}, self.family == 'ada'
 
         def name(index, table):
@@ -1302,21 +1307,24 @@ class TableRom:
             if entry is None or pointer + 4 > entry['size'] or not read(b, '<I', entry['data'] + pointer)[0]:
                 continue
             at = self.pointer(token, pointer)
-            version, header, size = EQUATION_INDEX_LAYOUTS[self.family][table]
-            if tuple(b[at:at + 3]) != (version, header, size):
+            version, headers, size = EQUATION_INDEX_LAYOUTS[self.family][table]
+            header = b[at + 1]
+            if (b[at], b[at + 2]) != (version, size) or header not in headers:
                 raise FormatError(f'the {table} table ({token}+{pointer:#x}) has an unreviewed layout')
             count = b[at + 3]
             stride, vf = size, 0
             if table == 'clock programming':
                 c1, s1, c2, s2 = b[at + 4:at + 8]
-                stride, vf = size + c1 * s1 + c2 * s2, c2 * s2
+                # v0x35 (Turing): secondary VF sub-entries follow the VF ones (header bytes 8..9).
+                vf = c2 * s2 + (b[at + 8] * b[at + 9] if version == 0x35 else 0)
+                stride = size + c1 * s1 + vf
             self.owner(at, header + stride * count)
-            if table == 'FLL':
+            if table == 'FLL' and header > 6:
                 name(b[at + 6] | (b[at + 7] << 8 if ada else 0), table)
             for i in range(count):
                 e = at + header + stride * i
                 if table == 'clock programming':
-                    for k in (3, 4):
+                    for k in (3, 4) if version == 0x40 else ():
                         name(b[e + k] | (b[e + k + 10] << 8 if ada else 0), table)
                     sub = b[e + stride - vf:e + stride]
                     for k in range(vf):
@@ -1424,7 +1432,9 @@ class TableRom:
         _vmin_clone references pins its value too; the item then carries 'clone'
         (also when that constant already links a copy). On Ada and Ampere a tree root
         or a per-chip equation (_vmin_tree) carries 'tree' instead; its clamp takes a
-        fixed value, and pinned and value_uv follow that clamp.
+        fixed value, and pinned and value_uv follow that clamp. highest_uv is then the
+        highest value of its equation list (vfe_range; None when unbounded): while stock,
+        the most its per-chip and temperature terms can give.
         """
         rails, vfe, base, count = self._rails()
         refs = self._ada_references(base, count)
@@ -1460,7 +1470,8 @@ class TableRom:
             clone = (self._vmin_clone(row, base, count, selector) if voltage and pins and refs is not None and
                      tree is None else None)
             if isinstance(tree, dict):
-                item.update(tree=tree, minimum_offset=at + 3, maximum_offset=at + 7)
+                span = vfe_range(self.blob, base, size, width, count, selector, clamped_children=True)
+                item.update(tree=tree, minimum_offset=at + 3, maximum_offset=at + 7, highest_uv=span and span[1])
                 if tree['state'] == 'pinned':
                     item.update(value_uv=tree['pinned_uv'], pinned=True)
                 diagnostic = None
@@ -1507,32 +1518,84 @@ class TableRom:
         self.owner(rail, size)
         return rail, size
 
-    def rail_fixed(self):
-        """Ada and Turing NVVDD REL and ALT equations that hold a fixed value, and the value of the OV equation.
+    def constant_equation(self, at):
+        """Value (uV) of a constant voltage equation at at, else None, as BlackwellRom.constant_equation: type 1,
+        output unit 2, no next link, finite minimum = maximum = value (bytes 3/7/11) and zero slopes (15/19)."""
+        b, width = self.blob, self._equation_layout()[1]
+        lo, hi, c0, c1, c2 = read(b, '<5f', at + 3)
+        if (b[at] != 1 or b[at + 23] & 15 != 2 or (b[at + 2] | (b[at + 24] << 8 if width == 2 else 0)) !=
+                (1 << 8 * width) - 1 or not math.isfinite(lo) or not lo == hi == c0 or c1 or c2):
+            return None
+        return lo
+
+    def follow_ov_equation(self):
+        """Where one NVVDD value for REL = ALT = OV (the flat follow-OV voltage) lives, or a diagnostic string.
+
+        The NVVDD OV selector picks equation E, a constant voltage equation (constant_equation). The value goes
+        into E's minimum, maximum and value, in every chain, only while E is dedicated: no rail row selector
+        (_role_offsets) or evaluated VMIN byte (on Turing also the boot voltage byte) but the NVVDD REL, ALT and
+        OV selectors selects it, no VFE equation references it and no table names it (equation_index_names, which
+        must read). Unlike BlackwellRom.follow_ov_equation there is no copy into an unused slot. Returns index,
+        offset, value_uv and dedicated (True).
+        """
+        rails, _, base, count = self._rails()
+        b, size = self.blob, self._equation_layout()[0]
+        row, index = rails[0][2], rails[0][3]['OV']
+        value = self.constant_equation(base + size * index)
+        if value is None:
+            return 'the OV equation is not a constant voltage equation'
+        refs = self._ada_references(base, count)
+        if refs is None:
+            return 'the VFE table holds an equation kind the editor does not read'
+        if index in refs:
+            return 'another VFE equation uses the OV equation'
+        selectors = [k for _, k in self._role_offsets()] + (
+            [TURING_BOOT_OFFSET, TURING_VMIN_OFFSET] if self.family == 'turing' else [ADA_VMIN_OFFSET])
+        own = {row + offset for role, offset in self._role_offsets() if role in ('REL', 'ALT', 'OV')}
+        others = [(name, k) for _, name, r, _ in rails for k in selectors if r + k not in own and b[r + k] == index]
+        if others:
+            return 'the {} rail row byte {} also selects the OV equation'.format(*others[0])
+        try:
+            names = self.equation_index_names()
+        except FormatError as exc:
+            return f'{exc}, so other users of the OV equation cannot be ruled out'
+        if index in names:
+            return f'the {names[index][0]} table also names the OV equation'
+        return dict(index=index, offset=base + size * index, value_uv=value, dedicated=True)
+
+    def rail_fixed(self, rail=0):
+        """The REL and ALT equations of a rail (rail index; Ada and Turing: NVVDD only, Ampere: NVVDD or MSVDD) that
+        hold a fixed value, and the value of the rail's OV equation.
 
         A fixed equation is the constant kind of _ada_equation_kind (zero slopes, no link,
         no reference from another equation) whose constant equals its clamp maximum (the
-        images store it as the clamp minimum too), and that no other role and not the
-        evaluated VMIN (Ada row byte 7, Turing byte 9) selects; on Turing the boot voltage
-        selector (byte 8) counts as a role too. Ada row byte 10 holds 2, the REL index, on
-        every image; its meaning is unknown and it is not counted as a role (Turing byte 10,
-        the voltage margin limit, is absent: _selectors). lowest_uv and highest_uv bound a
-        role's equation list (vfe_range; an unlinked equation, such as a compare REL head,
-        also by its own clamp). ov_uv is set when OV is a constant voltage equation with
-        minimum = maximum = constant; boot_uv is the stored boot voltage (row bytes 0..3).
+        images store it as the clamp minimum too), and that no other role and no evaluated
+        VMIN (Ada and Ampere row byte 7, Turing byte 9) of any rail row selects; on Turing
+        the boot voltage selector (byte 8) counts as a role too. Row byte 10 holds 2, the
+        NVVDD REL index, on every Ada and Ampere image (3 on the Ampere MSVDD row, whatever
+        equation that index holds); its meaning is unknown and it is not counted as a role
+        (Turing byte 10, the voltage margin limit, is absent: _selectors). lowest_uv and
+        highest_uv bound a role's equation list (vfe_range; an unlinked equation, such as a
+        compare REL head, also by its own clamp). ov_uv is set when OV is a constant voltage
+        equation with minimum = maximum = constant; boot_uv is the stored boot voltage (row
+        bytes 0..3).
         """
-        if self.family not in ('ada', 'turing'):
+        if self.family not in ('ada', 'ampere', 'turing'):
             return None
         rails, vfe, base, count = self._rails()
-        _, _, row, selectors = rails[0]
+        _, _, row, selectors = rails[rail]
         refs = self._ada_references(base, count)
         size, width = self._equation_layout()
         b = self.blob
         turing = self.family == 'turing'
-        selected = {{'VMIN': 'the VMIN slot'}.get(k, k): v for k, v in selectors.items()}
-        if turing:
-            selected['the boot voltage'] = b[row + TURING_BOOT_OFFSET]
-        selected['the evaluated VMIN'] = b[row + (TURING_VMIN_OFFSET if turing else ADA_VMIN_OFFSET)]
+        # Every role, boot (Turing) and evaluated VMIN selector of every rail row; another rail's by its name.
+        selected = []
+        for _, other, r, chosen in rails:
+            pairs = [({'VMIN': 'VMIN slot'}.get(k, k), v) for k, v in chosen.items()]
+            pairs += [('boot voltage', b[r + TURING_BOOT_OFFSET])] if turing else []
+            pairs += [('evaluated VMIN', b[r + (TURING_VMIN_OFFSET if turing else ADA_VMIN_OFFSET)])]
+            selected += [(what if r == row and what in ('REL', 'ALT', 'OV') else
+                          f'the {what}' if r == row else f'the {other} {what}', v) for what, v in pairs]
 
         def span(index):
             at = base + size * index
@@ -1552,7 +1615,7 @@ class TableRom:
             at = base + size * index
             lo, hi, value = read(b, '<fff', at + 3)
             kind = self._ada_equation_kind(vfe, base, index, refs)
-            shared = [name for name, other in selected.items() if name != role and other == index]
+            shared = [what for what, other in selected if what != role and other == index]
             diagnostic = ('is used by another equation' if kind == 'shared' else
                           f'is not a constant (a {kind} equation)' if kind != 'constant' else
                           'does not hold its constant at its clamp maximum' if value != hi else

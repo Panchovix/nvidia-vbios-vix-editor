@@ -9,7 +9,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from nvidia_vbios.editor import edit, plan
 from nvidia_vbios.editor.registry import (FAN_LOW_EXTRA_CHANNELS_REASON, FAN_POLICY_COPY_CHANNELS_REASON,
-                                          FAN_ZERO_RPM_NO_BLOCK_REASON, fan_layouts, registry)
+                                          FAN_ZERO_RPM_NO_BLOCK_REASON, FOLLOW_OV_CLAMP_REASON, fan_layouts, registry)
 from nvidia_vbios.rom import VbiosError, from_bytes, inspect_image, load
 from nvidia_vbios.rom.image import backend
 from test_ada_fields import (GV_HAL, REFERENCE_BLOCK, checked_elsewhere, dram_points, fan_curves, fan_limits, messages,
@@ -86,6 +86,18 @@ def recomputed(blob):
     for start, end in backend(from_bytes(bytes(blob))).image_regions:
         blob[end - 1] = (blob[end - 1] - sum(blob[start:end])) & 255
     return bytes(blob)
+
+
+def ampere_rails(*, msvdd_alt=None):
+    """synthetic_rom(family='ampere', copies=2) with each rail's evaluated VMIN byte (row byte 7) on its own VMIN slot
+    equation (4, 6), so no REL or ALT equation is shared; msvdd_alt sets the MSVDD ALT constant (equation 1, uV)."""
+    blob = synthetic_rom(family='ampere', copies=2)
+    parser = backend(from_bytes(blob))
+    row, vfe = parser.pointer('P', 0x68) + 5, parser.pointer('P', 0x20)
+    blob = patched(patched(blob, row + 7, b'\x04'), row + 0x11 + 7, b'\x06')
+    if msvdd_alt:
+        blob = patched(blob, vfe + 9 + 25 * 50 + 24 + 3, struct.pack('<fff', msvdd_alt, msvdd_alt, msvdd_alt))
+    return blob
 
 
 def assert_written(test, image, result, changes):
@@ -576,6 +588,91 @@ class AmpereVoltageTests(unittest.TestCase):
                 image = from_bytes(patched(blob, at, data))
                 self.assertNotIn('nvvdd_rel_equation_max_mv', descriptors(image))
                 self.assertTrue(any('Ampere rail' in m or 'Ampere VFE' in m for m in messages(image)), messages(image))
+
+    def test_fixed_rel_and_alt_on_each_rail(self):
+        image = from_bytes(ampere_rails(msvdd_alt=1090000))
+        parser = backend(image)
+        fields = descriptors(image)
+        for rail, alt in (('nvvdd', 1100), ('msvdd', 1090)):
+            with self.subTest(rail=rail):
+                rel_field, alt_field = fields[f'{rail}_rel_fixed_mv'], fields[f'{rail}_alt_fixed_mv']
+                self.assertEqual((rel_field['current'], rel_field['bounds']['minimum'], rel_field['bounds']['maximum'],
+                                  rel_field['editable'], rel_field['opt_in'], rel_field['experimental']),
+                                 (1081.25, 1081.25, alt, True, True, True))
+                self.assertEqual((alt_field['current'], alt_field['bounds']['minimum'],
+                                  alt_field['bounds']['maximum']), (alt, alt, 1100))
+                self.assertEqual({rel_field['ordering_group'], alt_field['ordering_group']}, {f'{rail}-rel-alt'})
+                self.assertEqual(rel_field['rail_identity']['logical_rail_id'], rail.upper())
+                self.assertIn('not hardware-tested on Ampere', rel_field['reason'])
+        # Written in every chain; the clamp minimum keeps the stored value, so the copy goes back byte for byte.
+        at = fields['msvdd_rel_fixed_mv']['equation_offset']
+        offsets = parser.copy_offsets(at + 7, 4) + parser.copy_offsets(at + 11, 4)
+        result = edit(image, {'msvdd_rel_fixed_mv': 1090})
+        self.assertEqual(sorted(e['offset'] for e in result.manifest['edits']), sorted(offsets))
+        changed_bytes_within(self, image, result, offsets)
+        for copy in parser.copy_offsets(at, 24):
+            self.assertEqual(struct.unpack_from('<5f', result.blob, copy + 3), (1081250, 1090000, 1090000, 0, 0))
+        self.assertEqual(edit(result.image, {'msvdd_rel_fixed_mv': 1081.25}).blob, image.blob)
+        # REL stays at most ALT and both at most OV; REL past ALT goes with ALT, in one edit.
+        for changes in ({'msvdd_rel_fixed_mv': 1095}, {'msvdd_alt_fixed_mv': 1101}, {'nvvdd_rel_fixed_mv': 1080}):
+            with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
+                edit(image, changes)
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        after = descriptors(edit(image, {'msvdd_rel_fixed_mv': 1095, 'msvdd_alt_fixed_mv': 1095}).image)
+        self.assertEqual([after[k]['current'] for k in ('msvdd_rel_fixed_mv', 'msvdd_alt_fixed_mv',
+                                                         'nvvdd_rel_fixed_mv')], [1095, 1095, 1081.25])
+        # An equation another rail's row selects too keeps a read-only field.
+        row = parser.pointer('P', 0x68) + 5
+        shared = descriptors(from_bytes(patched(image.blob, row + 7, b'\x00')))['msvdd_rel_fixed_mv']
+        self.assertEqual((shared['editable'], shared['reason']),
+                         (False, 'read-only: the MSVDD REL equation is also selected by the NVVDD evaluated VMIN'))
+
+    def test_nvvdd_rel_and_alt_follow_ov_then_one_flat_value(self):
+        image = from_bytes(ampere_rails())
+        parser = backend(image)
+        row = parser.pointer('P', 0x68) + 5
+        field = descriptors(image)['nvvdd_rel_alt_follow_ov']
+        self.assertEqual((field['current'], field['editable'], field['opt_in'], field['experimental']),
+                         (0, True, True, True))
+        self.assertIn('OV equation (1100 mV) in every chain: REL = ALT = OV', field['reason'])
+        self.assertIn('not hardware-tested on Ampere', field['reason'])
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'nvvdd_rel_alt_follow_ov': 1, 'nvvdd_rel_alt_follow_ov_mv': 1150})
+        self.assertEqual(exc.exception.code, 'SEPARATE_EDIT_REQUIRED')
+        followed = edit(image, {'nvvdd_rel_alt_follow_ov': 1})
+        changed_bytes_within(self, image, followed, [copy + k for copy in parser.copy_offsets(row + 4, 2)
+                                                     for k in (0, 1)], width=1)
+        for copy in parser.copy_offsets(row, 0x22):
+            self.assertEqual(followed.blob[copy + 4:copy + 7], bytes((5, 5, 5)))  # NVVDD REL = ALT = OV
+            self.assertEqual(followed.blob[copy + 0x15:copy + 0x18], bytes((0, 1, 7)))  # MSVDD as stored
+        fields = descriptors(followed.image)
+        self.assertEqual((fields['nvvdd_rel_alt_follow_ov']['current'], fields['nvvdd_rel_alt_follow_ov']['editable']),
+                         (1, False))
+        for key in ('nvvdd_rel_fixed_mv', 'nvvdd_alt_fixed_mv', 'nvvdd_rel_equation_max_mv', 'nvvdd_ov_equation_max_mv',
+                    'nvvdd_rel_max_mv'):
+            self.assertEqual((fields[key]['editable'], fields[key]['reason']), (False, FOLLOW_OV_CLAMP_REASON), key)
+        self.assertTrue(fields['msvdd_rel_fixed_mv']['editable'])
+        flat = fields['nvvdd_rel_alt_follow_ov_mv']
+        self.assertEqual((flat['current'], flat['editable'], flat['bounds']['minimum'], flat['bounds']['maximum'],
+                          flat['vfe_copy_slot']), (1100, True, 900, 1430, None))
+        self.assertIn('not hardware-tested on Ampere', flat['reason'])
+        at = fields['nvvdd_ov_equation_max_mv']['equation_offset']
+        offsets = [copy for k in (3, 7, 11) for copy in parser.copy_offsets(at + k, 4)]
+        result = edit(followed.image, {'nvvdd_rel_alt_follow_ov_mv': 1150})
+        self.assertEqual(sorted(e['offset'] for e in result.manifest['edits']), sorted(offsets))
+        changed_bytes_within(self, followed.image, result, offsets)
+        for copy in parser.copy_offsets(at, 24):
+            self.assertEqual(struct.unpack_from('<5f', result.blob, copy + 3), (1150000, 1150000, 1150000, 0, 0))
+        self.assertEqual(descriptors(edit(followed.image, {'nvvdd_rel_alt_follow_ov_mv': 1430}).image)
+                         ['nvvdd_rel_equation_max_mv']['current'], 1430)
+        for value in (899, 1431):
+            with self.subTest(value=value), self.assertRaises(VbiosError) as exc:
+                edit(followed.image, {'nvvdd_rel_alt_follow_ov_mv': value})
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        # Only the NVVDD row follows OV: an MSVDD row with REL = ALT = OV is no reviewed layout.
+        refused = from_bytes(patched(image.blob, row + 0x11 + 4, bytes((7, 7))))
+        self.assertNotIn('msvdd_rel_fixed_mv', descriptors(refused))
+        self.assertTrue(any('unvalidated Ampere rail selectors' in m for m in messages(refused)))
 
 
 class AmpereClockTests(unittest.TestCase):
