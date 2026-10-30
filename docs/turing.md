@@ -41,7 +41,8 @@ XOC-style fields**.
 - **REL and ALT follow OV** (advanced): `nvvdd_rel_alt_follow_ov`, a switch that points REL and ALT at the OV
   equation, as the Galax HOF XOC image does (REL = ALT = OV). Save it on its own and keep the original image to
   go back. On the saved copy (and on the HOF XOC image) `nvvdd_rel_alt_follow_ov_mv` sets that one voltage, from
-  950 to 1462 mV (OV is 1125 mV), at least the boot voltage and VMIN plus what its chained equations add. As
+  950 to 1462 mV (OV is 1125 mV), at least the boot voltage and VMIN plus what its chained equations add. Above
+  1243.75 mV the value is beyond the range of the VFE voltage variable, so the VF curve might not use it. As
   with the fixed values, whether the card then runs at a higher voltage is not known, and more voltage means
   more heat, power and wear.
 - **Clock offset ranges**: `gpc_offset_max_mhz` / `gpc_offset_min_mhz` (core) and `memory_offset_max_mhz` /

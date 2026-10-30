@@ -423,15 +423,18 @@ power and wear, and removing the override brings the card back.
 a float quadratic on the sensed temperature with no next equation. Its value falls 2.7 to 5.7
 mV per °C; with the stock clamps (900..940 mV on the RTX 4000 SFF Ada up to 1060..1100 mV on
 the RTX 4070) it stays above the maximum up to about 97 °C and reaches the minimum at about
-105 to 110 °C. So the floor is the REL of a hot GPU, and a floor equal to the ceiling holds REL
-there at every temperature. It goes from 830 mV, the lowest REL of any Ada image (the constant
-REL of an RTX 5000 Ada image), up to the ceiling and at most OV (1200 mV on every Ada image),
-with the ceiling in the `nvvdd-rel-clamp` group, as on GB20x. Where each chip sets its own
+105 °C, where the temperature input stops, or stays a few mV above it (RTX 4070, 4070 SUPER,
+4080 SUPER, RTX 4500 Ada). So the floor is the REL of a hot GPU, and a floor equal to the
+ceiling holds REL there at every temperature. It goes from 830 mV, the lowest REL of any Ada
+image (the constant REL of the RTX 5000 Ada Generation Laptop GPU image), up to the ceiling and
+at most OV (1200 mV on every Ada image), with the ceiling in the `nvvdd-rel-clamp` group, as
+on GB20x; a floor below VMIN plus its chained terms needs VMIN lowered in the same edit. Where
+each chip sets its own
 VMIN, no stored value stands for it, so the checks that keep VMIN below REL cannot hold it: the
 floor then stays at or above the highest VMIN of the board (its range plus what its chained
 terms add) until VMIN is fixed. On the RTX 5000 Ada that is 1140.5 mV, above its stored 1040 mV
 floor, which there only goes up. A constant REL (the newer RTX 4090 image, the RTX 4080, the
-RTX 4000 Ada and one RTX 5000 Ada image) takes its value through `nvvdd_rel_fixed_mv` instead,
+RTX 4000 Ada and the RTX 5000 Ada Laptop GPU image) takes its value through `nvvdd_rel_fixed_mv` instead,
 which the floor's reason names, and a compare REL (RTX 4060 family, RTX 4070 Ti SUPER, laptops)
 keeps both read-only. Not hardware-tested (on an RTX 2000 Ada a raised ceiling moved the
 evaluated REL).
@@ -512,12 +515,15 @@ evaluated VMIN may then go up to 1200 mV less what its chained equations add
 meaning is unknown and this field leaves it. No Ada vendor image is known to do
 this, and no Ada board has run it: not hardware-tested on Ada.
 
-The flat value works on the Ada copy too, from 830 to 1560 mV, and where each chip sets
+The flat value works on the Ada copy too, from 830 to 1560 mV (below VMIN plus its chained
+terms only with VMIN lowered in the same edit), and where each chip sets
 its own VMIN at least the highest VMIN of the board until VMIN is fixed (979 mV on the RTX
 4060 Ti, 989 mV on the RTX 4060, 1140.5 mV on the RTX 5000 Ada), as for the floor. On
 every parseable Ada image the OV constant is used by nothing else (no other rail row
 selector or evaluated VMIN byte, VFE equation, clock programming, FLL or voltage policy
-entry), so the value goes into its minimum, maximum and constant in every chain; no copy
+entry), so the value goes into its minimum, maximum and constant in every chain (above 1250
+mV it is beyond the Ada VFE voltage variable range, 450 to 1250 mV, so the VF curve might not
+use it); no copy
 is written on Ada, so an image whose OV equation something else names keeps the field
 read-only. Row byte 20 holds 4 on every Ada image, whatever its OV index (the OV index on
 the images without ALT); its meaning is unknown, it is not counted as a selector, and the
@@ -535,7 +541,8 @@ whose REL and ALT already select OV: it reads 1, read-only. The parser accepts R
 (ALT absent or = OV, VMIN slot = OV - 1) on the Ampere NVVDD row only. The flat
 value goes into the OV constant in every chain, as on Ada, from 900 to 1430 mV on Ampere
 and from 950 to 1462 mV on Turing (the lowest REL of the family's images up to 130 % of
-its OV); on Turing it also stays at or above the stored boot voltage and the highest
+its OV; above the VFE voltage variable range, 1250 mV on Ampere and 1243.75 mV on Turing,
+the VF curve might not use it); on Turing it also stays at or above the stored boot voltage and the highest
 VMIN (its clamp plus what its chained equations add) and joins the `nvvdd-rel-alt`
 ordering group, as the fixed REL and ALT values do. Nothing else uses the OV constant on
 any image of either corpus: no other rail row selector (on Turing the boot voltage and

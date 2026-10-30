@@ -107,7 +107,7 @@ funcionando sin las dependencias gráficas.
    **REL y ALT de NVVDD siguen a OV** (un interruptor: activado
    da el límite de voltaje plano estilo XOC; guárdalo solo y conserva la imagen
    original para volver atrás; en la copia guardada,
-   **Voltaje plano de NVVDD (REL = ALT = OV)**, justo debajo, fija ese voltaje, de 850
+   **Voltaje plano de NVVDD (REL = ALT = OV)**, en el lugar del interruptor, fija ese voltaje, de 850
    a 1560 mV, en Ada de 830 a 1560 mV, en Ampere de 900 a 1430 mV, en Turing de 950 a
    1462 mV, y nunca bajo el VMIN más alto donde cada chip fija el suyo) y, en
    Blackwell, Ada y Ampere, **Parada de
@@ -272,7 +272,8 @@ del chip mantenido entre el piso y el techo, así que un piso por encima de ese 
 pasa a ser el REL; sube ambos juntos para pasar del techo guardado, hasta OV (1200 mV).
 En Ada, **Piso REL de NVVDD** hace lo mismo donde el REL sigue a la temperatura (baja
 cuando la GPU se calienta), desde 830 mV (o, donde cada chip fija su propio VMIN, desde
-el VMIN más alto que puede alcanzar): el piso es entonces el REL de una GPU caliente.
+el VMIN más alto que puede alcanzar, o desde el piso guardado si es menor): el piso es
+entonces el REL de una GPU caliente.
 **Voltaje mínimo (VMIN)** (experimental) es el valor guardado de la
 ecuación que el driver evalúa como VMIN; en Ada el driver le suma sus términos
 encadenados (+90 mV en una RTX 2000 Ada), así que el valor llega hasta el REL más

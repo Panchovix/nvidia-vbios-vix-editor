@@ -110,7 +110,7 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    REL/ALT voltages and **NVVDD REL and ALT follow
    OV** (a switch: on gives the flat XOC-style voltage limit; save it on its own,
    and keep the original image to go back; on the saved copy
-   **NVVDD flat voltage (REL = ALT = OV)**, right under it, sets that voltage, 850 to
+   **NVVDD flat voltage (REL = ALT = OV)**, in the switch's place, sets that voltage, 850 to
    1560 mV, on Ada 830 to 1560 mV, on Ampere 900 to 1430 mV, on Turing 950 to 1462 mV, and
    never below the highest VMIN where each chip sets its own) and,
    on Blackwell, Ada and Ampere, **Fan
@@ -247,7 +247,8 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    ceiling, so a floor above it becomes the REL; raise both together to go past the
    stored ceiling, up to OV (1200 mV). On Ada, **NVVDD REL floor** does the same where
    REL follows the temperature (it falls as the GPU heats up), from 830 mV (or, where
-   each chip sets its own VMIN, from the highest VMIN it can reach): the floor
+   each chip sets its own VMIN, from the highest VMIN it can reach, or the stored floor if
+   lower): the floor
    is then the REL of a hot GPU. **Minimum
    voltage (VMIN)** (experimental) is the stored value of the equation the driver
    evaluates as VMIN; on Ada the driver adds its chained terms (+90 mV on an RTX

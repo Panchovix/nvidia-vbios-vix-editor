@@ -35,7 +35,10 @@ changes, one line each, in the same order.
   Turing, and on a copy saved with it on, **NVVDD flat voltage (REL = ALT = OV)** sets one value for REL, ALT and OV
   on all three: 830 to 1560 mV on Ada (OV 1200 mV), 900 to 1430 mV on Ampere (OV 1100 mV) and 950 to 1462 mV on
   Turing (OV 1125 mV; there also at least the boot voltage and VMIN plus its chained terms). On every Ada, Ampere and
-  Turing ROM nothing else uses the OV equation, so the value goes into it, in every copy of the tables. Where each
+  Turing ROM nothing else uses the OV equation, so the value goes into it, in every copy of the tables. As on
+  Blackwell, above 1250 mV (1243.75 mV on Turing) the value is beyond the range of the VFE voltage variable, so the
+  VF curve might not use it. On Ada a flat voltage or floor below VMIN plus its chained terms needs VMIN lowered in
+  the same edit. Where each
   chip sets its own VMIN, the flat voltage and the Ada REL floor stay at or above the highest VMIN it can reach until
   **NVVDD minimum voltage (VMIN)** is fixed: 979 mV on the RTX 4060 Ti, 989 mV on the RTX 4060 and 1140.5 mV on the
   RTX 5000 Ada, whose floor then only goes up, so REL does not end below VMIN. On the RTX 4090 95.02.3C ROMs the

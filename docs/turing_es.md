@@ -45,7 +45,8 @@ Todos los campos Turing están marcados como experimentales. Los marcados como *
   ecuación de OV, como hace la imagen Galax HOF XOC (REL = ALT = OV). Guárdalo solo y conserva la imagen original
   para volver atrás. En la copia guardada (y en la imagen HOF XOC) `nvvdd_rel_alt_follow_ov_mv` fija ese único
   voltaje, de 950 a 1462 mV (OV es 1125 mV), como mínimo el voltaje de arranque y VMIN más lo que suman sus
-  ecuaciones encadenadas. Como con los valores fijos, no se sabe si la tarjeta corre entonces a más voltaje, y
+  ecuaciones encadenadas. Sobre 1243,75 mV el valor queda fuera del rango de la variable de voltaje VFE, así
+  que la curva VF podría no usarlo. Como con los valores fijos, no se sabe si la tarjeta corre entonces a más voltaje, y
   más voltaje significa más calor, más potencia y más desgaste.
 - **Rangos de offset de reloj**: `gpc_offset_max_mhz` / `gpc_offset_min_mhz` (núcleo) y `memory_offset_max_mhz` /
   `memory_offset_min_mhz`, los rangos que puede usar una herramienta de overclock. Por sí solos no cambian los
