@@ -34,7 +34,7 @@ nvgpu `bios.h` structure definitions (MIT). No NVIDIA source file is included.
 | mingw-w64-ucrt-x86_64-expat | 2.9.0-1 | MIT | third_party/mingw-w64-ucrt-x86_64-expat/ | libexpat-1.dll |
 | mingw-w64-ucrt-x86_64-fontconfig | 2.18.3-1 | custom | third_party/mingw-w64-ucrt-x86_64-fontconfig/ | libfontconfig-1.dll |
 | mingw-w64-ucrt-x86_64-freetype | 2.15.0-1 | GPL-2.0-or-later OR FTL | third_party/mingw-w64-ucrt-x86_64-freetype/ | libfreetype-6.dll |
-| mingw-w64-ucrt-x86_64-fribidi | 1.0.17-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-fribidi/ | libfribidi-0.dll |
+| mingw-w64-ucrt-x86_64-fribidi | 1.0.18-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-fribidi/ | libfribidi-0.dll |
 | mingw-w64-ucrt-x86_64-gdk-pixbuf2 | 2.44.8-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-gdk-pixbuf2/ | libgdk_pixbuf-2.0-0.dll GdkPixbuf-2.0.typelib |
 | mingw-w64-ucrt-x86_64-gettext-runtime | 1.0-1 | GPL-3.0-or-later AND LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-gettext-runtime/ | libintl-8.dll |
 | mingw-w64-ucrt-x86_64-glib2 | 2.90.1-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-glib2/ | libgio-2.0-0.dll libgirepository-2.0-0.dll libglib-2.0-0.dll libgmodule-2.0-0.dll libgobject-2.0-0.dll Gio-2.0.typelib GioWin32-2.0.typelib GLib-2.0.typelib GLibWin32-2.0.typelib GModule-2.0.typelib GObject-2.0.typelib |
@@ -54,7 +54,7 @@ nvgpu `bios.h` structure definitions (MIT). No NVIDIA source file is included.
 | mingw-w64-ucrt-x86_64-libffi | 3.8.0-1 | MIT | third_party/mingw-w64-ucrt-x86_64-libffi/ | libffi-8.dll |
 | mingw-w64-ucrt-x86_64-libgcc | 16.2.0-6 | GPL-3.0-or-later WITH GCC-exception-3.1 AND GFDL-1.3-or-later | third_party/mingw-w64-ucrt-x86_64-libgcc/ | libgcc_s_seh-1.dll |
 | mingw-w64-ucrt-x86_64-libiconv | 1.19-1 | LGPL-2.1-or-later  documentation:GPL-3.0-or-later | third_party/mingw-w64-ucrt-x86_64-libiconv/ | libiconv-2.dll |
-| mingw-w64-ucrt-x86_64-libjpeg-turbo | 3.2.0-1 | custom:BSD-like | third_party/mingw-w64-ucrt-x86_64-libjpeg-turbo/ | libjpeg-8.dll |
+| mingw-w64-ucrt-x86_64-libjpeg-turbo | 3.2.1-1 | custom:BSD-like | third_party/mingw-w64-ucrt-x86_64-libjpeg-turbo/ | libjpeg-8.dll |
 | mingw-w64-ucrt-x86_64-libpng | 1.6.59-2 | custom | third_party/mingw-w64-ucrt-x86_64-libpng/ | libpng16-16.dll |
 | mingw-w64-ucrt-x86_64-libstdc++ | 16.2.0-6 | GPL-3.0-or-later WITH GCC-exception-3.1 AND GFDL-1.3-or-later | third_party/mingw-w64-ucrt-x86_64-libstdc++/ | libstdc++-6.dll |
 | mingw-w64-ucrt-x86_64-libthai | 0.1.30-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-libthai/ | libthai-0.dll |
@@ -68,7 +68,7 @@ nvgpu `bios.h` structure definitions (MIT). No NVIDIA source file is included.
 | mingw-w64-ucrt-x86_64-pango | 1.58.2-1 | LGPL-2.1 | third_party/mingw-w64-ucrt-x86_64-pango/ | libpango-1.0-0.dll libpangocairo-1.0-0.dll libpangoft2-1.0-0.dll libpangowin32-1.0-0.dll Pango-1.0.typelib PangoCairo-1.0.typelib |
 | mingw-w64-ucrt-x86_64-pcre2 | 10.49-1 | BSD-3-Clause | third_party/mingw-w64-ucrt-x86_64-pcre2/ | libpcre2-8-0.dll |
 | mingw-w64-ucrt-x86_64-pixman | 0.46.4-3 | MIT | third_party/mingw-w64-ucrt-x86_64-pixman/ | libpixman-1-0.dll |
-| mingw-w64-ucrt-x86_64-python | 3.14.9-1 | PSF-2.0 | third_party/mingw-w64-ucrt-x86_64-python/ | libpython3.14.dll (Python runtime and standard library compiled into the programs) |
+| mingw-w64-ucrt-x86_64-python | 3.14.10-1 | PSF-2.0 | third_party/mingw-w64-ucrt-x86_64-python/ | libpython3.14.dll (Python runtime and standard library compiled into the programs) |
 | mingw-w64-ucrt-x86_64-python-gobject | 3.58.1-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-python-gobject/ (standard text) | _gi.cp314-mingw_x86_64_ucrt_gnu.pyd _gi_cairo.cp314-mingw_x86_64_ucrt_gnu.pyd |
 | mingw-w64-ucrt-x86_64-vulkan-loader | 1~1.4.363.0-1 | Apache-2.0 | third_party/mingw-w64-ucrt-x86_64-vulkan-loader/ | vulkan-1.dll |
 | mingw-w64-ucrt-x86_64-xz | 5.8.4-1 | 0BSD AND LGPL-2.1-or-later AND GPL-2.0-or-later | third_party/mingw-w64-ucrt-x86_64-xz/ | liblzma-5.dll |
@@ -79,7 +79,7 @@ nvgpu `bios.h` structure definitions (MIT). No NVIDIA source file is included.
 
 nvbios.exe and nvbios-gui.exe are free software under the GNU General Public License
 v3.0 or later (`LICENSE`). Their source code is at
-https://github.com/Panchovix/nvidia-vbios-vix-editor: tag `v0.1.38` is this release,
+https://github.com/Panchovix/nvidia-vbios-vix-editor: tag `v0.1.39` is this release,
 including `tools/release/`, the scripts that build these programs.
 
 The MSYS2 packages above are unmodified UCRT64 builds, at the versions listed. MSYS2
@@ -99,7 +99,7 @@ corresponding source of these packages on request: open an issue in the reposito
 | mingw-w64-expat | 2.9.0-1 | https://repo.msys2.org/mingw/sources/mingw-w64-expat-2.9.0-1.src.tar.zst |
 | mingw-w64-fontconfig | 2.18.3-1 | https://repo.msys2.org/mingw/sources/mingw-w64-fontconfig-2.18.3-1.src.tar.zst |
 | mingw-w64-freetype | 2.15.0-1 | https://repo.msys2.org/mingw/sources/mingw-w64-freetype-2.15.0-1.src.tar.zst |
-| mingw-w64-fribidi | 1.0.17-1 | https://repo.msys2.org/mingw/sources/mingw-w64-fribidi-1.0.17-1.src.tar.zst |
+| mingw-w64-fribidi | 1.0.18-1 | https://repo.msys2.org/mingw/sources/mingw-w64-fribidi-1.0.18-1.src.tar.zst |
 | mingw-w64-gcc | 16.2.0-6 | https://repo.msys2.org/mingw/sources/mingw-w64-gcc-16.2.0-6.src.tar.zst |
 | mingw-w64-gdk-pixbuf2 | 2.44.8-1 | https://repo.msys2.org/mingw/sources/mingw-w64-gdk-pixbuf2-2.44.8-1.src.tar.zst |
 | mingw-w64-gettext | 1.0-1 | https://repo.msys2.org/mingw/sources/mingw-w64-gettext-1.0-1.src.tar.zst |
@@ -119,7 +119,7 @@ corresponding source of these packages on request: open an issue in the reposito
 | mingw-w64-libepoxy | 1.5.10-7 | https://repo.msys2.org/mingw/sources/mingw-w64-libepoxy-1.5.10-7.src.tar.zst |
 | mingw-w64-libffi | 3.8.0-1 | https://repo.msys2.org/mingw/sources/mingw-w64-libffi-3.8.0-1.src.tar.zst |
 | mingw-w64-libiconv | 1.19-1 | https://repo.msys2.org/mingw/sources/mingw-w64-libiconv-1.19-1.src.tar.zst |
-| mingw-w64-libjpeg-turbo | 3.2.0-1 | https://repo.msys2.org/mingw/sources/mingw-w64-libjpeg-turbo-3.2.0-1.src.tar.zst |
+| mingw-w64-libjpeg-turbo | 3.2.1-1 | https://repo.msys2.org/mingw/sources/mingw-w64-libjpeg-turbo-3.2.1-1.src.tar.zst |
 | mingw-w64-libpng | 1.6.59-2 | https://repo.msys2.org/mingw/sources/mingw-w64-libpng-1.6.59-2.src.tar.zst |
 | mingw-w64-libthai | 0.1.30-1 | https://repo.msys2.org/mingw/sources/mingw-w64-libthai-0.1.30-1.src.tar.zst |
 | mingw-w64-libtiff | 4.7.2-2 | https://repo.msys2.org/mingw/sources/mingw-w64-libtiff-4.7.2-2.src.tar.zst |
@@ -132,7 +132,7 @@ corresponding source of these packages on request: open an issue in the reposito
 | mingw-w64-pcre2 | 10.49-1 | https://repo.msys2.org/mingw/sources/mingw-w64-pcre2-10.49-1.src.tar.zst |
 | mingw-w64-pixman | 0.46.4-3 | https://repo.msys2.org/mingw/sources/mingw-w64-pixman-0.46.4-3.src.tar.zst |
 | mingw-w64-pygobject | 3.58.1-1 | https://repo.msys2.org/mingw/sources/mingw-w64-pygobject-3.58.1-1.src.tar.zst |
-| mingw-w64-python | 3.14.9-1 | https://repo.msys2.org/mingw/sources/mingw-w64-python-3.14.9-1.src.tar.zst |
+| mingw-w64-python | 3.14.10-1 | https://repo.msys2.org/mingw/sources/mingw-w64-python-3.14.10-1.src.tar.zst |
 | mingw-w64-vulkan-loader | 1~1.4.363.0-1 | https://repo.msys2.org/mingw/sources/mingw-w64-vulkan-loader-1~1.4.363.0-1.src.tar.zst |
 | mingw-w64-winpthreads | 14.0.0.r569.g34eeafb7d-1 | https://repo.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r569.g34eeafb7d-1.src.tar.zst |
 | mingw-w64-xz | 5.8.4-1 | https://repo.msys2.org/mingw/sources/mingw-w64-xz-5.8.4-1.src.tar.zst |
