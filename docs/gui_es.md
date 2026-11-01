@@ -70,8 +70,8 @@ funcionando sin las dependencias gráficas.
    potencia por defecto al arrancar tantos vatios como subas el TGP base, y el TGP base
    sin pasar del techo, que sigue siendo el tope. Otros portátiles no se probaron, y el
    VRM, la refrigeración y el cargador del portátil se dimensionaron para el límite de
-   fábrica. La ventana lo indica bajo los tres campos en las ROM de las RTX 5080 y 5090
-   Laptop GPU.
+   fábrica. La ventana lo indica bajo los tres campos en las ROM RTX 50 con la disposición
+   de portátil (entre las ROM revisadas, las RTX 5050, 5080 y 5090 Laptop GPU).
    Los valores de corriente de entrada de 12 V son valores guardados de
    la política, no corrientes seguras garantizadas; los límites del conector, del
    slot y de los cables siguen aplicando. **Temperatura máxima de funcionamiento**
@@ -83,15 +83,16 @@ funcionando sin las dependencias gráficas.
    3090, 89 °C en una RTX 2080 Ti), en pasos de
    1/32 °C, y es de solo lectura en las ROM estilo XOC, donde ese límite está desactivado
    o no existe. Un valor más bajo debería hacer que el driver baje los clocks antes, y uno
-   más alto deja menos margen térmico. Las ROM de la RTX 5080 y 5090 Laptop GPU guardan además
+   más alto deja menos margen térmico. Las ROM de las RTX 5050, 5080 y 5090 Laptop GPU guardan además
    un segundo límite del mismo tipo (87 °C) cuyo papel no se rastreó, así que ahí subir el
-   valor puede no tener efecto. En las ROM de portátil Ampere y Ada es de solo lectura:
+   valor puede no tener efecto (en la RTX 5050 Laptop GPU solo se puede bajar, porque no tiene
+   un valor de fábrica revisado). En las ROM de portátil Ampere y Ada es de solo lectura:
    guardan un límite más bajo del mismo tipo (89 °C) y no se sabe cuál alcanza primero la
    GPU. **Mostrar campos avanzados (estilo XOC)**
    (desmarcada por defecto) muestra campos opcionales como la potencia nominal de
-   las políticas fijas 2/7, el **TGP base del portátil** experimental de las RTX 5080 y
-   5090 Laptop GPU (se comportó como la base a la que Dynamic Boost le suma su boost en una
-   RTX 5090 Laptop GPU; súbelo junto con el techo y la potencia por defecto al arrancar,
+   las políticas fijas 2/7, el **TGP base del portátil** experimental de las ROM RTX 50 con
+   la disposición de portátil (se comportó como la base a la que Dynamic Boost le suma su
+   boost en una RTX 5090 Laptop GPU; súbelo junto con el techo y la potencia por defecto al arrancar,
    ver arriba), **Permitir cambiar el límite de potencia en uso** en las ROM de portátil
    Turing, Ampere y RTX 50 (un interruptor, experimental: activado escribe la fila del TGP en
    la entrada del TGP del encabezado de la tabla de potencia, que las ROM de portátil dejan

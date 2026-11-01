@@ -1409,6 +1409,28 @@ def notebook_fixture(*, device=0x2C59, header=(0xFF, 0xFF, 2), row8_type=0, prof
     return repair_fixture(blob)
 
 
+def single_rail_notebook_fixture(*, device=0x2D98, rails=1, monitor=26, chain=True, row13=(1, 180000, 180000),
+                                 row14_shape=SINGLE_RAIL_ROW14, **options):
+    """The RTX 5050 Laptop GPU layout: the notebook image of notebook_fixture on the single-rail table (rails=2 puts it
+    on the two-row one), with the single-rail rows 13/14 instead of the Max-Q rows (row 13 1/180000/180000 mA, or the
+    row13 min/rated/max; row 14 1/5001000/5001000 mA with the row14_shape bytes; both on monitor 26) and the NVVDD chain
+    on channel 26 (chain=False clears it). Channels 27/28 keep the reviewed NVVDD/MSVDD chains of notebook_fixture."""
+    from nvidia_vbios.rom.blackwell import NVVDD_CHANNEL
+    blob = bytearray(notebook_fixture(device=device, rails=rails, **options))
+    parsed = backend(from_bytes(bytes(blob)))
+    rows = parsed.power_rows()
+    for index, shape, limits in ((13, SINGLE_RAIL_ROW13, row13), (14, row14_shape, (1, 5001000, 5001000))):
+        at = rows[index]['offset']
+        blob[at:at + 102] = bytes(102)
+        for offset, value in shape.items():
+            blob[at + offset] = value
+        blob[at + 5] = monitor
+        struct.pack_into('<III', blob, at + 13, *limits)
+    at = parsed.pointer('P', 0x3C) + 0x11 + 0x1A * 26
+    blob[at:at + 0x1A] = NVVDD_CHANNEL if chain else bytes(0x1A)
+    return repair_fixture(blob)
+
+
 class NotebookLayoutTests(unittest.TestCase):
     """RTX 5080 Laptop layout: TGP in row 2, Max-Q output OCP rows, no GPU fans; no saved GET."""
 
@@ -1498,7 +1520,8 @@ class NotebookLayoutTests(unittest.TestCase):
 
     def test_notebook_output_ocp_needs_the_chain_on_every_device_and_both_rails(self):
         """The saved GET of a GET-reviewed desktop device covers its own rows, not the Max-Q rows of a notebook image:
-        there the chain is required too. A notebook layout on the single-rail table recognizes neither row."""
+        there the chain is required too. A notebook layout on the single-rail table with the Max-Q rows recognizes
+        neither row (its own rows: test_single_rail_notebook_nvvdd_ocp_by_layout_row_and_chain)."""
         for device in (0x2B85, 0x2C02, 0x2C05, 0x2C33):
             with self.subTest(device=device):
                 for chain, expected in ((True, ['structural-notebook'] * 2), (False, [None, None])):
@@ -1533,6 +1556,84 @@ class NotebookLayoutTests(unittest.TestCase):
             self.assertNotIn('owner-nvidia-smi-reading', [e['kind'] for e in fields[key]['evidence']], key)
         reading = descriptors(from_bytes(notebook_fixture()))['power_max_w']['evidence'][1]
         self.assertEqual(reading['scope'], 'RTX 5080 Laptop GPU 98.03.5C.00.F2 (10de:2c59)')
+
+    def test_single_rail_notebook_nvvdd_ocp_by_layout_row_and_chain(self):
+        """The notebook layout on the single-rail table whose row 13 is the single-rail row on the NVVDD chain (monitor
+        26), as on the RTX 5050 Laptop GPU: NVVDD is recognized whatever the device ID (0x2d98, that image's; 0x2dd8,
+        another RTX 5050 Laptop GPU ID, which no list names; 0x2c02, a GET-reviewed desktop ID whose saved GET covers
+        other rows), and MSVDD reads as absent, as on the single-rail desktops; a listed single-rail desktop ID
+        (0x2d04) keeps its own basis. An edit changes row 13 +17/+21 (and the repairs) only and reverts byte for byte."""
+        from nvidia_vbios.rom.blackwell import SINGLE_RAIL_OCP_ROW
+        bases = {0x2D98: 'structural-notebook-single-rail', 0x2DD8: 'structural-notebook-single-rail',
+                 0x2C02: 'structural-notebook-single-rail', 0x2D04: 'structural-channel'}
+        for device, basis in bases.items():
+            with self.subTest(device=device):
+                image = from_bytes(single_rail_notebook_fixture(device=device))
+                parser = backend(image)
+                self.assertEqual((parser.notebook_power_layout(), parser.single_rail()), (True, True))
+                policies = parser.output_ocp_policies()
+                self.assertEqual([(i['association_basis'], i['rail_absent']) for i in policies],
+                                 [(basis, False), (None, True)])
+                self.assertEqual(policies[0]['immutable_row_sha256'], SINGLE_RAIL_OCP_ROW)
+                fields = descriptors(image)
+                for key in ('nvvdd_output_ocp_max_ma', 'nvvdd_output_ocp_rated_ma'):
+                    self.assertTrue(fields[key]['editable'], key)
+                    evidence = fields[key]['evidence'][0]
+                    self.assertEqual((evidence['kind'], evidence['runtime_get'], evidence['set_tested']),
+                                     ('structural-row-comparison', False, False))
+                    if basis == 'structural-notebook-single-rail':
+                        self.assertEqual(evidence['format'], 'GB20x notebook single-rail row13 type7; monitor 26')
+                        self.assertIn('10de:2d98', evidence['scope'])
+                self.assertEqual((fields['nvvdd_output_ocp_max_ma']['current'],
+                                  fields['nvvdd_output_ocp_rated_ma']['current']), (180000, 180000))
+                self.assertIn('no saved GET', fields['nvvdd_output_ocp_rated_ma']['reason'])
+                self.assertEqual('single-rail images but no saved GET' in fields['nvvdd_output_ocp_rated_ma']['reason'],
+                                 basis == 'structural-notebook-single-rail')
+                msvdd = fields['msvdd_output_ocp_max_ma']
+                self.assertEqual((msvdd['current'], msvdd['editable'], msvdd['reason']),
+                                 (None, False, 'this recognized single-rail layout exposes only logic/NVVDD'))
+                self.assertNotIn('msvdd_output_ocp_rated_ma', fields)
+                row = parser.power_rows()[13]['offset']
+                changes = {'nvvdd_output_ocp_rated_ma': 220000, 'nvvdd_output_ocp_max_ma': 220000}
+                result = edit(image, changes)
+                self.assertTrue(result.manifest['integrity']['valid'])
+                self.assertEqual(result.manifest['changed_object_ids'], [0x13])
+                changed_bytes_within(self, image, result, [row + 17, row + 21])
+                self.assertEqual([(i['association_basis'], i['rail_absent'])
+                                  for i in backend(result.image).output_ocp_policies()],
+                                 [(basis, False), (None, True)])
+                self.assertEqual(edit(result.image, {key: 180000 for key in changes}).blob, image.blob)
+
+    def test_single_rail_notebook_needs_the_layout_the_row_and_the_chain(self):
+        """Not recognized without the NVVDD chain on channel 26, with row 13 on monitor 27 (which holds the NVVDD
+        chain: the row is not the single-rail one), with row 13's rated value above its maximum, on the two-row rail
+        table, or with the desktop power header on a device no list names; MSVDD then gives the generic reason. Row 14
+        is never taken as the NVVDD row, even with the bytes of the single-rail row 13 on the NVVDD chain."""
+        from nvidia_vbios.rom.blackwell import SINGLE_RAIL_OCP_ROW
+        cases = {'no chain': dict(chain=False), 'monitor 27': dict(monitor=27), 'two rails': dict(rails=2),
+                 'desktop header': dict(header=(0xFF, 8, 0xFF)), 'rated above max': dict(row13=(1, 190000, 180000))}
+        for name, options in cases.items():
+            with self.subTest(case=name):
+                image = from_bytes(single_rail_notebook_fixture(**options))
+                policies = backend(image).output_ocp_policies()
+                self.assertEqual([(i['association_basis'], i['rail_absent']) for i in policies],
+                                 [(None, False), (None, False)])
+                fields = descriptors(image)
+                self.assertFalse(fields['nvvdd_output_ocp_max_ma']['editable'])
+                self.assertNotIn('nvvdd_output_ocp_rated_ma', fields)
+                self.assertEqual(fields['msvdd_output_ocp_max_ma']['reason'],
+                                 'row shape/device/monitor association is outside reviewed evidence')
+                with self.assertRaises(VbiosError):
+                    edit(image, {'nvvdd_output_ocp_rated_ma': 200000})
+        image = from_bytes(single_rail_notebook_fixture(row14_shape=SINGLE_RAIL_ROW13))
+        policies = backend(image).output_ocp_policies()
+        self.assertEqual([i['immutable_row_sha256'] for i in policies], [SINGLE_RAIL_OCP_ROW] * 2)
+        self.assertEqual([(i['association_basis'], i['rail_absent']) for i in policies],
+                         [('structural-notebook-single-rail', False), (None, True)])
+        fields = descriptors(image)
+        self.assertTrue(fields['nvvdd_output_ocp_max_ma']['editable'])
+        self.assertEqual((fields['msvdd_output_ocp_max_ma']['editable'], fields['msvdd_output_ocp_max_ma']['reason']),
+                         (False, 'this recognized single-rail layout exposes only logic/NVVDD'))
 
     def test_base_tgp_needs_notebook_row_bytes_and_a_value_between_rated_and_maximum(self):
         image = from_bytes(notebook_fixture(base=150000))

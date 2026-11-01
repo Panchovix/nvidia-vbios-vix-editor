@@ -150,16 +150,20 @@ they are copied as stored numbers, so check that this board's hardware can take 
   of any kind for any of it. If you do not accept this, do not use the software.
 - Fields marked *experimental* have not been tested on hardware, or only on the cards
   named in their notes. Raising power, current or voltage limits can damage hardware.
-- Recognized images: GB20x object-directory v3 (GB202, GB203, GB205, GB206). Ada (AD10x),
+- Recognized images: GB20x object-directory v3 (GB202, GB203, GB205, GB206, GB207). Ada (AD10x),
   Ampere (GA10x) and Turing (TU10x/TU11x) images are supported with the same restriction as any other
   image: they can be inspected, and only the fields validated for them can be edited.
-- Laptops: the layout of the RTX 5080 and RTX 5090 Laptop GPU images is recognized by its
-  tables, so another Blackwell laptop image that shares it gets the same power and output
-  current fields. On a laptop,
+- Laptops: RTX 50 laptop images with the notebook layout (among the reviewed ROMs the RTX 5050,
+  5080 and 5090 Laptop GPU) are recognized by their tables, not by the device ID, so another RTX 50
+  laptop image that shares that layout gets the same power fields. The output current limits
+  are recognized by their rows the same way: NVVDD and MSVDD on the RTX 5080 and 5090 Laptop
+  GPU, NVVDD alone on the single-rail RTX 5050 Laptop GPU. They are not tested on a laptop,
+  the laptop's VRM was sized for the stock current, and raising them alone may not raise the
+  power. On a laptop,
   Dynamic Boost (the NVIDIA platform framework on Windows, nvidia-powerd on Linux)
   requests the running power limit at runtime, and the power ceiling in the image only
   caps it. Monitoring tools show the stored ceiling, so raising **Board power ceiling**
-  alone usually does not raise the running limit. On those two laptops **Notebook base
+  alone usually does not raise the running limit. On these laptops **Notebook base
   TGP** (experimental, under **Show advanced XOC-style fields**) edits a stored value. On
   one RTX 5090 Laptop GPU it acted as the base Dynamic Boost adds its boost to: the
   ceiling alone, or with only one of **Boot default board power** and **Notebook base
@@ -181,7 +185,8 @@ they are copied as stored numbers, so check that this board's hardware can take 
   under **Show advanced XOC-style fields**) fills in the TGP entry that laptop images leave empty,
   so current drivers accept power limit changes from `nvidia-smi -pl` and MSI Afterburner, as
   drivers up to R525 did by themselves on Turing and Ampere laptops. On one RTX 2070 Laptop GPU
-  on Windows the Afterburner slider then worked, with the limits at stock. The slider's 100 % is
+  on Windows the Afterburner slider then worked, with the limits at stock; other Turing laptops
+  and the Ampere and RTX 50 laptops are not tested yet. The slider's 100 % is
   **Boot default board power** and its top is **Board power ceiling**, so to allow more, raise
   only the ceiling; nothing above the stock limit has been tried yet. While Dynamic Boost or the
   laptop's own power mode holds a request, it overrides the slider, and a raised ceiling may let

@@ -32,9 +32,14 @@ def positions(blob, needle, start=0, end=None):
 # Single-rail images (NVVDD only) accepted by static comparison; no saved GET.
 # 0x2BB1 RTX PRO 6000 Workstation, 0x2D04 RTX 5060 Ti, 0x2F04 RTX 5070.
 SINGLE_RAIL_IDS = (0x2BB1, 0x2D04, 0x2F04)
+# Fingerprint of the NVVDD output OCP row 13 of those single-rail images (sha256 of row bytes 0..12
+# and 25..101: type 7, mA, monitor 26). The RTX 5050 Laptop GPU (0x2D98, 98.07.29.00.7E, notebook
+# layout on the single-rail table) stores the same row.
+SINGLE_RAIL_OCP_ROW = 'ad14cb826607972a1efca1069c575afaf906ddae4142a4fa01c5c7c3a6f9e688'
 # The NVVDD output monitor's power channel and the power device it reads,
 # byte-identical in all seven GET-reviewed sources (channel 13, or 27 on
-# Max-Q) and in the single-rail images (channel 26).
+# Max-Q) and in the single-rail images, the RTX 5050 Laptop GPU's included
+# (channel 26).
 NVVDD_CHANNEL = bytes.fromhex('0101001bb7000010000000000000090000000000000000000000')
 NVVDD_POWER_DEVICE = bytes.fromhex('0200000000140200090000ff60000000000100000000000000')
 # The MSVDD output monitor's channel and power device, likewise identical in
@@ -54,13 +59,16 @@ SLOT_ROW_SHAPE = 'a0e2f8f8065365e2f1ddd5abe4185fc302f91fd4dff11106c1a263fc3fb153
 # The policies an override profile entry may name (power_profiles); a connector input row is never one.
 PROFILE_POLICIES = (2, 7, 8, 9)
 # Notebook images (notebook_power_layout) have no saved GET. Their output OCP rows are accepted by
-# static comparison, whatever the device: rows 13/14 must equal the Max-Q rows and monitors 27/28
-# the reviewed channel chains (OUTPUT_CHAINS), byte for byte. Reviewed on the RTX 5080 Laptop GPU
-# (0x2C59, 98.03.5C.00.F2, Lenovo Legion 7 Pro) and the RTX 5090 Laptop GPU (0x2C18,
-# 98.03.5C.00.72), whose rows, monitors and chains are byte-identical.
-# Row 2 bytes 0..12 of both notebook images (byte 11 is 0x7b on every desktop and Max-Q row 2).
+# static comparison, whatever the device: on the two-row rail table rows 13/14 must equal the Max-Q
+# rows and monitors 27/28 the reviewed channel chains (OUTPUT_CHAINS), byte for byte. Reviewed on
+# the RTX 5080 Laptop GPU (0x2C59, 98.03.5C.00.F2, Lenovo Legion 7 Pro) and the RTX 5090 Laptop GPU
+# (0x2C18, 98.03.5C.00.72), whose rows, monitors and chains are byte-identical. On the single-rail
+# table row 13 must equal the single-rail row (SINGLE_RAIL_OCP_ROW) and monitor 26 the NVVDD chain,
+# as on the RTX 5050 Laptop GPU (0x2D98, 98.07.29.00.7E); row 14 holds no MSVDD limit there.
+# Row 2 bytes 0..12 of the notebook images (byte 11 is 0x7b on every desktop and Max-Q row 2).
 NOTEBOOK_TGP_ROW_PREFIX = bytes.fromhex('010200000000012b07000ccc10')
-# Row 2 +73 (u32 mW): 150000 on both notebook images, 0 on every desktop and Max-Q image.
+# Row 2 +73 (u32 mW): 150000 on the RTX 5080 and 5090 Laptop GPU images, 60000 on the RTX 5050
+# Laptop GPU image, 0 on every desktop and Max-Q image.
 NOTEBOOK_BASE_TGP_OFFSET = 73
 # u16 words of a rail row that may select a VFE equation: REL, ALT, OV, the evaluated VMIN
 # (+0x13), +0x15, +0x17, the rail INFO VMIN slot (+0x21), the words +0x1D/+0x1F/+0x23 (0xffff
@@ -558,6 +566,14 @@ class BlackwellRom:
         its own fingerprints: a GET-reviewed device keeps the saved GET only on
         the rows it was taken on (the Max-Q rows on 0x2BB4, the desktop rows on
         the others), so Max-Q rows on another device always need the chain.
+
+        A notebook image on the single-rail table (notebook_power_layout and
+        single_rail, any device; the RTX 5050 Laptop GPU) has no saved GET and no
+        Max-Q rows. Its row 13 is accepted only when it equals the single-rail row
+        byte for byte (SINGLE_RAIL_OCP_ROW, range bytes excluded) and its monitor's
+        channel and power device are the reviewed NVVDD ones
+        ('structural-notebook-single-rail'); row 14 then reports rail_absent, as on
+        the single-rail desktops. The bases above take precedence.
         """
         rows = self.power_rows()
         device = self.legacy['device']
@@ -569,11 +585,13 @@ class BlackwellRom:
         # must then be byte for byte the Max-Q rows (range bytes excluded) and their monitors follow the
         # reviewed chains.
         notebook = self.notebook_power_layout() and self.split_rail()
-        saved = (maxq if device == 0x2BB4 else
-                 ('ad14cb826607972a1efca1069c575afaf906ddae4142a4fa01c5c7c3a6f9e688', None) if single else
+        # A notebook on the one-row (NVVDD) rail table: its row 13 must be byte for byte the single-rail row
+        # and its monitor follow the reviewed NVVDD chain, whatever the device.
+        single_notebook = self.notebook_power_layout() and self.single_rail()
+        saved = (maxq if device == 0x2BB4 else (SINGLE_RAIL_OCP_ROW, None) if single else
                  ('d1437df9c34f8b9431a2e93eb6c9918910c2a48132020a962b46dcf46b056d79',
                   '8647926a8ed6d777cad5e927b6b1e911f8820c8bf478033163af335c0f5e2548'))
-        result = []
+        result, absent = [], single
         for i, (index, label, monitor_rail_id) in enumerate(((13, 'NVVDD', 1), (14, 'MSVDD', 16))):
             row = rows[index]
             raw = self.blob[row['offset']:row['offset'] + 102]
@@ -588,11 +606,15 @@ class BlackwellRom:
                 basis = 'structural-channel'
             elif ordered and notebook and fingerprint == maxq[i] and self.output_channel_chain(raw[5], label):
                 basis = 'structural-notebook'
+            elif (ordered and single_notebook and label == 'NVVDD' and fingerprint == SINGLE_RAIL_OCP_ROW and
+                  self.nvvdd_channel_chain(raw[5])):
+                basis = 'structural-notebook-single-rail'
+                absent = True
             recognized = basis is not None
             result.append(dict(row, logical_rail_id=label, vbios_row_index=index,
                                monitor_index=raw[5], unit_discriminator_raw=discriminator,
                                immutable_row_sha256=fingerprint, association_recognized=recognized,
-                               association_basis=basis, rail_absent=single and label == 'MSVDD',
+                               association_basis=basis, rail_absent=absent and label == 'MSVDD',
                                rm_policy_type=18 if recognized else None,
                                api_policy_type=19 if recognized else None,
                                monitor_class=6 if recognized else None,
@@ -608,6 +630,8 @@ class BlackwellRom:
         ff ff 02, rows 7 and 8 of type 0 with zero limits, and row 2 (type 1)
         holds 5000/80000/175000 mW (5000/95000/175000 on the RTX 5090 Laptop):
         the minimum, default and maximum nvidia-smi reports on those laptops.
+        The RTX 5050 Laptop image has the same layout (row 2 5000/50000/75000 mW)
+        on the single-rail table.
         ff 02 02 is the same layout with the runtime power limit switch on
         (runtime_limit_slot).
         """
@@ -639,8 +663,9 @@ class BlackwellRom:
     def notebook_base_tgp(self):
         """Row 2 +73 of the notebook layout (u32 mW), or None.
 
-        A candidate for the base TGP that Dynamic Boost adds its boost to: both notebook images
-        store 150000 there, the only 150000 in each image, and a public log from another RTX 5090
+        A candidate for the base TGP that Dynamic Boost adds its boost to: the RTX 5080 and 5090
+        Laptop images store 150000 there, the only 150000 in each image (the RTX 5050 Laptop image
+        60000, the only 60000 in it), and a public log from another RTX 5090
         Laptop shows the firmware's TGP policy base at 150000 mW while the running limit was that
         base + 25 W. On one RTX 5090 Laptop GPU it raised the running limit together with the ceiling
         and the boot default, not with the ceiling alone (the firmware is closed, so this rests on

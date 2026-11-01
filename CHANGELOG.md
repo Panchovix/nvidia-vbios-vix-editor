@@ -3,6 +3,11 @@
 One line per change. What each change does, where it applies and what was tested is in the
 [changelog details](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/changelog-details.md).
 
+## 0.1.40
+
+- RTX 5050 Laptop GPU and single-rail RTX 50 laptops with the same rows: the NVVDD output current limit can be edited (untested).
+- Docs: RTX 50 laptop fields are described by layout; the README says the switch was tested on one Turing laptop only.
+
 ## 0.1.39
 
 - Turing, Ampere and RTX 50 laptops: runtime power limit switch (experimental, opt-in; worked on one RTX 2070 Laptop GPU).

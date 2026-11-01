@@ -3,6 +3,45 @@
 What each change does, where it applies, what was tested and its risks. CHANGELOG.md lists the same
 changes, one line each, in the same order.
 
+## 0.1.40
+
+- **RTX 5050 Laptop GPU and single-rail RTX 50 laptops with the same rows: the NVVDD output current limit can be
+  edited (untested).** On the RTX 5050 Laptop GPU ROM (98.07.29.00.7E, reported in [issue
+  #26](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/26)) **NVVDD output OCP current ceiling** and
+  **MSVDD output OCP current ceiling** were read-only with no value. Its power table has the laptop layout of the RTX
+  5080 and 5090 Laptop GPU, but its rail table has one row (NVVDD), as on the RTX 5060 Ti and 5070, and its output
+  current rows are those of these single-rail desktop ROMs. The single-rail rule took those rows only on the desktops'
+  device IDs, and the laptop rule only the two-rail rows of the RTX 5080 and 5090 Laptop GPU. The NVVDD row (row 13)
+  is now recognized when a ROM has the laptop power table layout and the one-row rail table, the row equals the
+  single-rail NVVDD row byte for byte (its limits excluded) and it reads the reviewed NVVDD output channel and power
+  device, whatever the device ID. **NVVDD output OCP current ceiling** and **NVVDD output OCP current limit, rated
+  (experimental)** can then be edited: 180 A rated and 180 A ceiling on this ROM. Row 14 holds no MSVDD limit there
+  (5001 A on the same channel), so the MSVDD row stays read-only with the single-rail reason, as on the single-rail
+  desktops. An edit writes only the rated value and the ceiling of row 13 and repairs the power table's hash, the
+  directory digest and the image checksums. Tested statically only: the ROM's rows and channel chain were compared
+  with the reviewed ones, and edits were checked to change only those bytes and to revert byte for byte. Nothing was
+  loaded on a laptop and there is no runtime reading of this GPU, so whether the driver enforces a raised limit is not
+  known. The laptop's VRM was sized for the stock current, and a higher current limit alone may not raise the power:
+  on RTX 50 laptops Dynamic Boost requests the running limit, so raise **Boot default board power**, **Notebook base
+  TGP** and **Board power ceiling** together, as on one RTX 5090 Laptop GPU (0.1.35). On that laptop the NVVDD output
+  drew about 120 A of the same 180 A at about 175 W, so with this ROM's 75 W ceiling the stock current limit is
+  unlikely to be what holds the power (inferred). Load the copy with the loader, never flash it; removing the
+  override brings the stock behaviour back. For API users: the two NVVDD fields carry `structural-row-comparison`
+  evidence (format `GB20x notebook single-rail row13 type7; monitor 26`, `runtime_get` and `set_tested` false).
+
+- **Docs: RTX 50 laptop fields are described by layout; the README says the switch was tested on one Turing laptop
+  only.** The 0.1.39 texts named only the RTX 5080 and 5090 Laptop GPU for what applies to every RTX 50 laptop ROM
+  with that layout (the runtime power limit switch, the laptop power fields and **Notebook base TGP**; the output
+  current limits also need the reviewed rows) and counted 2 GB20x laptop ROMs. The README, the window guide, the field
+  docs and the field evidence now name the layout (among the reviewed ROMs the RTX 5050, 5080 and 5090 Laptop GPU)
+  and count 3, the README lists GB207 among the recognized GB20x chips, and the README's paragraph on the switch says
+  that other Turing laptops and the Ampere and RTX 50 laptops are not tested yet. The hardware results stay with the
+  laptops they came from (one RTX 5090 Laptop GPU for the laptop power fields, one RTX 2070 Laptop GPU for the
+  switch). The field docs also describe the RTX 5050 Laptop GPU ROM: TGP 5/50/75 W, base TGP 60 W, the single-rail
+  table with a 900..1025 mV REL clamp (also in the REL floor evidence), and no GR rail gating switch, since the ROM
+  enables none. The window guide notes that its maximum operating temperature can only be lowered, as the editor has
+  no reviewed stock value for it. What the editor offers changes only as in the entry above.
+
 ## 0.1.39
 
 - **Turing, Ampere and RTX 50 laptops: runtime power limit switch (experimental, opt-in; worked on one RTX 2070 Laptop

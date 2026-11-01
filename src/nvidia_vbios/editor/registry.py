@@ -342,9 +342,12 @@ def checksum_layout(image, parser):
 
 # The notebook images have no saved GET. Their TGP row is identified by layout and, on the
 # RTX 5080 Laptop GPU, by the nvidia-smi limits its owner reported on the same VBIOS.
+NOTEBOOK_LAYOUT_SCOPE = ('RTX 50 laptop images with the notebook layout; in the corpus the RTX 5050 Laptop GPU '
+                         '98.07.29.00.7E (10de:2d98), RTX 5080 Laptop GPU 98.03.5C.00.F2 (10de:2c59) and RTX 5090 '
+                         'Laptop GPU 98.03.5C.00.72 (10de:2c18)')
 NOTEBOOK_POWER_EVIDENCE = {
     'kind': 'structural-row-comparison', 'source': 'reviewed Blackwell notebook table layout',
-    'scope': 'RTX 5080 Laptop GPU 98.03.5C.00.F2 (10de:2c59), RTX 5090 Laptop GPU 98.03.5C.00.72 (10de:2c18)',
+    'scope': NOTEBOOK_LAYOUT_SCOPE,
     'format': 'GB20x power v40 notebook layout: header bytes 21..23 ff ff 02 (ff 02 02 with '
               'runtime_power_limit_unlock on), rows 7/8 empty, TGP row 2 type 1',
     'set_tested': False, 'runtime_get': False}
@@ -352,10 +355,11 @@ NOTEBOOK_POWER_EVIDENCE = {
 # table is closed.
 NOTEBOOK_BASE_TGP_EVIDENCE = {
     'kind': 'structural-row-comparison', 'source': 'reviewed Blackwell notebook table layout',
-    'scope': 'RTX 5080 Laptop GPU 98.03.5C.00.F2 (10de:2c59), RTX 5090 Laptop GPU 98.03.5C.00.72 (10de:2c18)',
+    'scope': NOTEBOOK_LAYOUT_SCOPE,
     'format': 'GB20x power v40 notebook layout: TGP row 2 bytes 0..12 010200000000012b07000ccc10; u32 mW at '
               'row 2 +73, 0 on every desktop and Max-Q row 2',
-    'observation': "only 150000 in the image; a public log from another RTX 5090 Laptop shows the firmware's TGP "
+    'observation': "the only such value in each image: 150000 on the RTX 5080 and 5090 Laptop GPU, 60000 on the RTX "
+                   "5050 Laptop GPU; a public log from another RTX 5090 Laptop shows the firmware's TGP "
                    'policy base at 150000 while the running limit was base + 25 W Dynamic Boost; for the set test on '
                    'one RTX 5090 Laptop GPU see the hardware-test entry',
     'set_tested': False, 'runtime_get': False}
@@ -499,7 +503,7 @@ RUNTIME_LIMIT_EVIDENCE = {
     'set_tested': False}
 RUNTIME_LIMIT_LAYOUT_EVIDENCE = {
     'kind': 'structural-row-comparison', 'source': 'Turing, Ampere, Ada and GB20x VBIOS corpus',
-    'observation': 'the TGP index is 0xff on the laptop images only (7 Turing, 10 Ampere, 5 Ada, 2 GB20x; a sixth '
+    'observation': 'the TGP index is 0xff on the laptop images only (7 Turing, 10 Ampere, 5 Ada, 3 GB20x; a sixth '
                    'Ada laptop image, which the editor does not parse, stores the same header) and names the TGP row '
                    'on every desktop and workstation image; the D-notifier index names row 2 on every laptop image, '
                    'the first R525 class-1 row on the Turing and Ampere ones',
@@ -979,6 +983,18 @@ SINGLE_RAIL_OCP_EVIDENCE = dict(
     observation='row13 monitor 26 -> power channel 26 (P+0x3c) and power device 9 (P+0x28) are byte-identical '
                 'to the NVVDD output channel 13 (27 on Max-Q) and its device in all seven GET-reviewed sources; '
                 'the MSVDD channel and device are disabled')
+# A notebook image on the one-row rail table (the RTX 5050 Laptop GPU): its row 13 is the single-rail row on the same
+# chain, so it is recognized by layout, row and chain, whatever the device. Nothing was run on such a laptop.
+NOTEBOOK_SINGLE_RAIL_OCP_EVIDENCE = dict(
+    STRUCTURAL_ROW_EVIDENCE, source='reviewed Blackwell notebook table layout',
+    scope='RTX 5050 Laptop GPU 98.07.29.00.7E (10de:2d98)',
+    format='GB20x notebook single-rail row13 type7; monitor 26',
+    observation='the notebook power layout on the one-row (NVVDD) rail table; row13 equals the single-rail row of the '
+                'RTX PRO 6000 Workstation, RTX 5060 Ti and RTX 5070 byte for byte (range bytes excluded), and monitor '
+                '26 -> power channel 26 (P+0x3c) and power device 9 (P+0x28) are byte-identical to the NVVDD output '
+                'channel and device of all seven GET-reviewed sources; any image with this layout and rail table whose '
+                'row and chain match is recognized, whatever its device; row14 is not read as an MSVDD limit; no saved '
+                'GET, and runtime SET and enforcement are untested on these laptops')
 
 
 def single_rail(parser):
@@ -1011,9 +1027,9 @@ REL_FLOOR_EVIDENCE = {
     'observation': 'every GB20x REL equation is a type 7 polynomial of the fused leakage (IDDQ), but the NVVDD one '
                    'of the vendor XOC images, which select the OV constant; clamped to 875..900 mV (RTX PRO 6000 '
                    'Max-Q), 850..850 mV (RTX PRO 4000 SFF), 900..1080 mV (RTX PRO 6000 Workstation), 900 to '
-                   '1100..1120 mV (GeForce) and 960..1025 mV (notebooks); with the clamp maximum raised to 1125 mV '
-                   'the driver reported REL 990 to 1000 mV on three RTX PRO 6000 Max-Q (the chip value), so the GSP '
-                   'applies an edited clamp',
+                   '1100..1120 mV (GeForce desktops), 960..1025 mV (RTX 5080 and 5090 Laptop GPU) and 900..1025 mV '
+                   '(RTX 5050 Laptop GPU); with the clamp maximum raised to 1125 mV the driver reported REL 990 to '
+                   '1000 mV on three RTX PRO 6000 Max-Q (the chip value), so the GSP applies an edited clamp',
     'set_tested': False}
 # The GB20x REL floor on four workstation boards (Linux loader): REL at the floor without a runtime request, and a
 # runtime offset added on top of it.
@@ -2451,6 +2467,8 @@ def output_ocp(image, parser):
             evidence = [dict(SINGLE_RAIL_OCP_EVIDENCE, immutable_row_sha256=item['immutable_row_sha256'])]
         elif item.get('association_basis') == 'structural-notebook':
             evidence = [dict(NOTEBOOK_OCP_EVIDENCE, immutable_row_sha256=item['immutable_row_sha256'])]
+        elif item.get('association_basis') == 'structural-notebook-single-rail':
+            evidence = [dict(NOTEBOOK_SINGLE_RAIL_OCP_EVIDENCE, immutable_row_sha256=item['immutable_row_sha256'])]
         identity = rail_identity(parser, item, ocp=True)
         # Policy row and voltage rail row are different namespaces.
         identity['vbios_policy_index'] = item['vbios_row_index']
@@ -2497,6 +2515,11 @@ def output_ocp(image, parser):
                                        'boot (current = rated); this notebook image has the Max-Q rows and channel chains '
                                        'but no saved GET; not hardware-tested; stored value, not a hardware-safe current rating'
                                        if item.get('association_basis') == 'structural-notebook' else
+                                       'experimental: rated output OCP; on the GET-reviewed sources it is enforced from '
+                                       'boot (current = rated); this notebook image has the NVVDD row and channel chain of '
+                                       'the single-rail images but no saved GET; not hardware-tested; stored value, not a '
+                                       'hardware-safe current rating'
+                                       if item.get('association_basis') == 'structural-notebook-single-rail' else
                                        'experimental: rated output OCP; on the GET-reviewed sources it is enforced from '
                                        'boot (current = rated); this image matches their NVVDD channel chain but has no '
                                        'saved GET; not hardware-tested; stored value, not a hardware-safe current rating'))
@@ -4458,10 +4481,10 @@ MAX_TEMP_CORPUS_EVIDENCE = {
     'observation': 'entry 0 is class 1 with byte 1 = 1 on every image and stores three equal temperatures: 90 C on '
                    'every RTX 5090, 88 C on the RTX 5080 and 5070 Ti, 85 C on the RTX 5070, 87 C on the RTX 5060 Ti, '
                    '92 C on the RTX PRO 6000 Max-Q, 93 C on the RTX PRO 6000 Workstation, 96 C on the RTX PRO 4000 '
-                   'SFF and 89 C on the RTX 5080 and 5090 Laptop GPUs; entries 1 and 4 store 105 C (entry 4: 103 C on '
-                   'the laptops); the laptops alone store a second class 1 entry with byte 1 = 1, entry 2 at 87/75/87 '
-                   'C, whose role was not traced; the ASUS XOC and MSI Lightning images keep the temperatures and set '
-                   'byte 0 of entries 0, 1 and 4 to 0'}
+                   'SFF and 89 C on the RTX 5050, 5080 and 5090 Laptop GPUs; entries 1 and 4 store 105 C (entry 4: '
+                   '103 C on the laptops); the laptops alone store a second class 1 entry with byte 1 = 1, entry 2 at '
+                   '87/75/87 C, whose role was not traced; the ASUS XOC and MSI Lightning images keep the temperatures '
+                   'and set byte 0 of entries 0, 1 and 4 to 0'}
 MAX_TEMP_NVML_EVIDENCE = dict(
     NVML_CAPTURE, source='read-only nvidia-smi capture',
     relation="'GPU Current Temp' + 'GPU Current T.Limit Temp' = stored entry 0 temperature",
@@ -5126,13 +5149,14 @@ LPWR_CORPUS_EVIDENCE = {
     'kind': 'structural-table', 'source': 'GB20x VBIOS corpus',
     'observation': 'each table has the same version, header and entry sizes and five entries on every image; GR power '
                    'gating is enabled on entries 0 and 1 (also 2 on the RTX 5080, RTX 5070 Ti, RTX PRO 4000 SFF and '
-                   'the RTX 5080 and 5090 Laptop GPUs), MSCG on entries 0..2 (0..1 on the RTX PRO 6000 Workstation, '
-                   'RTX 5070 and RTX 5060 Ti), NVDEC/NVENC/OFA/NVJPG on every entry and DIFR on entry 0; disabled GR, '
-                   'MSCG and DIFR entries store 0xfffffe00, 0xfffff000 and 0xfffff800; GR rail gating is enabled only '
-                   'on the RTX PRO 4000 SFF (entry 0) and the RTX 5080 and 5090 Laptop GPUs (entries 0..2; every LPWR '
-                   'table of the two laptops is byte-identical); disabled GR rail gating entries store 0xfc, or 0xfe '
-                   '(an enabled entry switched off) on entry 0 of the RTX 5090 and entries 0..1 of the RTX 5080 and '
-                   '5070 Ti; the DIFR words store 1000, 15 and 15 and the GR rail gating word 50 on every image'}
+                   'the RTX 5050, 5080 and 5090 Laptop GPUs), MSCG on entries 0..2 (0..1 on the RTX PRO 6000 '
+                   'Workstation, RTX 5070 and RTX 5060 Ti), NVDEC/NVENC/OFA/NVJPG on every entry and DIFR on entry 0; '
+                   'disabled GR, MSCG and DIFR entries store 0xfffffe00, 0xfffff000 and 0xfffff800; GR rail gating is '
+                   'enabled only on the RTX PRO 4000 SFF (entry 0) and the RTX 5080 and 5090 Laptop GPUs (entries '
+                   '0..2; every LPWR table of these two laptops is byte-identical); disabled GR rail gating entries '
+                   'store 0xfc (0x0c on entries 0..1 of the RTX 5050 Laptop GPU), or 0xfe (an enabled entry switched '
+                   'off) on entry 0 of the RTX 5090 and entries 0..1 of the RTX 5080 and 5070 Ti; the DIFR words store '
+                   '1000, 15 and 15 and the GR rail gating word 50 on every image'}
 LEGACY_LPWR_FIRMWARE_EVIDENCE = {
     'kind': 'static-firmware-analysis',
     'source': 'GSP-RM firmware 615.78.08 (gsp_tu10x.bin for Turing, gsp_ga10x.bin for Ampere and Ada), LPWR VBIOS '

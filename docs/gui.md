@@ -76,8 +76,8 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    the three together, the boot default by as many watts as you raise the base TGP, and
    keep the base TGP at or below the ceiling, which stays the cap. Other laptops are not
    tested, and the laptop's VRM, cooling and power adapter were sized for the stock
-   limit. The window notes this under the three fields on RTX 5080 and 5090 Laptop GPU
-   ROMs. The 12 V input
+   limit. The window notes this under the three fields on RTX 50 laptop ROMs with the
+   notebook layout (among the reviewed ROMs the RTX 5050, 5080 and 5090 Laptop GPU). The 12 V input
    current values are stored policy values, not hardware-safe ratings; connector,
    slot and cable limits still apply. **Max operating temperature** (Blackwell, Ada,
    Ampere and Turing, in the Power card; experimental, not hardware-tested) is the
@@ -88,13 +88,14 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    °C, and it is read-only on XOC-style ROMs, where that limit is disabled or missing.
    A lower value is expected to make the driver slow the GPU sooner, and a higher one
    leaves less thermal margin. The
-   RTX 5080 and 5090 Laptop GPU ROMs also store a second limit of the same kind (87 °C) whose
-   role was not traced, so raising the value there may have no effect. On Ampere and Ada laptop
+   RTX 5050, 5080 and 5090 Laptop GPU ROMs also store a second limit of the same kind (87 °C) whose
+   role was not traced, so raising the value there may have no effect (on the RTX 5050 Laptop
+   GPU it can only be lowered, since it has no reviewed stock value). On Ampere and Ada laptop
    ROMs it is read-only: they store a lower limit of the same kind (89 °C) and it is not
    known which one the GPU reaches first. **Show advanced XOC-style fields** (off by
    default) reveals opt-in fields such as the rated power of the fixed board
-   policies 2/7, the experimental **Notebook base TGP** of the RTX 5080 and 5090 Laptop
-   GPU (it behaved as the base Dynamic Boost adds its boost to on one RTX 5090 Laptop
+   policies 2/7, the experimental **Notebook base TGP** of RTX 50 laptop ROMs with the
+   notebook layout (it behaved as the base Dynamic Boost adds its boost to on one RTX 5090 Laptop
    GPU; raise it with the ceiling and the boot default, see above), **Expose runtime power
    limit** on Turing, Ampere and RTX 50 laptop ROMs (a switch, experimental: on writes the TGP
    row into the TGP entry of the power table header, which laptop ROMs leave empty (`0xff`), so

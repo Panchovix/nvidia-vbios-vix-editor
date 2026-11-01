@@ -82,8 +82,8 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `fan_N_zero_rpm_low_temp_c`, `fan_N_zero_rpm_high_temp_c`, `fan_extra_M_zero_rpm_*_temp_c` | The two temperatures at bytes 30..33 (1/32 °C) of a channel's or an extra curve's fan policy entry, read with the zero RPM bits (inferred meaning: idle fans stop below the lower and start above the upper) | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); only where the entry stores a nonzero pair (the upper at least the lower) and byte 46 is not 0xff; editable where the entry's block passes the firmware validator, on Ada and Ampere where `fan_zero_rpm` is offered; an edit keeps lower > 0, lower < upper <= point 1 of the same curve and 110 °C; with zero RPM on, an edit may not leave the upper above point 1 (`ZERO_RPM_ABOVE_CURVE`) |
 | `*_rel/alt/ov/vmin_selector_index` | Full stored selector index | Read-only |
 | `*_boot_voltage_uv` | Stored boot voltage | Read-only, preserved |
-| `*_output_ocp_max_ma` | Reviewed output-OCP policy maximum (client ceiling) | Reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images; Turing NVVDD row 13 (class 10, experimental, opt-in); Ampere NVVDD row 13 (class 0, experimental, opt-in) |
-| `*_output_ocp_rated_ma` | Reviewed output-OCP rated value, enforced from boot | Experimental, reviewed Blackwell rows13/14; NVVDD row 13 on single-rail images; Turing and Ampere NVVDD row 13 (opt-in) |
+| `*_output_ocp_max_ma` | Reviewed output-OCP policy maximum (client ceiling) | Reviewed Blackwell rows13/14, also on the GB20x notebook layout; NVVDD row 13 on single-rail images, also on the notebook layout with the single-rail table (RTX 5050 Laptop GPU); Turing NVVDD row 13 (class 10, experimental, opt-in); Ampere NVVDD row 13 (class 0, experimental, opt-in) |
+| `*_output_ocp_rated_ma` | Reviewed output-OCP rated value, enforced from boot | Experimental, reviewed Blackwell rows13/14, also on the GB20x notebook layout; NVVDD row 13 on single-rail images, also on the notebook layout with the single-rail table (RTX 5050 Laptop GPU); Turing and Ampere NVVDD row 13 (opt-in) |
 | `slot_power_rated_w`, `slot_power_max_w` | PCIe slot power policy: row 19 (SFF), row 18 (5060 Ti), Ada and Ampere row 5, Turing row 3 | Experimental, reviewed row shapes only |
 | `connector_N_power_rated/max_w`, `connector_N_current_threshold_rated/max_ma` | Power policy and current hardware threshold of external 12 V connector sense channel N, numbered in power-row order; on Ada and GB20x the power policy of the auxiliary power connector input | Experimental: Ampere and Turing, current thresholds opt-in; Ada and GB20x (power only, opt-in), reviewed row shapes on the connector input channel |
 | `slot_current_threshold_rated/max_ma`, `nvvdd_power_threshold_rated/max_w` | Hardware-threshold policies (slot 12 V current; Ada NVVDD output power) | Experimental, opt-in; slot current on Ada, Ampere and Turing, NVVDD power on Ada only |
@@ -397,8 +397,9 @@ Every GB20x REL equation (row+`0x0d`) is a type 7 polynomial of the chip's fused
 (IDDQ), but the NVVDD one of the vendor XOC images (they select the OV constant), and the
 evaluated REL is that value clamped to the equation's output minimum and maximum (+3 and
 +7): 875..900 mV on the RTX PRO 6000 Max-Q, 850..850 mV on the RTX PRO 4000 SFF, 900..1080
-mV on the RTX PRO 6000 Workstation, 900 to 1100..1120 mV on the GeForce images and
-960..1025 mV on the notebooks. The REL ceiling
+mV on the RTX PRO 6000 Workstation, 900 to 1100..1120 mV on the GeForce desktop images,
+960..1025 mV on the RTX 5080 and 5090 Laptop GPU and 900..1025 mV on the RTX 5050 Laptop
+GPU. The REL ceiling
 (`*_rel_equation_max_mv`) writes the maximum: with it at 1125 mV the driver reported REL 990
 to 1000 mV on three RTX PRO 6000 Max-Q, the chip value. The floor writes the minimum (float32
 uV at +3, nothing else): REL is then the higher of the chip value and the floor, up to the
@@ -629,9 +630,13 @@ without pinning factory limits or a complete ROM hash. Shapes were independently
 checked against all seven original corpus ROMs and their saved monitor records.
 Unknown shapes or devices produce read-only descriptors with unknown units in
 `raw_bounds`, and never become writable merely because their row index/type fits.
-The only exception is the NVVDD row 13 of the listed single-rail images: a fifth
-template plus the power channel/device chain described under
+The exceptions add the power channel/device chain to a template. The NVVDD row 13 of
+the listed single-rail images is a fifth template, described under
 [Single-rail images](#single-rail-images-rtx-pro-6000-workstation-rtx-5060-ti-rtx-5070).
+On the GB20x notebook layout the device ID is not checked; there rows 13/14 must equal
+the Max-Q templates (two-row rail table) or the NVVDD row 13 the single-rail template
+(single-rail table, the RTX 5050 Laptop GPU), each on the reviewed chain; see
+[Notebook images](#notebook-images-rtx-5050-5080-and-5090-laptop-gpu).
 
 The SFF source exposes ceilings90000mA and60000mA. Other reviewed sources have
 maximum5001000mA, with differing rated/default values. These are stored policy
@@ -963,8 +968,8 @@ A read-only `nvidia-smi` capture on five devices (two RTX PRO 6000 Max-Q, an RTX
 an RTX 5070 Ti and an RTX PRO 4000 SFF) showed "GPU Current Temp" plus "GPU Current
 T.Limit Temp" equal to this value, so it is the limit the driver measures the GPU's
 temperature headroom against (its maximum operating temperature). The capture is not
-distributed. Entries 1 and 4 store 105 °C (entry 4: 103 °C on the RTX 5080 and 5090 Laptop
-GPUs); what they do was not traced. The RTX 5080 and 5090 Laptop GPU images alone also store
+distributed. Entries 1 and 4 store 105 °C (entry 4: 103 °C on the laptop images); what they
+do was not traced. The laptop images (RTX 5050, 5080 and 5090 Laptop GPU) alone also store
 a second class 1 entry with byte 1 = 1, entry 2 at 87/75/87 °C, below their entry 0 (89 °C).
 Its role was not traced and no notebook was in the capture, so on those products the lower
 entry may limit the GPU first and a raised value may have no effect; the field stays editable
@@ -1225,7 +1230,7 @@ boolean; the code that applies an offset was not traced.
 
 `power_min_w`, `power_default_w` and `power_max_w` form the `board-power` ordering
 group (with `board_fixed_rated_w`, and on the GB20x notebook layout with
-`notebook_base_tgp_w`, see [Notebook images](#notebook-images-rtx-5080-and-rtx-5090-laptop-gpu));
+`notebook_base_tgp_w`, see [Notebook images](#notebook-images-rtx-5050-5080-and-5090-laptop-gpu));
 the two input-current fields form `input-current-12v`; each output-OCP rail's
 rated and maximum fields form `nvvdd-output-ocp` or `msvdd-output-ocp`; the slot
 power fields form `slot-power`; each GB20x rail's REL ceiling and floor, and the Ada NVVDD
@@ -1334,7 +1339,9 @@ with `runtime_get: false`:
 
   The MSVDD channel and device are disabled. Row 14 holds no MSVDD limit, so
   `msvdd_output_ocp_max_ma` stays read-only with the single-rail reason. Stock rated
-  NVVDD OCP: 660 A on the Workstation, 170 A on the 5060 Ti, 240 A on the 5070.
+  NVVDD OCP: 660 A on the Workstation, 170 A on the 5060 Ti, 240 A on the 5070. The
+  RTX 5050 Laptop GPU stores the same rows 13/14 and chain on the notebook layout (see
+  [Notebook images](#notebook-images-rtx-5050-5080-and-5090-laptop-gpu)).
 - **PCIe slot power (5060 Ti).** Row 18 has the immutable shape of the GET-reviewed
   SFF row 19 slot policy (type 2, mW, monitor 1, 66 W), so `slot_power_*` edits
   row 18 there. Row 17 has the same shape on monitor 2, the auxiliary connector input
@@ -1342,33 +1349,40 @@ with `runtime_get: false`:
   connector input above).
 - `api_rail_index` stays unknown. No edited value has been booted on these boards.
 
-## Notebook images (RTX 5080 and RTX 5090 Laptop GPU)
+## Notebook images (RTX 5050, 5080 and 5090 Laptop GPU)
 
 | Image | PCI ID | BIOS |
 |---|---|---|
+| GB207 RTX 5050 Laptop GPU | `10de:2d98` | `98.07.29.00.7E` |
 | GB203 RTX 5080 Laptop GPU (Lenovo Legion 7 Pro) | `10de:2c59` | `98.03.5C.00.F2` |
 | GB203 RTX 5090 Laptop GPU | `10de:2c18` | `98.03.5C.00.72` |
 
 The notebook fields below are recognized by the tables, not by the device ID, so another
-image with this layout and these rows gets them too. Only the owner's `nvidia-smi`
-reading belongs to one product (the RTX 5080 Laptop GPU). The stock maximum operating
-temperature (89 °C) and GR rail gating are listed for these two devices: on another
-device ID the temperature can only be lowered, and the GR rail gating switch covers the
-entries the image enables, so a copy saved with Off no longer shows it
-([LPWR](#lpwr-idle-power-switches-and-idle-times)).
+RTX 50 laptop image with this layout and these rows gets them too. Only the owner's
+`nvidia-smi` reading belongs to one product (the RTX 5080 Laptop GPU). The stock maximum
+operating temperature (89 °C) and GR rail gating are listed for the RTX 5080 and 5090
+Laptop GPU: on another device ID, the RTX 5050 Laptop GPU's included, the temperature can
+only be lowered, and the GR rail gating switch covers the entries the image enables, so a
+copy saved with Off no longer shows it ([LPWR](#lpwr-idle-power-switches-and-idle-times)).
 
-The rail and VFE tables are the split-rail ones, so the NVVDD and MSVDD voltage
-fields work unchanged (REL 1025 mV, OV 1200 mV, rail INFO VMIN slot 700 mV on both
-rails; the evaluated VMIN equations are min/max trees that take a value through their
-clamp, see [VMIN set per chip](#vmin-set-per-chip-tree-roots-and-per-chip-equations-_vmin_fixed)). The
-power policy table keeps the v0x40 format but places its rows differently:
+On the RTX 5080 and 5090 Laptop GPU the rail and VFE tables are the split-rail ones, so
+the NVVDD and MSVDD voltage fields work unchanged (REL 1025 mV, OV 1200 mV, rail INFO
+VMIN slot 700 mV on both rails; the evaluated VMIN equations are min/max trees that take
+a value through their clamp, see [VMIN set per chip](#vmin-set-per-chip-tree-roots-and-per-chip-equations-_vmin_fixed)).
+The RTX 5050 Laptop GPU has the one-row (NVVDD) rail table of the
+[single-rail images](#single-rail-images-rtx-pro-6000-workstation-rtx-5060-ti-rtx-5070):
+its NVVDD fields work the same way (REL 1025 mV, OV 1200 mV, rail INFO VMIN slot 700 mV,
+a min/max tree for the evaluated VMIN), and as there `msvdd_rel_max_mv` is reported
+read-only with the single-rail reason and no other MSVDD voltage field exists. The power
+policy table keeps the v0x40 format but places its rows differently:
 
 - **TGP in row 2.** Every desktop and Max-Q source has policy header bytes 21..23 =
   `ff 08 ff` and its TGP in row 8 (type 12). The notebooks have `ff ff 02` (`ff 02 02` with
   the [runtime power limit switch](#runtime-power-limit-switch-runtime_power_limit_unlock-opt-in)
   on), rows 7 and 8 of type 0 with zero limits, and row 2 (type 1) holding 5000/80000/175000 mW
-  (5000/95000/175000 mW on the RTX 5090 Laptop GPU). `nvidia-smi -q -d POWER` on an RTX 5080
-  Laptop GPU running the same VBIOS reports Min 5 W, Default 80 W and Max 175 W (public
+  (5000/95000/175000 mW on the RTX 5090 Laptop GPU, 5000/50000/75000 mW on the RTX 5050
+  Laptop GPU). `nvidia-smi -q -d POWER` on an RTX 5080 Laptop GPU running the same VBIOS
+  reports Min 5 W, Default 80 W and Max 175 W (public
   readings of RTX 5090 Laptop GPUs: 5, 95 and 175 W). `power_min_w`,
   `power_default_w` and `power_max_w` edit row 2 at +13, +17 and +21. Override profiles on
   this layout are unreviewed; an image with any profile offers no power fields. The
@@ -1379,7 +1393,8 @@ power policy table keeps the v0x40 format but places its rows differently:
   the stored ceiling. Raising `power_max_w` alone therefore usually does not raise the
   running limit. The output OCP, the cooling and the laptop's VRM can also keep power
   lower. The header also stores 55000/45000/35000/25000 at bytes 24..39 (RTX 5090 Laptop
-  GPU: 40000/35000/25000/15000), the D-notifier (battery) limits (see
+  GPU: 40000/35000/25000/15000, RTX 5050 Laptop GPU: 45000/35000/25000/10000), the
+  D-notifier (battery) limits (see
   [Runtime power limit switch](#runtime-power-limit-switch-runtime_power_limit_unlock-opt-in)).
 - **Hardware result: raise the three together.** One user tested edited copies of the RTX
   5090 Laptop GPU image (`98.03.5C.00.72`, stock row 2 5000/95000/175000 mW, +73 150000 mW)
@@ -1410,7 +1425,8 @@ power policy table keeps the v0x40 format but places its rows differently:
   `power_default_w` and `notebook_base_tgp_w` carry this as a `hardware-test` evidence
   entry (`set_tested: true`) whose scope names that one laptop.
 - **Base TGP, experimental and opt-in (`notebook_base_tgp_w`).** Row 2 +73 holds 150000 mW
-  on both notebooks, the only 150000 in each image, and 0 on every desktop and Max-Q row 2.
+  on the RTX 5080 and 5090 Laptop GPU and 60000 mW on the RTX 5050 Laptop GPU, the only
+  such value in each image, and 0 on every desktop and Max-Q row 2.
   A public log from another RTX 5090 Laptop GPU shows the firmware's TGP policy base at
   150000 mW while the running limit was that base + 25 W of Dynamic Boost. On the laptop
   above, +73 behaved as that base: raised with the ceiling and the boot default it raised
@@ -1426,27 +1442,43 @@ power policy table keeps the v0x40 format but places its rows differently:
   puts the ceiling below the stored base or the boot default above it leaves +73 as it was
   and the edited image without this field. The laptop's VRM, cooling and power adapter
   were sized for the stock limit.
-- **Output OCP.** Rows 13 and 14 equal the GET-reviewed Max-Q rows byte for byte
-  (range bytes excluded), monitors 27 and 28. Each monitor's power channel and the
-  power device it reads are byte-identical to the reviewed NVVDD (channel 13, device 9)
-  or MSVDD (channel 12, device 8) output on all seven GET-reviewed sources. The notebook
-  layout (above) with the two-row (NVVDD and MSVDD) rail table, the Max-Q rows and the
-  chain are required, not a device ID, and the chain is checked on every device, a
-  GET-reviewed desktop ID included: another image with this layout whose rows and chains
-  match is recognized the same way, and one whose rows or chains differ, or whose rail
-  table has one row, keeps them read-only. Rows 13 and 14 of both images are
-  byte-identical. Stock rated values: NVVDD 180 A, MSVDD 60 A, each with rated =
-  maximum.
-- **Row 9** is type 3 with unit byte 1 and value 11375 (RTX 5090 Laptop GPU: 12434), not
-  the type 11 input-current row of the desktop cards. It stays read-only
-  (`input_policy_9_max_raw`).
+- **Output OCP.** On the RTX 5080 and 5090 Laptop GPU rows 13 and 14 equal the
+  GET-reviewed Max-Q rows byte for byte (range bytes excluded), monitors 27 and 28. Each
+  monitor's power channel and the power device it reads are byte-identical to the
+  reviewed NVVDD (channel 13, device 9) or MSVDD (channel 12, device 8) output on all
+  seven GET-reviewed sources. The notebook layout (above) with the two-row (NVVDD and
+  MSVDD) rail table, the Max-Q rows and the chain are required, not a device ID, and the
+  chain is checked on every device, a GET-reviewed desktop ID included: another image
+  with this layout whose rows and chains match is recognized the same way, and one whose
+  rows or chains differ keeps them read-only. Rows 13 and 14 of these two images are
+  byte-identical. With the one-row rail table (the RTX 5050 Laptop GPU) row 13 must
+  instead equal the NVVDD row 13 of the
+  [single-rail images](#single-rail-images-rtx-pro-6000-workstation-rtx-5060-ti-rtx-5070)
+  byte for byte (range bytes excluded), on monitor 26, whose power channel 26 and power
+  device 9 are byte-identical to the reviewed NVVDD output; again the layout, the row
+  and the chain are required, not a device ID. Row 14 there holds no MSVDD limit (5001 A
+  on monitor 26, as on the single-rail desktops), so `msvdd_output_ocp_max_ma` stays
+  read-only with the single-rail reason. The two NVVDD descriptors cite the RTX 5050
+  Laptop GPU image (format `GB20x notebook single-rail row13 type7; monitor 26`). Stock
+  rated values: NVVDD 180 A on all three, MSVDD 60 A on the RTX 5080 and 5090 Laptop GPU,
+  each with rated = maximum. No raised value has been tested on an RTX 50 laptop. The
+  laptop's VRM was sized for the stock current, and a higher current limit alone may not
+  raise the power: on the one RTX 5090 Laptop GPU tested the running limit followed the
+  boot default, the base TGP and the ceiling (above).
+- **Row 9** is type 3 with unit byte 1 and value 11375 (RTX 5090 Laptop GPU: 12434, RTX
+  5050 Laptop GPU: 6000), not the type 11 input-current row of the desktop cards. It
+  stays read-only (`input_policy_9_max_raw`).
 - **Clock offsets.** The table equals the desktop one except bit 12 of the DRAM row
   descriptor (`0x1182` instead of `0x182`). That one bit is accepted on that row only.
+  The RTX 5050 Laptop GPU packs the table with 1-byte sub-entries (an 18-byte stride),
+  as the single-rail images do, with the same DRAM bit.
 - **Fans.** The cooler list is empty and every per-channel enable is 0: the laptop's
   fans belong to the system, so no fan field is offered.
-- **Idle power.** Every LPWR table of the two images is byte-identical. Both enable GR
-  rail gating on entries 0..2 (`lpwr_gr_rail_gating`, with its idle time, see
-  [LPWR idle power switches](#lpwr-idle-power-switches-and-idle-times)).
+- **Idle power.** Every LPWR table of the RTX 5080 and 5090 Laptop GPU images is
+  byte-identical. Both enable GR rail gating on entries 0..2 (`lpwr_gr_rail_gating`, with
+  its idle time, see [LPWR idle power switches](#lpwr-idle-power-switches-and-idle-times)).
+  The RTX 5050 Laptop GPU enables no GR rail gating entry (entries 0..1 store 0x0c), so it
+  has no such switch.
 
 There is no saved GET for a notebook. On one RTX 5090 Laptop GPU edited ceilings showed in
 the monitoring tools, and the running limit moved only with the ceiling, the boot default
@@ -1471,7 +1503,7 @@ name their TGP row only through the D-notifier index:
 | GB20x v40 | byte 22 | byte 23 | `ff ff 02` in bytes 21..23 | `ff 08 ff` |
 
 In the corpus the TGP index is `0xff` on the laptop images only (7 Turing, Max-Q laptops
-included, 10 Ampere, 5 Ada and 2 GB20x; a sixth Ada laptop image, which the editor does not
+included, 10 Ampere, 5 Ada and 3 GB20x; a sixth Ada laptop image, which the editor does not
 parse, stores the same header); every desktop and workstation image names its TGP row there and
 already takes runtime power limits.
 
@@ -2163,7 +2195,7 @@ The GB20x tables:
 
 | Key | Table (BIT P offset, object, header, entry size, enable word) | Entries the switch covers in the corpus |
 | --- | --- | --- |
-| `lpwr_gr_power_gating` | P+0x80, 0x39, 10, 5, u32 | 0..1; 0..2 on the RTX 5080, RTX 5070 Ti, RTX PRO 4000 SFF and the notebook |
+| `lpwr_gr_power_gating` | P+0x80, 0x39, 10, 5, u32 | 0..1; 0..2 on the RTX 5080, RTX 5070 Ti, RTX PRO 4000 SFF and the notebooks |
 | `lpwr_mscg` (memory system clock gating) | P+0x84, 0x3a, 7, 16, u32 | 0..2; 0..1 on the RTX PRO 6000 Workstation, RTX 5070 and RTX 5060 Ti |
 | `lpwr_nvdec_gating`, `lpwr_nvenc_gating`, `lpwr_ofa_gating`, `lpwr_nvjpg_gating` | P+0x11c, 0x120, 0x124, 0x128; 0xb4..0xb7; 10, 2, u16 | all five |
 | `lpwr_difr` | P+0xe8, 0x8e, 11, 18, u32 | entry 0 |
@@ -2184,7 +2216,8 @@ an entry whose bit 0 is clear is skipped, for each of these features.
   enable one. One limit: the video engine switches cover every entry, so a ROM whose
   NVDEC, NVENC, OFA or NVJPG entries all ship disabled reads as Off, and Stock then
   enables them; no corpus image ships like that.
-- **GR rail gating.** Disabled entries store 0xfc, but the GeForce desktops store 0xfe
+- **GR rail gating.** Disabled entries store 0xfc (0x0c on entries 0..1 of the RTX 5050
+  Laptop GPU), but the GeForce desktops store 0xfe
   on entry 0 (RTX 5090) or entries 0..1 (RTX 5080, 5070 Ti), the same byte a
   switched-off enabled entry stores, so the bytes cannot tell those apart. On the
   products whose stock entries are reviewed (PCI device 2c33: entry 0; 2c59 and 2c18,
