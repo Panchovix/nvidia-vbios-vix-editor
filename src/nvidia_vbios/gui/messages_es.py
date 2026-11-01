@@ -366,6 +366,31 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                       'cambio. Otros portátiles no se probaron. El VRM, la refrigeración y el cargador del portátil se '
                       'dimensionaron para el límite de fábrica, y si la batería se descarga enchufada con la CPU y la '
                       'GPU a plena carga, el cargador no alcanza.',
+ 'runtime_limit.note': 'Las ROM de portátil dejan vacía (0xff) la entrada del TGP en el encabezado de la tabla de '
+                       'potencia, y con eso los drivers actuales rechazan los cambios del límite de potencia en uso '
+                       '(nvidia-smi -pl, MSI Afterburner). Activado escribe ahí la fila del TGP, y el driver acepta '
+                       'entonces límites entre el piso y el techo de potencia de la placa; Desactivado vuelve a dejar '
+                       'la entrada vacía. Para un límite más alto desde el deslizador o nvidia-smi -pl, sube solo el '
+                       'techo de potencia de la placa: la potencia por defecto al arrancar, que es el 100 % del '
+                       'deslizador de MSI Afterburner, puede quedar de fábrica, y el deslizador llega entonces hasta '
+                       'el techo (113 % con un techo de 130 W sobre 115 W). El límite que fijes dura hasta que el '
+                       'driver vuelva a cargar. Dynamic Boost y el TGP configurable del portátil (NVPCF, el framework '
+                       'de plataforma de NVIDIA, en Windows; nvidia-powerd en Linux, desde Ampere) mantienen su '
+                       'propio pedido sobre la misma fila, y gana el pedido más bajo: mientras tengan uno, un valor '
+                       'más alto no tiene efecto y su próxima actualización borra el tuyo. Ese pedido también queda '
+                       'limitado por el techo, así que con un techo más alto podrían pasar por sí solos del límite de '
+                       'fábrica. Con batería siguen rigiendo los límites de batería, que son más bajos. El VRM, la '
+                       'refrigeración y el cargador del portátil se dimensionaron para el límite de fábrica.',
+ 'runtime_limit.turing': 'Probado en una RTX 2070 Laptop GPU con Windows (driver 621.01), con los límites de potencia '
+                         'de fábrica: con el interruptor activado, el deslizador del límite de potencia de MSI '
+                         'Afterburner, que antes estaba bloqueado, quedó disponible, y al 64 % (73,6 W) la GPU '
+                         'consumió 71,1 W bajo carga. No se probó nada por encima del límite de fábrica, y otros '
+                         'portátiles Turing no se probaron.',
+ 'runtime_limit.untested': 'Sin probar en hardware.',
+ 'runtime_limit.r525': 'Los drivers de NVIDIA hasta R525 (Windows 528.49, Linux 525.89.02) hacían esto por sí solos '
+                       'en estas ROM.',
+ 'runtime_limit.gb20x': 'Ningún driver de NVIDIA hizo esto en un portátil RTX 50: R525, que lo hacía en portátiles '
+                        'anteriores, salió antes que estas GPU.',
  'lpwr.enabled_entries': ('Este producto no está entre los revisados, así que este interruptor cubre las entradas '
                           'que esta ROM activa. Una copia guardada con Desactivado ya no muestra el interruptor, '
                           'porque una entrada que viene desactivada se ve igual que una apagada: guarda la ROM '
@@ -432,6 +457,8 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.board_fixed_rated_w': 'Potencia nominal de las políticas fijas 2/7 de la placa (avanzado, estilo XOC, '
                               'experimental)',
  'field.notebook_base_tgp_w': 'TGP base del portátil (experimental)',
+ 'field.runtime_power_limit_unlock': ('Permitir cambiar el límite de potencia en uso (nvidia-smi -pl, '
+                                      'Afterburner, experimental)'),
  'show_advanced': 'Mostrar campos avanzados (estilo XOC)',
  'shunt_multiplier': 'Multiplicador de shunt (x)',
  'shunt_help': 'Solo informativo: la VBIOS guarda los valores de los campos. Supone el mismo multiplicador en '

@@ -3,6 +3,56 @@
 What each change does, where it applies, what was tested and its risks. CHANGELOG.md lists the same
 changes, one line each, in the same order.
 
+## 0.1.39
+
+- **Turing, Ampere and RTX 50 laptops: runtime power limit switch (experimental, opt-in; worked on one RTX 2070 Laptop
+  GPU).** Laptop ROMs leave the TGP entry of the power table header empty (`0xff`), and current NVIDIA drivers then
+  refuse runtime power limit changes: `nvidia-smi -pl` and MSI Afterburner's power limit slider. Drivers up to R525
+  (Linux 525.89.02, Windows 528.49) took the TGP row by themselves on Turing and Ampere laptops; later drivers do not
+  (static analysis of GSP-RM 615.78.08 and the Windows 621.01 driver). **Expose runtime power limit (nvidia-smi -pl,
+  Afterburner)**, under **Show advanced XOC-style fields** (after **Notebook base TGP** on RTX 50 laptops), writes the
+  TGP row into that entry, as R525 did, and off writes `0xff` back, so a copy switched back equals the stock ROM byte
+  for byte. It is offered where the power table has the laptop layout: on Turing and Ampere laptop ROMs, Max-Q laptops
+  included, and on the RTX 5080 and 5090 Laptop GPU ROMs, where no driver did this before. Ada laptops are left out for
+  now, because no override has loaded on an Ada laptop yet. The switch itself changes no limit: the driver then takes
+  limits between **Board power floor** and **Board power ceiling**. For a higher limit from the slider or
+  `nvidia-smi -pl`, raise only the ceiling: **Boot default board power**, which is 100 % on Afterburner's slider, can
+  stay at stock, and the slider then goes up to the ceiling (113 % for a 130 W ceiling over 115 W). A limit set this way
+  lasts until the driver loads again, so set it after every boot (Afterburner can apply it at startup). Dynamic Boost
+  and the laptop's configurable TGP (the NVIDIA platform framework, NVPCF, on Windows; nvidia-powerd on Linux, Ampere
+  and newer) keep their own request on the same row and the lowest request wins: while they hold one, a higher value has
+  no effect and their next update drops yours. Their request is capped by the ceiling too, so a raised ceiling may let
+  them go above the stock limit by themselves. On battery the lower battery limits still apply. One user tested it on an
+  RTX 2070 Laptop GPU (90.06.58.40.08) on Windows with driver 621.01 and the Windows loader, with the power limits at
+  stock (1 W floor, 115 W default and ceiling): before the edit `nvidia-smi -pl` and the Afterburner slider were
+  refused; with the switch on the slider became available, and at 64 % (73.6 W) the GPU drew 71.1 W under load in a
+  game. Which of the two Turing loader files was loaded, whether Dynamic Boost was active and the behaviour on battery
+  were not reported, and nothing above the stock 115 W was tried. Other Turing laptops and the Ampere and RTX 50 laptops
+  are not tested, and on Turing the signed hash list over the power table is left stale, as for the other Turing power
+  edits. The laptop's VRM, cooling and power adapter were sized for the stock limit, and a raised ceiling asks more of
+  them; a battery that drains while plugged in under full CPU and GPU load means the adapter falls short. Load the copy
+  with the loader, never flash it; removing the override brings the stock behaviour back. For API users:
+  `runtime_power_limit_unlock` (flag, opt-in), copied by an import only with opt-in fields included and only between
+  ROMs that both have it.
+
+- **Blackwell REL floor: tested on RTX PRO 6000 Max-Q and RTX PRO 4000 SFF boards (hardware result).** The **NVVDD REL
+  floor** and **MSVDD REL floor** of 0.1.38 were not tested on hardware. On Linux with driver 615.78.08 and the Linux
+  loader, three RTX PRO 6000 Blackwell Max-Q boards and one RTX PRO 4000 Blackwell SFF loaded copies with both floors at
+  1100 mV and both REL ceilings at 1125 mV. On the Max-Q boards the driver evaluated REL at 1100 mV on NVVDD and MSVDD
+  with no runtime request, where their chip value, from the fused leakage, is about 990 to 1000 mV (the REL they
+  reported with only the ceiling raised). On the RTX PRO 4000 SFF a runtime request of 1000 mV on both rails (an offset
+  of -100 mV written by a tuning tool) evaluated 1000 mV, so a runtime offset still adds to the floor where the driver
+  applies it, and a negative one takes REL below the floor. The field reasons and the docs now say so; what the fields
+  accept is unchanged. GeForce RTX 50 cards, the RTX PRO 6000 Workstation and the laptops are not tested. More voltage
+  means more heat, power and wear; load the copy with the loader, never flash it, and removing the override brings the
+  card back.
+
+- **Ada, Ampere and Turing: the flat NVVDD voltage's reason notes the 1250 mV VFE range (1243.75 mV on Turing), as on
+  Blackwell.** The reason of **NVVDD flat voltage (REL = ALT = OV)** (in `nvbios fields` and the API) now says on these
+  families too that above 1250 mV on Ada and Ampere, and above 1243.75 mV on Turing, the value is beyond the range of
+  the VFE voltage variable (450 to 1250 mV, on Turing 450 to 1243.75 mV, on every image of these families examined), so
+  the VF curve might not use it. The 0.1.38 docs already said so; the field and its range are unchanged.
+
 ## 0.1.38
 
 - **Blackwell: REL floor, and one NVVDD voltage for REL = ALT = OV once they follow OV (experimental).** REL is the

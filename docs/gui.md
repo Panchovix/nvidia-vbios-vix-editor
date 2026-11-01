@@ -95,8 +95,19 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    default) reveals opt-in fields such as the rated power of the fixed board
    policies 2/7, the experimental **Notebook base TGP** of the RTX 5080 and 5090 Laptop
    GPU (it behaved as the base Dynamic Boost adds its boost to on one RTX 5090 Laptop
-   GPU; raise it with the ceiling and the boot default, see above), on
-   Ada and Blackwell the power limit of the auxiliary power connector (**Connector power
+   GPU; raise it with the ceiling and the boot default, see above), **Expose runtime power
+   limit** on Turing, Ampere and RTX 50 laptop ROMs (a switch, experimental: on writes the TGP
+   row into the TGP entry of the power table header, which laptop ROMs leave empty (`0xff`), so
+   current drivers accept power limit changes at runtime from `nvidia-smi -pl` or MSI
+   Afterburner, between the board power floor and ceiling (for more, raise only the ceiling:
+   the boot default, 100 % on Afterburner's slider, can stay at stock); drivers up to R525 did
+   this by themselves on Turing and Ampere laptops, none did on RTX 50 laptops; Dynamic Boost
+   keeps its own request on the same row and the lowest request wins, so while it holds one a
+   higher limit has no effect, and a raised ceiling may let it go above the stock limit by
+   itself; the battery limits still apply; on one RTX 2070 Laptop GPU on Windows, with the
+   limits at stock, MSI Afterburner's power limit slider then worked and 64 % (73.6 W) held
+   under load, while Ampere and RTX 50 laptops are not tested; the row notes
+   this), on Ada and Blackwell the power limit of the auxiliary power connector (**Connector power
    channel 1**, experimental: on a board with one 8-pin connector it most likely holds that
    connector near 150 W even with a higher board power limit; a PCIe 8-pin connector is rated
    150 W, and going past what the connector and its cable are rated for puts the cable, the

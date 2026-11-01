@@ -260,6 +260,10 @@ def checksum_tail(blob, end, family):
 # A profile of the Ada override table that no cable sense code selects still bounds a power edit, relaxed by
 # this factor (owner's choice): half its value as a lower bound, twice it as an upper one.
 UNREACHED_PROFILE_FACTOR = 2
+# Families whose notebook power header gets the runtime power limit switch (TableRom.runtime_limit_slot). Ada
+# is left out for now: no override has loaded on an Ada laptop yet (no loader payload fits one). Its notebook
+# images have the same shape (the D-notifier row is the first R525 class-1 row), so adding 'ada' enables it.
+RUNTIME_LIMIT_FAMILIES = ('turing', 'ampere')
 
 
 class TableRom:
@@ -359,9 +363,10 @@ class TableRom:
             raise FormatError('unvalidated 3x power table variant')
         self.owner(at, hs + size * count)
         index, self.notebook_power = self.blob[at + 10], False
-        if self.blob[at + 10:at + 14] == bytes((0xFF, 0xFF, 0xFF, 2)):
+        if self.blob[at + 11:at + 14] == bytes((0xFF, 0xFF, 2)) and index in (0xFF, 2):
             # Notebook header: no TGP index (byte 10); the D-notifier index (byte 13,
-            # nvgpu header field order tgp/rtp/mxm/dnotifier) names the TGP row.
+            # nvgpu header field order tgp/rtp/mxm/dnotifier) names the TGP row. Byte 10
+            # holds that index too where the runtime power limit switch is on (runtime_limit_slot).
             index, self.notebook_power = self.blob[at + 13], True
         if index >= count:
             raise FormatError('TGP policy index exceeds power rows')
@@ -388,6 +393,30 @@ class TableRom:
         if not total:
             raise FormatError('TGP policy does not read the total board power channel (class 2, rail 0xf5)')
         return rows
+
+    def runtime_limit_slot(self):
+        """The TGP index byte (header byte 10) the runtime power limit switch writes, or None.
+
+        NVIDIA RM serves the runtime power limit (nvidia-smi -pl, the NvAPI client power policies) through
+        that byte and refuses it while it is 0xff, as on every notebook header. R525 then took the first row
+        of class 1 as the TGP; later drivers dropped that fallback. Offered on the notebook header power_rows
+        reads, bytes 11..13 ff ff 02 (D-notifier row 2, as on every laptop image in the corpus; a header that
+        names another row there gets no power field and no switch), when that row, the TGP row of power_rows,
+        is that first class-1 row; byte 10 holds 0xff (state 0) or the row (state 1). R525 reads the class
+        in 8 bits, byte 0 & 0xf | (byte 66 & 0xf) << 4, on rows of 0x43 bytes or more (Ampere, Ada; the
+        Turing rows have no byte 66), so row 0 of the Ampere and Ada laptop images is class 17 for it, not
+        the type 1 power_rows reads. dict(offset (primary chain), row, state).
+        """
+        rows = self.power_rows()
+        if self.family not in RUNTIME_LIMIT_FAMILIES or not self.notebook_power:
+            return None
+        size, row = self.power_entry_size, self.tgp_index
+        classes = [self.blob[r['offset']] & 15 | ((self.blob[r['offset'] + 66] & 15) << 4 if size > 66 else 0)
+                   for r in rows]
+        if 1 not in classes or classes.index(1) != row:
+            return None
+        at = self.pointer('P', 0x2C) + 10
+        return dict(offset=at, row=row, state=0 if self.blob[at] == 0xFF else 1)
 
     def power_channel(self, index):
         """One entry of the power channel table (P+0x3c, v0x20, 32 entries).

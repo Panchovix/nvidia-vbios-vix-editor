@@ -103,6 +103,26 @@ class ImportTests(unittest.TestCase):
         self.assertEqual((report['changes'], report['skipped']), ({'power_max_w': 225, 'notebook_base_tgp_w': 200}, []))
         self.assertEqual((values(result.image)['power_max_w'], values(result.image)['notebook_base_tgp_w']), (225, 200))
 
+    def test_the_runtime_power_limit_switch_is_an_opt_in_flag_between_roms_that_have_it(self):
+        from test_extended_fields import notebook_fixture
+        target = from_bytes(notebook_fixture(), 'laptop.rom')
+        donor = donor_of(notebook_fixture(), {'runtime_power_limit_unlock': 1})
+        report, result = import_fields(target, donor, ['power'])
+        self.assertIsNone(result)
+        self.assertEqual([(e['field'], e['reason']) for e in report['skipped']],
+                         [('runtime_power_limit_unlock', 'opt_in')])
+        report, result = import_fields(target, donor, ['power'], include_opt_in=True)
+        self.assertEqual((report['changes'], report['skipped']), ({'runtime_power_limit_unlock': 1}, []))
+        self.assertEqual(result.blob, donor.blob)
+        # A desktop ROM of the family has no switch: it is never copied to or from one.
+        desktop = from_bytes(self.blob, 'board.rom')
+        for ours, theirs, reason in ((desktop, donor, 'absent_in_target'), (donor, desktop, 'absent_in_donor')):
+            with self.subTest(reason=reason):
+                report, _ = import_fields(ours, theirs, ['power'], include_opt_in=True)
+                self.assertNotIn('runtime_power_limit_unlock', report['changes'])
+                self.assertIn(('runtime_power_limit_unlock', reason),
+                              [(e['field'], e['reason']) for e in report['skipped']])
+
     def test_a_notebook_rom_edited_past_the_base_tgp_by_an_earlier_release_imports_as_before(self):
         # Earlier releases left row 2 +73 at 150000 under a 140 W ceiling or a 160 W boot default, as an edit without
         # the base TGP still does. Such a donor has no base TGP field and its values come over as before; a stock

@@ -27,7 +27,8 @@ FIELD_KEYS = frozenset(('power_min_w', 'power_max_w', 'nvvdd_rel_max_mv', 'msvdd
                         'gpc_offset_max_mhz', 'gpc_offset_min_mhz',
                         'memory_offset_min_mhz', 'dram_min_table_mhz',
                         'input_current_policy7_limit_ma', 'slot_power_rated_w', 'slot_power_max_w',
-                        'board_fixed_rated_w', 'notebook_base_tgp_w', 'fan_pwm_frequency_hz', 'fan_channels',
+                        'board_fixed_rated_w', 'notebook_base_tgp_w', 'runtime_power_limit_unlock',
+                        'fan_pwm_frequency_hz', 'fan_channels',
                         'nvvdd_rel_alt_follow_ov', 'nvvdd_rel_alt_follow_ov_mv',
                         'fan_zero_rpm',
                         'slot_current_threshold_rated_ma', 'slot_current_threshold_max_ma',
@@ -275,6 +276,18 @@ def notebook_notes(field, family, language='en'):
     return ([text('notebook.ceiling')] if key == 'power_max_w' else
             [text('notebook.default')] if key == 'power_default_w' else
             [text('notebook.base_tgp')] if key == 'notebook_base_tgp_w' else [])
+
+
+def runtime_limit_notes(field, family, language='en'):
+    """Notes of the runtime power limit switch (runtime_power_limit_unlock): what it writes and what still limits
+    the result, the hardware result (one Turing laptop; Ampere and GB20x untested), then the driver precedent
+    (drivers through R525 did it on Turing and Ampere laptops, none on GB20x)."""
+    if field.get('key') != 'runtime_power_limit_unlock':
+        return []
+    text = Messages(language)
+    return [text('runtime_limit.note'),
+            text('runtime_limit.turing' if family == 'turing' else 'runtime_limit.untested'),
+            text('runtime_limit.gb20x' if (family or '').startswith('blackwell') else 'runtime_limit.r525')]
 
 
 def output_current_notes(field, family, language='en'):

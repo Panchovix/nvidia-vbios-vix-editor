@@ -1280,6 +1280,9 @@ class AdaRelFloorTests(unittest.TestCase):
         self.assertEqual((floor['bounds']['encoding_maximum'], ceiling['bounds']['encoding_minimum']), (1200, 830))
         self.assertEqual(floor['equation_offset'], ceiling['equation_offset'])
         self.assertIn('so the floor is the REL of a hot GPU', floor['reason'])
+        # The GB20x floor's hardware result is not an Ada one.
+        self.assertNotIn('hardware-test', [e['kind'] for e in floor['evidence']])
+        self.assertIn('not hardware-tested', floor['reason'])
         at = floor['equation_offset']
         offsets = parser.copy_offsets(at + 3, 4)
         self.assertEqual(len(offsets), 2)
@@ -1361,6 +1364,8 @@ class AdaFollowOvVoltageTests(unittest.TestCase):
                           field['vfe_copy_slot']), (1200, True, 830, 1560, None))
         self.assertIn('the minimum, maximum and value of the constant OV equation (equation 5) in every chain',
                       field['reason'])
+        self.assertIn('above 1250 mV is beyond the Ada VFE voltage variable range (450-1250 mV), so the VF curve '
+                      'might not use it', field['reason'])
         self.assertIn('not hardware-tested on Ada', field['reason'])
         at = vfe_base(parser)[1] + 5 * 25
         offsets = [copy for k in (3, 7, 11) for copy in parser.copy_offsets(at + k, 4)]

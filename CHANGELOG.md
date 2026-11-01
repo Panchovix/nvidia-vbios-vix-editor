@@ -3,6 +3,12 @@
 One line per change. What each change does, where it applies and what was tested is in the
 [changelog details](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/changelog-details.md).
 
+## 0.1.39
+
+- Turing, Ampere and RTX 50 laptops: runtime power limit switch (experimental, opt-in; worked on one RTX 2070 Laptop GPU).
+- Blackwell REL floor: tested on RTX PRO 6000 Max-Q and RTX PRO 4000 SFF boards (hardware result).
+- Ada, Ampere and Turing: the flat NVVDD voltage's reason notes the 1250 mV VFE range (1243.75 mV on Turing), as on Blackwell.
+
 ## 0.1.38
 
 - Blackwell: REL floor, and one NVVDD voltage for REL = ALT = OV once they follow OV (experimental).

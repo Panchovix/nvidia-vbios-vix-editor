@@ -92,8 +92,22 @@ funcionando sin las dependencias gráficas.
    las políticas fijas 2/7, el **TGP base del portátil** experimental de las RTX 5080 y
    5090 Laptop GPU (se comportó como la base a la que Dynamic Boost le suma su boost en una
    RTX 5090 Laptop GPU; súbelo junto con el techo y la potencia por defecto al arrancar,
-   ver arriba), en Ada y Blackwell el límite de potencia del conector de
-   alimentación auxiliar (**Canal de potencia de conector 1**, experimental: en una placa con un
+   ver arriba), **Permitir cambiar el límite de potencia en uso** en las ROM de portátil
+   Turing, Ampere y RTX 50 (un interruptor, experimental: activado escribe la fila del TGP en
+   la entrada del TGP del encabezado de la tabla de potencia, que las ROM de portátil dejan
+   vacía (`0xff`), para que los drivers actuales acepten cambios del límite de potencia en uso
+   desde `nvidia-smi -pl` o MSI Afterburner, entre el piso y el techo de potencia de la placa
+   (para más, sube solo el techo: la potencia por defecto al arrancar, el 100 % del deslizador
+   de Afterburner, puede quedar de fábrica); los drivers hasta R525 lo hacían por sí solos en
+   portátiles Turing y Ampere, ninguno lo hizo en portátiles RTX 50; Dynamic Boost mantiene su
+   propio pedido sobre la misma fila y gana el pedido más bajo, así que mientras tenga uno un
+   límite más alto no tiene efecto, y con un techo más alto podría pasar por sí solo del límite
+   de fábrica; los límites de batería siguen rigiendo; en una RTX 2070 Laptop GPU con Windows,
+   con los límites de fábrica, el deslizador del límite de potencia de MSI Afterburner funcionó
+   y el 64 % (73,6 W) se mantuvo bajo carga, mientras que los portátiles Ampere y RTX 50 no se
+   probaron; la fila lo indica), en
+   Ada y Blackwell el límite de potencia del conector de alimentación auxiliar (**Canal de
+   potencia de conector 1**, experimental: en una placa con un
    solo conector de 8 pines lo más probable es que frene ese conector en unos 150 W aunque el
    límite de potencia de la placa sea más alto; un conector PCIe de 8 pines admite 150 W, y pasar
    de lo que admiten el conector y su cable pone en riesgo el cable, el conector y la fuente, lo

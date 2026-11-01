@@ -69,7 +69,7 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | IDs (`*` stands for the `nvvdd` or `msvdd` prefix) | Meaning | Offline support |
 | --- | --- | --- |
 | `*_rel_equation_max_mv` | VFE output clamp maximum addressed by REL selector | Reviewed Blackwell; Ada temperature-derated REL |
-| `*_rel_equation_min_mv` | VFE output clamp minimum (REL floor) addressed by REL selector: REL is the equation's value (GB20x: the chip value; Ada: a temperature value) clamped to the floor and the ceiling | Experimental, GB20x and Ada (NVVDD, every chain, a temperature-derated REL); editable with the REL ceiling while REL does not select the OV equation; 850 mV (Ada 830 mV and at least the highest VMIN set per chip; or the stored floor) up to the ceiling and at most OV (1200 mV), ordering group `*-rel-clamp` with it |
+| `*_rel_equation_min_mv` | VFE output clamp minimum (REL floor) addressed by REL selector: REL is the equation's value (GB20x: the chip value; Ada: a temperature value) clamped to the floor and the ceiling | Experimental, GB20x and Ada (NVVDD, every chain, a temperature-derated REL); editable with the REL ceiling while REL does not select the OV equation; 850 mV (Ada 830 mV and at least the highest VMIN set per chip; or the stored floor) up to the ceiling and at most OV (1200 mV), ordering group `*-rel-clamp` with it; GB20x hardware-tested on RTX PRO 6000 Max-Q and RTX PRO 4000 SFF boards |
 | `*_alt_equation_max_mv` | VFE output clamp maximum addressed by ALT selector | Reviewed Blackwell when present; Ada temperature-derated ALT (experimental) |
 | `*_ov_equation_max_mv` | VFE output clamp maximum addressed by OV selector | Reviewed Blackwell |
 | `*_vmin_equation_max_mv` | VFE output clamp maximum addressed by the rail INFO VMIN slot (GB20x row+`0x21`, Ada/Ampere row byte 11); **not** the evaluated VMIN | Read-only |
@@ -89,6 +89,7 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `slot_current_threshold_rated/max_ma`, `nvvdd_power_threshold_rated/max_w` | Hardware-threshold policies (slot 12 V current; Ada NVVDD output power) | Experimental, opt-in; slot current on Ada, Ampere and Turing, NVVDD power on Ada only |
 | `board_fixed_rated_w` | Rated value of the fixed board policies 2/7 | Experimental, opt-in (hidden in the GUI by default) |
 | `notebook_base_tgp_w` | Row 2 +73 of the GB20x notebook layout, the base TGP that Dynamic Boost adds its boost to (as one RTX 5090 Laptop GPU behaved) | Experimental, opt-in (hidden in the GUI by default), GB20x notebook layout only; hardware-tested on one RTX 5090 Laptop GPU, where it raised the running limit only together with `power_default_w` and `power_max_w`; an edited value stays between `power_default_w` and `power_max_w`, which it does not bound |
+| `runtime_power_limit_unlock` | TGP index of the power table header (3x byte 10, GB20x byte 22): 1 names the TGP row (row 2) there, 0 leaves it empty (`0xff`), as the laptop images ship, where current drivers refuse runtime power limit changes | Experimental, opt-in (hidden in the GUI by default), Turing, Ampere and GB20x notebook headers, not Ada; 0 gives back the stock bytes; hardware-tested on one RTX 2070 Laptop GPU (Turing, Windows) with the limits at stock, not on Ampere or GB20x; see [Runtime power limit switch](#runtime-power-limit-switch-runtime_power_limit_unlock-opt-in) |
 | `input_current_rated_ma`, `input_current_max_ma` | 12 V board input-current policy, row 9 (Ada: thresholds 0/1, rows 9/10) | Experimental, reviewed row shapes |
 | `input_current_policy7_limit_ma` | Policy 7 limit linked to the 12 V input policy | Experimental, reviewed Blackwell row shape |
 | `input_policy_9_max_raw` | Row 9 raw maximum; units unknown | Read-only, only when row 9 is unrecognized |
@@ -415,8 +416,16 @@ Floor and ceiling form one ordering group (`nvvdd-rel-clamp`, `msvdd-rel-clamp`)
 together they are checked on the result, so both can be raised in one edit, and a floor above
 the ceiling or above OV is refused. A higher floor raises the lowest REL value, which bounds
 VMIN. An import treats it like the ceiling, and the two come together.
-Experimental: the floor is not hardware-tested (the ceiling is); more voltage means more heat,
-power and wear, and removing the override brings the card back.
+
+**Hardware result.** On Linux (driver 615.78.08, Linux loader) three RTX PRO 6000 Blackwell
+Max-Q boards and one RTX PRO 4000 Blackwell SFF loaded copies with both floors at 1100 mV and
+both REL ceilings at 1125 mV. On the Max-Q boards the driver evaluated REL at 1100 mV on NVVDD
+and MSVDD with no runtime request, where their chip value is about 990 to 1000 mV. On the RTX
+PRO 4000 SFF a runtime request of 1000 mV on both rails (an offset of -100 mV written by a
+tuning tool) evaluated 1000 mV: a runtime offset still adds to the floor where the driver
+applies it, so a negative one takes REL below the floor. Other boards are not tested.
+Experimental: more voltage means more heat, power and wear, and removing the override brings
+the card back.
 
 **Ada.** `nvvdd_rel_equation_min_mv` writes the clamp minimum (+3) of the NVVDD REL equation
 (row byte 4) in every chain, where REL is the temperature-derated shape the REL ceiling edits:
@@ -1247,7 +1256,8 @@ their own bounds, as before. Only a canonical `power_min_w`, `power_default_w`,
 a minimum or rated value, and only the
 canonical `input_current_policy7_limit_ma` binding may write row 7's opaque bytes
 61:65 (the canonical `notebook_base_tgp_w` binding, likewise, row 2's bytes 73:77 on the
-GB20x notebook layout). Any other binding with one of these keys fails with `INVALID_FIELD_EVIDENCE`.
+GB20x notebook layout, and the canonical `runtime_power_limit_unlock` binding the TGP index of the
+power table header). Any other binding with one of these keys fails with `INVALID_FIELD_EVIDENCE`.
 Aliases, partial offsets, other rows and non-matching profiles stay protected.
 Override profiles that matched the base must still match after the edit, and no
 profile may end with a policy default above its maximum. On a top-level profile
@@ -1354,8 +1364,9 @@ clamp, see [VMIN set per chip](#vmin-set-per-chip-tree-roots-and-per-chip-equati
 power policy table keeps the v0x40 format but places its rows differently:
 
 - **TGP in row 2.** Every desktop and Max-Q source has policy header bytes 21..23 =
-  `ff 08 ff` and its TGP in row 8 (type 12). The notebooks have `ff ff 02`, rows 7 and 8
-  of type 0 with zero limits, and row 2 (type 1) holding 5000/80000/175000 mW
+  `ff 08 ff` and its TGP in row 8 (type 12). The notebooks have `ff ff 02` (`ff 02 02` with
+  the [runtime power limit switch](#runtime-power-limit-switch-runtime_power_limit_unlock-opt-in)
+  on), rows 7 and 8 of type 0 with zero limits, and row 2 (type 1) holding 5000/80000/175000 mW
   (5000/95000/175000 mW on the RTX 5090 Laptop GPU). `nvidia-smi -q -d POWER` on an RTX 5080
   Laptop GPU running the same VBIOS reports Min 5 W, Default 80 W and Max 175 W (public
   readings of RTX 5090 Laptop GPUs: 5, 95 and 175 W). `power_min_w`,
@@ -1368,7 +1379,8 @@ power policy table keeps the v0x40 format but places its rows differently:
   the stored ceiling. Raising `power_max_w` alone therefore usually does not raise the
   running limit. The output OCP, the cooling and the laptop's VRM can also keep power
   lower. The header also stores 55000/45000/35000/25000 at bytes 24..39 (RTX 5090 Laptop
-  GPU: 40000/35000/25000/15000), whose meaning is unknown.
+  GPU: 40000/35000/25000/15000), the D-notifier (battery) limits (see
+  [Runtime power limit switch](#runtime-power-limit-switch-runtime_power_limit_unlock-opt-in)).
 - **Hardware result: raise the three together.** One user tested edited copies of the RTX
   5090 Laptop GPU image (`98.03.5C.00.72`, stock row 2 5000/95000/175000 mW, +73 150000 mW)
   through the Windows loader, with a 400 W adapter:
@@ -1442,6 +1454,121 @@ and the base TGP raised together (above); no other edited field has been tested 
 Blackwell notebook (Ampere laptops have, see Ampere fields).
 The power and OCP descriptors carry `structural-row-comparison` evidence with
 `runtime_get: false`.
+
+## Runtime power limit switch (`runtime_power_limit_unlock`, opt-in)
+
+NVIDIA RM serves the runtime power limit, the client limit `nvidia-smi -pl` sets through NVML
+(RM control `0x2080e61e` SET, `0x2080a61d` GET) and MSI Afterburner through the NvAPI client
+power policies, through the TGP policy the power policy table header names. While that index
+is `0xff` it answers `NV_ERR_NOT_SUPPORTED` (GSP-RM 615.78.08 `gsp_ga10x.bin`, handler
+0x178ed60, check at 0x178edb0; Windows driver 621.01 `nvlddmkm.sys`, 0x1404f01c1). Neither
+checks whether the GPU is a laptop: the header decides. The laptop images store `0xff` there and
+name their TGP row only through the D-notifier index:
+
+| Format | TGP index | D-notifier index | Laptop images | Desktop and workstation images |
+|---|---|---|---|---|
+| 3x (Turing, Ampere, Ada) | byte 10 | byte 13 | `ff ff ff 02` in bytes 10..13 | `02 ff ff ff` |
+| GB20x v40 | byte 22 | byte 23 | `ff ff 02` in bytes 21..23 | `ff 08 ff` |
+
+In the corpus the TGP index is `0xff` on the laptop images only (7 Turing, Max-Q laptops
+included, 10 Ampere, 5 Ada and 2 GB20x; a sixth Ada laptop image, which the editor does not
+parse, stores the same header); every desktop and workstation image names its TGP row there and
+already takes runtime power limits.
+
+R525 (Linux 525.89.02; Windows 528.49, when runtime power limits still worked on laptops) had a
+fallback: with the TGP index at `0xff`, the first power row of class 1 became the TGP. It reads
+the class as the low nibble of entry byte 0 with entry byte 66 as bits 4..7 on rows of 0x43 bytes
+or more (Ampere, Ada; the 0x42-byte Turing rows have no byte 66), an 8-bit value in which only the
+low nibble of byte 66 counts, as in the 615 and 621 parsers. Row 0 of the Ampere and Ada laptop
+images is therefore class 17, not the type 1 that byte 0 alone gives. With that decode the first
+class-1 row of every Turing and Ampere laptop image is the D-notifier row, row 2. The 615 and
+621 drivers no longer have the fallback.
+
+Value 1 writes the D-notifier row into the TGP index, which on Turing and Ampere laptops
+reproduces what R525 did by itself; 0 writes `0xff` back, so a copy switched back equals the
+stock image byte for byte. The switch exists where:
+
+- **Turing, Ampere:** the notebook header (bytes 11..13 `ff ff 02`; byte 10 `0xff` for 0, `02`
+  for 1) whose D-notifier row, the TGP row of the power fields (class 1 mW with ordered bounds on
+  the board-total channel), is the first row R525 reads as class 1. The D-notifier row must be
+  row 2, as on every laptop image in the corpus: a header that names another row there gets no
+  power field and no switch. It is written in every chain (both Turing banks), and the additive
+  checksum of the power table's image is repaired.
+- **GB20x:** the notebook layout (bytes 21..23 `ff ff 02`, `ff 02 02` for 1; row 2 type 1, rows 7
+  and 8 empty) whose row 2 holds mW (bit 0 of row byte 1 clear: the unit bit the GSP-RM and
+  Windows driver parsers read, set on the current rows 9..14), where the power table object
+  (0x13) is the only hash owner of byte 22; its hash, the directory digest and the image
+  checksums are repaired. No driver did this on GB20x: R525 predates it, and the desktop TGP is
+  another row (row 8, type 12), so there is no precedent.
+- **Ada** is left out on purpose for now: no override has loaded on an Ada laptop yet (no loader
+  payload fits one). Its laptop images have the same shape.
+
+Any other header gets no field. With the switch on the header still reads as the notebook layout
+(`02 ff ff 02` like `ff ff ff 02`, `ff 02 02` like `ff ff 02`), so every power field keeps its row,
+values, editability and reasons. Only the canonical binding may change a power table header byte:
+another binding over it is refused (`PRESERVED_FIELD_CHANGED`; `INVALID_FIELD_EVIDENCE` with the
+switch's key).
+
+**Hardware result (Turing).** One user loaded a copy of an RTX 2070 Laptop GPU image
+(`90.06.58.40.08`, `10de:1f14`) with the switch on and the power limits at stock (1 W floor,
+115 W default and ceiling) through the Windows loader, on Windows with driver 621.01. Before the
+edit `nvidia-smi -pl` and MSI Afterburner's power limit slider were refused. With it the slider
+became available, and at 64 % the GPU was limited to 73.6 W (64 % of 115 W): under load (a
+Vulkan game at 99 % GPU use) it drew 71.1 W at 1245 MHz and 64 °C. Not reported: which of the
+two Turing loader files was loaded, whether Dynamic Boost was active and the behaviour on
+battery; nothing above the stock 115 W was tried. Other Turing laptops and the Ampere and GB20x
+laptops are not tested.
+
+What still limits the result (static analysis of GSP-RM 615.78.08 and the 621.01 driver; on
+Turing, of GSP-RM 621.01 `gsp_tu10x.bin` too):
+
+- **Dynamic Boost and the configurable TGP** (the NVIDIA platform framework, NVPCF, on Windows;
+  `nvidia-powerd` on Linux, Ampere and newer) target the same row on every one of these images
+  (header byte 38, GB20x byte 45, or the D-notifier row where that byte is `0xff`) and keep their
+  own request there, next to the one `nvidia-smi -pl` sets. The driver takes the lowest request on
+  the row (0x17b8030; the row's combine mode, bit 0 of row byte 77 on GB20x, is 0 on these images
+  and not stored on 3x), and while the platform holds a request its update clears yours
+  (0x17cbc98). So while Dynamic Boost or a configurable TGP mode holds one, a higher value has no
+  effect and a lower one lasts until their next update. Without such a request the value stays,
+  for example on Linux with `nvidia-powerd` stopped (its exit most likely sets the client limit
+  back to a stored value, so set yours after it stops; not tested).
+- **Other platform requests** on the TGP row combine the same way, and the lowest wins; which ones
+  a laptop makes is to be checked on hardware.
+- **On battery** the battery limits still apply. On Turing (GSP-RM 621.01) that is the TGP row's
+  own battery limit (row bytes 30..33, 41 W on the TU106 laptop image `10de:1f14`), requested only
+  while on battery, plus the D-notifier levels D2..D5 (30/20/20/10 W there) when the platform sets
+  one. The header stores those levels in the four dwords right after the D-notifier byte: 3x bytes
+  14..29, GB20x bytes 24..39, which GSP-RM 615 parses into the same limits.
+- **Range:** `nvidia-smi -pl` and MSI Afterburner take values between the TGP row minimum and
+  maximum (`power_min_w` to `power_max_w`). The client limit starts at the row's rated value,
+  `power_default_w`, at every driver load, and Afterburner's slider shows that as 100 %, with its
+  top at `power_max_w` over `power_default_w` (113 % for 130 W over 115 W; NvAPI 621.01
+  0x18023c382, GSP-RM 621.01 `gsp_tu10x.bin` 0x4b979e4, 0x4b9b66c and 0x4b8caf4). So for a higher
+  limit from the slider or `nvidia-smi -pl`, raise `power_max_w` alone and leave `power_default_w`
+  at stock, and set the limit again after every driver load (Afterburner can apply it at startup);
+  whether it survives the GPU powering off on a hybrid-graphics laptop (RTD3) is not known. That
+  the power controller then holds a limit above `power_default_w` is inferred from desktop cards,
+  where it does; nothing above the stock limit is tested.
+- **The ceiling caps the platform too.** On Turing (GSP-RM 621.01 0x4be456c) the platform's own
+  request is capped by `power_max_w`: with a raised ceiling a Dynamic Boost request above the stock
+  limit passes up to it, and the configurable TGP mode without its turbo offset requests the
+  ceiling itself, so on a laptop that uses them a raised ceiling alone can raise the running limit,
+  without the slider (on the RTX 5090 Laptop GPU above it did not). Other limits (NVVDD output
+  current, voltage, temperature, the power adapter) may stop it first, and the laptop's VRM,
+  cooling and power adapter were sized for the stock limit.
+- **Turing:** the signed hash list over the power table is left stale, as for the board power
+  edits a driver used on one RTX 2080 Ti.
+
+```sh
+./nvbios edit laptop.rom laptop-pl.rom --set runtime_power_limit_unlock=1 --dry-run
+```
+
+The switch itself changes no limit. To try it, turn it on (in the GUI under **Show advanced
+XOC-style fields**; for a limit above the stock one, raise `power_max_w` in the same copy and leave
+`power_default_w` at stock), save the copy (without `--dry-run`) and load it with the loader (or
+the loader file the editor saves next to it), then reboot. Then set a limit between `power_min_w`
+and `power_max_w` with `nvidia-smi -pl <W>` (as root or administrator) or MSI Afterburner's power
+limit slider, and read it back with `nvidia-smi -q -d POWER`.
 
 ## Fan tables (`fan_channels`, `fan_pwm_frequency_hz`, `fan_N_*`, `fan_extra_M_*`)
 
@@ -2199,7 +2326,10 @@ the 0x53-byte entry prefix (the larger variant adds zero bytes). `30/2c/4b` (RTX
 VBIOS 95.02.18) holds the first 0x2c header and 0x4b entry bytes of `30/32/53`; its
 policy rows are matched as the 0x53 rows they truncate (eight more zero bytes). The TGP row is
 header byte 10; notebook headers store `ff ff ff 02` in bytes 10..13 and name
-row 2 through the D-notifier index. The TGP row must be class 1 in mW on power
+row 2 through the D-notifier index (`02 ff ff 02`, the same header with the TGP index
+filled in, reads the same way; see
+[Runtime power limit switch](#runtime-power-limit-switch-runtime_power_limit_unlock-opt-in)).
+The TGP row must be class 1 in mW on power
 channel 0, which must be the class-2 sum on rail 0xf5 (the total board power
 monitor in the Ada and GB20x GET readings). The rated values equal the published
 board power of all fifteen desktop and workstation images. Other policies are
@@ -2652,7 +2782,8 @@ C 0x1C, M 0x1D, i 0x68): pointers past a token's end are absent.
 **Power policy table (P+0x2C).** `30/2c/42`, and `30/27/42` on one RTX 2080 image (the
 first 0x27 header bytes of `30/2c/42`). Rows hold minimum/rated/maximum at bytes 2/6/10
 as on Ampere; the TGP row is row 2 on every image (header byte 10, or byte 13 with the
-notebook header `ff ff ff 02`). It must read the board-total power channel, the only
+notebook header `ff ff ff 02`, or `02 ff ff 02` with the runtime power limit switch on).
+It must read the board-total power channel, the only
 class-2 sum on rail 0xf5 of the 20-entry, 22-byte channel table (P+0x3C): channel 9 on
 the desktop TU10x/TU116 images (channel 0 there is another sum, rail 0xdf), channel 0
 on TU117 and the laptops. `power_max_w`, `power_default_w` and `power_min_w` keep the
@@ -2839,6 +2970,7 @@ PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_advanced_fields.py
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_ada_fields.py'
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_ampere_fields.py'
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_turing.py'
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_runtime_power_limit.py'
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_rail_vmin.py'
 ```
 

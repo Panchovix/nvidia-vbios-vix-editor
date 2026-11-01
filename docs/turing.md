@@ -8,8 +8,9 @@ has run edited images through the Windows loader (driver 617.70). An edit of 500
 connector loaded, and the card reached about 458 W under load: the power limiter no longer triggered, the voltage
 limiters (Reliability Voltage, Max Operating Voltage) did. With the board power alone it stopped near 300 W,
 because the per-connector rows were still at stock. An RTX 2070 with its power limit raised from 200 to 225 W
-reached 225 W through the Windows loader. Nothing else below is tested on hardware. If you own a Turing card, the
-tester guide at the end tells us what works.
+reached 225 W through the Windows loader. On one RTX 2070 Laptop GPU (Windows, driver 621.01) the runtime power
+limit switch below made MSI Afterburner's power limit slider work. Nothing else below is tested on hardware. If
+you own a Turing card, the tester guide at the end tells us what works.
 
 ## What the editor does
 
@@ -17,6 +18,21 @@ Every Turing field is marked experimental. Fields marked *advanced* appear after
 XOC-style fields**.
 
 - **Board power**: `power_max_w` (ceiling), `power_default_w` (boot default) and `power_min_w` (floor).
+- **Runtime power limit** (advanced, laptop and Max-Q laptop images): `runtime_power_limit_unlock`, a switch that
+  writes the TGP row into the TGP entry of the power table header, which laptop images leave empty (`0xff`), so
+  current drivers accept power limit changes at runtime (`nvidia-smi -pl`, MSI Afterburner) between `power_min_w` and
+  `power_max_w`, as drivers up to R525 did by themselves; off writes the stock byte back. For a higher limit raise
+  only `power_max_w`: `power_default_w`, which is 100 % on Afterburner's slider, can stay at stock, and the slider
+  then reaches `power_max_w` (113 % for 130 W over 115 W). Dynamic Boost keeps its own request on the same row and
+  the lowest request wins (while it holds one it overrides yours, and a raised `power_max_w` may let it go above the
+  stock limit by itself), and the battery limits still apply. On one RTX 2070 Laptop GPU (Windows, driver 621.01,
+  Windows loader) with the power limits at stock, MSI Afterburner's power limit slider, refused before, became
+  available, and at 64 % (73.6 W) the GPU drew 71.1 W under load; nothing above the stock limit was tried, and other
+  Turing laptops are not tested. To test it, turn it on, save, load `<name>-loader.bin` and reboot, then run
+  `nvidia-smi -pl <W>` (as root or administrator) or move MSI Afterburner's power limit slider, and report whether it
+  is accepted and whether the limit holds (`nvidia-smi -q -d POWER`, on the charger and on battery). To test a higher
+  limit, raise only `power_max_w` (for example from 115 to 130 W), set the slider above 100 % and report the power
+  drawn under load; a limit you set lasts until the driver loads again.
 - **Per-input power limits** (desktop and workstation images): `slot_power_max_w` / `slot_power_rated_w` for
   the PCIe slot (on one MSI GTX 1650 the slot row has the board power's class; the same fields edit it), and
   `connector_N_power_max_w` / `connector_N_power_rated_w` for each external 12 V connector

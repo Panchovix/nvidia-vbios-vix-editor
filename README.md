@@ -177,7 +177,15 @@ they are copied as stored numbers, so check that this board's hardware can take 
   ROM of the same GPU stores 90 A), the likely cause, though not proven. **NVVDD output current
   limit ceiling** and **NVVDD output current limit, rated** (experimental, under **Show advanced
   XOC-style fields**) edit it; the limit likely protects the core VRM, which was sized for the
-  stock value.
+  stock value. On Turing, Ampere and RTX 50 laptops, **Expose runtime power limit** (experimental,
+  under **Show advanced XOC-style fields**) fills in the TGP entry that laptop images leave empty,
+  so current drivers accept power limit changes from `nvidia-smi -pl` and MSI Afterburner, as
+  drivers up to R525 did by themselves on Turing and Ampere laptops. On one RTX 2070 Laptop GPU
+  on Windows the Afterburner slider then worked, with the limits at stock. The slider's 100 % is
+  **Boot default board power** and its top is **Board power ceiling**, so to allow more, raise
+  only the ceiling; nothing above the stock limit has been tried yet. While Dynamic Boost or the
+  laptop's own power mode holds a request, it overrides the slider, and a raised ceiling may let
+  it go above the stock limit by itself.
 
 ## Run from source
 

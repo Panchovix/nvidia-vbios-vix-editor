@@ -23,7 +23,7 @@ from .registry import (registry, power, input_current, output_ocp, slot_power, p
                        FIXED_SEMANTICS, REL_FLOOR_SEMANTICS, DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS,
                        MAX_TEMP_SEMANTICS, FACTORY_SEMANTICS, ADVANCED_SEMANTICS, PERF_CF_CONTROLLERS, fxp_percent,
                        FAN_ZERO_RPM_BITS, FAN_ZERO_RPM_TEMP_CEILING, FAN_ZERO_RPM_TEMP_FLOOR, fan_stop_accepted,
-                       fan_stop_parameters)
+                       fan_stop_parameters, RUNTIME_LIMIT_SEMANTICS)
 
 # The value semantics of the two zero RPM temperatures of a fan policy entry: the lower, then the upper.
 ZERO_RPM_PAIR_SEMANTICS = ('stored-fan-zero-rpm-lower-temperature', 'stored-fan-zero-rpm-upper-temperature')
@@ -38,10 +38,11 @@ REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresh
 # REL/ALT values and the GB20x and Ada REL floors.
 RAIL_EXCEPTIONS = (VMIN_SEMANTICS, VMIN_FIXED_SEMANTICS, FOLLOW_OV_SEMANTICS, FOLLOW_OV_VOLTAGE_SEMANTICS,
                    FIXED_SEMANTICS, REL_FLOOR_SEMANTICS)
-# Layout fields whose bytes no other check rereads through the canonical parser: only the
-# reviewed complete binding (offsets, encoding, scale and layout) may write them.
-COMPLETE_BINDING_SEMANTICS = (RAIL_EXCEPTIONS + (DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS, MAX_TEMP_SEMANTICS) +
-                              FACTORY_SEMANTICS + ADVANCED_SEMANTICS)
+# Layout fields whose bytes no other check rereads through the canonical parser, and the runtime power
+# limit switch (the TGP index of the power table header): only the reviewed complete binding (offsets,
+# encoding, scale and layout) may write them.
+COMPLETE_BINDING_SEMANTICS = (RAIL_EXCEPTIONS + (DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS, MAX_TEMP_SEMANTICS,
+                                                 RUNTIME_LIMIT_SEMANTICS) + FACTORY_SEMANTICS + ADVANCED_SEMANTICS)
 # GB20x Advanced section: the objects of its tables (BIT P offset -> object), which change only at
 # the bytes the canonical Advanced bindings declare.
 ADVANCED_OBJECTS = {0xA8: PERF_CF_TABLE[-1], 0xAC: PERF_CF_POLICIES[-1],
@@ -671,7 +672,10 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
             raise VbiosError('FACTORY_DEFAULT_CHANGED', 'power factory/rated defaults must be preserved')
         table = parser.pointer('P', 0x2C)
         header_size, stride = image.blob[table + 1:table + 3]
-        if image.blob[table:table + header_size] != output.blob[table:table + header_size]:
+        # The header changes only at the TGP index the canonical runtime power limit switch writes.
+        slot = {at for binding in canonical.values() if binding.descriptor['value_semantics'] == RUNTIME_LIMIT_SEMANTICS
+                for at in binding.offsets}
+        if any(image.blob[at] != output.blob[at] and at not in slot for at in range(table, table + header_size)):
             raise VbiosError('PRESERVED_FIELD_CHANGED', 'power table header identity must be preserved')
         for index, (left, right) in enumerate(zip(source_rows, target_rows)):
             if index not in minimum_indices and left['minimum_raw'] != right['minimum_raw']:

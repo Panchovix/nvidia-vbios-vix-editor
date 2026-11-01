@@ -297,6 +297,7 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'field.slot_power_max_w': 'PCIe slot power ceiling (experimental)',
  'field.board_fixed_rated_w': 'Fixed board policies 2/7 rated power (advanced, XOC-style, experimental)',
  'field.notebook_base_tgp_w': 'Notebook base TGP (experimental)',
+ 'field.runtime_power_limit_unlock': 'Expose runtime power limit (nvidia-smi -pl, Afterburner, experimental)',
  'field.slot_current_threshold_rated_ma': 'PCIe slot current threshold, rated (advanced, experimental)',
  'field.slot_current_threshold_max_ma': 'PCIe slot current threshold ceiling (advanced, experimental)',
  'field.nvvdd_power_threshold_rated_w': 'NVVDD output power threshold, rated (advanced, experimental)',
@@ -351,6 +352,28 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
                       "comes back once they are moved back. Other laptops are not tested. The laptop's VRM, cooling "
                       'and power adapter were sized for the stock limit, and a battery that drains while plugged in '
                       'under full CPU and GPU load means the adapter falls short.',
+ 'runtime_limit.note': 'Laptop ROMs leave the TGP entry of the power table header empty (0xff), and current drivers '
+                       'then refuse runtime power limit changes (nvidia-smi -pl, MSI Afterburner). On writes the TGP '
+                       'row there, so the driver accepts limits between Board power floor and Board power ceiling; '
+                       'Off writes the empty entry back. For a higher limit from the slider or nvidia-smi -pl, raise '
+                       "only Board power ceiling: Boot default board power, which is 100 % on MSI Afterburner's "
+                       'slider, can stay at stock, and the slider then goes up to the ceiling (113 % for a 130 W '
+                       'ceiling over 115 W). A limit you set lasts until the driver loads again. Dynamic Boost and '
+                       "the laptop's configurable TGP (the NVIDIA platform framework, NVPCF, on Windows; "
+                       'nvidia-powerd on Linux, Ampere and newer) keep their own request on the same row, and the '
+                       'lowest request wins: while they hold one, a higher value has no effect and their next update '
+                       'drops yours. Their request is capped by the ceiling too, so with a raised ceiling they may go '
+                       'above the stock limit by themselves. On battery the lower battery limits still apply. The '
+                       "laptop's VRM, cooling and power adapter were sized for the stock limit.",
+ 'runtime_limit.turing': 'Tested on one RTX 2070 Laptop GPU on Windows (driver 621.01), with the power limits at '
+                         "stock: with the switch on, MSI Afterburner's power limit slider, refused before, became "
+                         'available, and at 64 % (73.6 W) the GPU drew 71.1 W under load. Nothing above the stock '
+                         'limit was tried, and other Turing laptops are not tested.',
+ 'runtime_limit.untested': 'Not tested on hardware.',
+ 'runtime_limit.r525': 'NVIDIA drivers up to R525 (Windows 528.49, Linux 525.89.02) did this by themselves on these '
+                       'ROMs.',
+ 'runtime_limit.gb20x': 'No NVIDIA driver did this on an RTX 50 laptop: R525, which did it on older laptops, came '
+                        'before these GPUs.',
  'lpwr.enabled_entries': ('This product is not among the reviewed ones, so this switch covers the entries this '
                           'ROM enables. A copy saved with Off no longer shows the switch, since an entry shipped '
                           'disabled looks the same as one turned off: keep the original ROM to go back to Stock.'),

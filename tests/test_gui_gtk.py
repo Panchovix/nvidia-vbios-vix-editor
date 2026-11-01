@@ -283,11 +283,21 @@ class GtkSmokeTests(unittest.TestCase):
                         # with the advanced box off or on (the base TGP row shown and untouched).
                         for advanced in (False, True):
                             window.advanced_toggle.set_active(advanced)
-                            # The base TGP is an advanced field: hidden until the box is ticked.
+                            # The base TGP and the runtime power limit switch are advanced fields: hidden until
+                            # the box is ticked.
                             self.assertEqual('notebook_base_tgp_w' in window.entries, advanced)
+                            self.assertEqual('runtime_power_limit_unlock' in window.entries, advanced)
                             staged({'power_max_w': '120'}, {'power_max_w': '120'})
                             staged({'power_max_w': '175', 'power_default_w': '160'}, {'power_default_w': '160'})
                             staged({'power_default_w': '80'}, {})
+                        # The switch row notes what it writes and what still limits the result, that it is not
+                        # tested on an RTX 50 laptop and that no driver did this on one.
+                        switch = '\n'.join(texts(window.rows['runtime_power_limit_unlock']['row']))
+                        self.assertIn(window.text('runtime_limit.note'), switch)
+                        self.assertIn(window.text('runtime_limit.untested'), switch)
+                        self.assertIn(window.text('runtime_limit.gb20x'), switch)
+                        self.assertNotIn(window.text('runtime_limit.r525'), switch)
+                        self.assertNotIn(window.text('runtime_limit.turing'), switch)
                         base = '\n'.join(texts(window.rows['notebook_base_tgp_w']['row']))
                         self.assertIn(window.text('notebook.base_tgp'), base)
                         self.assertIn(window.text('field.notebook_base_tgp_w').split(' (')[0], base)

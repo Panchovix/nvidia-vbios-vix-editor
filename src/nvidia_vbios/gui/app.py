@@ -24,8 +24,8 @@ from .presentation import (ADVANCED_SECTION, advanced_group, change_rows, change
                            fan_curve_hint, fan_stop_notes, field_label, field_section, import_summary, linux_value,
                            lpwr_notes, number, memory_columns, memory_comparison, memory_configuration, memory_raw_text,
                            MEMORY_TIMINGS, notebook_notes, opt_in_field_keys, output_current_notes, parse_number,
-                           per_chip, primary_preview, read_only_reason, row_title, SECTION_NAMES, section_order,
-                           shunt_real,
+                           per_chip, primary_preview, read_only_reason, row_title, runtime_limit_notes,
+                           SECTION_NAMES, section_order, shunt_real,
                            sense_profile_notes, shunt_scaled, summed_cap_notes, technical_field_keys, to_display,
                            to_stored, unsupported_notes, value_text, vmin_clone_notes, vmin_tree_notes, windows_value,
                            zero_rpm_channels_hint)
@@ -877,7 +877,7 @@ class EditorWindow(Gtk.ApplicationWindow):
         for note in (summed_cap_notes(field, fields, self.language) +
                      connector_input_notes(field, fields, self.language) +
                      sense_profile_notes(field, fields, self.language) +
-                     notebook_notes(field, family, self.language) +
+                     notebook_notes(field, family, self.language) + runtime_limit_notes(field, family, self.language) +
                      output_current_notes(field, family, self.language) + lpwr_notes(field, self.language) +
                      vmin_clone_notes(field, self.language) + vmin_tree_notes(field, family, self.language) +
                      fan_stop_notes(field, family, self.language)):

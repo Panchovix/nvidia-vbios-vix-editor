@@ -363,6 +363,12 @@ class ExtendedFieldTests(unittest.TestCase):
         self.assertEqual((floor['ordering_group'], ceiling['ordering_group']), ('nvvdd-rel-clamp', 'nvvdd-rel-clamp'))
         self.assertEqual(floor['equation_offset'], ceiling['equation_offset'])
         self.assertIn('REL is the higher of the chip value and this floor, up to the REL ceiling', floor['reason'])
+        # Hardware result: REL at 1100 mV floors on three RTX PRO 6000 Max-Q, and a runtime offset on top of it.
+        self.assertIn('made the driver evaluate REL at 1100 mV on NVVDD and MSVDD without a runtime request',
+                      floor['reason'])
+        self.assertIn('(on an RTX PRO 4000 SFF with the same floors, -100 mV gave 1000 mV)', floor['reason'])
+        self.assertEqual([(e['kind'], e['set_tested']) for e in floor['evidence'][-2:]],
+                         [('structural-table', False), ('hardware-test', True)])
         at = floor['equation_offset']
         result = edit(image, {'nvvdd_rel_equation_min_mv': 950})
         self.assertEqual([e['offset'] for e in result.manifest['edits']], [at + 3])

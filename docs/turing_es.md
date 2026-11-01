@@ -8,8 +8,10 @@ imágenes editadas con el cargador de Windows (driver 617.70). Una potencia de l
 conector se cargó y la tarjeta llegó a unos 458 W bajo carga: el limitador de potencia dejó de activarse y se
 activaron los de voltaje (Reliability Voltage, Max Operating Voltage). Con solo la potencia de la tarjeta se
 detenía cerca de 300 W, porque las filas de cada conector seguían en sus valores de fábrica. Una RTX 2070 con el
-límite de potencia subido de 200 a 225 W llegó a 225 W con el cargador de Windows. Nada más de lo que sigue está
-probado en hardware. Si tienes una tarjeta Turing, la guía del final nos dice qué funciona.
+límite de potencia subido de 200 a 225 W llegó a 225 W con el cargador de Windows. En una RTX 2070 Laptop GPU
+(Windows, driver 621.01) el interruptor del límite de potencia en uso de más abajo hizo funcionar el deslizador
+del límite de potencia de MSI Afterburner. Nada más de lo que sigue está probado en hardware. Si tienes una
+tarjeta Turing, la guía del final nos dice qué funciona.
 
 ## Qué hace el editor
 
@@ -18,6 +20,23 @@ Todos los campos Turing están marcados como experimentales. Los marcados como *
 
 - **Potencia de la tarjeta**: `power_max_w` (techo), `power_default_w` (valor por defecto al arrancar) y
   `power_min_w` (mínimo).
+- **Límite de potencia en uso** (avanzado, imágenes de portátil, Max-Q incluidas): `runtime_power_limit_unlock`, un
+  interruptor que escribe la fila del TGP en la entrada del TGP del encabezado de la tabla de potencia, que las
+  imágenes de portátil dejan vacía (`0xff`), para que los drivers actuales acepten cambios del límite de potencia en
+  uso (`nvidia-smi -pl`, MSI Afterburner) entre `power_min_w` y `power_max_w`, como lo hacían por sí solos los
+  drivers hasta R525; desactivado vuelve a escribir el byte de fábrica. Para un límite más alto sube solo
+  `power_max_w`: `power_default_w`, que es el 100 % del deslizador de Afterburner, puede quedar de fábrica, y el
+  deslizador llega entonces hasta `power_max_w` (113 % con 130 W sobre 115 W). Dynamic Boost mantiene su propio
+  pedido sobre la misma fila y gana el pedido más bajo (mientras tenga uno, manda sobre el tuyo, y con `power_max_w`
+  más alto podría pasar por sí solo del límite de fábrica), y los límites de batería siguen rigiendo. En una RTX 2070
+  Laptop GPU (Windows, driver 621.01, cargador de Windows) con los límites de potencia de fábrica, el deslizador del
+  límite de potencia de MSI Afterburner, que antes estaba bloqueado, quedó disponible, y al 64 % (73,6 W) la GPU
+  consumió 71,1 W bajo carga; no se probó nada por encima del límite de fábrica, y otros portátiles Turing no se
+  probaron. Para probarlo, actívalo, guarda, carga `<nombre>-loader.bin` y reinicia; luego ejecuta
+  `nvidia-smi -pl <W>` (como root o administrador) o mueve el deslizador del límite de potencia de MSI Afterburner, y
+  reporta si lo acepta y si el límite se mantiene (`nvidia-smi -q -d POWER`, con el cargador y con batería). Para
+  probar un límite más alto, sube solo `power_max_w` (por ejemplo de 115 a 130 W), pon el deslizador sobre 100 % y
+  reporta la potencia bajo carga; el límite que fijes dura hasta que el driver vuelva a cargar.
 - **Límites de potencia por entrada** (imágenes de escritorio y workstation): `slot_power_max_w` /
   `slot_power_rated_w` para el slot PCIe (en una GTX 1650 de MSI la fila del slot tiene la clase de la
   potencia de la tarjeta; los mismos campos la editan), y `connector_N_power_max_w` /

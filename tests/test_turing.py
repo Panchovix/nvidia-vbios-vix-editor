@@ -800,6 +800,8 @@ class TuringVoltageTests(unittest.TestCase):
         self.assertEqual((flat['current'], flat['editable'], flat['bounds']['minimum'], flat['bounds']['maximum'],
                           flat['ordering_group']), (1125, True, 950, 1462, 'nvvdd-rel-alt'))
         self.assertIn('at or above the stored boot voltage and the highest VMIN', flat['reason'])
+        self.assertIn('above 1243.75 mV is beyond the Turing VFE voltage variable range (450-1243.75 mV)',
+                      flat['reason'])
         self.assertIn(TURING_UNTESTED, flat['reason'])
         ov = descriptors(followed.image)['nvvdd_ov_equation_max_mv']['equation_offset']
         offsets = [copy for k in (3, 7, 11) for copy in self.parser.copy_offsets(ov + k, 4)]
@@ -1002,6 +1004,8 @@ def joint_step(field):
     bounds, current = field['bounds'], Decimal(str(field['current']))
     if field['key'] == 'max_operating_temp_c':
         return current - 1
+    if field['key'] == 'runtime_power_limit_unlock':
+        return 1 - current
     if field['key'] in ('factory_gpc_offset_mhz', 'factory_memory_offset_mhz'):
         # A value other than 0 sets the flag and 0 writes flag 0 with 0 kHz: step only an entry that stores an offset
         # (flag 1, not 0 kHz), which going back restores byte for byte.

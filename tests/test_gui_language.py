@@ -143,6 +143,51 @@ class LanguageTests(unittest.TestCase):
         self.assertIn('VMIN < REL floor ≤ REL ≤ ALT', Messages()('order_hint_voltage'))
         self.assertIn('VMIN < piso REL ≤ REL ≤ ALT', Messages('es')('order_hint_voltage'))
 
+    def test_runtime_power_limit_switch_label_and_notes(self):
+        from nvidia_vbios.editor.sections import SECTIONS
+        from nvidia_vbios.gui.presentation import row_title, runtime_limit_notes
+        field = {'key': 'runtime_power_limit_unlock', 'units': 'flag', 'experimental': True, 'opt_in': True}
+        self.assertEqual(row_title(field), ('Expose runtime power limit (nvidia-smi -pl, Afterburner)', True))
+        self.assertEqual(row_title(field, 'es'),
+                         ('Permitir cambiar el límite de potencia en uso (nvidia-smi -pl, Afterburner)', True))
+        power = dict(SECTIONS)['power']
+        self.assertEqual(power.index('runtime_power_limit_unlock'), power.index('notebook_base_tgp_w') + 1)
+        # What it writes and what still limits the result, the hardware result of the family (one Turing laptop),
+        # then its driver precedent.
+        for family, tested, precedent in (('turing', 'runtime_limit.turing', 'runtime_limit.r525'),
+                                          ('ampere', 'runtime_limit.untested', 'runtime_limit.r525'),
+                                          ('blackwell-gb20x', 'runtime_limit.untested', 'runtime_limit.gb20x')):
+            for language in ('en', 'es'):
+                text = Messages(language)
+                self.assertEqual(runtime_limit_notes(field, family, language),
+                                 [text('runtime_limit.note'), text(tested), text(precedent)])
+        self.assertEqual(runtime_limit_notes({'key': 'power_max_w'}, 'turing'), [])
+        english, spanish = (runtime_limit_notes(field, 'ampere', language) for language in ('en', 'es'))
+        # For more, the ceiling alone (the boot default is the slider's 100 %), which also caps the platform.
+        for part in ('nvidia-smi -pl', 'Off writes the empty entry back', 'Board power floor and Board power ceiling',
+                     "raise only Board power ceiling: Boot default board power, which is 100 % on MSI Afterburner's "
+                     'slider, can stay at stock', 'Dynamic Boost', 'the lowest request wins',
+                     'a higher value has no effect', 'capped by the ceiling too', 'On battery',
+                     'sized for the stock limit'):
+            self.assertIn(part, english[0])
+        for part in ('nvidia-smi -pl', 'Desactivado vuelve a dejar la entrada vacía', 'el piso y el techo de potencia '
+                     'de la placa', 'sube solo el techo de potencia de la placa: la potencia por defecto al arrancar, '
+                     'que es el 100 % del deslizador de MSI Afterburner, puede quedar de fábrica', 'Dynamic Boost',
+                     'gana el pedido más bajo', 'un valor más alto no tiene efecto', 'limitado por el techo',
+                     'Con batería', 'el límite de fábrica'):
+            self.assertIn(part, spanish[0])
+        self.assertEqual((english[1], spanish[1]), ('Not tested on hardware.', 'Sin probar en hardware.'))
+        self.assertIn('R525', english[2])
+        self.assertIn('R525', spanish[2])
+        self.assertIn('RTX 50', runtime_limit_notes(field, 'blackwell-gb20x', 'es')[2])
+        english, spanish = (runtime_limit_notes(field, 'turing', language)[1] for language in ('en', 'es'))
+        for part in ('one RTX 2070 Laptop GPU on Windows (driver 621.01)', 'power limit slider', '64 % (73.6 W)',
+                     '71.1 W under load', 'Nothing above the stock limit was tried'):
+            self.assertIn(part, english)
+        for part in ('una RTX 2070 Laptop GPU con Windows (driver 621.01)', 'deslizador del límite de potencia',
+                     '64 % (73,6 W)', '71,1 W bajo carga', 'No se probó nada por encima del límite de fábrica'):
+            self.assertIn(part, spanish)
+
 
 if __name__ == '__main__':
     unittest.main()

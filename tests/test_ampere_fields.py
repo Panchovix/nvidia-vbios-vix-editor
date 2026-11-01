@@ -655,6 +655,7 @@ class AmpereVoltageTests(unittest.TestCase):
         flat = fields['nvvdd_rel_alt_follow_ov_mv']
         self.assertEqual((flat['current'], flat['editable'], flat['bounds']['minimum'], flat['bounds']['maximum'],
                           flat['vfe_copy_slot']), (1100, True, 900, 1430, None))
+        self.assertIn('above 1250 mV is beyond the Ampere VFE voltage variable range (450-1250 mV)', flat['reason'])
         self.assertIn('not hardware-tested on Ampere', flat['reason'])
         at = fields['nvvdd_ov_equation_max_mv']['equation_offset']
         offsets = [copy for k in (3, 7, 11) for copy in parser.copy_offsets(at + k, 4)]

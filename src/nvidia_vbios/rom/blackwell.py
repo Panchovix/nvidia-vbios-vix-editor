@@ -608,11 +608,33 @@ class BlackwellRom:
         ff ff 02, rows 7 and 8 of type 0 with zero limits, and row 2 (type 1)
         holds 5000/80000/175000 mW (5000/95000/175000 on the RTX 5090 Laptop):
         the minimum, default and maximum nvidia-smi reports on those laptops.
+        ff 02 02 is the same layout with the runtime power limit switch on
+        (runtime_limit_slot).
         """
         at = self.pointer("P", 11 * 4)
         rows = self.power_rows()
-        return (self.blob[at + 21:at + 24] == bytes((0xFF, 0xFF, 2)) and rows[2]['type'] == 1 and
-                all(rows[i]['type'] == 0 and not rows[i]['maximum_raw'] for i in (7, 8)))
+        return (self.blob[at + 21:at + 24] in (bytes((0xFF, 0xFF, 2)), bytes((0xFF, 2, 2))) and
+                rows[2]['type'] == 1 and all(rows[i]['type'] == 0 and not rows[i]['maximum_raw'] for i in (7, 8)))
+
+    def runtime_limit_slot(self):
+        """The TGP index byte (policy header byte 22) the runtime power limit switch writes, or None.
+
+        NVIDIA RM serves the runtime power limit (nvidia-smi -pl, the NvAPI client power policies) through
+        that byte, which names row 8 on every desktop and Max-Q source, and refuses it while it is 0xff, as
+        on the notebook layout, whose TGP row 2 only the D-notifier byte 23 names. Byte 22 holds 0xff (state 0)
+        or 2 (state 1); no driver filled it in on GB20x (the R525 fallback to the first class-1 row is older).
+        Row 2 must hold mW: bit 0 of row byte 1 clear (the unit bit the GSP-RM and Windows driver parsers
+        read; the current rows 9..14 set it). The power table object must be its only hashed owner.
+        dict(offset, row, state).
+        """
+        if not self.notebook_power_layout() or self.blob[self.power_rows()[2]['offset'] + 1] & 1:
+            return None
+        at = self.pointer("P", 11 * 4) + 22
+        try:
+            self.object_for(at)
+        except FormatError:
+            return None
+        return dict(offset=at, row=self.blob[at + 1], state=0 if self.blob[at] == 0xFF else 1)
 
     def notebook_base_tgp(self):
         """Row 2 +73 of the notebook layout (u32 mW), or None.

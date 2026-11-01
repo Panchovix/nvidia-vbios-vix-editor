@@ -157,8 +157,8 @@ def experimental_flag(image, parser, key):
 ADA_POWER_EVIDENCE = {
     'kind': 'nvidia-struct-prefix-and-structural-rule', 'source': SOURCE,
     'format': 'Ada 3x power 30/32/53, 30/34/5b or 30/2c/4b (the first 0x2c header and 0x4b entry bytes of '
-              '30/32/53); TGP row = header byte 10 (notebook: byte 13 when bytes 10..12 are ff); class 1 mW on '
-              'power channel 0 = class-2 sum on rail 0xf5',
+              '30/32/53); TGP row = header byte 10 (notebook: byte 13 when bytes 11..13 are ff ff 02 and byte 10 is ff '
+              'or 02); class 1 mW on power channel 0 = class-2 sum on rail 0xf5',
     'observation': 'the TGP row is row 2 on every parseable Ada image; its rated value equals the published board '
                    'power of the reference desktop and workstation boards in the corpus (a partner RTX 4090 '
                    'image, VBIOS 95.02.18, is rated 550 W)'}
@@ -207,7 +207,7 @@ AMPERE_STRUCTURAL_EVIDENCE = {
 AMPERE_POWER_EVIDENCE = dict(
     AMPERE_STRUCTURAL_EVIDENCE,
     format='Ampere 3x power 30/2c/47, 30/2c/43 or 30/32/47; TGP row = header byte 10 (notebook: byte 13 when bytes '
-           '10..12 are ff); class 1 mW on power channel 0 = class-2 sum on rail 0xf5',
+           '11..13 are ff ff 02 and byte 10 is ff or 02); class 1 mW on power channel 0 = class-2 sum on rail 0xf5',
     observation='the TGP row is row 2 on every image; its rated value is the board power of the model on the '
                 'desktop and workstation images (for example RTX A6000 300 W, RTX A4000 140 W, RTX 3060 170 W)')
 AMPERE_NOTEBOOK_REASON = ('experimental: stored notebook TGP; the platform (Dynamic Boost, nvidia-powerd) requests the '
@@ -227,9 +227,9 @@ TURING_STRUCTURAL_EVIDENCE = {
 TURING_POWER_EVIDENCE = dict(
     TURING_STRUCTURAL_EVIDENCE,
     format='Turing 3x power 30/2c/42 or 30/27/42 (the first 0x27 header bytes of 30/2c/42); TGP row = header byte '
-           '10 (notebook: byte 13 when bytes 10..12 are ff); class 1 mW on the board-total power channel, the only '
-           'class-2 sum on rail 0xf5 of the 20-entry channel table (channel 9 on desktop TU10x/TU116, 0 on TU117 and '
-           'laptops)',
+           '10 (notebook: byte 13 when bytes 11..13 are ff ff 02 and byte 10 is ff or 02); class 1 mW on the '
+           'board-total power channel, the only class-2 sum on rail 0xf5 of the 20-entry channel table (channel 9 on '
+           'desktop TU10x/TU116, 0 on TU117 and laptops)',
     observation='the table decodes like the Ampere power table: minimum/rated/maximum u32 mW at row bytes 2/6/10; '
                 'the TGP row is row 2 on every image; its rated value is the board power of the model (for example '
                 'RTX 2080 Ti 260 W, TITAN RTX 280 W, GTX 1660 SUPER 125 W, GTX 1650 75 W)')
@@ -345,7 +345,8 @@ def checksum_layout(image, parser):
 NOTEBOOK_POWER_EVIDENCE = {
     'kind': 'structural-row-comparison', 'source': 'reviewed Blackwell notebook table layout',
     'scope': 'RTX 5080 Laptop GPU 98.03.5C.00.F2 (10de:2c59), RTX 5090 Laptop GPU 98.03.5C.00.72 (10de:2c18)',
-    'format': 'GB20x power v40 notebook layout: header bytes 21..23 ff ff 02, rows 7/8 empty, TGP row 2 type 1',
+    'format': 'GB20x power v40 notebook layout: header bytes 21..23 ff ff 02 (ff 02 02 with '
+              'runtime_power_limit_unlock on), rows 7/8 empty, TGP row 2 type 1',
     'set_tested': False, 'runtime_get': False}
 # Row 2 +73 of the notebook layout. Nothing in open code names it; the firmware that reads the
 # table is closed.
@@ -472,6 +473,83 @@ NOTEBOOK_BASE_TGP_REASON = ('experimental, opt-in: the base TGP that Dynamic Boo
                             'and the ceiling, so a value above the ceiling takes a higher ceiling in the same edit; '
                             'other laptops untested; the laptop VRM, cooling and power adapter were sized for the '
                             'stock limit')
+# The runtime power limit switch (runtime_power_limit_unlock): the TGP index of the power policy header, which the
+# laptop images leave at 0xff (TableRom/BlackwellRom.runtime_limit_slot). Static analysis of closed firmware and
+# drivers; one Turing laptop has run an edited header (RUNTIME_LIMIT_TURING_HARDWARE), no Ampere or GB20x one.
+RUNTIME_LIMIT_SEMANTICS = 'stored-runtime-power-limit-slot'
+RUNTIME_LIMIT_EVIDENCE = {
+    'kind': 'firmware-static-analysis',
+    'source': 'GSP-RM 615.78.08 (gsp_ga10x.bin) client power limit handler 0x178ed60, Windows driver 621.01 '
+              '(nvlddmkm.sys) 0x1404f01c1, R525 525.89.02 power policy table parser; for Turing, GSP-RM 621.01 '
+              '(gsp_tu10x.bin) power policies and NvAPI 621.01 client power policies (0x18023be80)',
+    'observation': 'the client power limit (RM control 0x2080e61e SET, which nvidia-smi -pl uses through NVML, and '
+                   '0x2080a61d GET) is served by the TGP policy the header names and returns NV_ERR_NOT_SUPPORTED '
+                   'while that index is 0xff (0x178edb0); the NvAPI client power policies (MSI Afterburner) need the '
+                   'same index; neither checks for a laptop; R525 took the first row of class 1 (byte 0 & 0xf | '
+                   '(byte 66 & 0xf) << 4 on rows of 0x43 bytes or more) as the TGP when the index was 0xff, the 615 '
+                   'and 621 drivers do not; Dynamic Boost and the configurable TGP request the same row on these '
+                   'images as another client: the client requests combine by minimum (0x17b8030), and while the '
+                   'platform holds one its update drops the nvidia-smi request (0x17cbc98); on Turing (621.01) the '
+                   'client request starts at the row rated value (power_default_w) at every driver load (0x4b979e4), '
+                   "nvidia-smi -pl (0x4b9b66c) and NvAPI's client policy SET (0x4b8caf4) take the row minimum to "
+                   'maximum, NvAPI gives the slider in percent of the rated value (0x18023c382), and the platform '
+                   'request is capped by the row maximum (0x4be456c; the configurable TGP mode without its turbo '
+                   'offset requests that maximum); that the power controller holds a client limit above the rated '
+                   'value is not verified',
+    'set_tested': False}
+RUNTIME_LIMIT_LAYOUT_EVIDENCE = {
+    'kind': 'structural-row-comparison', 'source': 'Turing, Ampere, Ada and GB20x VBIOS corpus',
+    'observation': 'the TGP index is 0xff on the laptop images only (7 Turing, 10 Ampere, 5 Ada, 2 GB20x; a sixth '
+                   'Ada laptop image, which the editor does not parse, stores the same header) and names the TGP row '
+                   'on every desktop and workstation image; the D-notifier index names row 2 on every laptop image, '
+                   'the first R525 class-1 row on the Turing and Ampere ones',
+    'set_tested': False, 'runtime_get': False}
+RUNTIME_LIMIT_FORMATS = {
+    'table': '3x power header byte 10 (TGP index) and byte 13 (D-notifier index): ff ff ff 02 in bytes 10..13 of the '
+             'notebook header, 02 ff ff 02 with the switch on; written in every chain, additive checksum repaired',
+    'gb20x': 'GB20x power v40 header byte 22 (TGP index) and byte 23 (D-notifier index): ff ff 02 in bytes 21..23 of '
+             'the notebook layout, ff 02 02 with the switch on; row 2 in mW (row byte 1 bit 0 clear); object 0x13 '
+             'hash, directory digest and checksum repaired'}
+# One user's report, with screenshots: an RTX 2070 Laptop GPU on Windows ran a copy with the switch on and the power
+# limits at stock. Dynamic Boost, the battery and a limit above the stock one were not part of it.
+RUNTIME_LIMIT_TURING_HARDWARE = {
+    'kind': 'hardware-test', 'set_tested': True,
+    'source': 'user report: an edited image loaded as an override (Windows loader, Windows driver 621.01)',
+    'scope': 'one RTX 2070 Laptop GPU 90.06.58.40.08 (10de:1f14), row 2 stock 1000/115000/115000 mW; other Turing '
+             'laptops and the Ampere and GB20x laptops are untested',
+    'observed': "before the edit nvidia-smi -pl and MSI Afterburner's power limit slider were refused; with "
+                'runtime_power_limit_unlock 1 and the power limits at stock the slider became available, and at 64 % '
+                'the GPU was limited to 73.6 W (64 % of 115 W); under load (a Vulkan game, 99 % GPU use) it drew '
+                '71.1 W at 1245 MHz and 64 C; which of the two Turing loader files was loaded, whether Dynamic Boost '
+                'was active and the behaviour on battery were not reported, and no limit above the stock 115 W was '
+                'tried'}
+# The Turing ending of the switch's reason: that laptop, then the stale signed hash list of every Turing edit.
+RUNTIME_LIMIT_TURING_TESTED = (
+    "on one RTX 2070 Laptop GPU (Windows driver 621.01, Windows loader) MSI Afterburner's power limit slider, refused "
+    'before the edit, became available with the switch on and the power limits at stock, and at 64 % (73.6 W) the '
+    'GPU drew 71.1 W under load; nothing above the stock 115 W was tried, and other Turing laptops are untested; '
+    'the signed hash list over this table is left stale, as for the board and connector power, whose edits a driver '
+    'used on one RTX 2080 Ti')
+
+
+def runtime_limit_reason(parser, row):
+    """Reason of the runtime power limit switch, with the driver precedent of the family."""
+    precedent = ('no NVIDIA driver did this on GB20x: R525, which did it by itself on older laptop images, predates '
+                 'it' if isinstance(parser, BlackwellRom) else
+                 'NVIDIA drivers through R525 (Linux 525.89.02, Windows 528.49) did this by themselves on such images')
+    return ('experimental, opt-in: 1 names the TGP row (row %d) in the power table header, where laptop images leave '
+            'the TGP index empty (0xff), so that the driver accepts runtime power limit changes (nvidia-smi -pl, MSI '
+            'Afterburner); 0 writes 0xff back; %s, and later drivers refuse runtime power limit changes on laptops; '
+            "Dynamic Boost and the laptop's configurable TGP (the NVIDIA platform framework, NVPCF, on Windows; "
+            'nvidia-powerd on Linux, Ampere and newer) keep their own request on the same row and the lowest request '
+            'wins: while they hold one, a higher value has no effect and their next update drops yours, and without '
+            'one yours stays until the driver loads again; on battery the lower battery limits still apply; the '
+            'accepted range is the TGP row minimum to maximum, so raise power_max_w alone for a higher limit from '
+            "the slider or nvidia-smi -pl: power_default_w, 100 %% on MSI Afterburner's slider (whose top is "
+            'power_max_w over power_default_w), can stay at stock; the requests of Dynamic Boost and the '
+            'configurable TGP are capped by power_max_w too, so with it raised they may go above the stock limit '
+            'by themselves (the laptop VRM, cooling and power adapter were sized for the stock limit); %s'
+            % (row, precedent, RUNTIME_LIMIT_TURING_TESTED if turing(parser) else 'not hardware-tested'))
 
 
 @registry.register
@@ -665,7 +743,7 @@ def power(image, parser):
                          'firmware acceptance and runtime minimum remain unknown' if untested else
                   'encoded floor only; firmware acceptance and runtime minimum remain unknown',
                   **layout, **profile_extra, **flags)] + fixed_policy_rated(image, parser, rows, matching, top) + (
-        [] if base is None else [notebook_base_tgp(image, parser, tgp, base)])
+        [] if base is None else [notebook_base_tgp(image, parser, tgp, base)]) + runtime_power_limit(image, parser)
 
 
 def notebook_base_tgp(image, parser, tgp, base):
@@ -683,6 +761,34 @@ def notebook_base_tgp(image, parser, tgp, base):
                  format_scope='notebook TGP policy row 2 +73; no override profiles', experimental=True,
                  opt_in=True, ordering_group='board-power', encoding_bounds=(0, 0x7FFFFFFF / 1000),
                  reason=NOTEBOOK_BASE_TGP_REASON, notebook_tgp=True)
+
+
+def runtime_power_limit(image, parser):
+    """Experimental opt-in switch of the TGP index of a laptop power table header (runtime_limit_slot).
+
+    1 writes the TGP row there, so the driver serves runtime power limit changes; 0 writes the stock 0xff
+    back, so a copy switched back equals the stock image. Every chain (both Turing banks); only this
+    canonical binding may change a power table header byte (api.edit). The power fields read the same row
+    either way.
+    """
+    slot = parser.runtime_limit_slot()
+    if slot is None:
+        return []
+    editable = can_edit(image, parser)
+    offsets, layout = [], ()
+    if editable:
+        offsets = parser.copy_offsets(slot['offset'], 1) if isinstance(parser, TableRom) else [slot['offset']]
+        layout = ((0, (b'\xff',) * len(offsets)), (1, (bytes((slot['row'],)),) * len(offsets)))
+    form = 'gb20x' if isinstance(parser, BlackwellRom) else 'table'
+    return [field('runtime_power_limit_unlock', 'Expose runtime power limit (nvidia-smi -pl, Afterburner)', 'flag',
+                  slot['state'], 0 if editable else None, 1 if editable else None, editable,
+                  [dict(RUNTIME_LIMIT_EVIDENCE),
+                   dict(RUNTIME_LIMIT_LAYOUT_EVIDENCE, format=RUNTIME_LIMIT_FORMATS[form])] +
+                  ([dict(RUNTIME_LIMIT_TURING_HARDWARE)] if turing(parser) else []),
+                  offsets=offsets, encoding='<B' if editable else '', scale=1, layout=layout,
+                  writable_status=None if editable else 'unsupported', experimental=True, opt_in=True,
+                  value_semantics=RUNTIME_LIMIT_SEMANTICS, policy_indices=[slot['row']], notebook_tgp=True,
+                  reason=runtime_limit_reason(parser, slot['row']))]
 
 
 def fixed_policy_rated(image, parser, rows, matching, top=None):
@@ -909,14 +1015,30 @@ REL_FLOOR_EVIDENCE = {
                    'the driver reported REL 990 to 1000 mV on three RTX PRO 6000 Max-Q (the chip value), so the GSP '
                    'applies an edited clamp',
     'set_tested': False}
+# The GB20x REL floor on four workstation boards (Linux loader): REL at the floor without a runtime request, and a
+# runtime offset added on top of it.
+REL_FLOOR_HARDWARE = {
+    'kind': 'hardware-test', 'set_tested': True,
+    'source': 'edited images loaded as an override (Linux loader, Linux driver 615.78.08); read-only driver rail '
+              'status',
+    'scope': 'three RTX PRO 6000 Blackwell Max-Q and one RTX PRO 4000 Blackwell SFF, NVVDD and MSVDD; other boards '
+             'are untested',
+    'observed': 'with nvvdd_rel_equation_min_mv and msvdd_rel_equation_min_mv at 1100 mV and both REL ceilings at '
+                '1125 mV, the driver evaluated REL at 1100 mV on NVVDD and MSVDD of the Max-Q boards with no runtime '
+                'request (their chip value, the REL reported with only the ceiling raised: about 990 to 1000 mV); '
+                'on the RTX PRO 4000 SFF a runtime request of 1000 mV on both rails (a -100 mV offset written by a '
+                'tuning tool) evaluated 1000 mV, so a runtime offset still adds to the floor where the driver '
+                'applies it'}
 REL_FLOOR_REASON = (
     'experimental: the clamp minimum (floor) of the REL equation; REL is the higher of the chip value and this '
     'floor, up to the REL ceiling (the clamp maximum); the floor stays at most the OV value of the rail, so REL and '
     'VMIN (kept below REL) stay at or below OV; the chip value comes from the fused leakage (about 990 to '
-    '1000 mV on RTX PRO 6000 Max-Q boards with a raised ceiling); a tuning tool\'s runtime voltage offset still adds '
-    'on drivers that apply it, while on drivers that ignore runtime rail offsets on RTX 50 cards the VBIOS is the '
-    'way to raise REL; not hardware-tested (raising the clamp maximum of the same equation is: it let REL reach the '
-    'chip value); more voltage means more heat, power and wear; removing the override brings the card back')
+    '1000 mV on RTX PRO 6000 Max-Q boards with a raised ceiling); on three RTX PRO 6000 Max-Q boards (Linux driver '
+    '615.78.08, Linux loader) floors of 1100 mV on both rails, with the ceilings at 1125 mV, made the driver evaluate '
+    'REL at 1100 mV on NVVDD and MSVDD without a runtime request; a tuning tool\'s runtime voltage offset still adds '
+    'to the floor on drivers that apply it (on an RTX PRO 4000 SFF with the same floors, -100 mV gave 1000 mV), '
+    'while on drivers that ignore runtime rail offsets on RTX 50 cards the VBIOS is the way to raise REL; other '
+    'boards are untested; more voltage means more heat, power and wear; removing the override brings the card back')
 ADA_REL_FLOOR_EVIDENCE = {
     'kind': 'structural-table', 'source': 'Ada VBIOS corpus',
     'format': 'Ada VFE equation (25 bytes) selected at rail row byte 4: clamp minimum float32 uV at byte 3, maximum '
@@ -1047,7 +1169,8 @@ def rel_floor(image, parser, item, records, ceiling, follow, evidence):
                   REL_FLOOR_REASON)
     return field(rail.lower() + '_rel_equation_min_mv', f'{rail} REL equation output floor', 'mV', current,
                  lowest, min(item['output_maximum_uv'] / 1000, top) if editable else None, editable,
-                 [dict(e) for e in evidence] + [dict(ADA_REL_FLOOR_EVIDENCE if table else REL_FLOOR_EVIDENCE)],
+                 [dict(e) for e in evidence] + ([dict(ADA_REL_FLOOR_EVIDENCE)] if table else
+                                                [dict(REL_FLOOR_EVIDENCE), dict(REL_FLOOR_HARDWARE)]),
                  offsets=offsets, encoding='<f' if editable else '',
                  scale=1000, stored_units='uV' if known else None,
                  writable_status=None if editable else 'unsupported', experimental=True,
@@ -1685,6 +1808,10 @@ FOLLOW_OV_VOLTAGE_SEMANTICS = 'stored-follow-ov-voltage'
 # REL_FLOOR_MV) up to 130 % of its stock OV constant (1200 mV; Ampere 1100 mV, Turing 1125 mV), or the stored value,
 # if outside.
 FOLLOW_OV_VOLTAGE_MV = {'gb20x': (850, 1560), 'ada': (830, 1560), 'ampere': (900, 1430), 'turing': (950, 1462)}
+# The range of the VFE voltage variable per family (the voltage the VF curve is read over): on every image of the
+# Ada, Ampere and Turing corpus, the variable of type 2 has a float uV output range of 450000 to 1250000 (Turing
+# 1243750). The flat value may go above it, but the VF curve might not use that.
+VFE_VOLTAGE_RANGE_MV = {'gb20x': (450, 1250), 'ada': (450, 1250), 'ampere': (450, 1250), 'turing': (450, 1243.75)}
 # Its read-only reason until the switch is saved; the GUI translates it (presentation.REASON_KEYS).
 FOLLOW_OV_SWITCH_OFF_REASON = ('read-only while nvvdd_rel_alt_follow_ov is 0: set it to 1, save, open the copy, then '
                                'set this value')
@@ -1789,10 +1916,11 @@ def follow_ov_voltage(image, parser, moved, ov, state, value, blocked, owned, fl
                  f"unused VFE slot ({slot}) and points the NVVDD {'REL, ALT' if alt else 'REL'} and OV selectors at "
                  f'it, and the shared equation stays at {value / 1000:g} mV; the GPC curve offset takes the first '
                  'unused slot too, so change it in a separate edit')
+        vfe_low, vfe_high = VFE_VOLTAGE_RANGE_MV[parser.family if table else 'gb20x']
         reason = (f"experimental, opt-in: one value for {'REL = ALT = OV' if alt else 'REL = OV'} while the NVVDD "
-                  f"{'REL and ALT selectors follow' if alt else 'REL selector follows'} OV; {where}; " +
-                  ('' if table else 'above 1250 mV is beyond the GB20x VFE voltage variable range (450-1250 mV), so '
-                                    'the VF curve might not use it; ') +
+                  f"{'REL and ALT selectors follow' if alt else 'REL selector follows'} OV; {where}; "
+                  f"above {vfe_high:g} mV is beyond the {parser.family.capitalize() if table else 'GB20x'} VFE "
+                  f'voltage variable range ({vfe_low:g}-{vfe_high:g} mV), so the VF curve might not use it; ' +
                   ('it stays at or above the stored boot voltage and the highest VMIN (VMIN plus what its chained '
                    'equations add); ' if turing(parser) else '') +
                   (note + '; ' if raised else '') +
