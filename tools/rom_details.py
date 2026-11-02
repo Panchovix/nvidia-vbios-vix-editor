@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a ROM Details Markdown file matching TechPowerUp / VBIOS database specification style.
+"""Generate a ROM Details Markdown file matching TechPowerUp / VBIOS database specification type style.
 
 Extracts:
   - File metadata, size, MD5/SHA1/SHA256 hashes
@@ -233,3 +233,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
