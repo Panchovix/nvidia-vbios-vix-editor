@@ -15,7 +15,7 @@ SECTIONS = (
                  'msvdd_rel_equation_max_mv', 'msvdd_rel_equation_min_mv', 'msvdd_rel_max_mv', 'msvdd_rel_fixed_mv',
                  'msvdd_alt_fixed_mv', 'msvdd_ov_equation_max_mv', 'msvdd_vmin_mv', 'msvdd_vmin_fixed',
                  'msvdd_vmin_equation_max_mv', 'msvdd_alt_equation_max_mv')),
-    ('clocks', ('factory_gpc_offset_mhz', 'factory_memory_offset_mhz', 'factory_rated_boost_mhz',
+    ('clocks', ('hbm2_target_mhz', 'factory_gpc_offset_mhz', 'factory_memory_offset_mhz', 'factory_rated_boost_mhz',
                 'gpc_curve_offset_mhz', 'gpc_offset_max_mhz',
                 'gpc_offset_min_mhz', 'memory_offset_max_mhz', 'memory_offset_min_mhz',
                 'xbar_max_table_mhz', 'xbar_min_table_mhz', 'sys_max_table_mhz', 'sys_min_table_mhz',

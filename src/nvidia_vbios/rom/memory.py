@@ -1,6 +1,6 @@
 """Read-only memory view: memory configurations, clock bands, timing entries and the GB20x board profile.
 
-Turing, Ampere, Ada and GB20x share the table set (nouveau M0203, rammap and timing layouts):
+Volta, Turing, Ampere, Ada and GB20x share the table set (nouveau M0203, rammap and timing layouts):
 - BIT M+0x03 (u16, legacy-relative) is the memory configuration table, version 0x10: per entry,
   byte 0 holds the type (low nibble, 0xf = unused) and the hardware strap (high nibble), byte 1
   the column of the per-configuration tables (low nibble, nouveau "group"; not the strap) and the
@@ -29,8 +29,8 @@ from .image import backend
 from .tables import TableRom
 
 VENDORS = {1: 'Samsung', 6: 'SK hynix', 0xF: 'Micron'}
-# Type 9 is GDDR6 in nouveau; 0xa appears only on GDDR6X boards and 0xd only on GB20x (GDDR7).
-TYPES = {9: 'GDDR6'}
+# Type 6 is HBM2 (Volta GV100); Type 9 is GDDR6 in nouveau; 0xa appears only on GDDR6X boards and 0xd only on GB20x (GDDR7).
+TYPES = {6: 'HBM2', 9: 'GDDR6'}
 TYPE_GUESSES = {0xA: 'GDDR6X', 0xD: 'GDDR7'}
 # (name, word, first bit, width, confidence) of the decoded timing fields.
 TIMING_FIELDS = (('tRC', 0, 0, 8, 'inferred'), ('tRAS', 0, 17, 7, 'inferred'), ('tRP', 0, 24, 8, 'inferred'),
@@ -99,7 +99,8 @@ def _configurations(parser):
     b = parser.blob
     at = parser.legacy['start'] + struct.unpack_from('<H', b, token['data'] + 3)[0]
     version, hs, size, count, lookup = _header(b, at, 5)
-    if version != 0x10 or hs < 7 or size < 2 or not count or lookup:
+    # Header byte 4 (lookup) is 0 on GDDR boards and 4 on Volta GV100 (HBM2) boards.
+    if version != 0x10 or hs < 7 or size < 2 or not count or lookup not in (0, 4):
         raise FormatError('unrecognized memory configuration table')
     table = _table(parser, 'memory configurations', at, hs + size * count)
     items = []

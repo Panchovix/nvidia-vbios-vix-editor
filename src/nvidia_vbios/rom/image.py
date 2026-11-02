@@ -58,8 +58,9 @@ def metadata(image):
     pci, extended, issues = scan_images(image.blob)
     legacy = [p for p in pci if p['vendor'] == 0x10DE and p['type'] == 0]
     devices = sorted({p['device'] for p in legacy})
+    # Version strings: 88.xx (Volta GV100) or 9x.xx (Turing, GA100, Ampere, Ada, Blackwell).
     versions = sorted({m.group().decode('ascii') for m in re.finditer(
-        rb'9[0-9]\.[0-9A-Fa-f]{2}\.[0-9A-Fa-f]{2}\.[0-9A-Fa-f]{2}\.[0-9A-Fa-f]{2}', image.blob)})
+        rb'(?:88|9[0-9])\.[0-9A-Fa-f]{2}\.[0-9A-Fa-f]{2}\.[0-9A-Fa-f]{2}\.[0-9A-Fa-f]{2}', image.blob)})
     arch = architecture(devices[0], versions, editor=True) if len(devices) == 1 else dict(
         family='unknown', product='ambiguous or missing PCI identity', in_scope=False,
         bios_family_consistent=False, evidence=[], reason='requires a unique NVIDIA legacy PCI identity')
@@ -81,7 +82,8 @@ def backend(image, *, require_scope=True):
                          details={'architecture': arch})
     if arch['family'] == 'blackwell-gb20x':
         return BlackwellRom(image.blob, image.name)
-    if arch['family'] in ('ada', 'ampere', 'turing'):
+    # Volta, Turing, Ampere and Ada share the PCI/BIT/NPDS table layout parsed by TableRom.
+    if arch['family'] in ('ada', 'ampere', 'turing', 'volta'):
         return TableRom(image.blob, image.name, family=arch['family'])
     raise FormatError('no supported parser for this architecture')
 

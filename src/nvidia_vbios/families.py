@@ -8,10 +8,20 @@ another explicit source and are recognized only for offline file editing
 unknown. No hardware is accessed.
 """
 SOURCE = 'https://raw.githubusercontent.com/NVIDIA/open-gpu-kernel-modules/615.71.09/README.md'
+# Volta (GV100 0x1D8x-0x1DFx: Tesla V100 PCIe/SXM2/FHHL, Tesla V100S, TITAN V) is experimental.
 # Turing (TU102 0x1E0x-0x1E7x, TU104 0x1E8x-0x1EFx, TU106 0x1F0x-0x1F7x, TU117 0x1F8x-0x1FFx,
 # TU116 0x218x-0x21Dx) is experimental: one RTX 2080 Ti has run an edited board power limit;
 # nothing else is tested on Turing hardware.
 DEVICES = {
+    0x1D81: ('volta', 'NVIDIA TITAN V'),
+    0x1D8D: ('volta', 'NVIDIA Tesla V100-SXM2-32GB'),
+    0x1DB1: ('volta', 'NVIDIA Tesla V100-SXM2-16GB'),
+    0x1DB4: ('volta', 'NVIDIA Tesla V100-PCIE-16GB'),
+    0x1DB5: ('volta', 'NVIDIA Tesla V100-FHHL-16GB'),
+    0x1DB6: ('volta', 'NVIDIA Tesla V100-PCIE-32GB'),
+    0x1DF0: ('volta', 'NVIDIA Tesla V100S-PCIE-32GB'),
+    0x1DF2: ('volta', 'NVIDIA Tesla V100S-PCIE-32GB'),
+    0x1DF6: ('volta', 'NVIDIA Tesla V100S-PCIE-32GB'),
     0x1E02: ('turing', 'NVIDIA TITAN RTX'),
     0x1E04: ('turing', 'NVIDIA GeForce RTX 2080 Ti'),
     0x1E07: ('turing', 'NVIDIA GeForce RTX 2080 Ti'),
@@ -320,13 +330,14 @@ def architecture(device, versions=(), editor=False):
     if editor and device in EDITOR_ONLY:
         family, product, note = EDITOR_ONLY[device]
         source = {'source': note, 'kind': 'pci-ids-entry', 'device': f'{device:04x}', 'scope': 'offline editor only'}
+    # Volta images carry 88.xx versions (88.00 GV100).
     # Turing images carry 90.xx versions (90.02 TU102, 90.04 TU104, 90.06 TU106, 90.16 TU116, 90.17 TU117).
-    expected = {'turing': '90.', 'ampere': '94.', 'ada': '95.', 'blackwell-gb20x': '98.'}.get(family)
+    expected = {'volta': '88.', 'turing': '90.', 'ampere': '94.', 'ada': '95.', 'blackwell-gb20x': '98.'}.get(family)
     if device in GA100_DEVICE_IDS:
         expected = '92.'  # NVIDIA DGX A100/A800 firmware release notes.
     coherent = bool(expected and versions and all(v.startswith(expected) for v in versions))
     return {'family': family, 'product': product, 'in_scope': family in
-            ('turing', 'ampere', 'ada', 'blackwell-gb20x'), 'bios_family_consistent': coherent,
+            ('volta', 'turing', 'ampere', 'ada', 'blackwell-gb20x'), 'bios_family_consistent': coherent,
             'evidence': [source,
                          {'kind': 'bios-version-family', 'versions': list(versions),
                           'expected_prefix': expected}],

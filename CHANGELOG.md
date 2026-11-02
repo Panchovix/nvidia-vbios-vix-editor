@@ -3,6 +3,13 @@
 One line per change. What each change does, where it applies and what was tested is in the
 [changelog details](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/changelog-details.md).
 
+## 0.1.41
+
+- Volta (GV100): support for Tesla V100 PCIe (16GB/32GB), Tesla V100 SXM2 (16GB/32GB), Tesla V100 FHHL, Tesla V100S PCIe 32GB, and TITAN V.
+- Volta: read-only Memory inspection for HBM2 configurations, timing tables, and clock bands.
+- Volta: board power ceiling editing on 30/27/36 power policy tables.
+- Volta: dual type-0x70 NPDS image chain traversal (ISBN and terminal certificate images).
+
 ## 0.1.40
 
 - RTX 5050 Laptop GPU and single-rail RTX 50 laptops with the same rows: the NVVDD output current limit can be edited (untested).

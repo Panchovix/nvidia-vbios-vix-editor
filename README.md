@@ -1,6 +1,6 @@
 # NVIDIA VBIOS Vix Editor
 
-Offline VBIOS Editor for Blackwell 2.0 (GB2XX) cards, Ada (AD1XX), Ampere (GA1XX) and Turing (TU1XX) GPUs.
+Offline VBIOS Editor for Blackwell 2.0 (GB2XX) cards, Ada (AD1XX), Ampere (GA1XX), Turing (TU1XX) and Volta (GV100) GPUs.
 
 Use them via a loader, [NVIDIA Linux VBIOS Vix Loader](https://github.com/Panchovix/nvidia-linux-vbios-vix-loader) for Linux.
 
@@ -117,7 +117,7 @@ Offline editor for NVIDIA Blackwell (GB20x), Ada (AD10x), Ampere (GA10x) and Tur
 It edits when applicable: power limits, voltage ceilings, the minimum voltage
 (VMIN), clock offset ranges, 12 V input current and output OCP limits, fan PWM frequency, fan channels,
 per-channel fan speed limits, the stored fan curves and zero RPM (experimental).
-A read-only **Memory** section (all four families) shows the memory configurations, the memory clock bands and
+A read-only **Memory** section (all five families) shows the memory configurations (including HBM2 on Volta), the memory clock bands and
 their timing entries with decoded values and, on Blackwell, an undecoded board memory-training profile, and tells
 whether another ROM's tables are identical or differ. **Import from ROM…** copies the values of chosen sections
 (for example the fan settings; Blackwell board power and Turing VMIN often need the advanced fields too, as does a
@@ -137,7 +137,7 @@ they are copied as stored numbers, so check that this board's hardware can take 
   `<name>-loader.bin`. From the command line:
   `nvbios normalize edited.rom payload.bin --representation ada-relocated-v2` (Ada desktop and
   workstation) or `--representation ampere-relocated-v1` (Ampere GA102–GA107). Both are experimental;
-  so far they have been loaded on an RTX 4090 and an RTX A2000. Turing payloads fit without relocation:
+  so far they have been loaded on an RTX 4090 and an RTX A2000. Turing and Volta payloads fit without relocation:
   saving an edited Turing copy saves `<name>-loader.bin` (load it first) and `<name>-loader-e0end.bin`
   (`--representation turing-e0-end-v1`, to try if the first does not apply the edit); both have loaded
   on an RTX 2080 Ti through the Windows loader.
@@ -151,7 +151,7 @@ they are copied as stored numbers, so check that this board's hardware can take 
 - Fields marked *experimental* have not been tested on hardware, or only on the cards
   named in their notes. Raising power, current or voltage limits can damage hardware.
 - Recognized images: GB20x object-directory v3 (GB202, GB203, GB205, GB206, GB207). Ada (AD10x),
-  Ampere (GA10x) and Turing (TU10x/TU11x) images are supported with the same restriction as any other
+  Ampere (GA10x), Turing (TU10x/TU11x) and Volta (GV100) images are supported with the same restriction as any other
   image: they can be inspected, and only the fields validated for them can be edited.
 - Laptops: RTX 50 laptop images with the notebook layout (among the reviewed ROMs the RTX 5050,
   5080 and 5090 Laptop GPU) are recognized by their tables, not by the device ID, so another RTX 50

@@ -8,3 +8,5 @@ build-windows/
 dist-windows/
 *.rom
 *.bin
+
+.vs/
