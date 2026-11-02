@@ -1,6 +1,6 @@
 # NVIDIA VBIOS Vix Editor
 
-Offline VBIOS Editor for Blackwell 2.0 (GB2XX) cards, Ada (AD1XX), Ampere (GA1XX), Turing (TU1XX) and Volta (GV100) GPUs.
+Offline VBIOS Editor for Blackwell 2.0 (GB2XX) cards, Ada (AD1XX), Ampere (GA1XX), Turing (TU1XX) and **Volta (GV100)** GPUs.
 
 Use them via a loader, [NVIDIA Linux VBIOS Vix Loader](https://github.com/Panchovix/nvidia-linux-vbios-vix-loader) for Linux.
 
