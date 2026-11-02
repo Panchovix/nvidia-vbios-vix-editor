@@ -18,8 +18,8 @@ from ..rom.tables import ADVANCED_TABLES, PROFILE_BYTES, TableRom, checksum_tail
 from .registry import (registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
                        fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
                        fixed_voltage, dram_offset_points, gpc_curve_offset, max_operating_temperature,
-                       factory_clocks, perf_cf_controllers, lpwr_features, LPWR_ENABLED_ENTRIES, VMIN_SEMANTICS,
-                       VMIN_FIXED_SEMANTICS,
+                       factory_clocks, perf_cf_controllers, lpwr_features, volta_hbm2_target, LPWR_ENABLED_ENTRIES,
+                       VMIN_SEMANTICS, VMIN_FIXED_SEMANTICS, VOLTA_HBM2_SEMANTICS,
                        FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS, DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS,
                        MAX_TEMP_SEMANTICS, FACTORY_SEMANTICS, ADVANCED_SEMANTICS, PERF_CF_CONTROLLERS, fxp_percent,
                        FAN_ZERO_RPM_BITS, FAN_ZERO_RPM_TEMP_CEILING, FAN_ZERO_RPM_TEMP_FLOOR, fan_stop_accepted,
@@ -31,14 +31,15 @@ ZERO_RPM_PAIR_SEMANTICS = ('stored-fan-zero-rpm-lower-temperature', 'stored-fan-
 REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
                       fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
                       fixed_voltage, dram_offset_points, gpc_curve_offset, max_operating_temperature, factory_clocks,
-                      perf_cf_controllers, lpwr_features)
+                      perf_cf_controllers, lpwr_features, volta_hbm2_target)
 # Fields that change otherwise preserved rail bytes, each only through its reviewed binding:
 # the evaluated VMIN equation and the switch that restores a VMIN tree root's stock clamp, the
 # XOC-style NVVDD REL/ALT selectors and the fixed Ada/Turing REL/ALT values.
 RAIL_EXCEPTIONS = (VMIN_SEMANTICS, VMIN_FIXED_SEMANTICS, FOLLOW_OV_SEMANTICS, FIXED_SEMANTICS)
 # Layout fields whose bytes no other check rereads through the canonical parser: only the
 # reviewed complete binding (offsets, encoding, scale and layout) may write them.
-COMPLETE_BINDING_SEMANTICS = (RAIL_EXCEPTIONS + (DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS, MAX_TEMP_SEMANTICS) +
+COMPLETE_BINDING_SEMANTICS = (RAIL_EXCEPTIONS + (DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS, MAX_TEMP_SEMANTICS,
+                                                 VOLTA_HBM2_SEMANTICS) +
                               FACTORY_SEMANTICS + ADVANCED_SEMANTICS)
 # GB20x Advanced section: the objects of its tables (BIT P offset -> object), which change only at
 # the bytes the canonical Advanced bindings declare.

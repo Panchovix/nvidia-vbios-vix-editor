@@ -20,7 +20,7 @@ from ..rom.memory import PROFILE_COLUMNS, TIMING_FIELDS
 from .i18n import Messages
 
 FIELD_KEYS = frozenset(('power_min_w', 'power_max_w', 'nvvdd_rel_max_mv', 'msvdd_rel_max_mv',
-                        'dram_max_table_mhz', 'memory_offset_max_mhz',
+                        'dram_max_table_mhz', 'memory_offset_max_mhz', 'hbm2_target_mhz',
                         'current_limit_a', 'ocp_limit_a', 'power_default_w',
                         'input_current_rated_ma', 'input_current_max_ma',
                         'gpc_offset_max_mhz', 'gpc_offset_min_mhz',

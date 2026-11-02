@@ -133,6 +133,11 @@ def turing(parser):
     return isinstance(parser, TableRom) and parser.family == 'turing'
 
 
+def volta(parser):
+    """True for Volta (GV100: Tesla V100 PCIe/SXM2/FHHL, Tesla V100S, TITAN V) table-layout ROMs."""
+    return isinstance(parser, TableRom) and parser.family == 'volta'
+
+
 # The only Ada board that runs edited images here. Booted edits: TGP ceiling
 # 100 W (NVML maximum) and NVVDD REL ceiling 1100 mV (runtime evaluated REL); a
 # second image also changed the GPC offset ceiling and the memory offset floor
@@ -245,6 +250,40 @@ TURING_NOTE = ('the table decodes like the Ampere one on the Turing images exami
                'this table, which the editor cannot update, was left stale; under load that card stopped near 300 W '
                'with the connector power rows at stock and reached about 458 W with them raised to 250 W each; on '
                'one RTX 2070 a power limit raised from 200 to 225 W loaded (Windows loader) and the card reached 225 W')
+# Volta (GV100: Tesla V100 PCIe/SXM2/FHHL, Tesla V100S, TITAN V): structural rules.
+VOLTA_STRUCTURAL_EVIDENCE = {
+    'kind': 'structural-row-comparison',
+    'source': 'Volta VBIOS corpus, Tesla V100 and V100S images', 'set_tested': False, 'runtime_get': False}
+VOLTA_POWER_EVIDENCE = dict(
+    VOLTA_STRUCTURAL_EVIDENCE,
+    format='Volta 3x power 30/27/36; TGP row = header byte 10; class 1 mW on the board-total power channel '
+           '(class-2 sum on rail 0xf5 of the 20-entry channel table, channel 0)',
+    observation='the table decodes with minimum/rated/maximum u32 mW at row bytes 2/6/10; the TGP row is row 2 '
+                'on every image; its rated value is the board power of the model (e.g. Tesla V100 PCIe 250 W, '
+                'Tesla V100S PCIe 250 W, Tesla V100 SXM2 300 W, TITAN V 250 W)')
+VOLTA_HASH_EVIDENCE = {
+    'kind': 'integrity-observation', 'source': 'Volta VBIOS corpus, Tesla V100 and V100S images',
+    'observation': 'the type-0x70 certificate and ISBN images at the end of each Volta chain hold cryptographic '
+                   'signatures covering the executable images; offline edited images must be loaded through a runtime '
+                   'loader (nvidia-linux-vbios-vix-loader or nvidia-windows-vbios-vix-loader)',
+    'set_tested': False}
+VOLTA_NOTE = ('the power table decodes with variant 30/27/36; the TGP ceiling at row index 2 can be edited and loaded '
+              'via runtime firmware loader')
+VOLTA_HBM2_SEMANTICS = 'stored-volta-hbm2-target'
+VOLTA_HBM2_EVIDENCE = dict(
+    VOLTA_STRUCTURAL_EVIDENCE,
+    format='Volta P-state table P+0x00 v0x50 (header 50 0a 03 04 06 0a); entry 3 (P0, base 0f 08 ff) sub-entry 1 '
+           '(10 bytes, four u16 words + trailing 0x022b)',
+    observation='Tesla V100 32GB PCIe and Tesla V100S 32GB PCIe share byte-identical HBM2 memory timing tables '
+                '(P+0x08) and Band 3 (800..1199 MHz) profiles; entry 3 sub-entry 1 stores the HBM2 clock profile: '
+                '877 MHz (46 01 6d 03 6d 43 db 00 2b 02, 900 GB/s) on V100 and 1107 MHz '
+                '(7a 01 53 04 53 c4 14 01 2b 02, 1134 GB/s) on V100S')
+VOLTA_HBM2_LAYOUT = (
+    (877, (b'\x46\x01', b'\x6d\x03', b'\x6d\x43', b'\xdb\x00')),
+    (1107, (b'\x7a\x01', b'\x53\x04', b'\x53\xc4', b'\x14\x01')),
+)
+VOLTA_HBM2_UNRECOGNIZED_REASON = ('read-only: the Volta P0 HBM2 sub-entry of this image does not hold the reviewed '
+                                  '877 MHz (V100) or 1107 MHz (V100S) profile')
 # The connector power rows ran on that card with the board power (500 W TGP, 250 W per connector).
 TURING_CONNECTOR_TESTED = ('on one RTX 2080 Ti (Windows loader) a 500 W TGP with 250 W per connector channel loaded '
                            'and the card reached about 458 W under load (near 300 W with these rows at stock); the '
@@ -569,6 +608,7 @@ def power(image, parser):
                      'format': '3x power policy; TGP index from header; limit_unit flag mW',
                      'recognized_variants': ['Ada 30/32/53', 'Ada 30/34/5b', 'Ada 30/2c/4b'] if ada(parser) else
                                             ['Turing 30/2c/42', 'Turing 30/27/42'] if turing(parser) else
+                                            ['Volta 30/27/36'] if volta(parser) else
                                             ['Ampere 30/2c/47', 'Ampere 30/2c/43', 'Ampere 30/32/47']}]
         # Ada override profiles picked by the cable sense inputs (profile_binding raises
         # unless the top level's profile equals the base): that profile's TGP entries are
@@ -603,6 +643,8 @@ def power(image, parser):
         if ada(parser):
             evidence = (evidence + [dict(ADA_POWER_EVIDENCE)] + ([dict(ADA_NOTEBOOK_EVIDENCE)] if notebook else []) +
                         ([dict(ADA_PROFILE_EVIDENCE)] if binding else []))
+        elif volta(parser):
+            evidence = evidence + [dict(VOLTA_POWER_EVIDENCE), dict(VOLTA_HASH_EVIDENCE)]
         elif turing(parser):
             evidence = evidence + [dict(TURING_POWER_EVIDENCE), dict(TURING_HASH_EVIDENCE)]
         else:
@@ -619,7 +661,9 @@ def power(image, parser):
     # Ada notebook TGP rows are never the hardware-tested board; Ampere is never tested.
     flags = ({'experimental': True} if notebook and ada(parser) or binding else
              experimental_flag(image, parser, 'power_max_w'))
-    untested = TURING_NOTE + '; ' if turing(parser) else 'not hardware-tested on this board; ' if flags else ''
+    untested = (VOLTA_NOTE + '; ' if volta(parser) else
+                TURING_NOTE + '; ' if turing(parser) else
+                'not hardware-tested on this board; ' if flags else '')
     top_extra = {} if top is None else dict(bound_profile=top['index'], base_values={
         'power_max_w': rows[8]['maximum_raw'] / 1000, 'power_default_w': rows[8]['default_raw'] / 1000})
     # A notebook TGP is another quantity than a board TGP: the platform requests the running limit.
@@ -4731,6 +4775,29 @@ def lpwr_features(image, parser):
                    f'{stock * multiplier}); editable only while its switch is Stock (stored or in the same edit); '
                    + LPWR_UNTESTED if editable or not writable else LPWR_TIME_SWITCH_REASON))
     return result
+
+
+@registry.register
+def volta_hbm2_target(image, parser):
+    """Volta P0 HBM2 target frequency (877 MHz stock V100 or 1107 MHz V100S profile) in BIT P+0x00."""
+    if not volta(parser):
+        return []
+    info = parser.volta_hbm2_target()
+    if info is None:
+        return []
+    current = info['current_mhz']
+    editable = current is not None and can_edit(image, parser)
+    offsets, layout = chain_copies(parser, info['word_offsets'], 2, VOLTA_HBM2_LAYOUT) if editable else ((), ())
+    reason = (VOLTA_HBM2_UNRECOGNIZED_REASON if current is None else
+              'experimental: P0 HBM2 clock profile in BIT P+0x00 entry 3 sub-entry 1; set 877 MHz for stock Tesla '
+              'V100 (900 GB/s) or 1107 MHz for Tesla V100S (1134 GB/s); both share identical Band 3 (800..1199 MHz) '
+              'HBM2 controller timings in P+0x08')
+    return [field('hbm2_target_mhz', 'HBM2 target frequency (experimental)', 'MHz', current,
+                  877 if editable else None, 1107 if editable else None, editable,
+                  [dict(VOLTA_HBM2_EVIDENCE), dict(VOLTA_HASH_EVIDENCE)],
+                  offsets=offsets, encoding='<H' if editable else '', scale=1, layout=layout,
+                  writable_status=None if editable else 'unsupported', experimental=True,
+                  value_semantics=VOLTA_HBM2_SEMANTICS, reason=reason)]
 
 
 @registry.register

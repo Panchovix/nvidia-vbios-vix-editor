@@ -40,6 +40,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.factory_gpc_offset_mhz': 'Offset GPC de fábrica (overclock del fabricante, experimental)',
  'field.factory_memory_offset_mhz': 'Offset de memoria de fábrica (overclock del fabricante, experimental)',
  'field.factory_rated_boost_mhz': 'Clock boost nominal de fábrica',
+ 'field.hbm2_target_mhz': 'Frecuencia objetivo HBM2 (experimental)',
  'field.max_operating_temp_c': 'Temperatura máxima de funcionamiento (experimental)',
  'section.advanced': 'Avanzado: controladores de rendimiento y ahorro en reposo',
  'section.advanced_note': ('Blackwell, Ada, Ampere y Turing. Experimental y sin probar en hardware. La política de '

@@ -351,6 +351,10 @@ def image_chains(blob, pci, extended, *, family=None):
     NPDS image (NBSI signature in its body) flagged last, stamped with no device
     (0000) or this chip, ends the chain after the data images. No table is read
     from it.
+
+    Volta (family 'volta') carries two sequential type-0x70 NPDS images after the
+    data images: an ISBN digest image followed by a certificate image flagged
+    last, which closes the chain. No table is read from either.
     """
     by_start = {p['start']: p for p in pci + extended}
     chains = []
@@ -381,15 +385,22 @@ def image_chains(blob, pci, extended, *, family=None):
             cursor = image['end']
             if image['last']:
                 break
-        tail = by_start.get(cursor)
-        if (family == 'turing' and len(images) > first and not images[-1]['last'] and tail and
-                tail['type'] == 0x70 and 'npds' in tail and tail['vendor'] == 0x10DE and tail['last'] and
-                (tail['device'] == 0 or tail['device'] & 0xFF80 in chip)):
+        if family in ('turing', 'volta') and len(images) > first and not images[-1]['last']:
             # A loader that reads the NPDE byte would end the chain at a data image it flags last:
             # such a chain is refused instead of being read two ways.
+            # Turing carries one trailing 0x70 image; Volta carries two (ISBN then certificate).
             at = npde(blob, images[-1])
             if at is None or not blob[at + 0x0A] & 0x80:
-                images.append(tail)
+                while cursor in by_start:
+                    tail = by_start[cursor]
+                    if (tail['type'] == 0x70 and 'npds' in tail and tail['vendor'] == 0x10DE and
+                            (tail['device'] == 0 or tail['device'] & 0xFF80 in chip)):
+                        images.append(tail)
+                        cursor = tail['end']
+                        if tail['last']:
+                            break
+                    else:
+                        break
         if len(images) == first or not images[-1]['last']:
             raise FormatError('NPDS data chain lacks a complete last image')
         chains.append(images)

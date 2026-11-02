@@ -1,4 +1,4 @@
-"""PCI/BIT/NPDS table layout of the Ada, Ampere (GA10x) and Turing ROMs.
+"""PCI/BIT/NPDS table layout of the Volta (GV100), Ada, Ampere (GA10x) and Turing ROMs.
 
 Field locations derive from NVIDIA-authored nvgpu bios.h 3x power/1x rail/clock
 prefixes and VFE output equations; every rule below is structural and was
@@ -9,6 +9,8 @@ Turing (25-image corpus) reads its power policy and input channels like
 Ampere (0x42-byte rows, 22-byte channels), its rail (nvgpu 1x row), VFE (as
 Ampere with 20 variables), clock (nvgpu v35) and fan tables (the Ada cooler and
 mapping tables, a v0x10 policy table) through Turing variants below.
+Volta (Tesla V100/V100S, TITAN V) reads its power policy via variant 30/27/36
+and its 20-entry 22-byte input channels like Turing.
 No board serial, complete-file size, table-address, or source-hash pins.
 """
 import copy
@@ -126,13 +128,14 @@ ADA_FAN_CHANNELS = 2
 # entry as 2b3w8d: byte 0 is the policy class (0 skips the entry, 1 is read), byte 1 the thermal
 # channel, bytes 2..7 three temperatures in 1/32 C. Header bytes 4, 5, 6 and 9 name policy entries
 # by role (0xff: none); byte 9 names the maximum operating temperature policy (THERMAL_MAX_TEMP_BYTE).
-THERMAL_POLICY_LAYOUTS = {'turing': (0x0A, 0x28), 'ampere': (0x0A, 0x28), 'ada': (0x0B, 0x28)}
+THERMAL_POLICY_LAYOUTS = {'volta': (0x0A, 0x1C), 'turing': (0x0A, 0x28), 'ampere': (0x0A, 0x28), 'ada': (0x0B, 0x28)}
 THERMAL_ROLE_BYTES = (4, 5, 6, 9)
 THERMAL_MAX_TEMP_BYTE = 9
 # Factory clock record (P+0x98): version 0x10, then array A and array B, two {u8 flag, u32 kHz}
 # entries each. Turing stores the 6-byte header GSP-RM reads as 6b; Ampere and Ada the 7-byte header
 # it reads as 7b, whose byte 6 it keeps as a clock flag (1 on three Ada images, 0 elsewhere).
-FACTORY_CLOCK_HEADERS = {'turing': (bytes.fromhex('10 06 05 02 05 02'),),
+FACTORY_CLOCK_HEADERS = {'volta': (bytes.fromhex('10 06 05 02 05 02'),),
+                         'turing': (bytes.fromhex('10 06 05 02 05 02'),),
                          'ampere': (bytes.fromhex('10 07 05 02 05 02 00'),),
                          'ada': (bytes.fromhex('10 07 05 02 05 02 00'), bytes.fromhex('10 07 05 02 05 02 01'))}
 FACTORY_CLOCK_ENTRY = 5
@@ -192,8 +195,20 @@ UNIT_WEIGHT = bytes.fromhex('00 10 00 00')
 # rows 0..0x41 as Ampere's. The power channel table has 20 entries of 22 bytes; the TGP
 # row reads the board-total channel (class-2 sum on rail 0xf5), which is channel 9 on
 # the desktop TU10x/TU116 images (channel 0 there is another sum) and 0 on TU117 and laptops.
-# Turing connector channels may hold a current correction offset in bytes 10..13 (nvgpu
-# curr_corr_offset; 200 and 300 on the RTX 2070 connector channels).
+# Volta (GV100) power policy variant: 30/27/36 (header size 0x27 = 39 bytes, entry
+# size 0x36 = 54 bytes). The power channel table has 20 entries of 22 bytes, like
+# Turing; the TGP row sits at index 2 reading channel 0 (board total).
+VOLTA_POWER_VARIANTS = ((0x30, 0x27, 0x36),)
+VOLTA_EDITED_TABLES = (('P', 0x00), ('P', 0x2C))
+# Volta P-state / clock programming table (BIT P+0x00, v0x50): header 50 0a 03 04 06 0a
+# (10-byte header, four entries of 3 base bytes + six 10-byte clock sub-entries). Entry 3
+# (P0, base bytes 0f 08 ff) sub-entry 1 stores the HBM2 clock profile: 877 MHz on Tesla V100
+# (900 GB/s) and 1,107 MHz on Tesla V100S (1,134 GB/s), both sharing the trailing word 0x022b.
+VOLTA_PSTATE_HEADER = bytes.fromhex('50 0a 03 04 06 0a')
+VOLTA_HBM2_PROFILES = {
+    877: bytes.fromhex('46 01 6d 03 6d 43 db 00 2b 02'),
+    1107: bytes.fromhex('7a 01 53 04 53 c4 14 01 2b 02'),
+}
 TURING_POWER_VARIANTS = ((0x30, 0x2C, 0x42), (0x30, 0x27, 0x42))
 # Turing rail table: one nvgpu 1x row of 14 bytes (vbios_voltage_rail_table_1x_entry):
 # REL +4, ALT +5, OV +6, power equation +7, boot voltage equation +8, VMIN limit
@@ -311,7 +326,10 @@ class TableRom:
                     for c in self.chains for p in c]
             primary = self.blob[self.legacy['start']:self.chain_end]
             same = all(self.blob[c[0]['start']:c[-1]['end']] == primary for c in self.chains)
-            self._integrity = dict(valid=all(p['checksum'] == 0 for p in sums) and same,
+            # Volta's trailing 0x70 certificate image does not carry an additive checksum.
+            valid_sums = all(s['checksum'] == 0 for p, s in zip((p for c in self.chains for p in c), sums)
+                             if self.family != 'volta' or p['type'] != 0x70)
+            self._integrity = dict(valid=valid_sums and same,
                                    image_checksums=sums, duplicate_image_chains_identical=same,
                                    cryptographic_signature='not verified',
                                    sha384_object_directory='not recognized in this table layout')
@@ -330,7 +348,8 @@ class TableRom:
 
     def _checksum_padding(self):
         # Ada fields also write the rail table (P+0x68), which lies in the legacy image.
-        tables = (TURING_EDITED_TABLES if self.family == 'turing' else
+        tables = (VOLTA_EDITED_TABLES if self.family == 'volta' else
+                  TURING_EDITED_TABLES if self.family == 'turing' else
                   ADA_EDITED_TABLES + ((('P', 0x68),) if self.family == 'ada' else ()))
         for token, offset in tables:
             try:
@@ -350,7 +369,7 @@ class TableRom:
     def power_rows(self):
         at = self.pointer('P', 0x2C)
         version, hs, size, count = self.blob[at:at + 4]
-        variants = {'ampere': AMPERE_POWER_VARIANTS, 'turing': TURING_POWER_VARIANTS}.get(self.family, ADA_POWER_VARIANTS)
+        variants = {'volta': VOLTA_POWER_VARIANTS, 'ampere': AMPERE_POWER_VARIANTS, 'turing': TURING_POWER_VARIANTS}.get(self.family, ADA_POWER_VARIANTS)
         if (version, hs, size) not in variants or not count:
             raise FormatError('unvalidated 3x power table variant')
         self.owner(at, hs + size * count)
@@ -376,7 +395,7 @@ class TableRom:
         # board power monitor in the reviewed Ada and GB20x GET readings). On
         # Turing it reads the only such channel, wherever the table puts it.
         channel = self.blob[tgp['offset'] + 1]
-        if self.family == 'turing':
+        if self.family in ('turing', 'volta'):
             count = self.blob[self.pointer('P', 0x3C) + 3]
             total = [i for i in range(count) if self.power_channel(i)[:2] == b'\x02\xf5'] == [channel]
         else:
@@ -389,13 +408,14 @@ class TableRom:
         """One entry of the power channel table (P+0x3c, v0x20, 32 entries).
 
         Ada entries are 26 bytes; Ampere entries are 22 or 26 bytes (the last four zero).
-        Turing has 20 entries of 22 bytes.
+        Turing and Volta have 20 entries of 22 bytes.
         """
         at = self.pointer('P', 0x3C)
         version, hs, size, count = self.blob[at:at + 4]
-        sizes, entries = {'ampere': ((0x16, 0x1A), 0x20), 'turing': ((0x16,), 0x14)}.get(self.family, ((0x1A,), 0x20))
+        sizes, entries = {'volta': ((0x16,), 0x14), 'ampere': ((0x16, 0x1A), 0x20), 'turing': ((0x16,), 0x14)}.get(self.family, ((0x1A,), 0x20))
         if version != 0x20 or hs not in (6, 0x0A) or size not in sizes or count != entries:
-            raise FormatError(f"unvalidated {'Turing' if self.family == 'turing' else 'Ada'} power channel table")
+            family_name = 'Turing' if self.family == 'turing' else 'Volta' if self.family == 'volta' else 'Ada'
+            raise FormatError(f"unvalidated {family_name} power channel table")
         self.owner(at, hs + size * count)
         if not 0 <= index < count:
             raise FormatError('power channel index is outside the table')
@@ -1896,6 +1916,28 @@ class TableRom:
                    for i in range(count)]
         return dict(name=name, offset=at, header_size=hs, entry_size=es, format=fmt, object_id=None,
                     entries=entries)
+
+    def volta_hbm2_target(self):
+        """Volta P-state table (BIT P+0x00, v0x50) Entry 3 Sub-entry 1 HBM2 clock target, or None on other families."""
+        if self.family != 'volta':
+            return None
+        at = self.pointer('P', 0x00)
+        b = self.blob
+        if b[at:at + 6] != VOLTA_PSTATE_HEADER:
+            raise FormatError('unvalidated Volta P-state table header')
+        hs, bsz, count, scnt, ssz = b[at + 1:at + 6]
+        stride = bsz + scnt * ssz
+        size = hs + count * stride
+        self.owner(at, size)
+        entry3 = at + hs + 3 * stride
+        sub1 = entry3 + bsz + ssz
+        raw = b[sub1:sub1 + ssz]
+        current = next((mhz for mhz, prof in VOLTA_HBM2_PROFILES.items() if raw == prof), None)
+        if b[entry3:entry3 + bsz] != b'\x0f\x08\xff' or raw[8:10] != b'\x2b\x02':
+            current = None
+        return dict(table_offset=at, table_size=size, subentry_offset=sub1,
+                    word_offsets=(sub1, sub1 + 2, sub1 + 4, sub1 + 6),
+                    current_mhz=current, raw=raw)
 
     def copy_offsets(self, at, size):
         self.owner(at, size)
