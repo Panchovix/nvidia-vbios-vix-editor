@@ -166,7 +166,9 @@ class LayoutDocumentTests(unittest.TestCase):
             self.assertEqual((code, json.loads(text)['result']),
                              (0, {'output': str(output), 'image_sha256': hashlib.sha256(self.hooked).hexdigest(),
                                   'slots': 8}))
-            self.assertEqual((output.read_bytes(), stat.S_IMODE(output.stat().st_mode)), (expected, 0o644))
+            # chmod 0o644 on Windows only clears the read-only flag, which stat reports as 0o666.
+            self.assertEqual((output.read_bytes(), stat.S_IMODE(output.stat().st_mode)),
+                             (expected, 0o666 if os.name == 'nt' else 0o644))
             self.assertEqual(sorted(p.name for p in Path(directory).iterdir()), ['hooked.bin', 'layout.json', 'stock.bin'])
             code, text = run_cli(['vfe-layout', str(stock), '--output', str(Path(directory) / 'none.json')])
             report = json.loads(text)
