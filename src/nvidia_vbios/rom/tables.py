@@ -78,6 +78,9 @@ ADA_PROFILE_FIELDS = {0: 'maximum', 1: 'default'}
 # The reviewed Ada selection chain (MSI RTX 4090 Suprim, 95.02.3C.40.EA). Row 0 (type 1, param 8:
 # GPIO set 0, votes into row 1, no presence gate; evaluated by 0x17c72a0) reads two sense inputs
 # into a code (bit 0 | bit 1 << 1) and votes the value of the entry holding that code (0: no vote).
+# Byte 1 of that entry is a direct profile, applied at once whatever the vote (0x17bbf34; 0xff: none):
+# 0xff on this board, the entry's code on a Gigabyte RTX 4090 image (95.02.18.C0.75). GSP-RM 620.70.06
+# reads the byte the same way.
 # Row 1 (type 2, param 0; 0x17bc09c) applies the profile of the last entry whose threshold is at or
 # below the vote. Rows 2 and 3 are off. Unused entries hold 00 ff 00 00 00 00 00.
 ADA_SELECTION_HEADERS = (bytes.fromhex('01 08 00 00 00'), bytes.fromhex('02 00 00 00 00'))
@@ -733,9 +736,10 @@ class TableRom:
 
         None means no vote (the firmware then fails the power manager setup) or no
         threshold reached. Raises FormatError for any other selection layout: other row
-        headers, a used row 2 or 3, codes other than exactly 0..3, a profile byte on a
-        sense entry, a threshold param other than 0xff, thresholds not strictly
-        ascending or naming a disabled profile.
+        headers, a used row 2 or 3, codes other than exactly 0..3, a direct profile (sense
+        entry byte 1) other than 0xff or the entry's own code, or one that row 1 does not
+        select at a code with a nonzero vote, a threshold param other than 0xff,
+        thresholds not strictly ascending or naming a disabled profile.
         """
         at, b = self.profile_table(), self.blob
         profiles = self.power_profiles() if profiles is None else profiles
@@ -756,16 +760,21 @@ class TableRom:
                 out.append((e[1], read(e, '<I', 2)[0], e[6]))
             return out
         sense, thresholds = entries(starts[0]), entries(starts[1])
-        if (sorted(code for _, _, code in sense) != [0, 1, 2, 3] or any(p != 0xFF for p, _, _ in sense) or
+        if (sorted(code for _, _, code in sense) != [0, 1, 2, 3] or
+                any(p not in (0xFF, code) for p, _, code in sense) or
                 any(param != 0xFF for _, _, param in thresholds)):
             raise FormatError('unrecognized Ada override profile selection entry')
         values, enabled = [value for _, value, _ in thresholds], {p['index'] for p in profiles}
         if not values or values != sorted(set(values)) or any(p not in enabled for p, _, _ in thresholds):
             raise FormatError('Ada override profile thresholds are not ascending or name a disabled profile')
         levels = {}
-        for _, vote, code in sense:
+        for direct, vote, code in sense:
             reached = [p for p, value, _ in thresholds if value <= vote] if vote else []
             levels[code] = reached[-1] if reached else None
+            # A direct profile (byte 1) is applied before row 1. The chain stays the reviewed one only if row 1
+            # applies that same profile; with no vote the power setup fails either way.
+            if direct != 0xFF and vote and direct != levels[code]:
+                raise FormatError('unrecognized Ada override profile selection entry')
         return levels
 
     def top_power_profile(self):

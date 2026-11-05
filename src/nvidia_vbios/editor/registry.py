@@ -166,9 +166,9 @@ ADA_POWER_EVIDENCE = {
 # MSI RTX 4090 Suprim 95.02.3C.40.EA (see TableRom.profile_selection).
 ADA_PROFILE_EVIDENCE = {
     'kind': 'firmware-static-analysis', 'source': 'GSP-RM 615.78.08 (gsp_ga10x.bin), profile parser 0x17cd67c',
-    'format': 'P+0xF4 v0x10: selection row 0 (type 1) maps a two-input sense code to a vote in mW, row 1 (type 2) '
-              'maps the vote to a profile by threshold; profile entry selector = policy row | field << 8 (0 maximum, '
-              '1 rated)',
+    'format': 'P+0xF4 v0x10: selection row 0 (type 1) maps a two-input sense code to a vote in mW and to a direct '
+              'profile (entry byte 1, 0xff none; applied first by 0x17bbf34), row 1 (type 2) maps the vote to a '
+              'profile by threshold; profile entry selector = policy row | field << 8 (0 maximum, 1 rated)',
     'observation': 'the profile apply 0x17bc69c calls policy vtable +0x2d0, the wrapper 0x17b2340, which calls the '
                    'limit setter 0x177fd2c (client 0xfe) and then a notify method; the policy constructor 0x178aa44 '
                    'seeds the row limits with the same client, so a selected profile replaces the row value (it '

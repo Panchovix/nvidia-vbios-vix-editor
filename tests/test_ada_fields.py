@@ -42,19 +42,21 @@ def messages(image):
     return [d.get('message', '') for d in inspect_image(image)['diagnostics']]
 
 
-def sense_profiles(blob, top=(70000, 70000), lower=(30000, 40000, 50000), input_rated=25000):
+def sense_profiles(blob, top=(70000, 70000), lower=(30000, 40000, 50000), input_rated=25000, first=4,
+                   direct=False):
     """The override profile selection chain of the MSI RTX 4090 Suprim 95.02.3C.40.EA, at the synthetic scale.
 
     Selection row 0 reads the cable sense code: codes 0 and 1 vote nothing, code 2 votes lower[2] and code 3
-    votes top[0]. Row 1 maps lower + top[0] to profiles 4..7. Profiles 4 and 5 set the TGP maximum to
-    lower[0] and lower[1], profile 6 sets the TGP maximum and rated value to lower[2] and the rated value
-    of both 12 V input thresholds to input_rated, and profile 7 holds top (TGP maximum, rated).
+    votes top[0]. Row 1 maps lower + top[0] to profiles first..first + 3 (4..7 on that board). The first two
+    set the TGP maximum to lower[0] and lower[1], the third sets the TGP maximum and rated value to lower[2]
+    and the rated value of both 12 V input thresholds to input_rated, and the last holds top (TGP maximum,
+    rated). direct stores each sense entry's code as its direct profile (byte 1) instead of 0xff.
     """
     at = backend(from_bytes(blob)).profile_table()
     table = bytearray(bytes.fromhex('10 0a 05 04 07 08 01 10 09 08') + bytes(PROFILE_BYTES - 10))
-    rows = ((bytes.fromhex('01 08 00 00 00'), [struct.pack('<BBIB', 1, 0xFF, vote, code)
+    rows = ((bytes.fromhex('01 08 00 00 00'), [struct.pack('<BBIB', 1, code if direct else 0xFF, vote, code)
                                                for code, vote in enumerate((0, 0, lower[2], top[0]))]),
-            (bytes.fromhex('02 00 00 00 00'), [struct.pack('<BBIB', 1, 4 + i, value, 0xFF)
+            (bytes.fromhex('02 00 00 00 00'), [struct.pack('<BBIB', 1, first + i, value, 0xFF)
                                                for i, value in enumerate(lower + top[:1])]),
             (bytes(5), []), (bytes(5), []))
     for k, (header, entries) in enumerate(rows):
@@ -62,9 +64,9 @@ def sense_profiles(blob, top=(70000, 70000), lower=(30000, 40000, 50000), input_
         table[start:start + 5] = header
         for j in range(8):
             table[start + 5 + 7 * j:start + 12 + 7 * j] = entries[j] if j < len(entries) else b'\x00\xff' + bytes(5)
-    profiles = {4: [(2, lower[0])], 5: [(2, lower[1])],
-                6: [(2, lower[2]), (0x102, lower[2]), (0x109, input_rated), (0x10A, input_rated)],
-                7: [(2, top[0]), (0x102, top[1])]}
+    profiles = {first: [(2, lower[0])], first + 1: [(2, lower[1])],
+                first + 2: [(2, lower[2]), (0x102, lower[2]), (0x109, input_rated), (0x10A, input_rated)],
+                first + 3: [(2, top[0]), (0x102, top[1])]}
     for index, entries in profiles.items():
         start = 0xFE + 0x49 * index
         table[start] = 1
@@ -74,10 +76,15 @@ def sense_profiles(blob, top=(70000, 70000), lower=(30000, 40000, 50000), input_
 
 
 # Byte changes (offset in the profile table, bytes) that leave the reviewed override profile shape, and the
-# FormatError message each one gives: a threshold param other than 0xff, the presence gate bit of the sense
-# row, a field 2 (minimum) entry, a used selection row 2, and a top-level profile that differs from the base.
+# FormatError message each one gives: a threshold param other than 0xff, a direct profile (sense entry byte 1)
+# naming another code or a profile row 1 does not apply at that code, the presence gate bit of the sense row,
+# a field 2 (minimum) entry, a used selection row 2, and a top-level profile that differs from the base.
 SENSE_PROFILE_VARIANTS = (
     ('threshold param', 0x47 + 5 + 6, b'\x00', 'unrecognized Ada override profile selection entry'),
+    ('direct profile of another code', 0x0A + 5 + 7 * 3 + 1, b'\x02',
+     'unrecognized Ada override profile selection entry'),
+    ('direct profile row 1 does not apply', 0x0A + 5 + 7 * 3 + 1, b'\x03',
+     'unrecognized Ada override profile selection entry'),
     ('presence gate', 0x0A + 2, b'\x08', 'unrecognized Ada override profile selection rows'),
     ('field 2 entry', 0xFE + 4 * 0x49 + 1 + 2, b'\x02', 'unsupported Ada override profile entry'),
     ('extra selection row', 0x0A + 2 * 0x3D, b'\x02', 'unrecognized Ada override profile selection rows'),
@@ -363,6 +370,20 @@ class AdaSenseProfileTests(unittest.TestCase):
         self.assertEqual(self.parser.profile_selection(), {0: None, 1: None, 2: 6, 3: 7})
         self.assertEqual([p['index'] for p in self.parser.matching_power_profiles()], [7])
         self.assertEqual(self.parser.top_power_profile()['selection_power_raw'], 70000)
+
+    def test_direct_profiles_that_row_1_also_applies_decode_the_same(self):
+        # A Gigabyte RTX 4090 image (95.02.18.C0.75) stores each sense entry's code as its direct profile (byte 1),
+        # which the firmware applies before row 1. With row 1 on profiles 0..3, codes 2 and 3 get the same profile
+        # either way, so the selection and the power fields are those of 0xff, and an edit keeps the bytes.
+        base = synthetic_rom(copies=2, policies=True)
+        stored, direct = (from_bytes(sense_profiles(base, first=0, direct=flag)) for flag in (False, True))
+        self.assertEqual(backend(direct).profile_selection(), {0: None, 1: None, 2: 2, 3: 3})
+        self.assertFalse(inspect_image(direct)['diagnostics'])
+        changes = {'power_max_w': 90, 'power_default_w': 80}
+        expected, at = edit(stored, changes).blob, backend(stored).profile_table()
+        for code in range(4):
+            expected = patched(expected, at + 0x0A + 5 + 7 * code + 1, bytes([code]))
+        self.assertEqual(edit(direct, changes).blob, expected)
 
     def test_power_fields_write_the_top_profile_with_the_base_and_lower_levels_bound_them(self):
         fields = descriptors(self.image)

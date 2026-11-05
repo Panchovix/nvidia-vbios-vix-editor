@@ -2471,6 +2471,14 @@ and the firmware fails the power setup (static reading, not tested). The DCB GPI
 functions 0xee/0xed of this image also appear on a GB202 image without selection
 rows, so they do not identify the sense inputs by themselves.
 
+Byte 1 of each sense entry (row 0) names a direct profile: the firmware applies it as
+soon as that code is read, whatever the vote and before row 1 (static reading of
+GSP-RM 615.78.08 and 620.70.06); 0xff means none, as on this image. A Gigabyte RTX
+4090 image (95.02.18.C0.75, reported by a user) stores the entry's code there. The
+editor accepts that only when row 1 selects the same profile at every code that votes,
+so the firmware still applies one profile per level (with no vote the power setup
+fails either way).
+
 Because a selected profile replaces the base value, raising only the base would
 most likely be undone at the top level (static reading, not tested). So
 `power_max_w` and `power_default_w` write the base TGP row and the matching entry of
@@ -2494,7 +2502,9 @@ inferred 600 W level and the other profiles) and an evidence entry of kind
 Anything else keeps the power fields hidden (the Power card then says some fields
 are not shown) and the slot, 12 V input and NVVDD threshold fields read-only: other
 selection headers (such as the presence gate bit), a used row 2 or 3, codes other
-than 0..3, a threshold param other than 0xff, thresholds out of order or naming a
+than 0..3, a direct profile other than 0xff or the entry's own code, or one that row 1
+does not select too at a code that votes, a threshold param other than 0xff,
+thresholds out of order or naming a
 disabled profile, a profile entry with field 2 (minimum) or a malformed or
 duplicate entry, and a top-level profile that differs from the base table. A lower
 profile entry outside the stored range of its base row (below the floor, above the

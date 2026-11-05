@@ -3,6 +3,23 @@
 What each change does, where it applies, what was tested and its risks. CHANGELOG.md lists the same
 changes, one line each, in the same order.
 
+## 0.1.41
+
+- **Ada: cable sense entries may name the profile their level selects (RTX 4090 95.02.18.C0.75): power limit
+  may unlock (untested).** On a Gigabyte RTX 4090 ROM (95.02.18.C0.75, reported in [issue
+  #30](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/30)) the power fields were hidden with
+  "unrecognized Ada override profile selection entry", so the board power limit could not be edited. Its sense
+  entries (selection row 0) hold their code in byte 1, where the reviewed MSI RTX 4090 Suprim (95.02.3C.40.EA) holds
+  0xff. Static analysis of GSP-RM 615.78.08 and 620.70.06 shows that this byte names a direct profile, which the
+  firmware applies as soon as that code is read and before the threshold row (0xff: none). The editor now accepts a
+  direct profile equal to the entry's code when, at each code that votes, the threshold row selects that same
+  profile: the firmware then applies one profile per level, as with 0xff, so the selection, fields and bounds are the
+  same, and an edit keeps the byte. A direct profile the threshold row does not select still hides the power fields,
+  since the firmware would apply two profiles there and the editor does not model that. Tested on synthetic images
+  only: the ROM was not shared, so whether its threshold row selects the same profiles is not known, and nothing was
+  loaded on a card. Load the copy with the loader, never flash it; removing the override brings the stock behaviour
+  back.
+
 ## 0.1.40
 
 - **RTX 5050 Laptop GPU and single-rail RTX 50 laptops with the same rows: the NVVDD output current limit can be

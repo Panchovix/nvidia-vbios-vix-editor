@@ -3,6 +3,10 @@
 One line per change. What each change does, where it applies and what was tested is in the
 [changelog details](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/changelog-details.md).
 
+## 0.1.41
+
+- Ada: cable sense entries may name the profile their level selects (RTX 4090 95.02.18.C0.75): power limit may unlock (untested).
+
 ## 0.1.40
 
 - RTX 5050 Laptop GPU and single-rail RTX 50 laptops with the same rows: the NVVDD output current limit can be edited (untested).
