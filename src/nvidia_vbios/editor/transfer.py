@@ -61,6 +61,11 @@ def _unit(field):
 def _blame(exc, unit_of):
     """The unit an editor refusal names by its field; None when it names none."""
     key = exc.details.get('field') if isinstance(exc.details, dict) else None
+    # The runtime voltage-offset switch with the GPC curve offset or the follow-OV switch: the other field comes
+    # first, so the hooks go after it (the order that lets them be removed again) in a second import.
+    if (key is None and exc.code == 'SEPARATE_EDIT_REQUIRED' and isinstance(exc.details, dict) and
+            (exc.details.get('fields') or [None])[0] == 'runtime_voltage_offsets'):
+        key = 'runtime_voltage_offsets'
     return unit_of.get(key) if isinstance(key, str) else None
 
 

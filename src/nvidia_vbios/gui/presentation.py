@@ -9,14 +9,16 @@ from ..editor.sections import (ADVANCED_SECTION, SECTION_NAMES, SECTIONS, field_
 from ..editor.registry import (FACTORY_BOOST_REASON, FACTORY_OFFSET_FRACTION_REASON, FACTORY_UNREVIEWED_REASON,
                                FAN_LOW_EXTRA_CHANNELS_REASON, FAN_POLICY_COPY_CHANNELS_REASON,
                                FAN_ZERO_RPM_MIXED_REASON, FAN_ZERO_RPM_NO_BLOCK_REASON, FAN_ZERO_RPM_TEMPS_OFF_REASON,
-                               FOLLOW_OV_CLAMP_REASON, FOLLOW_OV_REL_CLAMP_REASON, FOLLOW_OV_SWITCH_OFF_REASON,
+                               FOLLOW_OV_CLAMP_REASON, FOLLOW_OV_HOOKS_REASON, FOLLOW_OV_REL_CLAMP_REASON,
+                               FOLLOW_OV_SWITCH_OFF_REASON,
                                LPWR_ENABLED_ENTRIES, LPWR_ENABLED_UNRECOGNIZED_REASON,
                                LPWR_GR_RG_ENABLED_UNRECOGNIZED_REASON, LPWR_GR_RG_UNRECOGNIZED_REASON,
                                LPWR_MIXED_REASON, LPWR_STOCK_UNRECOGNIZED_REASON, LPWR_TABLE_UNREVIEWED_REASON,
                                LPWR_TIME_SWITCH_REASON,
                                MAX_TEMP_DISABLED_REASON, MAX_TEMP_LOWER_LIMIT_REASON, MAX_TEMP_NO_POLICY_REASON,
                                MAX_TEMP_UNEQUAL_REASON, MAX_TEMP_UNRECOGNIZED_REASON,
-                               PERF_CF_CONTROLLER_UNRECOGNIZED_REASON, PERF_CF_POLICY_UNRECOGNIZED_REASON)
+                               PERF_CF_CONTROLLER_UNRECOGNIZED_REASON, PERF_CF_POLICY_UNRECOGNIZED_REASON,
+                               RUNTIME_OFFSETS_PARTIAL_REASON, RUNTIME_OFFSETS_REMOVE_WAITS_REASON)
 from ..rom.memory import PROFILE_COLUMNS, TIMING_FIELDS
 from .i18n import Messages
 
@@ -29,7 +31,7 @@ FIELD_KEYS = frozenset(('power_min_w', 'power_max_w', 'nvvdd_rel_max_mv', 'msvdd
                         'input_current_policy7_limit_ma', 'slot_power_rated_w', 'slot_power_max_w',
                         'board_fixed_rated_w', 'notebook_base_tgp_w', 'runtime_power_limit_unlock',
                         'fan_pwm_frequency_hz', 'fan_channels',
-                        'nvvdd_rel_alt_follow_ov', 'nvvdd_rel_alt_follow_ov_mv',
+                        'nvvdd_rel_alt_follow_ov', 'nvvdd_rel_alt_follow_ov_mv', 'runtime_voltage_offsets',
                         'fan_zero_rpm',
                         'slot_current_threshold_rated_ma', 'slot_current_threshold_max_ma',
                         'nvvdd_power_threshold_rated_w', 'nvvdd_power_threshold_max_w',
@@ -98,6 +100,7 @@ REASON_KEYS = {
     FOLLOW_OV_CLAMP_REASON: 'reason.follow_ov_clamp',
     FOLLOW_OV_REL_CLAMP_REASON: 'reason.follow_ov_rel_clamp',
     FOLLOW_OV_SWITCH_OFF_REASON: 'reason.follow_ov_switch_off',
+    FOLLOW_OV_HOOKS_REASON: 'reason.follow_ov_hooks',
 }
 
 
@@ -167,11 +170,21 @@ def field_label(field, language='en'):
     return field.get('label', key)
 
 
+# The read-only reasons of the runtime voltage-offset switch, by prefix (a partial set names what is wrong after it).
+# Its other reasons stay in English in the English GUI and read reason.runtime_offsets_blocked in the others.
+RUNTIME_OFFSETS_REASON_KEYS = {RUNTIME_OFFSETS_REMOVE_WAITS_REASON: 'reason.runtime_offsets_remove_waits',
+                               RUNTIME_OFFSETS_PARTIAL_REASON: 'reason.runtime_offsets_partial'}
+
+
 def read_only_reason(field, language='en'):
     text = Messages(language)
     reason = field.get('reason')
     if reason in REASON_KEYS:
         return text(REASON_KEYS[reason])
+    if field.get('key') == 'runtime_voltage_offsets' and reason:
+        key = next((k for prefix, k in RUNTIME_OFFSETS_REASON_KEYS.items() if reason.startswith(prefix)), None)
+        if key or language != 'en':
+            return text(key or 'reason.runtime_offsets_blocked')
     if field.get('units') == 'flag' and (field.get('vmin_tree') or {}).get('state') == 'stock':
         return text('reason.vmin_fixed_stock')
     # Unmapped evidence stays in English (the JSON manifest keeps it). Avoid pretending
@@ -288,6 +301,17 @@ def runtime_limit_notes(field, family, language='en'):
     return [text('runtime_limit.note'),
             text('runtime_limit.turing' if family == 'turing' else 'runtime_limit.untested'),
             text('runtime_limit.gb20x' if (family or '').startswith('blackwell') else 'runtime_limit.r525')]
+
+
+def runtime_offsets_notes(field, language='en'):
+    """Notes of the runtime voltage-offset hook switch (runtime_voltage_offsets): what the hooks add, that nothing
+    changes without a runtime tool, and that it is untested; and where the unused entries an install takes hold
+    leftover bytes (runtime_hooks dirty: the RTX PRO 6000 Max-Q ROMs), that off writes clean ones there."""
+    if field.get('key') != 'runtime_voltage_offsets':
+        return []
+    text = Messages(language)
+    dirty = (field.get('runtime_hooks') or {}).get('dirty')
+    return [text('runtime_offsets.note')] + ([text('runtime_offsets.dirty', entries=', '.join(dirty))] if dirty else [])
 
 
 def output_current_notes(field, family, language='en'):

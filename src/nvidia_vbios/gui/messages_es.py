@@ -475,6 +475,18 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.nvvdd_rel_alt_follow_ov': ('REL y ALT de NVVDD siguen a OV (límite de voltaje plano estilo XOC; avanzado, '
                                    'experimental)'),
  'field.nvvdd_rel_alt_follow_ov_mv': 'Voltaje plano de NVVDD (REL = ALT = OV)',
+ 'field.runtime_voltage_offsets': ('Offsets de voltaje en tiempo de ejecución (hooks compatibles con mVolt+; avanzado, '
+                                   'experimental)'),
+ 'runtime_offsets.note': ('Agrega hooks de offset de voltaje en tiempo de ejecución (compatibles con mVolt+) a los '
+                          'límites REL, ALT, OV y VMIN de cada riel, para herramientas que escriben la variable VFE en '
+                          'tiempo de ejecución: el valor que escriben, en µV y limitado a ±1,25 V, se suma a cada '
+                          'límite. Sin esa herramienta queda en 0 y no cambia nada, y los voltajes fijados en esta '
+                          'ventana siguen aplicando. Off quita los hooks. Abre y edita una copia con hooks solo con '
+                          'esta versión del editor o una más nueva: las anteriores muestran el límite del hook '
+                          '(1250 mV) como techo de REL y OV, y editarlo rompe los hooks. Sin probar en hardware.'),
+ 'runtime_offsets.dirty': ('En esta ROM las entradas sin uso que toman los hooks ({entries}) tienen bytes sobrantes: '
+                           'al desactivar se escriben ahí bytes limpios sin uso, así que una copia activada y luego '
+                           'desactivada difiere del original en esos bytes.'),
  'field.power_default_w': 'Potencia por defecto al arrancar (experimental)',
  'field.input_current_rated_ma': 'Límite de corriente de entrada de 12 V, nominal (experimental)',
  'field.input_current_max_ma': 'Techo de corriente de entrada de 12 V (experimental)',
@@ -557,6 +569,18 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                                 '"Voltaje plano de NVVDD (REL = ALT = OV)", que aparece con los campos avanzados.'),
  'reason.follow_ov_switch_off': ('Activa "REL y ALT de NVVDD siguen a OV", guarda la copia y ábrela para fijar este '
                                  'valor.'),
+ 'reason.follow_ov_hooks': ('Los hooks de offset de voltaje en tiempo de ejecución ocupan los selectores de NVVDD que '
+                            'este ajuste mueve: primero desactiva "Offsets de voltaje en tiempo de ejecución" y guarda '
+                            'la copia.'),
+ 'reason.runtime_offsets_remove_waits': ('Una edición guardada después de los hooks (el offset de la curva GPC o la '
+                                         'copia del voltaje plano de NVVDD) ocupó las siguientes entradas VFE sin uso, '
+                                         'así que quitar los hooks ahora dejaría un hueco antes de ella: primero '
+                                         'vuélvela atrás (el offset de la curva GPC a 0), guarda la copia y ábrela.'),
+ 'reason.runtime_offsets_partial': ('Esta ROM tiene un conjunto incompleto o ajeno de hooks de offset de voltaje en '
+                                    'tiempo de ejecución, así que el interruptor y los voltajes de los límites con hook '
+                                    'son de solo lectura: edita la ROM original.'),
+ 'reason.runtime_offsets_blocked': ('No se pueden agregar ni quitar los hooks de offset de voltaje en tiempo de '
+                                    'ejecución en esta ROM; el motivo exacto (en inglés) está en el manifiesto JSON.'),
  'reason.generic': 'Edición no disponible para este campo.',
  'error.INVALID_IMAGE': 'Abre una ROM primero',
  'error.INVALID_CHANGES': 'Prepare una vista previa verificada antes de guardar',
@@ -589,8 +613,11 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                                   'VMIN y el offset de la curva GPC también se guardan por separado, al igual que el '
                                   'voltaje plano de NVVDD y el offset de la curva GPC en algunas ROM Blackwell, y lo '
                                   'mismo desactivar la parada en reposo y cambiar sus umbrales en una copia donde la '
-                                  'parada escribió valores de parada. Guarda uno y luego abre la copia para cambiar el '
-                                  'resto'),
+                                  'parada escribió valores de parada. En las ROM Blackwell el interruptor de offsets de voltaje '
+                                  'en tiempo de ejecución se guarda aparte del offset de la curva GPC y del ajuste '
+                                  'REL/ALT siguen a OV, y con hooks instalados después de un offset de la curva GPC, '
+                                  'desactiva el interruptor antes de volver ese offset a 0. Guarda uno y luego abre la '
+                                  'copia para cambiar el resto'),
  'cli_usage': 'uso: ',
  'cli_positionals': 'argumentos posicionales',
  'cli_options': 'opciones',

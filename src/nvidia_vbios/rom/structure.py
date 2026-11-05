@@ -73,6 +73,25 @@ def vfe_constant_mhz(size, var, value):
             (bytes((0xFF,)) if size == 25 else b''))
 
 
+# Runtime voltage-offset hooks (GB20x; the layout mVolt+ installs): per voltage-limit selector, a new VFE
+# variable copied from the stock type-9 template, which a tool overrides at runtime (a VALUE in uV), and a
+# quadratic equation on it that clamps it to +-1.25 V and links the selector's original equation as its next
+# equation, so the limit is the original one plus the variable (0 unless a tool sets it).
+# The stock template variable (type 9, zero range; variables 4, 5, 11, 12 and 13 of every GB20x image).
+VFE_HOOK_VARIABLE = bytes.fromhex('0900000000000000000708000400000000001000000000000000000000')
+# An unused VFE variable entry (type 0), as every GB20x image stores it in its unused tail.
+VFE_FREE_VARIABLE = bytes.fromhex('000000000000000000ff00000000000000001000000000000000000000')
+VFE_HOOK_LIMIT_UV = 1250000
+# Hook equation bytes 3..22: clamp -1.25 V..+1.25 V, constant 0, slope 1.0, curvature 0.
+VFE_HOOK_BODY = struct.pack('<5f', -VFE_HOOK_LIMIT_UV, VFE_HOOK_LIMIT_UV, 0.0, 1.0, 0.0)
+
+
+def vfe_hook_equation(var, target):
+    """The 25-byte hook equation: quadratic (1) on var, next link target (bytes 2 | 24 << 8), VFE_HOOK_BODY, uV
+    output (2)."""
+    return bytes((1, var, target & 0xFF)) + VFE_HOOK_BODY + bytes((2, target >> 8))
+
+
 def vfe_referrers(blob, base, size, width, count):
     """Equation index -> [(referrer index, 'next', 'child' or 'criterion')]: who links each equation.
 
@@ -215,8 +234,12 @@ def fan_curve(blob, at):
                 curve_points=tuple(read(blob, '<HH', at + 18 + 4 * k) for k in range(3)))
 
 
-def vfe_range(blob, base, size, width, count, index, seen=frozenset(), *, clamped_children=False):
+def vfe_range(blob, base, size, width, count, index, seen=frozenset(), *, clamped_children=False, variables=None):
     """(lowest, highest) uV of the VFE equation list at index, or None when it is not bounded.
+
+    variables optionally maps VFE variable indices to values: a quadratic (1) on one of them is then
+    its value there (constant + slope x + curvature x^2), clamped like any other equation (a runtime
+    voltage-offset hook with its variable at 0 adds 0 to the equation it links).
 
     Each equation is clamped to its own float bounds (bytes 3/7) and its next link
     (byte 2, | byte 24 << 8 when links are u16) is added, as the RTX 2000 Ada VMIN
@@ -231,11 +254,11 @@ def vfe_range(blob, base, size, width, count, index, seen=frozenset(), *, clampe
     (the VMIN bounds use it, for the compare REL of the RTX 4060 family and the
     RTX 4070 Ti SUPER, clamped to 1015..1090 mV over a chain with an unclamped slope).
     """
-    span = _vfe_span(blob, base, size, width, count, index, seen, clamped_children)
+    span = _vfe_span(blob, base, size, width, count, index, seen, clamped_children, variables or {})
     return span if span is not None and all(math.isfinite(v) for v in span) else None
 
 
-def _vfe_span(blob, base, size, width, count, index, seen, clamped_children):
+def _vfe_span(blob, base, size, width, count, index, seen, clamped_children, variables):
     """vfe_range with -inf/+inf for the unbounded ends; None for a list it cannot read."""
     none = (1 << 8 * width) - 1
     low = high = 0.0
@@ -247,12 +270,15 @@ def _vfe_span(blob, base, size, width, count, index, seen, clamped_children):
         lo, hi, c0, c1, c2 = struct.unpack_from('<5f', e, 3)
         if e[23] & 15 != 2 or not lo <= hi:
             return None
-        if e[0] in (1, 7):
+        if e[0] == 1 and e[1] in variables:
+            x = variables[e[1]]
+            span = (c0 + c1 * x + c2 * x * x,) * 2
+        elif e[0] in (1, 7):
             constant = e[0] == 1 and abs(c1) < VFE_RESIDUE and abs(c2) < VFE_RESIDUE
             span = (c0, c0) if constant else (-math.inf, math.inf)
         elif e[0] in (2, 3):
             children = [_vfe_span(blob, base, size, width, count, e[k] | (e[k + 4] << 8 if width == 2 else 0), seen,
-                                  clamped_children) for k in ((11, 12) if e[0] == 2 else (15, 16))]
+                                  clamped_children, variables) for k in ((11, 12) if e[0] == 2 else (15, 16))]
             if None in children or not clamped_children and not all(math.isfinite(v) for c in children for v in c):
                 return None
             span = (min(c[0] for c in children), max(c[1] for c in children))

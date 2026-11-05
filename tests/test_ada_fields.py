@@ -1,5 +1,6 @@
 """Ada editable fields: generated images, and reference ROMs where they are available."""
 from decimal import Decimal
+import hashlib
 import os
 from pathlib import Path
 import struct
@@ -75,20 +76,61 @@ def sense_profiles(blob, top=(70000, 70000), lower=(30000, 40000, 50000), input_
     return patched(blob, at, bytes(table))
 
 
+def gigabyte_sense_profiles(blob):
+    """The override profile table of a Gigabyte RTX 4090 image (95.02.18.C0.75, issue #32), byte for byte, with the
+    base rows the user reported: TGP row 2 150/450/600 W, 12 V input thresholds (rows 9 and 10) rated 45 A and
+    58 A maximum. Row 6 (no field) takes 600 W rated and maximum, its value on the corpus image of that version.
+
+    Sense row 0 names each code as its direct profile; codes 2 and 3 vote 450 and 600 W. Row 1 maps 150, 300,
+    450 and 600 W to profiles 4..7, of which 4 and 5 are disabled. Direct profiles 2 and 3 set row 6 (maximum and
+    rated) and the 12 V input maxima (rows 9 and 10); threshold profiles 6 and 7 set the TGP maximum only.
+    """
+    parser = backend(from_bytes(blob))
+    rows = parser.power_rows()
+    for row, limits in ((2, (150000, 450000, 600000)), (6, (10000, 600000, 600000)), (9, (1000, 45000, 58000)),
+                        (10, (1000, 45000, 58000))):
+        blob = patched(blob, rows[row]['offset'] + 2, struct.pack('<III', *limits))
+    table = bytearray(bytes.fromhex('10 0a 05 04 07 08 01 10 09 08') + bytes(PROFILE_BYTES - 10))
+    selection = ((bytes.fromhex('01 08 00 00 00'), [struct.pack('<BBIB', 1, code, vote, code)
+                                                    for code, vote in enumerate((0, 0, 450000, 600000))]),
+                 (bytes.fromhex('02 00 00 00 00'), [struct.pack('<BBIB', 1, 4 + i, value, 0xFF)
+                                                    for i, value in enumerate((150000, 300000, 450000, 600000))]),
+                 (bytes(5), []), (bytes(5), []))
+    for k, (header, entries) in enumerate(selection):
+        start = 0x0A + 0x3D * k
+        table[start:start + 5] = header
+        for j in range(8):
+            table[start + 5 + 7 * j:start + 12 + 7 * j] = entries[j] if j < len(entries) else b'\x00\xff' + bytes(5)
+    for index, entries in {2: ((6, 450000), (0x106, 450000), (9, 45000), (10, 45000)),
+                           3: ((6, 600000), (0x106, 600000), (9, 60000), (10, 60000)),
+                           6: ((2, 450000),), 7: ((2, 600000),)}.items():
+        start = 0xFE + 0x49 * index
+        table[start] = 1
+        for j, (selector, value) in enumerate(entries):
+            struct.pack_into('<BII', table, start + 1 + 9 * j, 1, selector, value)
+    return patched(blob, parser.profile_table(), bytes(table))
+
+
 # Byte changes (offset in the profile table, bytes) that leave the reviewed override profile shape, and the
 # FormatError message each one gives: a threshold param other than 0xff, a direct profile (sense entry byte 1)
-# naming another code or a profile row 1 does not apply at that code, the presence gate bit of the sense row,
-# a field 2 (minimum) entry, a used selection row 2, and a top-level profile that differs from the base.
+# naming another code or a disabled profile at a code that votes, a threshold a vote selects naming a disabled
+# profile, the presence gate bit of the sense row, a field 2 (minimum) entry, a used selection row 2, and a
+# top-level TGP entry that differs from the base. Profiles 0..3 are disabled on these images.
 SENSE_PROFILE_VARIANTS = (
     ('threshold param', 0x47 + 5 + 6, b'\x00', 'unrecognized Ada override profile selection entry'),
     ('direct profile of another code', 0x0A + 5 + 7 * 3 + 1, b'\x02',
      'unrecognized Ada override profile selection entry'),
-    ('direct profile row 1 does not apply', 0x0A + 5 + 7 * 3 + 1, b'\x03',
-     'unrecognized Ada override profile selection entry'),
+    ('disabled direct profile at a code that votes', 0x0A + 5 + 7 * 3 + 1, b'\x03',
+     'Ada override direct profile 3 at code 3 is disabled'),
+    ('selected threshold names a disabled profile', 0x47 + 5 + 7 * 2 + 1, b'\x03',
+     'Ada override profile threshold selected at code 2 names disabled profile 3'),
     ('presence gate', 0x0A + 2, b'\x08', 'unrecognized Ada override profile selection rows'),
     ('field 2 entry', 0xFE + 4 * 0x49 + 1 + 2, b'\x02', 'unsupported Ada override profile entry'),
     ('extra selection row', 0x0A + 2 * 0x3D, b'\x02', 'unrecognized Ada override profile selection rows'),
-    ('top differs from the base', 0xFE + 7 * 0x49 + 1 + 5, b'\x00', 'selects no profile equal to the base table'))
+    ('top differs from the base', 0xFE + 7 * 0x49 + 1 + 5, b'\x00',
+     'override profile 7 of the top sense level holds a TGP value other than the base table'))
+# The top-level entry that differs sits on the TGP row only: the other policies' fields bind their own rows.
+TOP_TGP_VARIANT = 'top differs from the base'
 
 
 def fan_limits(channels, sides=('min_rpm', 'max_rpm', 'min_pct', 'max_pct')):
@@ -442,13 +484,33 @@ class AdaSenseProfileTests(unittest.TestCase):
                 self.assertNotIn('power_max_w', fields)
                 self.assertTrue(any(message in m for m in messages(image)), messages(image))
                 field = fields['input_current_rated_ma']
-                self.assertFalse(field['editable'])
-                self.assertIn('differs from the base table' if name.startswith('top') else
-                              'override profiles do not decode', field['reason'])
+                self.assertEqual(field['editable'], name == TOP_TGP_VARIANT)
+                if name != TOP_TGP_VARIANT:
+                    self.assertIn('override profiles do not decode', field['reason'])
                 with self.assertRaises(VbiosError) as exc:
                     edit(image, {'power_max_w': 90})
                 self.assertEqual(exc.exception.code, 'UNKNOWN_FIELD')
 
+
+    def test_lower_level_maximum_below_the_base_rated_value_does_not_hide_the_fields(self):
+        # Profile 6 (code 2) replaces the TGP maximum with 50 W and leaves the rated value (70 W) to the base. How
+        # the firmware treats rated > max there is not analysed: the editor names it and leaves the choice to the
+        # user, as 0.1.41 did, instead of hiding the power fields.
+        at = self.parser.profile_table()
+        row = bytearray(0x49)
+        row[0] = 1
+        for j, (selector, value) in enumerate(((2, 50000), (0x109, 25000), (0x10A, 25000))):
+            struct.pack_into('<BII', row, 1 + 9 * j, 1, selector, value)
+        image = from_bytes(patched(self.blob, at + 0xFE + 6 * 0x49, bytes(row)))
+        self.assertEqual(inspect_image(image)['diagnostics'], [])
+        fields = descriptors(image)
+        for key, bounds in {'power_max_w': (70, 2147483.647), 'power_default_w': (30, 70),
+                            'power_min_w': (1, 50)}.items():
+            with self.subTest(key=key):
+                self.assertTrue(fields[key]['editable'])
+                self.assertEqual((fields[key]['bounds']['minimum'], fields[key]['bounds']['maximum']), bounds)
+        self.assertIn('override profile 6 sets the TGP maximum to 50 W at its sense level',
+                      fields['power_default_w']['reason'])
 
     def test_lower_profile_values_outside_the_stored_range_fail_closed(self):
         # A lower-level value the stored base value could not be requested again with (no image has one): profile
@@ -467,6 +529,123 @@ class AdaSenseProfileTests(unittest.TestCase):
             self.assertFalse(fields[key]['editable'], key)
             self.assertIn('override profile 6 of a lower cable sense level holds a value outside the stored range',
                           fields[key]['reason'])
+
+
+class AdaDirectAndThresholdProfileTests(unittest.TestCase):
+    """Direct and threshold profiles applied together at one sense level (issue #32), on a synthetic image."""
+    # SHA-256 of the 1422-byte profile table the user posted.
+    TABLE_SHA256 = '09b28243ffe8ac33772e95ca4edf1cef0eefae90f3f1a8f8d173c1fb1883509a'
+
+    def setUp(self):
+        self.blob = gigabyte_sense_profiles(synthetic_rom(copies=2, policies=True))
+        self.image = from_bytes(self.blob)
+        self.parser = backend(self.image)
+
+    def test_table_and_selection_decode(self):
+        at = self.parser.profile_table()
+        self.assertEqual(hashlib.sha256(self.blob[at:at + PROFILE_BYTES]).hexdigest(), self.TABLE_SHA256)
+        self.assertEqual([p['index'] for p in self.parser.power_profiles()], [2, 3, 6, 7])
+        self.assertEqual(self.parser.profile_selection(), {0: None, 1: None, 2: 6, 3: 7})
+        self.assertEqual(self.parser.profile_levels(), {0: (), 1: (), 2: (2, 6), 3: (3, 7)})
+        self.assertEqual([(p['index'], p['selected_by']) for p in self.parser.top_power_profiles()],
+                         [(3, 'direct'), (7, 'threshold')])
+        self.assertEqual(self.parser.top_power_profile()['index'], 7)
+        self.assertEqual([p['index'] for p in self.parser.matching_power_profiles()], [7])
+        self.assertFalse(inspect_image(self.image)['diagnostics'])
+
+    def test_power_fields_bind_profile_7_and_the_other_reached_profiles_bound_them(self):
+        fields = descriptors(self.image)
+        # A lower level that replaces a maximum but not the rated value (profile 6 TGP, profile 2 input current)
+        # does not bound the base rated value: the firmware's handling of rated > max is not analysed.
+        expected = {'power_max_w': (600, 450, 2147483.647), 'power_default_w': (450, 150, 600),
+                    'power_min_w': (150, 1, 450), 'input_current_rated_ma': (45000, 1000, 58000)}
+        for key, (current, low, high) in expected.items():
+            with self.subTest(key=key):
+                field = fields[key]
+                self.assertEqual((field['current'], field['bounds']['minimum'], field['bounds']['maximum']),
+                                 (current, low, high))
+                self.assertTrue(field['editable'])
+        self.assertEqual(fields['power_max_w']['override_profiles'],
+                         {'top_profile': 7, 'top_sense_code': 3, 'top_sense_level_w': 600,
+                          'top_sense_level_basis': 'inferred', 'other_profiles': [2, 6], 'top_direct_profile': 3})
+        reason = fields['power_max_w']['reason']
+        for text in ('direct profile 3 (sense entry byte 1), which sets other limits (rows 6, 9 and 10)',
+                     'the other profiles (6; 6 is selected, at code 2) keep their own limits',
+                     'from below only: it has no upper bound but the encoding',
+                     'override profile 7, used at the top level (code 3, most likely a 600 W cable; inferred, not '
+                     'tested), holds the same value and is written with it',
+                     'raise input_current_rated_ma (opt-in) with it',
+                     'override profile 2 sets their maximum to 45 A at its lower sense level',
+                     'not known (not analysed) and the editor leaves it to you'):
+            self.assertIn(text, reason)
+        # Profile 7 holds no TGP rated entry: power_default_w writes the base alone and says so.
+        reason = fields['power_default_w']['reason']
+        self.assertIn('override profile 7, used at the top level (code 3, most likely a 600 W cable; inferred, not '
+                      'tested), holds no TGP rated entry, so the base value applies there', reason)
+        self.assertNotIn('holds the same value', reason)
+        self.assertIn('override profile 6 sets the TGP maximum to 450 W at its sense level', reason)
+        self.assertIn('the editor leaves it to you', reason)
+        # At code 3 direct profile 3 replaces the 12 V input maximum with 60 A: the base ceiling would be undone.
+        field = fields['input_current_max_ma']
+        self.assertFalse(field['editable'])
+        self.assertIn('override profile 3 replaces this ceiling with 60000 mA', field['reason'])
+        self.assertIn('override profile 2 sets the ceiling to 45000 mA', fields['input_current_rated_ma']['reason'])
+        self.assertIn('the editor leaves it to you', fields['input_current_rated_ma']['reason'])
+        from nvidia_vbios.gui.presentation import sense_profile_notes
+        notes = sense_profile_notes(fields['power_max_w'], list(fields.values()))
+        self.assertIn('Raise it too', notes[2])
+
+    def test_power_max_edit_writes_the_base_and_profile_7_in_both_chains(self):
+        result = edit(self.image, {'power_max_w': 800})
+        offsets = [at for o in (self.parser.power_rows()[2]['maximum_offset'],
+                                self.parser.top_power_profile()['entries'][0]['value_offset'])
+                   for at in self.parser.copy_offsets(o, 4)]
+        changed = {i for i, (a, b) in enumerate(zip(self.blob, result.blob)) if a != b}
+        checksums = {end - 1 for _, end in self.parser.image_regions}
+        # 600000 -> 800000 changes three bytes of each value; one checksum byte per chain.
+        self.assertEqual(len(changed), 14)
+        self.assertEqual(changed - checksums, {at + k for at in offsets for k in range(3)})
+        after = backend(result.image)
+        self.assertEqual(descriptors(result.image)['power_max_w']['current'], 800)
+        self.assertEqual(after.profile_levels(), self.parser.profile_levels())
+        self.assertEqual([p for p in after.power_profiles() if p['index'] != 7],
+                         [p for p in self.parser.power_profiles() if p['index'] != 7])
+        self.assertEqual(edit(result.image, {'power_max_w': 600}).blob, self.blob)
+        rated = edit(self.image, {'input_current_rated_ma': 40000})
+        self.assertEqual(backend(rated.image).power_profiles(), self.parser.power_profiles())
+        # Above the maxima profiles 6 and 2 set at code 2: allowed, the base rated values alone change.
+        tgp, inputs = self.parser.power_rows()[2], [self.parser.power_rows()[i] for i in (9, 10)]
+        raised = edit(self.image, {'power_default_w': 550, 'input_current_rated_ma': 52000})
+        changed_bytes_within(self, self.image, raised, [
+            at for o in [tgp['maximum_offset'] - 4] + [r['maximum_offset'] - 4 for r in inputs]
+            for at in self.parser.copy_offsets(o, 4)])
+        self.assertEqual(backend(raised.image).power_profiles(), self.parser.power_profiles())
+        self.assertEqual(edit(raised.image, {'power_default_w': 450, 'input_current_rated_ma': 45000}).blob, self.blob)
+        for changes in ({'power_default_w': 601}, {'input_current_rated_ma': 58001}, {'power_max_w': 449}):
+            with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
+                edit(self.image, changes)
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        with self.assertRaises(VbiosError) as exc:
+            edit(self.image, {'input_current_max_ma': 60000})
+        self.assertNotEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+
+    def test_layouts_whose_result_is_ambiguous_stay_refused(self):
+        at = self.parser.profile_table()
+        variants = (
+            # Profile 3 also sets the TGP maximum that profile 7 sets at code 3.
+            ('direct and threshold profile share an entry', 0xFE + 3 * 0x49 + 1 + 1, b'\x02',
+             'Ada override profiles 3 (direct) and 7 (threshold) both set a limit at code 3'),
+            ('selected threshold names a disabled profile', 0xFE + 6 * 0x49, bytes(0x49),
+             'Ada override profile threshold selected at code 2 names disabled profile 6'),
+            ('disabled direct profile at a code that votes', 0xFE + 2 * 0x49, bytes(0x49),
+             'Ada override direct profile 2 at code 2 is disabled'))
+        for name, offset, data, message in variants:
+            with self.subTest(name=name):
+                image = from_bytes(patched(self.blob, at + offset, data))
+                fields = descriptors(image)
+                self.assertNotIn('power_max_w', fields)
+                self.assertTrue(any(message in m for m in messages(image)), messages(image))
+                self.assertFalse(fields['input_current_rated_ma']['editable'])
 
 
 class AdaVoltageTests(unittest.TestCase):

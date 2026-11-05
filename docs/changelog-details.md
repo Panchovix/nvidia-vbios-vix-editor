@@ -3,6 +3,91 @@
 What each change does, where it applies, what was tested and its risks. CHANGELOG.md lists the same
 changes, one line each, in the same order.
 
+## 0.1.42
+
+- **Blackwell: runtime voltage offsets switch, mVolt+-compatible VFE hooks for runtime offset tools (experimental;
+  worked on one RTX PRO 4000 SFF).** On Windows 621.01 and newer the driver ignores rail voltage offsets on RTX 50
+  cards, so mVolt+ applies its offsets through VFE variables: in the BIOS override each REL, ALT, OV and VMIN limit
+  gets a hook, an equation that adds a dedicated variable (in uV, clamped to +-1.25 V) to the original equation, and
+  at runtime it writes the variable. The new **Runtime voltage offsets** switch (advanced) writes those same bytes on
+  every RTX 50 ROM that allows it: a copy of the stock template variable and a hook equation per present REL, ALT, OV
+  and VMIN selector of each rail, in the first unused VFE entries, with the selector moved to the hook. The image
+  stores no offset, so with no runtime tool nothing changes. Off removes the hooks and gives back the stock bytes (on
+  the RTX PRO 6000 Max-Q ROMs two unused variables get clean unused bytes instead of their leftover ones). A ROM whose
+  selectors all hold complete hooks, mVolt+-made ones included, shows the switch on; a partial or foreign set is
+  read-only. With hooks installed, the REL floor and ceilings, ALT and OV ceilings and VMIN edit the original
+  equations through the hooks, so fixed values and runtime offsets work together and the order of the edits does not
+  matter; the follow-OV switch is read-only while hooks are installed. On the ASUS XOC and MSI Lightning ROMs, and on
+  copies whose REL and ALT follow OV, REL, ALT and OV share one equation: each gets its own hook linking it, as mVolt+
+  installs them. With hooks installed after a GPC curve offset, that offset can change but not go back to 0 until the
+  hooks are removed (it would leave a gap in the unused VFE entries). Open and edit copies with hooks only with this
+  version or newer: older versions show the hook clamp (1250 mV) as the REL and OV ceilings, and editing it there
+  breaks the hooks. Tested statically on all 35 GB20x ROMs of the corpus: the installed bytes equal an independent
+  build from the layout, every limit evaluates the same with the variables at 0, and removal gives back the stock
+  bytes. On one RTX PRO 4000 SFF (Linux, driver 615.78.08) the VFE masks and selectors the GSP firmware reports
+  matched the hooks, and a runtime tool wrote the hook variables (hardware result). Other cards and drivers are
+  untested, and the VMIN hooks link a min/max root on most ROMs, a link no NVIDIA image has. Load the copy with the
+  loader; removing the override brings the card back. For API users: the field carries `runtime_hooks` (the slot
+  table: rail, role, stored word, hook, variable, target, the reference template variable and the leftover entries an
+  install takes), and hooked voltage fields carry `selector.runtime_hook`.
+
+- **Blackwell: `nvbios vfe-layout` prints the layout document runtime offset tools read to trust the voltage-offset
+  hooks.** A runtime tool that writes the hook variables has to know which VFE entries are hooks before it writes one.
+  `nvbios vfe-layout PAYLOAD` prints that table for an image whose runtime voltage offsets switch is on, as the
+  `nvidia-runtime-vfe-layout/v1` JSON document: the image's SHA-256, the untouched template variable read as the
+  reference, bitmaps of the used VFE variables and equations, and per hook its rail, role (REL, ALT, OV or VMIN), hook
+  equation, linked equation, variable and clamp. It prints the document itself, not the result envelope (LF line ends,
+  also on Windows); `--output FILE` writes it through a temporary file replaced in one step, replacing an existing
+  FILE. Images that are not RTX 50, have no complete set of hooks or break a rule of the document (unused entries that
+  are not one block at the end of their table, no untouched template variable, other hook bytes, shared hooks or
+  variables, a hook that is another slot's linked equation) are refused with the usual error envelope. Tested
+  statically on every GB20x ROM of the corpus with hooks installed (the document matches the hook table and every
+  rule), and the documents of 8 edited payloads of 7 RTX 50 cards equal the ones built and checked for them
+  independently. On one RTX PRO 4000 SFF (Linux, driver 615.78.08) the document matched the VFE masks and selectors
+  the GSP firmware reports, and a runtime tool wrote the hook variables (hardware result). For API users:
+  `nvidia_vbios.rom.vfe_layout.layout_document(image)` returns the document.
+
+- **Ada: cable sense levels may apply a direct and a threshold profile with different limits (RTX 4090
+  95.02.18.C0.75, untested).** On a Gigabyte RTX 4090 ROM (95.02.18.C0.75, reported in [issue
+  #32](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/32)) 0.1.41 still hid the power fields, now with
+  "Ada override profile thresholds are not ascending or name a disabled profile". Its threshold row names two
+  disabled profiles (4 and 5) that no sense code selects, and at codes 2 and 3 its sense entries name direct profiles
+  2 and 3 while the threshold row selects profiles 6 and 7. Static analysis of GSP-RM 615.78.08 and 620.70.06 shows
+  that the firmware applies only the threshold a vote selects, and that at a code with a vote it applies the direct
+  profile first and then the threshold profile. On this ROM the direct profiles set row 6 and the 12 V input maxima
+  and the threshold profiles set only the TGP maximum, so the result does not depend on the order. The editor now
+  accepts a threshold that names a disabled profile when no vote selects it, and a direct profile that differs from
+  the threshold profile when it is enabled and the two set different limits; a direct profile that sets a limit the
+  threshold profile sets too, a disabled one at a code that votes, and a selected threshold naming a disabled profile
+  are still refused. Each field binds the top level's entries on its own rows: `power_max_w` writes the base TGP row
+  and profile 7 together (600 to 800 W changes 14 bytes in the two chains, checksums included), and
+  `input_current_max_ma` stays read-only because direct profile 3 sets 60 A there against 58 A in the base. Where a
+  sense level sets a row's maximum but not its rated value (here profile 6, TGP 450 W, and profile 2, 12 V input
+  45 A, both at code 2), the base rated value runs under that maximum at that level; how the firmware treats a rated
+  value above it is not known (not analysed), so the editor does not bound it and the reasons of `power_default_w`
+  and `input_current_rated_ma` name the profile and its maximum. The `power_max_w` reason now says that the other profiles bound it from
+  below only, with no upper bound but the encoding. Tested on a synthetic image built from the profile table the user
+  posted and on a corpus ROM of the same version with the same table; nothing was loaded on a card. Load the copy
+  with the loader, never flash it; removing the override brings the stock behaviour back.
+
+- **Ada: REL ceiling, REL floor and ALT ceiling edits must keep REL at or below ALT at every temperature (RTX 4090
+  95.02.18).** The REL ceiling, the REL floor and the ALT ceiling were each checked against their own range only, so
+  on the RTX 4090 95.02.18 images (REL 1640 - 5.714 x T clamped to 1040..1080 mV, ALT 20 mV higher, clamped to
+  1060..1100 mV) a REL ceiling of 1195 mV with ALT left at 1100 mV was accepted, and so was a REL floor and ceiling of
+  1195 mV with the ALT ceiling at 1195 mV, although ALT keeps its 1060 mV clamp minimum when hot (reported by a user).
+  Every voltage edit now checks its result, on every family: where REL and ALT are each one clamped quadratic equation
+  (a constant or a temperature equation on the same variable), REL must stay at or below ALT at every input value,
+  checked exactly at the points where REL minus ALT can peak; otherwise the edit is refused with `OUT_OF_BOUNDS`, a
+  message naming the REL (or ALT) field and the voltages where REL passes ALT. Raising the REL and ALT ceilings
+  together still works, and neither ceiling is capped at OV. ALT has no floor field, so on those images the REL floor
+  goes up to 1060 mV; a flat higher REL is the follow-OV switch and its value (REL = ALT = OV). Not checked where the
+  editor cannot evaluate REL or ALT: a compare on fused inputs (RTX 4060 family, 4070 Ti SUPER) and the GB20x
+  leakage polynomial, whose ALT is a +20 mV head on the REL equation, so the REL floor and ceiling raises on RTX 50 cards are unchanged.
+  Every image of the corpus passes as stored. An image saved earlier with REL above ALT keeps accepting edits that
+  leave that rail's REL and ALT alone. Also in the docs and field evidence: the Ada 12 V input current and
+  NVVDD output power threshold ranges, now 16-66 A rated (maxima up to 70 A) on the 18 stock images with those rows
+  and 122-700 W rated (maxima up to 900 W). Offline check only; nothing ran on a card.
+
 ## 0.1.41
 
 - **Ada: cable sense entries may name the profile their level selects (RTX 4090 95.02.18.C0.75): power limit

@@ -444,6 +444,17 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'field.fixed_advanced': '{rail} {role} fixed voltage (advanced, experimental)',
  'field.nvvdd_rel_alt_follow_ov': 'NVVDD REL and ALT follow OV (XOC-style flat voltage limit; advanced, experimental)',
  'field.nvvdd_rel_alt_follow_ov_mv': 'NVVDD flat voltage (REL = ALT = OV)',
+ 'field.runtime_voltage_offsets': 'Runtime voltage offsets (mVolt+-compatible hooks; advanced, experimental)',
+ 'runtime_offsets.note': ('Adds runtime voltage-offset hooks (mVolt+-compatible) to the REL, ALT, OV and VMIN limits '
+                          'of each rail, for tools that write the VFE variable at runtime: the value they write, in '
+                          'µV and clamped to ±1.25 V, is added to each limit. With no such tool it stays 0 and '
+                          'nothing changes, and the voltages set in this window still apply. Off removes the hooks. '
+                          'Open and edit a copy with hooks only with this editor version or newer: older ones show '
+                          'the hook clamp (1250 mV) as the REL and OV ceilings, and editing it breaks the hooks. '
+                          'Not tested on hardware.'),
+ 'runtime_offsets.dirty': ('On this ROM the unused entries the hooks take ({entries}) hold leftover bytes: off writes '
+                           'clean unused bytes there, so a copy switched on and then off differs from the original '
+                           'at those bytes.'),
  'field.power_default_w': 'Boot default board power (experimental)',
  'field.input_current_rated_ma': '12 V input current limit, rated (experimental)',
  'field.input_current_max_ma': '12 V input current ceiling (experimental)',
@@ -518,6 +529,16 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
                                 'voltage (REL = ALT = OV)", shown with the advanced fields.'),
  'reason.follow_ov_switch_off': ('Turn on "NVVDD REL and ALT follow OV", save the copy and open it to set this '
                                  'value.'),
+ 'reason.follow_ov_hooks': ('Runtime voltage-offset hooks hold the NVVDD selectors this setting moves: turn off '
+                            '"Runtime voltage offsets" and save the copy first.'),
+ 'reason.runtime_offsets_remove_waits': ('An edit saved after the hooks (the GPC curve offset or the copy of the NVVDD '
+                                         'flat voltage) took the next unused VFE entries, so removing the hooks now '
+                                         'would leave a gap before them: set it back first (the GPC curve offset to '
+                                         '0), save the copy and open it.'),
+ 'reason.runtime_offsets_partial': ('This ROM holds an incomplete or foreign set of runtime voltage-offset hooks, so '
+                                    'the switch and the voltages of the hooked limits are read-only: edit the original '
+                                    'ROM instead.'),
+ 'reason.runtime_offsets_blocked': 'The runtime voltage-offset hooks cannot be added to or removed from this ROM.',
  'reason.generic': 'Editing unavailable for this field.',
  'error.INVALID_IMAGE': 'Open a ROM first',
  'error.INVALID_CHANGES': 'Stage a verified preview before saving',
@@ -547,7 +568,10 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
                                   'voltages. On some RTX 4090 ROMs VMIN and the GPC curve offset also need separate '
                                   'saves, as do the NVVDD flat voltage and the GPC curve offset on some Blackwell '
                                   'ROMs, and so do zero RPM off and its thresholds on a copy where zero RPM wrote '
-                                  'fan-stop values. Save one, then open the copy to change the rest'),
+                                  'fan-stop values. On Blackwell ROMs the runtime voltage offsets switch is saved '
+                                  'apart from the GPC curve offset and the REL/ALT follow OV setting, and with hooks '
+                                  'installed after a GPC curve offset, turn the switch off before setting that offset '
+                                  'back to 0. Save one, then open the copy to change the rest'),
  'cli_usage': 'usage: ',
  'cli_positionals': 'positional arguments',
  'cli_options': 'options',

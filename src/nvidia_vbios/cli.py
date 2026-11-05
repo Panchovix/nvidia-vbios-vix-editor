@@ -2,8 +2,10 @@
 from __future__ import annotations
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 from . import __version__
 
 LICENSE_NOTICE = ('Copyright (C) 2026 panchovix\n'
@@ -23,6 +25,22 @@ class Parser(argparse.ArgumentParser):
 
 def emit(value):
     print(json.dumps(value, indent=2, sort_keys=True, allow_nan=False))
+
+
+def write_atomic(path, data):
+    """Write data to path through a temporary file in the same directory, replaced in one step (mode 0644)."""
+    path = Path(path)
+    descriptor, name = tempfile.mkstemp(prefix=f'.{path.name}.', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(name, 0o644)
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
 
 
 def changes_from_args(args):
@@ -89,6 +107,14 @@ def parser():
                    help='also import opt-in (advanced) fields; fan curve levels come with their curve without it')
     p.add_argument('--dry-run', action='store_true', help='report what would be imported without writing')
     p.add_argument('--json', action='store_true')
+    p = commands.add_parser('vfe-layout', help='print the runtime VFE layout document of a GB20x payload with '
+                                               'runtime voltage-offset hooks (for runtime offset tools): the '
+                                               'document itself, not the result envelope')
+    p.add_argument('input', type=Path, metavar='PAYLOAD')
+    p.add_argument('--output', type=Path, metavar='FILE', help='write the document to FILE instead of printing it '
+                                                               '(an existing FILE is replaced atomically); the '
+                                                               'result envelope reports it')
+    p.add_argument('--json', action='store_true', help='changes nothing: the document is JSON')
     p = commands.add_parser('normalize', help='export a validated single-chain driver payload')
     p.add_argument('input', type=Path)
     p.add_argument('output', type=Path)
@@ -113,6 +139,15 @@ def execute(args):
             raise VbiosError('INTEGRITY_NOT_VERIFIED', 'full known-format integrity could not be verified', details=report)
         return report
     source = load(args.input)
+    if args.command == 'vfe-layout':
+        from .rom.vfe_layout import layout_bytes, layout_document
+        document = layout_document(source)
+        if args.output is None:
+            return layout_bytes(document)
+        if args.output.exists() and os.path.samefile(args.output, args.input):
+            raise UsageError('--output must not be the payload itself')
+        write_atomic(args.output, layout_bytes(document))
+        return dict(output=str(args.output), image_sha256=document['image_sha256'], slots=len(document['slots']))
     if args.command == 'memory':
         from .rom.memory import compare, memory_report
         report = memory_report(source, raw=args.raw or args.compare is not None)
@@ -168,6 +203,16 @@ def main(argv=None):
             args = root.parse_args(argv)
         operation = args.command
         result = execute(args)
+        if isinstance(result, bytes):
+            # vfe-layout without --output: the document itself, as bytes (no CRLF from a Windows text stdout)
+            stream = getattr(sys.stdout, 'buffer', None)
+            if stream is None:
+                sys.stdout.write(result.decode('ascii'))
+            else:
+                sys.stdout.flush()
+                stream.write(result)
+                stream.flush()
+            return 0
         emit(dict(schema_version=1, ok=True, operation=operation, result=result))
         return 0
     except (ValueError, OSError, RuntimeError) as exc:

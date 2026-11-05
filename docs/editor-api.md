@@ -68,6 +68,7 @@ editable.
 | `nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv`, `msvdd_rel_fixed_mv`, `msvdd_alt_fixed_mv` | mV | uV, exact float32 (constant and clamp maximum; the clamp minimum is kept) | Constant Ada and Turing NVVDD and Ampere (every rail) REL/ALT equations; experimental (opt-in on Ampere and Turing); ordering group `nvvdd-rel-alt` (`msvdd-rel-alt`), with `nvvdd_vmin_mv` and `nvvdd_rel_alt_follow_ov_mv` on Turing |
 | `nvvdd_rel_equation_min_mv`, `msvdd_rel_equation_min_mv` | mV | uV, exact float32 (REL clamp minimum) | GB20x and Ada REL floor (Ada: NVVDD, every chain), experimental; editable with the REL ceiling while REL does not select the OV equation; up to the ceiling and at most the OV equation's clamp minimum (1200 mV), on Ada at least the highest value of a VMIN set per chip (or the stored floor, if lower); ordering group `nvvdd-rel-clamp` or `msvdd-rel-clamp` with `*_rel_equation_max_mv`, whose encoding bounds keep both limits: a floor above the stored ceiling needs `*_rel_equation_max_mv` in the same request (the hidden alias `nvvdd_rel_max_mv` is not in the group) |
 | `nvvdd_rel_alt_follow_ov_mv` | mV | uV, exact float32 (minimum, maximum and constant of the OV constant, or of its copy) | GB20x, Ada, Ampere and Turing (in place only, every chain, on Ada, Ampere and Turing), experimental, opt-in; one value for REL = ALT = OV on a copy saved with `nvvdd_rel_alt_follow_ov` 1 (see below) |
+| `runtime_voltage_offsets` | flag | u16 rail row words (`layout`) and VFE variables and equations (`companion`) | GB20x, experimental, opt-in, not hardware-tested; 1 installs mVolt+-compatible runtime voltage-offset hooks on the REL, ALT, OV and VMIN (+0x13) selectors, 0 removes them (see below) |
 | `*_vmin_mv` on a VMIN set per chip, `*_vmin_fixed` | mV; flag | uV, exact float32 (clamp minimum and maximum, every chain); the switch writes stored clamp bytes (`layout`) | Experimental, GB20x and Ampere tree roots and Ada per-chip equations; `current` `null` while stock; the switch offers only 1 -> 0 (see below) |
 | `msvdd_rel_max_mv` | mV | uV, exact float32 | GB20x; Ampere two-rail GA102 read-only (constant equations); Ada exposes one rail and refuses MSVDD |
 | `dram_max_table_mhz` | table MHz | signed int16 | GB20x clock V50 with reviewed identity descriptors; Ada/Ampere GV HAL clocks table and Turing v0x35 clocks table, experimental |
@@ -135,6 +136,77 @@ fixes VMIN. On the RTX 4090 95.02.3C images, whose memory clock constant keeps t
 the flat value stays at or above that stock VMIN plus its chain (926 mV). While REL or ALT select a constant OV equation, the NVVDD REL, ALT and OV ceilings
 (and `nvvdd_rel_max_mv`), the NVVDD REL floor and the NVVDD fixed REL and ALT values are
 read-only.
+
+### Runtime voltage offsets
+
+`runtime_voltage_offsets` (GB20x, opt-in, not hardware-tested) adds the hooks mVolt+ installs for
+its runtime voltage offsets. For each REL, ALT, OV and evaluated VMIN (+0x13) word of each rail
+that names an equation (NVVDD then MSVDD; absent words 0xffff and other words at or past the
+equation count are skipped, as mVolt+ does), 1 copies the stock type-9 template variable
+into the first unused VFE variable and writes into the first unused equation a quadratic on it
+(type 1, clamp -1250000.0..+1250000.0 uV, constant 0, slope 1.0, curvature 0, uV output) whose
+next link is the word's original equation; the word then selects it. A tool that writes the
+variable at runtime (a VALUE in uV, NvAPI `PerfVfeVarSetControl`) adds that offset to the limit;
+the image stores none, so with no such tool every limit equals its original equation. 0 points
+the words back and writes the clean unused bytes over the hook entries, so install then remove
+gives back the stock bytes, except where the entries held other unused bytes (the first two unused
+variables of the RTX PRO 6000 Max-Q images), which the reason and `runtime_hooks.dirty` name.
+Installing needs the VFE header and BIT P token runtime tools accept, original equations in use (words
+that share one, as REL, ALT and OV of the vendor XOC images or of a copy whose REL and ALT follow OV,
+each get their own hook linking it), a stock template variable, the unused variables and equations
+as one block at the end of each table with room for the hooks and named by no VFE equation, rail row
+word or table that names equations (`equation_index_names`), and the rail table as legacy object
+0x21; the unused entries stay one end block. An image whose words all select complete hooks
+(mVolt+-made ones too) reads 1; a partial or foreign set is read-only, and the voltage fields of the
+words that select one are too. The descriptor's `runtime_hooks` lists per slot the rail, role,
+stored word, hook equation, variable and target equation, the untouched template variable runtime
+tools read as the reference (`reference_variable`), and `dirty`, the unused entries an install
+would take that hold leftover bytes.
+
+With the hooks installed, the voltage fields follow each hook to its original equation: the REL
+floor and ceilings, ALT/OV ceilings and VMIN edit the same bytes as without hooks, so a request with
+the switch and those fields gives the same bytes as two edits in either order. Their `selector`
+(REL, ALT and OV ceilings, REL floor, evaluated VMIN and the `*_selector_index` fields) carries
+`runtime_hook` (`word` is the stored word, the hook), and `raw` names the original equation, as does
+the `current` of `*_selector_index`. The follow-OV switch and the copy of the flat follow-OV value
+would move the hooked selectors, so they are read-only while hooks are installed, and the GPC curve
+offset takes the first unused VFE slot too: requesting the switch with any of them at another value
+than its current one fails with `SEPARATE_EDIT_REQUIRED`. Removal stays read-only while an edit made
+after the hooks (a GPC curve offset or the flat value's copy) holds the next unused entries, and an
+edit that would free an unused entry before installed hooks (the GPC curve offset set to 0 when the
+hooks were installed after it) fails with `SEPARATE_EDIT_REQUIRED`: remove the hooks first. An
+import (`nvbios import`) that would set the switch and the GPC curve offset or the follow-OV switch
+applies the other field and reports the switch as refused; import again to add it. Older editors
+(0.1.41 and before) read the hook as the selected equation: open and edit copies with hooks only
+with 0.1.42 or newer.
+
+### Runtime VFE layout document
+
+`nvbios vfe-layout PAYLOAD [--output FILE]` prints the document a runtime offset tool reads to trust
+the hooks of one image (`nvidia_vbios.rom.vfe_layout.layout_document(image)` in the API):
+
+```json
+{"schema_version": "nvidia-runtime-vfe-layout/v1", "image_sha256": "<SHA-256 of the file>",
+ "reference_variable": 4, "variable_bitmap_hex": "<32 bytes>", "equation_bitmap_hex": "<1024 bytes>",
+ "slots": [{"rail": "NVVDD", "field": "REL", "wrapper": 1818, "next": 3, "variable": 74,
+            "min_uv": -1250000, "max_uv": 1250000}]}
+```
+
+Give it the payload the loader loads: `image_sha256` is the SHA-256 of the file as given.
+`reference_variable` is `runtime_hooks.reference_variable`, and the bitmaps mark the used VFE
+variables (255) and equations (type byte not 0; bit i is byte i // 8, bit i % 8, least significant
+first). There is one slot per hook, in the `runtime_hooks` order: `field` is its role, `wrapper` the
+hook equation, `next` the equation it links, `variable` its variable and `min_uv`/`max_uv` its clamp.
+Unlike the other commands, it prints the document itself, not the result envelope: the exact bytes
+(two-space indented JSON with LF line ends, also on Windows, keys in this order, no `note`), and
+`--json` changes nothing. With `--output` it is written through a temporary file in the same
+directory and replaced in one step (mode 0644), and the usual envelope reports the path; an existing
+FILE is replaced (regenerating a layout), where edit, import and normalize refuse one. Refused with
+the usual error envelope (exit status 2): an image that is not GB20x (`UNSUPPORTED_ARCHITECTURE`),
+one without a complete set of hooks (`NO_RUNTIME_HOOKS`), and one that breaks a rule of the document
+(`VFE_LAYOUT_REFUSED`): unused variables or equations that are not one block at the end of their
+table, no untouched template variable left, other than the exact hook bytes, two slots sharing a
+hook or a variable, a hook that is another slot's linked equation, or an index past 0x1FFF.
 
 ### Fan zero RPM and the start temperature rule
 
@@ -353,7 +425,8 @@ unambiguous ownership. Every hash owner intersecting a write is repaired.
 The legacy image carries its own directory of the same format (digest at
 `legacy+0x209`); `integrity.legacy_directory` reports its hashes without
 changing `integrity.valid`. A write inside the legacy image (only the opt-in
-`nvvdd_rel_alt_follow_ov`, and the selectors `nvvdd_rel_alt_follow_ov_mv` moves to a copy)
+`nvvdd_rel_alt_follow_ov` and `runtime_voltage_offsets`, and the selectors `nvvdd_rel_alt_follow_ov_mv` moves
+to a copy)
 requires that directory to verify, repairs every legacy
 object it touches, its digest and the legacy image checksum, and must reparse
 valid; those repairs carry `"directory": "legacy"` in the manifest.
@@ -391,7 +464,8 @@ and OCP remain unchanged. When no profile matches the base (ASUS XOC-style image
 reached at the top level of the ROM's selection table and write only its entries; the base maximum and rated
 values stay unchanged (see `extended-fields.md`). Ada power uses its header's TGP index rather than a
 fixed board row. The power table header changes only at its TGP index, through the canonical
-`runtime_power_limit_unlock` binding. Ada REL editing changes only the clamp maximum (the ceiling) and
+`runtime_power_limit_unlock` binding, and the runtime voltage-offset hooks (rail row words, VFE variables and
+equations) only through the canonical `runtime_voltage_offsets` binding. Ada REL editing changes only the clamp maximum (the ceiling) and
 minimum (the floor) and preserves its temperature equation coefficients and sensed-temperature input. The evaluated
 VMIN equation and the NVVDD REL/ALT selectors change only through the canonical
 `*_vmin_mv`, `*_vmin_fixed` and `nvvdd_rel_alt_follow_ov` bindings (the REL/ALT/OV

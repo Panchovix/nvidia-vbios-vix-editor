@@ -108,6 +108,10 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    itself; the battery limits still apply; on one RTX 2070 Laptop GPU on Windows, with the
    limits at stock, MSI Afterburner's power limit slider then worked and 64 % (73.6 W) held
    under load, while Ampere and RTX 50 laptops are not tested; the row notes
+   this), **Runtime voltage offsets** on RTX 50 ROMs (a switch, experimental, not tested on
+   hardware: on adds the mVolt+-compatible hooks to the REL, ALT, OV and VMIN limits, so a tool
+   that writes the VFE variable at runtime can add an offset, in µV and clamped to ±1.25 V, on top
+   of the voltages set here; with no such tool nothing changes; off removes them; the row notes
    this), on Ada and Blackwell the power limit of the auxiliary power connector (**Connector power
    channel 1**, experimental: on a board with one 8-pin connector it most likely holds that
    connector near 150 W even with a higher board power limit; a PCIe 8-pin connector is rated

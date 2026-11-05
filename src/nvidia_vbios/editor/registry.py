@@ -3,9 +3,10 @@ from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 import math
 import struct
-from ..rom.blackwell import BlackwellRom, CONNECTOR_INPUT_CHANNEL, FAN_POLICY_FLAG_OFFSET
-from ..rom.structure import (DRAM_POINT_OFFSET_BIT, GPC_CURVE_OFFSET_LIMIT, vfe_constant_mhz,
-                             vfe_free_slot)
+from ..rom.blackwell import (BlackwellRom, CONNECTOR_INPUT_CHANNEL, FAN_POLICY_FLAG_OFFSET, HOOK_PARTIAL_BLOCKED,
+                             HOOK_REMOVE_WAITS)
+from ..rom.structure import (DRAM_POINT_OFFSET_BIT, GPC_CURVE_OFFSET_LIMIT, VFE_HOOK_LIMIT_UV, VFE_RESIDUE,
+                             vfe_constant_mhz, vfe_free_slot)
 from ..rom.errors import VbiosError, FormatError
 from ..rom.image import metadata
 from ..rom.tables import SOURCE, TOP_SENSE_CODE, TableRom
@@ -172,12 +173,18 @@ ADA_PROFILE_EVIDENCE = {
     'observation': 'the profile apply 0x17bc69c calls policy vtable +0x2d0, the wrapper 0x17b2340, which calls the '
                    'limit setter 0x177fd2c (client 0xfe) and then a notify method; the policy constructor 0x178aa44 '
                    'seeds the row limits with the same client, so a selected profile replaces the row value (it '
-                   'does not clamp it); the profile of the top sense code equals the base and is written with it; '
-                   'the other profiles keep their values and bound the edit',
+                   'does not clamp it); at a code with a vote a direct profile other than the threshold profile '
+                   'is applied too, first; it must be enabled and set other limits (row and field) than the '
+                   'threshold profile, so the order does not change the result; thresholds no vote selects are '
+                   'never applied; the top sense code\'s entries on the edited rows equal the base and are written '
+                   'with it (a differing one keeps that field read-only); the other profiles keep their values and '
+                   'bound the edit',
     'inferred': 'static analysis only: that code 3 is the 600 W level of a 12V-2x6 cable (the RTX PRO 6000 Max-Q '
                 'images map codes 0..3 to 150/300/450/600 W) and that raising only the base would be undone by '
                 'the top profile; DCB GPIO functions 0xee/0xed are on this image but also on a GB202 image without '
-                'selection rows (RTX PRO 6000 Workstation), so they do not identify the sense inputs by themselves',
+                'selection rows (RTX PRO 6000 Workstation), so they do not identify the sense inputs by themselves; '
+                'not analysed: how the limit setter treats a base rated value above a maximum that a lower level '
+                'sets while leaving the rated value to the base (the editor does not bound it)',
     'runtime_active_profile': 'inferred from the selection chain; not measured', 'set_tested': False}
 # The level the top sense code most likely stands for (inferred, see ADA_PROFILE_EVIDENCE).
 SENSE_TOP_LEVEL_W = 600
@@ -424,36 +431,80 @@ def ada_input_rated_ma(parser):
     return rated.pop() if None not in items and len(rated) == 1 else None
 
 
+def ada_input_rated_cap(parser):
+    """(profile index, value) of the lowest maximum an override profile sets on the Ada 12 V input-current
+    thresholds at a sense level that leaves their rated value to the base (profile_binding rated_ceilings), or
+    None. Information for the reasons only: the rated value is not bounded by it."""
+    rows = tuple(i['vbios_row_index'] for i in (parser.ada_policy('input_current_0'),
+                                                parser.ada_policy('input_current_1')) if i is not None)
+    try:
+        binding = parser.profile_binding(rows) if rows else None
+    except FormatError:
+        return None
+    return min(binding['rated_ceilings'], key=lambda c: c[1]) if binding and binding['rated_ceilings'] else None
+
+
+def profile_rows(profile):
+    """'row 6' or 'rows 6, 9 and 10': the power rows an override profile sets."""
+    rows = sorted({e['policy'] for e in profile['entries']})
+    return ('row %d' % rows[0] if len(rows) == 1 else
+            'rows %s and %d' % (', '.join(map(str, rows[:-1])), rows[-1]))
+
+
 def ada_profile_note(parser, binding, ceiling=False):
-    """Reason clause of a TGP field on an Ada image whose override profiles follow the cable sense inputs."""
-    others = sorted({p['index'] for p in parser.power_profiles()} - {binding['top']})
-    codes = {}
-    for code, index in sorted(parser.profile_selection().items()):
-        if index is not None and index != binding['top']:
-            codes.setdefault(index, []).append(code)
+    """Reason clause of a TGP field on an Ada image whose override profiles follow the cable sense inputs: the
+    ceiling (power_max_w) when ceiling, else the rated value (power_default_w)."""
+    profiles = {p['index']: p for p in parser.power_profiles()}
+    # Only the lower-level profiles with an entry on the TGP row bound it; a direct profile that sets other rows
+    # (profile 2 on the Gigabyte 95.02.18.C0.75 image) does not.
+    bounding = {index for found in binding['entries'].values() for index, _ in found}
+    others = sorted(bounding)
+    codes, direct = {}, set()
+    for code, applied in sorted(parser.profile_levels().items()):
+        for index in applied:
+            if index in bounding:
+                codes.setdefault(index, []).append(code)
+                if len(applied) == 2 and index == applied[0]:
+                    direct.add(index)
 
     def named(found):
         return 'code %d' % found[0] if len(found) == 1 else 'codes ' + ', '.join(map(str, found))
+
+    def label(index):
+        return '%d (direct)' % index if index in direct else '%d' % index
     only = 'only ' if len(codes) < len(others) else ''
     if not codes:
         reached = '; no sense code selects them'
     elif len(codes) == 1:
         (index, found), = codes.items()
-        reached = '; %s%d is selected, at %s' % (only, index, named(found))
+        reached = '; %s%s is selected, at %s' % (only, label(index), named(found))
     else:
-        reached = '; %s%s are selected' % (only, ' and '.join('%d at %s' % (index, named(found))
+        reached = '; %s%s are selected' % (only, ' and '.join('%s at %s' % (label(index), named(found))
                                                               for index, found in sorted(codes.items())))
+    first = ('' if binding['top_direct'] is None else
+             '; at that level the firmware first applies direct profile %d (sense entry byte 1), which sets other '
+             'limits (%s) and is kept as stored'
+             % (binding['top_direct'], profile_rows(profiles[binding['top_direct']])))
+    held = ('holds the same value and is written with it (a selected profile replaces the base value, so raising '
+            'the base alone would likely be undone; static analysis)'
+            if binding['tied']['maximum' if ceiling else 'default'] else
+            'holds no TGP %s entry, so the base value applies there' % ('maximum' if ceiling else 'rated'))
     note = ('this ROM sets its power limits from the 16-pin cable sense inputs; override profile %d, used at the top '
-            'level (code %d, most likely a %d W cable; inferred, not tested), holds the same value and is written '
-            'with it (a selected profile replaces the base value, so raising the base alone would likely be undone; '
-            'static analysis); the other profiles (%s%s) keep their own limits and bound this value; '
-            % (binding['top'], TOP_SENSE_CODE, SENSE_TOP_LEVEL_W, ', '.join(map(str, others)), reached))
+            'level (code %d, most likely a %d W cable; inferred, not tested), %s%s; the other profiles (%s%s) keep '
+            'their own limits and bound this value%s; '
+            % (binding['top'], TOP_SENSE_CODE, SENSE_TOP_LEVEL_W, held, first, ', '.join(map(str, others)), reached,
+               ' from below only: it has no upper bound but the encoding' if ceiling else ''))
     if ceiling:
         note += 'going past %d W exceeds that cable rating and is your call; ' % SENSE_TOP_LEVEL_W
-        rated = ada_input_rated_ma(parser)
+        rated, cap = ada_input_rated_ma(parser), ada_input_rated_cap(parser)
         if rated is not None:
             note += ('the 12 V input current thresholds (rated %g A, about %d W at 12 V) may limit first: raise '
                      'input_current_rated_ma (opt-in) with it; ' % (rated / 1000, round(rated * 12 / 1000)))
+        if rated is not None and cap is not None:
+            note += ('override profile %d sets their maximum to %g A at its lower sense level and leaves the rated '
+                     'value to the base, so a rated value above that runs under that maximum there; how the firmware '
+                     'treats that is not known (not analysed) and the editor leaves it to you; '
+                     % (cap[0], cap[1] / 1000))
     return note
 
 
@@ -652,12 +703,16 @@ def power(image, parser):
                      'recognized_variants': ['Ada 30/32/53', 'Ada 30/34/5b', 'Ada 30/2c/4b'] if ada(parser) else
                                             ['Turing 30/2c/42', 'Turing 30/27/42'] if turing(parser) else
                                             ['Ampere 30/2c/47', 'Ampere 30/2c/43', 'Ampere 30/32/47']}]
-        # Ada override profiles picked by the cable sense inputs (profile_binding raises
-        # unless the top level's profile equals the base): that profile's TGP entries are
-        # written with the base; the lower levels keep theirs and bound the edit.
+        # Ada override profiles picked by the cable sense inputs: the top level's TGP entries
+        # are written with the base and must equal it (a direct profile applied there too
+        # holds no TGP entry, TableRom.profile_levels); the lower levels keep theirs and
+        # bound the edit.
         binding = parser.profile_binding((parser.tgp_index,)) if ada(parser) else None
         if binding and notebook:
             raise FormatError('override profiles of the notebook layout are unreviewed')
+        if binding and (binding['differs']['maximum'] or binding['differs']['default']):
+            raise FormatError('override profile %d of the top sense level holds a TGP value other than the base '
+                              'table' % (binding['differs']['maximum'] + binding['differs']['default'])[0][0])
         if binding and binding['outside']:
             raise FormatError('override profile %s of a lower cable sense level holds a TGP value outside the stored '
                               'TGP range, which then could not be requested again'
@@ -671,17 +726,29 @@ def power(image, parser):
             minimum_scope = ('header-indexed TGP policy in every validated duplicate chain; at or below every override '
                              'profile value of the TGP row (twice the value of a profile no cable sense level selects)')
             default_scope = ('header-indexed TGP rated value in every validated duplicate chain and the TGP rated '
-                             'entry of override profile %d (top sense level)' % binding['top'])
+                             'entry of override profile %d (top sense level)' % binding['top']
+                             if binding['tied']['default'] else
+                             'header-indexed TGP rated value in every validated duplicate chain; override profile %d '
+                             '(top sense level) holds no TGP rated entry' % binding['top'])
             maximum_note = ada_profile_note(parser, binding, ceiling=True)
             default_note = ada_profile_note(parser, binding)
+            if binding['rated_ceilings']:
+                # A lower level replaces the TGP maximum but not the rated value: the base rated value runs under that
+                # maximum there. Not a bound (firmware handling not analysed): the user decides.
+                cap = min(binding['rated_ceilings'], key=lambda c: c[1])
+                default_note += ('override profile %d sets the TGP maximum to %g W at its sense level and leaves the '
+                                 'rated value to the base, so a rated value above that runs under that maximum there; '
+                                 'how the firmware treats that is not known (not analysed) and the editor leaves it to '
+                                 'you; ' % (cap[0], cap[1] / 1000))
             minimum_note = ('kept at or below every override profile value of the TGP row, or twice the value of a '
                             'profile no cable sense level selects%s; ' % (
                                 ' (profiles %s)' % ', '.join(map(str, binding['unreached'])) if binding['unreached']
                                 else ''))
-            profile_extra = dict(override_profiles={
+            profile_extra = dict(override_profiles=dict({
                 'top_profile': binding['top'], 'top_sense_code': TOP_SENSE_CODE,
                 'top_sense_level_w': SENSE_TOP_LEVEL_W, 'top_sense_level_basis': 'inferred',
-                'other_profiles': sorted({p['index'] for p in profiles} - {binding['top']})})
+                'other_profiles': sorted({p['index'] for p in profiles} - {binding['top'], binding['top_direct']})},
+                **({} if binding['top_direct'] is None else {'top_direct_profile': binding['top_direct']})))
         if ada(parser):
             evidence = (evidence + [dict(ADA_POWER_EVIDENCE)] + ([dict(ADA_NOTEBOOK_EVIDENCE)] if notebook else []) +
                         ([dict(ADA_PROFILE_EVIDENCE)] if binding else []))
@@ -1192,7 +1259,7 @@ def rel_floor(image, parser, item, records, ceiling, follow, evidence):
                  writable_status=None if editable else 'unsupported', experimental=True,
                  value_semantics=REL_FLOOR_SEMANTICS, rail_identity=rail_identity(parser, item),
                  selector={'raw': item['selector_raw'], 'width_bits': item['selector_width_bits'],
-                           'offset': item['selector_offset'], 'absent': item['absent']},
+                           'offset': item['selector_offset'], 'absent': item['absent'], **hook_selector(item)},
                  equation_offset=item['equation_offset'], equation_type=item.get('equation_type'),
                  runtime_role_candidate='REL', reason=reason,
                  **(rel_clamp_group(parser, item, top, lowest) if editable else {}))
@@ -1208,6 +1275,100 @@ def rel_clamps(image, parser):
     keys = {f'{rail}_rel_equation_{side}_mv' for rail in ('nvvdd', 'msvdd') for side in ('max', 'min')}
     return [b for b in equation_roles(image, parser) if b.descriptor['key'] in keys and
             b.descriptor.get('ordering_group')]
+
+
+def clamped_quadratic(blob, item, width, variables):
+    """(variable, lo, hi, c0, c1, c2) of a rail role's equation (rail_equations item) when it is one clamped
+    quadratic voltage output: type 1, output unit 2, no next link. variable is None for a constant (slopes below
+    VFE_RESIDUE); a sloped equation needs finite clamps and a variable below variables (the VFE variable count).
+    None for an absent role and any other shape (a chain, a compare or min/max tree, the GB20x type 7 polynomial of
+    the fused leakage), which the editor cannot evaluate."""
+    at = item.get('equation_offset')
+    if item['absent'] or at is None:
+        return None
+    e = blob[at:at + item['equation_size']]
+    lo, hi, c0, c1, c2 = struct.unpack_from('<5f', e, 3)
+    link = e[2] | (e[24] << 8 if width == 2 else 0)
+    if e[0] != 1 or e[23] & 15 != 2 or link != (1 << 8 * width) - 1 or not lo <= hi:
+        return None
+    if abs(c1) < VFE_RESIDUE and abs(c2) < VFE_RESIDUE:
+        return None, lo, hi, c0, 0.0, 0.0
+    if e[1] >= variables or not all(math.isfinite(v) and abs(v) < 1e30 for v in (lo, hi, c0, c1, c2)):
+        return None
+    return e[1], lo, hi, c0, c1, c2
+
+
+def _clamped_value(eq, x):
+    return min(max(eq[3] + eq[4] * x + eq[5] * x * x, eq[1]), eq[2])
+
+
+def _clamp_points(*equations, extra=()):
+    """The input values where a clamped quadratic (clamped_quadratic) of equations meets a clamp or peaks, with
+    extra and a point beyond each end: the maximum of one of them, or of a difference of two, lies among these."""
+    points = set(extra)
+    for _, lo, hi, c0, c1, c2 in equations:
+        if c2:
+            points.add(-c1 / (2 * c2))
+        for v in (lo, hi):
+            if not c2 and c1:
+                points.add((v - c0) / c1)
+            elif c2 and c1 * c1 - 4 * c2 * (c0 - v) >= 0:
+                root = math.sqrt(c1 * c1 - 4 * c2 * (c0 - v))
+                points.update(((-c1 - root) / (2 * c2), (-c1 + root) / (2 * c2)))
+    return sorted((points | {min(points) - 1, max(points) + 1}) if points else {0.0})
+
+
+def _rel_alt_peak(rel, alt):
+    """(x, REL - ALT in uV) where REL - ALT peaks."""
+    extra = [-(rel[4] - alt[4]) / (2 * (rel[5] - alt[5]))] if rel[5] != alt[5] else []
+    x = max(_clamp_points(rel, alt, extra=extra), key=lambda x: _clamped_value(rel, x) - _clamped_value(alt, x))
+    return x, _clamped_value(rel, x) - _clamped_value(alt, x)
+
+
+def rel_above_alt(parser):
+    """The rails whose evaluated REL rises above ALT somewhere, as dicts (rail, x, rel_uv, alt_uv, variable, rel and
+    alt: the two clamped_quadratic tuples, and alt_floor: a sloped ALT keeps REL above it even with its ceiling
+    raised to REL's highest value, so only a lower REL helps).
+
+    Checked where both are one clamped quadratic (clamped_quadratic) of the same input variable, or constants:
+    REL(x) = min(max(c0 + c1 x + c2 x^2, lo), hi), ALT alike, over every value of x. Between the points where an
+    equation meets a clamp, each side is a quadratic or a constant, so REL - ALT peaks at such a point, at a vertex
+    (REL's, ALT's or that of their difference) or beyond the outermost point, where both are clamped; those points
+    are evaluated. REL or ALT on another shape (a chain, a fused-input compare, the GB20x leakage polynomial with its
+    +20 mV ALT head) is not checked; an absent ALT neither."""
+    try:
+        records = parser.rail_equations()
+    except FormatError:
+        return []
+    if isinstance(parser, BlackwellRom):
+        width, vfe = 2, parser.pointer('P', 0x20)
+    else:
+        width, vfe = parser._equation_layout()[1], parser._rails()[1]
+    variables = parser.blob[vfe + 3]
+    found = []
+    for rail in dict.fromkeys(r['logical_rail_id'] for r in records):
+        roles = {r['role']: r for r in records if r['logical_rail_id'] == rail}
+        if 'REL' not in roles or 'ALT' not in roles:
+            continue
+        rel, alt = (clamped_quadratic(parser.blob, roles[k], width, variables) for k in ('REL', 'ALT'))
+        if rel is None or alt is None or None not in {rel[0], alt[0]} and rel[0] != alt[0]:
+            continue
+        x, excess = _rel_alt_peak(rel, alt)
+        # 1 uV absorbs the float rounding of equal lines.
+        if excess > 1:
+            top = max(_clamped_value(rel, p) for p in _clamp_points(rel))
+            raised = alt[:2] + (max(alt[2], top),) + alt[3:]
+            found.append(dict(rail=rail, x=x, rel_uv=_clamped_value(rel, x), alt_uv=_clamped_value(alt, x),
+                              alt_floor=alt[0] is not None and _rel_alt_peak(rel, raised)[1] > 1,
+                              variable=rel[0] if rel[0] is not None else alt[0], rel=rel, alt=alt))
+    return found
+
+
+def hook_selector(item):
+    """The runtime_hook entry of a voltage field's selector: the installed runtime voltage-offset hook of its rail row
+    word (BlackwellRom.runtime_hook: the stored word, the hook equation, its variable and the target); the selector's
+    raw then names the target, the equation the hook adds to. Empty without a hook."""
+    return {'runtime_hook': dict(item['runtime_hook'])} if item.get('runtime_hook') else {}
 
 
 @registry.register
@@ -1263,7 +1424,7 @@ def equation_roles(image, parser):
         if editable:
             offsets = [item['maximum_offset']] if isinstance(parser, BlackwellRom) else parser.copy_offsets(item['maximum_offset'], 4)
         selector = {'raw': item['selector_raw'], 'width_bits': item['selector_width_bits'],
-                    'offset': item['selector_offset'], 'absent': item['absent']}
+                    'offset': item['selector_offset'], 'absent': item['absent'], **hook_selector(item)}
         # GB20x and Ada REL: the clamp maximum (this ceiling) and minimum (rel_floor) form one ordering group.
         clamp = (isinstance(parser, BlackwellRom) or ada(parser)) and item['role'] == 'REL'
         result.append(field(key, label, 'mV',
@@ -1518,7 +1679,7 @@ def evaluated_vmin(image, parser):
                           f'minimum and maximum; {chained}; on Ada the driver reported the value plus its chained '
                           'equations; the relation to the driver VMIN on Turing is unknown; ' + TURING_UNTESTED}[family]
         selector = {'raw': item['selector_raw'], 'width_bits': 16 if family == 'gb20x' else 8,
-                    'offset': item['selector_offset'], 'absent': item['equation_offset'] is None}
+                    'offset': item['selector_offset'], 'absent': item['equation_offset'] is None, **hook_selector(item)}
         evidence = (GB20X_VMIN_EVIDENCE + ([GB20X_VMIN_TREE_EVIDENCE] if tree else []) if family == 'gb20x' else
                     [TURING_VMIN_EVIDENCE, TURING_VOLTAGE_EVIDENCE] + ADA_VMIN_EVIDENCE if family == 'turing' else
                     ADA_VMIN_EVIDENCE + ([AMPERE_VOLTAGE_EVIDENCE] if family == 'ampere' else []) +
@@ -1787,9 +1948,15 @@ def rail_follow_ov(image, parser):
     # Images without an ALT selector (RTX PRO 6000 Workstation, PRO 4000 SFF, Max-Q, notebook) move REL alone.
     names, flat = (('REL and ALT selectors', 'REL = ALT = OV') if len(moved) == 2 else
                    ('REL selector (this image has no ALT selector)', 'REL = OV'))
+    try:
+        hooked = parser.runtime_hooks()['state'] != 'off'
+    except FormatError:
+        hooked = False
     if state == 1:
         reason = (f'read-only: the OV equation is already selected by the NVVDD {names}; the image keeps no record '
                   'of the original selectors, so the editor cannot restore them (edit the original image instead)')
+    elif hooked:
+        reason = FOLLOW_OV_HOOKS_REASON
     elif state is None or rel['absent'] or ov_value is None or not all(r['layout_recognized'] for r in moved):
         reason = 'read-only: the NVVDD REL, ALT and OV selectors or the OV equation hold another shape'
     elif not owned:
@@ -1817,6 +1984,114 @@ def rail_follow_ov(image, parser):
                                    'the copy; confirmed on one RTX 5090 (the edited copy loaded as an override without '
                                    'problems)'),
             follow_ov_voltage(image, parser, moved, ov, state, ov_value, None if state == 1 else reason, owned)]
+
+
+# The follow-OV switch while the NVVDD selectors it moves (REL, and ALT where the image has one) hold runtime
+# voltage-offset hooks (runtime_voltage_offsets): moving them would drop the hooks. The GUI translates it
+# (presentation.REASON_KEYS), and the read-only reasons of the switch below (RUNTIME_OFFSETS_REASON_KEYS).
+FOLLOW_OV_HOOKS_REASON = ('read-only while runtime voltage-offset hooks hold the NVVDD selectors this switch moves: '
+                          'set runtime_voltage_offsets to 0 and save first')
+RUNTIME_OFFSETS_REMOVE_WAITS_REASON = 'read-only: ' + HOOK_REMOVE_WAITS
+RUNTIME_OFFSETS_PARTIAL_REASON = 'read-only: ' + HOOK_PARTIAL_BLOCKED
+RUNTIME_OFFSETS_SEMANTICS = 'stored-runtime-voltage-offset-hooks'
+RUNTIME_OFFSETS_EVIDENCE = {
+    'kind': 'third-party-layout', 'source': 'mVolt+ 0.50.9 and 0.50.11 (Windows), "Voltage offsets (experimental)"; '
+                                            'static analysis of what it writes, no code reused',
+    'format': 'GB20x rail row words REL +0x0d, ALT +0x0f, OV +0x11 and VMIN +0x13 (u16, legacy image) of each rail; '
+              'per present word a VFE variable (29 bytes, a byte copy of the stock type-9 template 09 00x8 07 08 00 04 '
+              '00x5 10 00x10) and a VFE equation (25 bytes: 01, the variable, next link low byte, clamp -1250000.0 and '
+              '+1250000.0, constant 0, slope 1.0, curvature 0, 02, next link high byte) that links the original '
+              'equation, in the first unused VFE entries (variables, then equations, in word order); the word then '
+              'selects that equation; VFE header 30 0e 1d ff 19 00 (bytes 0..5) and 00 00 01 08 05 00 20 (bytes 7..13)',
+    'observation': 'a runtime tool writes the variable, a VALUE in uV within +-1.25 V, through the NVIDIA VFE variable '
+                   'control (RM control 0x2080e0b4, NvAPI PerfVfeVarSetControl), which mVolt+ uses on RTX 50 cards '
+                   'where the driver ignores rail voltage offsets (Windows 621.01 and newer); with the variable at its '
+                   'stored 0 every limit equals its original equation, so values fixed in those equations still apply; '
+                   'whether a driver applies a written value was not tested here; the GSP-RM 615 and 620 VFE parsers '
+                   'read the hook like any type-1 equation (the evaluator was not traced), and the VMIN hook links a '
+                   'min/max root on most images, a link no NVIDIA image has',
+    'set_tested': False}
+RUNTIME_OFFSETS_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'GB20x VBIOS corpus',
+    'observation': 'every GB20x image has that VFE header, a BIT P token of 0x138 bytes, the template in variables 4, '
+                   '5, 11, 12 and 13, and its unused VFE variables and equations (type 0) as one block at the end of '
+                   'each table, with room for every hook (the fewest: 9 unused equations on a notebook image with 6 '
+                   'words); the vendor XOC images select one equation for NVVDD REL, ALT and OV (each word gets its '
+                   'own hook linking it, as mVolt+ installs them); on the RTX PRO 6000 Max-Q images the first two '
+                   'unused variables hold leftover bytes',
+    'set_tested': False}
+
+
+def runtime_hooks_descriptor(hooks):
+    """The runtime_hooks attribute of the switch: state, the reference template variable, per slot the rail, role,
+    stored word, hook equation, variable and the equation the hook links (target), and dirty: the unused entries an
+    install would take whose bytes are not the clean unused ones (removal then writes the clean bytes there, so
+    install then remove does not give back the original bytes)."""
+    return dict(state=hooks['state'], reference_variable=hooks['reference'], limit_uv=VFE_HOOK_LIMIT_UV,
+                slots=[{k: slot[k] for k in ('rail', 'role', 'word', 'hook', 'variable', 'target')}
+                       for slot in hooks['slots']], dirty=list(hooks['dirty']))
+
+
+@registry.register
+def runtime_voltage_offsets(image, parser):
+    """GB20x runtime voltage-offset hooks (BlackwellRom.runtime_hooks), mVolt+-compatible.
+
+    1 installs a hook on every REL, ALT, OV and evaluated VMIN word of each rail that names an equation (words
+    that name one equation each get their own): a copy of the stock
+    template variable and an equation that adds it, clamped to +-1.25 V, to the word's original equation, in the
+    first unused VFE entries; the word then selects the hook. 0 points the words back at the original equations
+    and writes the clean unused bytes over the hook entries, so a copy switched back equals the stock image (but
+    where the entries held other unused bytes, which runtime_hooks lists as dirty). A tool sets the variables at
+    runtime; at 0, their stored value, nothing changes, and the voltage fields edit the original equations through
+    the hooks either way. Reads 1 for an image with a complete set of hooks (made by mVolt+ too); read-only for a
+    partial or foreign set, and where runtime_hooks blocks the change; not offered on a VFE layout runtime tools do
+    not accept (no image of the corpus). The words, variables and equations go through
+    a layout and companion bytes; only this reviewed binding may write them.
+    """
+    if not isinstance(parser, BlackwellRom):
+        return []
+    try:
+        hooks = parser.runtime_hooks()
+        rail, length = parser.rail_table()
+    except FormatError:
+        return []
+    if hooks['state'] == 'off' and not hooks['layout']:
+        return []  # no VFE layout runtime tools accept: no hooks to install or report
+    try:
+        owner = parser.legacy_owner(rail, length)
+        owned = (owner['id'], owner['data'], owner['size']) == (0x21, rail, length)
+    except FormatError:
+        owned = False
+    state = {'off': 0, 'on': 1}.get(hooks['state'])
+    reason = None
+    if hooks['blocked']:
+        reason = 'read-only: ' + hooks['blocked']
+    elif not owned:
+        reason = ('read-only: the rail table is not the exact legacy-image object 0x21 of a valid legacy directory, '
+                  'so its hashes cannot be repaired')
+    editable = reason is None and can_edit(image, parser)
+    offsets, layout, companion = (), (), ()
+    if editable:
+        offsets = [slot['selector_offset'] for slot in hooks['slots']]
+        layout = tuple((value, tuple(struct.pack('<H', w) for w in hooks['words'][value])) for value in (0, 1))
+        companion = tuple((value, tuple(hooks['writes'][value])) for value in (0, 1))
+    slots = len(hooks['slots'])
+    if reason is None:
+        dirty = hooks['dirty']
+        reason = ('experimental, opt-in: 1 adds runtime voltage-offset hooks (mVolt+-compatible) to the REL, ALT, OV '
+                  f'and VMIN limits ({slots} here): tools that write the VFE variable at runtime add a value in uV, '
+                  'clamped to +-1.25 V, to each limit; with no such tool the value stays 0 and nothing changes, and '
+                  'the voltages set in the other fields still apply; 0 removes the hooks' +
+                  (' (' + ' and '.join(dirty) + ' held leftover unused bytes, which removal replaces with the clean '
+                   'ones)' if dirty else '') + '; not hardware-tested')
+    return [field('runtime_voltage_offsets', 'Runtime voltage offsets (mVolt+-compatible hooks)', 'flag', state,
+                  0 if editable else None, 1 if editable else None, editable,
+                  [dict(RUNTIME_OFFSETS_EVIDENCE), dict(RUNTIME_OFFSETS_CORPUS_EVIDENCE), dict(LEGACY_DIRECTORY_EVIDENCE),
+                   dict(SELECTOR_EVIDENCE)],
+                  offsets=offsets, encoding='<H' if editable else '', scale=1, layout=layout, companion=companion,
+                  writable_status=None if editable else 'unsupported', experimental=True, opt_in=True,
+                  value_semantics=RUNTIME_OFFSETS_SEMANTICS, runtime_hooks=runtime_hooks_descriptor(hooks),
+                  reason=reason)]
 
 
 FOLLOW_OV_VOLTAGE_SEMANTICS = 'stored-follow-ov-voltage'
@@ -2176,6 +2451,8 @@ def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, re
             'so editing this row alone may have no effect')
     one_max, one_rated = len(maxima) == 1 and not others, len(rated) == 1 and not others
     max_lower, rated_lower = max(rated), max(i['minimum_raw'] for i in items)
+    rated_upper = min(maxima)
+    differ_max = differ_rated = None
     tied = {'maximum': [], 'default': []}
     if not profiles_decoded(parser):
         # As for the TGP: an undecoded override profile may target this policy.
@@ -2189,8 +2466,8 @@ def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, re
             binding = parser.profile_binding(tuple(i['vbios_row_index'] for i in items))
         except FormatError:
             binding, one_max, one_rated = None, False, False
-            differ = ('read-only: the override profile of the top cable sense level differs from the base table, so '
-                      'a profile may override this policy; editing it alone may have no effect')
+            differ = ('read-only: the top cable sense level selects no override profile, so which values apply '
+                      'there is unknown; editing this policy alone may have no effect')
         if binding and binding['outside']:
             several = len(binding['outside']) > 1
             differ = ('read-only: override profile%s %s of a lower cable sense level hold%s a value outside the '
@@ -2201,6 +2478,22 @@ def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, re
             tied = binding['tied']
             max_lower = max([max_lower] + binding['values'])
             rated_lower = max([rated_lower] + binding['defaults'])
+
+            def top_differs(found, what):
+                # A top-level profile (direct or threshold) that replaces this field with another value: an edit of
+                # the base would be undone there, and the editor does not change that profile.
+                indices = sorted({index for index, _ in found})
+                return ('read-only: at the top cable sense level (code %d) override profile %s replaces %s with %s, '
+                        'not the base value; editing the base alone would likely be undone there, and the editor '
+                        'keeps that profile as stored' % (
+                            TOP_SENSE_CODE, ', '.join(map(str, indices)), what,
+                            ', '.join(amount(v) for v in sorted({v for _, v in found}))))
+            if binding['differs']['maximum']:
+                differ_max = top_differs(binding['differs']['maximum'], 'this ceiling')
+            if binding['differs']['default']:
+                differ_rated = top_differs(binding['differs']['default'], 'this rated value')
+            # Information only, not a bound: how the firmware treats a rated value above such a maximum is unknown.
+            cap = min(binding['rated_ceilings'], key=lambda c: c[1]) if binding['rated_ceilings'] else None
             if binding['values'] or tied['maximum'] or tied['default']:
                 evidence = list(evidence) + [ADA_PROFILE_EVIDENCE]
 
@@ -2217,20 +2510,31 @@ def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, re
             entries = binding['entries']
             reasons = (reasons[0] + replaced(entries['maximum'], 'this value', 'it') +
                        replaced(entries['default'], 'the rated value', 'this ceiling'),
-                       reasons[1] + replaced(entries['default'], 'this value', 'it'))
+                       reasons[1] + replaced(entries['default'], 'this value', 'it') + (
+                           '; override profile %d sets the ceiling to %s at its cable sense level and leaves the '
+                           'rated value to the base, so a value above that runs under that ceiling there; how the '
+                           'firmware treats that is not known (not analysed) and the editor leaves it to you'
+                           % (cap[0], amount(cap[1])) if cap is not None else ''))
     if blocked:
         one_max = one_rated = False
         differ = blocked
+    if differ_max and one_max:
+        one_max, max_reason = False, differ_max
+    else:
+        max_reason = reasons[0] if one_max else differ
+    if differ_rated and one_rated:
+        one_rated, rated_reason = False, differ_rated
+    else:
+        rated_reason = reasons[1] if one_rated else differ
     return [field(keys[0], labels[0], units, max(maxima) / scale if len(maxima) == 1 else None,
                   max_lower / scale, upper_raw / scale, editable and one_max, [dict(e) for e in evidence],
                   offsets=offsets('maximum_offset') + tied['maximum'], value_semantics='stored-policy-maximum',
-                  writable_status=None if one_max else 'unsupported', reason=reasons[0] if one_max else differ,
-                  **common),
+                  writable_status=None if one_max else 'unsupported', reason=max_reason, **common),
             field(keys[1], labels[1], units, max(rated) / scale if len(rated) == 1 else None,
-                  rated_lower / scale, min(maxima) / scale, editable and one_rated,
+                  rated_lower / scale, rated_upper / scale, editable and one_rated,
                   [dict(e) for e in evidence], offsets=offsets('default_offset') + tied['default'],
                   value_semantics='stored-policy-rated-default', writable_status=None if one_rated else 'unsupported',
-                  reason=reasons[1] if one_rated else differ, **common)]
+                  reason=rated_reason, **common)]
 
 
 ADA_SLOT_EVIDENCE = [
@@ -2244,10 +2548,10 @@ ADA_INPUT_EVIDENCE = [
     dict(ADA_STRUCTURAL_EVIDENCE, format='Ada power rows class 5 (hardware threshold, nvgpu bios.h) mA, shapes '
                                          '619656b5/6951b88d, threshold index 0/1 (parameter byte 0), channel 9',
          observation='channel 9 is byte-identical to the GB20x 12 V input-current channel 9 that saved GET '
-                     'identifies (policy 9, mA); rated values 16-45 A, about 1.2-1.69 x rated TGP / 12 V on the 11 '
-                     'images with these rows; thresholds 0 and 1 hold equal rated values on all 11 and equal maxima '
-                     'on 10 (RTX 4500 Ada: 22000/21000 mA), minima differ on two (0/1000 mA); a value is editable '
-                     'only where both rows hold it'),
+                     'identifies (policy 9, mA); rated values 16-66 A (maxima up to 70 A), about 1.2-1.69 x rated '
+                     'TGP / 12 V on the 18 stock images with these rows; thresholds 0 and 1 hold equal rated values '
+                     'on all 18 and equal maxima on 17 (RTX 4500 Ada: 22000/21000 mA), minima differ on two '
+                     '(0/1000 mA); a value is editable only where both rows hold it'),
     dict(ADA_RUNTIME_EVIDENCE, observation='units only: the class-5 mA row 8 of this board reports limit unit 1 (mA); '
                                            'the 12 V input rows are not present on this board')]
 
@@ -2984,8 +3288,9 @@ def power_thresholds(image, parser):
                                        '10000/125983/125983, CONTROL current 125983'),
                       dict(ADA_STRUCTURAL_EVIDENCE, format='Ada power row shapes 9d19198c/f9720229 on the NVVDD '
                                                            'output power channel 18 (rail 1)',
-                           observation='rated value above the rated TGP on every Ada image (122-650 W rated; the RTX '
-                                       '4050 Laptop GPU 122 W row is below its 140 W TGP ceiling); the RTX 4060 '
+                           observation='rated value above the rated TGP on every Ada image (122-700 W rated, maxima '
+                                       'up to 900 W; the RTX 4050 Laptop GPU 122 W row is below its 140 W TGP '
+                                       'ceiling); the RTX 4060 '
                                        'has a second class-5 mW row on channel 18 (parameter byte 0 = 4, 100 W) '
                                        'and keeps both values read-only')],
             reasons=('experimental, opt-in: ceiling of the NVVDD output power hardware threshold; SET untested; '

@@ -11,8 +11,9 @@ import math
 import re
 import struct
 from .errors import FormatError
-from .structure import (VFE_CRITERION_EQUATION, VFE_UNCLAMPED, dram_points, fan_curve, gpc_curve_slot, scan_images,
-                        parse_bit, vfe_clamp_state, vfe_free_slot, vfe_range, vfe_tree)
+from .structure import (VFE_CRITERION_EQUATION, VFE_FREE_VARIABLE, VFE_HOOK_BODY, VFE_HOOK_VARIABLE, VFE_UNCLAMPED,
+                        dram_points, fan_curve, gpc_curve_slot, scan_images, parse_bit, vfe_clamp_state, vfe_free_slot,
+                        vfe_hook_equation, vfe_range, vfe_referrers, vfe_tree)
 
 def unpack(blob, fmt, at):
     size = struct.calcsize(fmt)
@@ -76,6 +77,20 @@ NOTEBOOK_BASE_TGP_OFFSET = 73
 # 4000 SFF, RTX 5060 Ti and notebook rows). +0x1B is the boot voltage's high half.
 RAIL_SELECTORS = (0x0D, 0x0F, 0x11, 0x13, 0x15, 0x17, 0x1D, 0x1F, 0x21, 0x23) + tuple(range(0x29, 0x41, 2))
 VMIN_SELECTOR = 0x13
+# Runtime voltage-offset hooks (BlackwellRom.runtime_hooks, structure.VFE_HOOK_VARIABLE): the rail row words a hook
+# takes (REL, ALT, OV and the evaluated VMIN), the VFE header (bytes 0..5 and 7..13: 255 variables of 29 bytes,
+# 2048 equations of 25 bytes) and the smallest BIT P token that runtime tools accept, as on every GB20x image.
+HOOK_ROLES = (('REL', 0x0D), ('ALT', 0x0F), ('OV', 0x11), ('VMIN', VMIN_SELECTOR))
+HOOK_VFE_HEADER = (bytes.fromhex('300e1dff1900'), bytes.fromhex('00000108050020'))
+HOOK_BIT_P_SIZE = 0xF8
+# The diagnostic of a rail selector that selects a hook-shaped equation outside a complete set of hooks.
+HOOK_PARTIAL_DIAGNOSTIC = ('selects a runtime voltage-offset hook outside a complete set of hooks, so the equation it '
+                           'adds to is not followed (runtime_voltage_offsets)')
+# Why the hooks cannot change (runtime_hooks 'blocked'): the fixed texts the GUI translates, and the prefix of a
+# partial or foreign set (followed by what is wrong).
+HOOK_PARTIAL_BLOCKED = 'the selectors hold an incomplete or foreign set of hooks: '
+HOOK_REMOVE_WAITS = ('removing the hooks would leave unused VFE entries before used ones: an edit after them (the GPC '
+                     'curve offset or the flat follow-OV copy) took the next unused entries; set it back first')
 # Entry types (byte 0) of the reviewed P+0x104 table (object 0xa7), whose entries hold VFE equation
 # indices at bytes 5..8 (BlackwellRom.equation_index_names).
 P104_ENTRY_TYPES = (0, 1, 3)
@@ -976,6 +991,12 @@ class BlackwellRom:
         The profile must be complete, ordered, at or below the base and at or
         above every other profile entry. Raises FormatError naming the failed
         condition (fail closed).
+
+        The u8 profile of a stage 1 entry is a direct profile the firmware applies
+        first at that code (0xff: none, on every GB20x image of the corpus). It is
+        not checked: a profile holds only these 8 entries, so the complete profile
+        returned here (or a matching one), applied after it, overwrites all of them.
+        Ada differs, its profiles can be partial (TableRom.profile_selection).
         """
         profiles = self.power_profiles()
         if not profiles:
@@ -1058,6 +1079,11 @@ class BlackwellRom:
         cross-ROM rows. FFFF denotes absence and selectors remain full u16.
         Every writable equation has a unique object14 owner and reviewed output
         prefix. Unknown equation kinds remain inspectable/read-only.
+
+        A word that holds an installed runtime voltage-offset hook (runtime_hooks 'on') reads as the
+        equation the hook links: selector_raw is that equation's index and runtime_hook names the hook (the
+        stored word, the hook equation and its variable); runtime_hook is None otherwise. A word that
+        selects a hook-shaped equation outside a complete set is not recognized (HOOK_PARTIAL_DIAGNOSTIC).
         """
         b = self.blob
         rail, vfe = self.pointer("P", 0x68), self.pointer("P", 0x20)
@@ -1078,14 +1104,18 @@ class BlackwellRom:
                 raise FormatError('unvalidated rail logical identity')
             for role, offset in (('REL', 0x0D), ('ALT', 0x0F), ('OV', 0x11), ('VMIN', 0x21)):
                 selector = unpack(b, '<H', row + offset)[0]
+                hook = self.runtime_hook(row + offset, strict=False)
                 item = dict(logical_rail_id=label, rail_index=i, rail_entry=row, role=role,
-                            selector_offset=row + offset, selector_width_bits=16, selector_raw=selector,
+                            selector_offset=row + offset, selector_width_bits=16,
+                            selector_raw=hook['target'] if hook else selector,
                             absent=selector == 0xFFFF, boot_voltage_uv=unpack(b, '<I', row + 0x19)[0],
                             equation_offset=None, maximum_offset=None, equation_size=25,
-                            output_minimum_uv=None, output_maximum_uv=None, layout_recognized=False)
+                            output_minimum_uv=None, output_maximum_uv=None, layout_recognized=False,
+                            runtime_hook=hook)
                 if not item['absent']:
-                    at = equations + selector * 25
+                    at = equations + item['selector_raw'] * 25
                     try:
+                        self.runtime_hook(row + offset)
                         if self.object_for(at, 25)['id'] != 0x14:
                             raise FormatError('selector does not address object14')
                         lo, hi = unpack(b, '<ff', at + 3)
@@ -1125,8 +1155,11 @@ class BlackwellRom:
             return None
         return lo
 
-    def equation_references(self, equations, count):
+    def equation_references(self, equations, count, skip=frozenset()):
         """Equation indices another VFE equation references, or None for an unreviewed kind.
+
+        The links of the equations in skip are left out (the installed runtime voltage-offset hooks, each
+        the rail row word's own link to the equation it adds to: hook_equations).
 
         Every kind links its next equation (bytes 2 | 24 << 8, 0xffff = none);
         min/max (2) children are bytes 11/12 | 15/16 << 8 and compare (3)
@@ -1140,6 +1173,8 @@ class BlackwellRom:
             e = b[equations + 25 * i:equations + 25 * i + 25]
             if e[0] not in (0, 1, 2, 3, 7):
                 return None
+            if i in skip:
+                continue
             links = [e[2] | e[24] << 8] if e[0] else []
             if e[0] == 2:
                 links += [e[11] | e[15] << 8, e[12] | e[16] << 8]
@@ -1231,7 +1266,9 @@ class BlackwellRom:
         clamp is VFE_UNCLAMPED, 'pinned' once a value set minimum = maximum; pinned
         and value_uv follow that clamp. Other shapes are reported only. rel_lowest_uv
         is the lowest value of the REL equation list (vfe_range); a constant or a root
-        adds no chained equations (added_uv 0, 0).
+        adds no chained equations (added_uv 0, 0). Installed runtime voltage-offset hooks are followed
+        (selected_equation): selector_raw is the equation the hook links, the hook's link is not a reference,
+        and the rail row words count as the equations they evaluate.
         """
         b = self.blob
         rail, vfe = self.pointer("P", 0x68), self.pointer("P", 0x20)
@@ -1241,18 +1278,28 @@ class BlackwellRom:
         equations = vfe + b[vfe + 1] + b[vfe + 2] * b[vfe + 3]
         count = b[vfe + 5] | b[vfe + 10] << 8
         self.object_for(vfe, equations + 25 * count - vfe)
-        refs = self.equation_references(equations, count)
+        refs = self.equation_references(equations, count, self.hook_equations())
         rows = [rail + 5 + 65 * i for i in range(rows)]
-        selected = [unpack(b, "<H", row + offset)[0] for row in rows for offset in RAIL_SELECTORS]
+        selected = [self.selected_equation(row + offset) for row in rows for offset in RAIL_SELECTORS]
         result, names = [], None
         for i, (label, row) in enumerate(zip(("NVVDD", "MSVDD"), rows)):
             if b[row:row + 2] != bytes((1, i + 1)):
                 raise FormatError("unvalidated rail logical identity")
-            selector, rel = unpack(b, "<H", row + VMIN_SELECTOR)[0], unpack(b, "<H", row + 0x0D)[0]
+            selector, rel = self.selected_equation(row + VMIN_SELECTOR), self.selected_equation(row + 0x0D)
+            try:
+                self.runtime_hook(row + 0x0D)
+            except FormatError:
+                rel = 0xFFFF
             rel = None if rel == 0xFFFF else vfe_range(b, equations, 25, 2, count, rel, clamped_children=True)
             item = dict(logical_rail_id=label, rail_index=i, rail_entry=row, selector_offset=row + VMIN_SELECTOR,
                         selector_raw=selector, equation_offset=None, equation_size=25, equation_type=None,
-                        value_uv=None, pinned=False, rel_lowest_uv=rel and rel[0], added_uv=(0.0, 0.0))
+                        value_uv=None, pinned=False, rel_lowest_uv=rel and rel[0], added_uv=(0.0, 0.0),
+                        runtime_hook=self.runtime_hook(row + VMIN_SELECTOR, strict=False))
+            try:
+                self.runtime_hook(row + VMIN_SELECTOR)
+            except FormatError as exc:
+                result.append(dict(item, diagnostic=str(exc)))
+                continue
             if selector >= count:
                 result.append(dict(item, diagnostic="is absent or outside the equation table"))
                 continue
@@ -1336,7 +1383,9 @@ class BlackwellRom:
         of E with the value goes into the first unused VFE slot (type 0, the slot a GPC curve offset takes too),
         which must be clean (vfe_free_slot) and used by nothing, and those three selectors move to it, so E
         keeps its bytes. Tables that cannot be read rule out both. Returns index, offset, value_uv and
-        dedicated, and for a copy slot and slot_offset.
+        dedicated, and for a copy slot and slot_offset. Installed runtime voltage-offset hooks are followed
+        (selected_equation, hook_equations); moving the selectors to a copy would drop them, so a shared E
+        is refused while they are installed.
         """
         b = self.blob
         rail, vfe = self.pointer("P", 0x68), self.pointer("P", 0x20)
@@ -1346,11 +1395,16 @@ class BlackwellRom:
         equations = vfe + b[vfe + 1] + b[vfe + 2] * b[vfe + 3]
         count = b[vfe + 5] | b[vfe + 10] << 8
         self.object_for(vfe, equations + 25 * count - vfe)
-        index = unpack(b, "<H", rows[0] + 0x11)[0]
+        try:
+            self.runtime_hook(rows[0] + 0x11)
+        except FormatError as exc:
+            return f"the OV selector {exc}"
+        index = self.selected_equation(rows[0] + 0x11)
         value = self.constant_equation(equations + 25 * index) if index < count else None
         if value is None:
             return "the OV equation is not a constant voltage equation"
-        refs = self.equation_references(equations, count)
+        hooks = self.hook_equations()
+        refs = self.equation_references(equations, count, hooks)
         if refs is None:
             return "the VFE table holds an equation kind the editor does not read"
         try:
@@ -1358,15 +1412,230 @@ class BlackwellRom:
         except FormatError as exc:
             return f"{exc}, so other users of the OV equation cannot be ruled out"
         own = {rows[0] + offset for offset in (0x0D, 0x0F, 0x11)}
-        used = refs | set(names) | {unpack(b, "<H", row + offset)[0] for row in rows for offset in RAIL_SELECTORS
+        used = refs | set(names) | {self.selected_equation(row + offset) for row in rows for offset in RAIL_SELECTORS
                                     if row + offset not in own}
         result = dict(index=index, offset=equations + 25 * index, value_uv=value, dedicated=index not in used)
         if result["dedicated"]:
             return result
+        if hooks:
+            return ("the OV equation is shared, and moving the selectors to a copy of it would drop the runtime "
+                    "voltage-offset hooks (runtime_voltage_offsets)")
         slot = next((i for i in range(count) if not b[equations + 25 * i]), None)
         if slot is None or slot in used or b[equations + 25 * slot:equations + 25 * slot + 25] != vfe_free_slot(25):
             return "the OV equation is shared and the first unused VFE slot is missing, not clean or used"
         return dict(result, slot=slot, slot_offset=equations + 25 * slot)
+
+    def runtime_hooks(self):
+        """Runtime voltage-offset hooks on the rail row words HOOK_ROLES (structure.VFE_HOOK_VARIABLE).
+
+        A hook is a byte copy of the stock template variable and a hook equation on it (vfe_hook_equation)
+        that links the word's original equation (its target); the word selects the hook. A tool sets the
+        variable at runtime (a VALUE in uV, clamped to +-1.25 V); at 0, its stock value, the limit is the
+        target's. Slots: each word that names an equation of the table (below the equation count, as mVolt+
+        reads them: 0xffff and other out-of-table words are skipped), NVVDD then MSVDD, REL, ALT, OV, VMIN
+        (row +0x13). Several slots may link one target (REL, ALT and OV of the vendor XOC images and of images
+        whose REL and ALT follow OV): each gets its own hook, as mVolt+ installs them and its runtime accepts
+        them (it requires distinct variables and hooks, and no slot's target being another slot's hook).
+
+        state: 'off' when no slot selects a hook-shaped equation (type 1 with the hook clamp); 'on' when
+        every slot selects a complete hook: the exact hook equation, its variable the template's bytes, its
+        target an equation in use other than itself and other than another hook; hooks and variables
+        distinct, each hook named by exactly one rail row word (RAIL_SELECTORS) and linked by no equation,
+        each variable read by no other equation (byte 1), and a stock template variable left that no hook
+        uses (runtime tools read it as the reference, at 0); 'partial' otherwise (diagnostic says why).
+
+        blocked is None when the state can change: 'off' to 'on' needs the exact VFE header and BIT P size
+        (HOOK_VFE_HEADER, HOOK_BIT_P_SIZE), slots that select equations in use, a template variable, and
+        the unused variables and equations (type 0) forming one block at the end of their tables with room
+        for one of each per slot, named by nothing (no VFE equation, rail row word or other table,
+        equation_index_names); the hooks take the first ones, in slot order, so the unused entries stay one
+        end block. 'on' to 'off' needs the unused entries to form that block again once the hooks' entries
+        are unused (writes 0 gives them the clean unused bytes, VFE_FREE_VARIABLE and vfe_free_slot); else
+        blocked is HOOK_REMOVE_WAITS, and for a partial set it starts with HOOK_PARTIAL_BLOCKED. words[v] and
+        writes[v] are the rail row words (per slot) and the (offset, bytes) VFE entries of state v; dirty
+        lists the entries the hooks would take whose bytes are not the clean unused ones (removal writes the
+        clean bytes there); layout tells whether the VFE header and BIT P token are the ones runtime tools
+        accept; unused_tail whether the unused variables and equations of this image form one block at the
+        end of each table.
+        """
+        report = self._hooks()
+        if isinstance(report, FormatError):
+            raise FormatError(str(report))
+        return copy.deepcopy(report)
+
+    def _hooks(self):
+        cached = getattr(self, "_hook_cache", None)
+        if cached is None or cached[0] is not self.blob:
+            try:
+                report = self._hook_report()
+            except FormatError as exc:
+                report = exc
+            cached = self._hook_cache = (self.blob, report)
+        return cached[1]
+
+    def runtime_hook(self, at, *, strict=True):
+        """The installed hook (runtime_hooks 'on') of the rail row word at `at`, as dict(word, hook, variable,
+        target, hook_offset, variable_offset), or None. strict: FormatError (HOOK_PARTIAL_DIAGNOSTIC) when the
+        word selects a hook-shaped equation of a 'partial' image."""
+        report = self._hooks()
+        if isinstance(report, FormatError):
+            return None
+        slot = next((s for s in report["slots"] if s["selector_offset"] == at), None)
+        if slot is None:
+            return None
+        if report["state"] == "on":
+            return {k: slot[k] for k in ("word", "hook", "variable", "target", "hook_offset", "variable_offset")}
+        if strict and slot.get("hooked"):
+            raise FormatError(HOOK_PARTIAL_DIAGNOSTIC)
+        return None
+
+    def selected_equation(self, at):
+        """The VFE equation index the rail row word at `at` evaluates: an installed hook's target, else the word."""
+        hook = self.runtime_hook(at, strict=False)
+        return hook["target"] if hook else unpack(self.blob, "<H", at)[0]
+
+    def hook_equations(self):
+        """Indices of the installed hook equations (runtime_hooks 'on'); empty otherwise."""
+        report = self._hooks()
+        if isinstance(report, FormatError) or report["state"] != "on":
+            return frozenset()
+        return frozenset(s["hook"] for s in report["slots"])
+
+    def _hook_report(self):
+        b = self.blob
+        rail, vfe = self.pointer("P", 0x68), self.pointer("P", 0x20)
+        rows = self.rail_count(rail)
+        if b[vfe:vfe + 5] != bytes((0x30, 14, 29, 255, 25)) or self.object_for(vfe)["id"] != 0x14:
+            raise FormatError("unvalidated Blackwell VFE output layout")
+        variables = vfe + b[vfe + 1]
+        equations = variables + 29 * 255
+        count = b[vfe + 5] | b[vfe + 10] << 8
+        self.object_for(vfe, equations + 25 * count - vfe)
+
+        def eq(i):
+            return b[equations + 25 * i:equations + 25 * i + 25]
+
+        def var(i):
+            return b[variables + 29 * i:variables + 29 * i + 29]
+        slots, words = [], []
+        for i, label in enumerate(("NVVDD", "MSVDD")[:rows]):
+            row = rail + 5 + 65 * i
+            if b[row:row + 2] != bytes((1, i + 1)):
+                raise FormatError("unvalidated rail logical identity")
+            words += [unpack(b, "<H", row + offset)[0] for offset in RAIL_SELECTORS]
+            for role, offset in HOOK_ROLES:
+                word = unpack(b, "<H", row + offset)[0]
+                # A word at or past the equation count (0xffff: absent) names no equation: no slot, as for mVolt+.
+                if word < count:
+                    # Hook-shaped: a quadratic with the hook clamp (+-1.25 V), whatever its other bytes.
+                    shaped = eq(word)[0] == 1 and eq(word)[3:11] == VFE_HOOK_BODY[:8]
+                    slots.append(dict(rail=label, role=role, selector_offset=row + offset, word=word, hooked=shaped,
+                                      hook=None, variable=None, target=word, hook_offset=None, variable_offset=None))
+        layout = ((b[vfe:vfe + 6], b[vfe + 7:vfe + 14]) == HOOK_VFE_HEADER and
+                  self.tokens["P"]["size"] >= HOOK_BIT_P_SIZE)
+        templates = [i for i in range(255) if var(i) == VFE_HOOK_VARIABLE]
+        free_v = [i for i in range(255) if not var(i)[0]]
+        free_e = [i for i in range(count) if not eq(i)[0]]
+        try:
+            refs = vfe_referrers(b, equations, 25, 2, count)
+        except FormatError:
+            refs = None
+
+        def tail(free, size):
+            return free == list(range(size - len(free), size))
+        report = dict(state="off", slots=slots, reference=None, diagnostic=None, blocked=None,
+                      words={}, writes={}, dirty=[], layout=layout,
+                      unused_tail=tail(free_v, 255) and tail(free_e, count))
+        layout_reason = "the VFE table header or the BIT P token differs from the layout runtime tools accept"
+        if any(s["hooked"] for s in slots):
+            problem = None if layout else layout_reason
+            for s in slots:
+                if problem:
+                    break
+                e = eq(s["word"]) if s["word"] < count else None
+                where = f"the {s['rail']} {s['role']} selector"
+                target = e[2] | e[24] << 8 if e else None
+                if e is None or e != vfe_hook_equation(e[1], target):
+                    problem = f"{where} does not select a hook"
+                elif e[1] == 0xFF or var(e[1]) != VFE_HOOK_VARIABLE:
+                    problem = f"the variable of {where}'s hook is not a copy of the stock template"
+                elif target >= count or target == s["word"] or not eq(target)[0]:
+                    problem = f"{where}'s hook links no other equation in use"
+                else:
+                    s.update(hook=s["word"], variable=e[1], target=target, hook_offset=equations + 25 * s["word"],
+                             variable_offset=variables + 29 * e[1])
+            hooks, used = [s["hook"] for s in slots], [s["variable"] for s in slots]
+            if problem:
+                pass
+            elif len(set(hooks)) != len(hooks) or len(set(used)) != len(used):
+                problem = "two selectors share a hook or a hook variable"
+            elif any(s["target"] in hooks for s in slots):
+                problem = "a hook links another hook"
+            elif any(words.count(h) != 1 for h in hooks):
+                problem = "a hook is named by another rail row word too"
+            elif refs is None:
+                problem = "the VFE table holds an equation kind the editor does not read"
+            elif any(h in refs for h in hooks):
+                problem = "another equation links a hook"
+            elif any(eq(i)[0] and eq(i)[1] in used for i in range(count) if i not in hooks):
+                problem = "another equation reads a hook variable"
+            elif not [t for t in templates if t not in used]:
+                problem = "no stock template variable is left for runtime tools to read as the reference"
+            if problem:
+                for s in slots:
+                    s.update(hook=None, variable=None, target=s["word"], hook_offset=None, variable_offset=None)
+                report.update(state="partial", diagnostic=problem, blocked=HOOK_PARTIAL_BLOCKED + problem)
+                return report
+            report.update(state="on", reference=next(t for t in templates if t not in used))
+            report["words"] = {0: [s["target"] for s in slots], 1: hooks}
+            report["writes"] = {0: [(s["variable_offset"], VFE_FREE_VARIABLE) for s in slots] +
+                                   [(s["hook_offset"], vfe_free_slot(25)) for s in slots], 1: []}
+            if not (tail(sorted(free_v + used), 255) and tail(sorted(free_e + hooks), count)):
+                report["blocked"] = HOOK_REMOVE_WAITS
+            return report
+        targets = [s["word"] for s in slots]
+        new_v, new_e = free_v[:len(slots)], free_e[:len(slots)]
+        if not layout:
+            reason = layout_reason
+        elif not slots:
+            reason = "no REL, ALT, OV or VMIN selector is present"
+        elif any(not eq(t)[0] for t in targets):
+            reason = "a REL, ALT, OV or VMIN selector names no equation in use"
+        elif not templates:
+            reason = "the image has no stock template variable"
+        elif not (tail(free_v, 255) and tail(free_e, count)):
+            reason = "the unused VFE variables or equations do not form one block at the end of their table"
+        elif len(new_v) < len(slots) or len(new_e) < len(slots):
+            reason = (f"the VFE table has {len(free_v)} unused variables and {len(free_e)} unused equations, and the "
+                      f"hooks need {len(slots)} of each")
+        elif refs is None:
+            reason = "the VFE table holds an equation kind the editor does not read"
+        elif (any(i in refs or i in words for i in new_e) or
+              any(eq(i)[0] and eq(i)[1] in new_v for i in range(count))):
+            reason = "an unused VFE entry the hooks would take is named by an equation or a rail row word"
+        else:
+            # The clock programming, FLL, voltage policy and P+0x104 tables name equations too.
+            try:
+                names = self.equation_index_names()
+            except FormatError as exc:
+                names = str(exc)
+            if isinstance(names, str):
+                reason = f"{names}, so another user of the unused VFE entries the hooks would take cannot be ruled out"
+            elif any(i in names for i in new_e):
+                table = names[next(i for i in new_e if i in names)][0]
+                reason = f"an unused VFE equation the hooks would take is named by the {table} table"
+            else:
+                reason = None
+        report["blocked"] = reason
+        if reason is None:
+            report["words"] = {0: targets, 1: new_e}
+            report["writes"] = {0: [], 1: [(variables + 29 * v, VFE_HOOK_VARIABLE) for v in new_v] +
+                                       [(equations + 25 * e, vfe_hook_equation(v, t))
+                                        for v, e, t in zip(new_v, new_e, targets)]}
+            report["dirty"] = ([f"variable {v}" for v in new_v if var(v) != VFE_FREE_VARIABLE] +
+                               [f"equation {e}" for e in new_e if eq(e) != vfe_free_slot(25)])
+            report["new"] = dict(variables=new_v, equations=new_e)
+        return report
 
     def rail_limits(self):
         b = self.blob
@@ -1385,7 +1654,9 @@ class BlackwellRom:
             row = rail + 5 + i * 0x41
             if b[row] != 1 or b[row + 1] != i + 1:
                 raise FormatError("unrecognized rail identity fields")
-            eq = unpack(b, "<H", row + 0x0D)[0]
+            # An installed runtime voltage-offset hook reads as the equation it links (runtime_hook).
+            self.runtime_hook(row + 0x0D)
+            eq = self.selected_equation(row + 0x0D)
             at = equations + eq * 25
             if self.object_for(at, 25)["id"] != 0x14 or b[at + 23] & 15 != 2:
                 raise FormatError("rail equation is not a voltage output in object 0x14")

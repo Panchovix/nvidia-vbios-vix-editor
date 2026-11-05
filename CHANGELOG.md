@@ -3,6 +3,13 @@
 One line per change. What each change does, where it applies and what was tested is in the
 [changelog details](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/changelog-details.md).
 
+## 0.1.42
+
+- Blackwell: runtime voltage offsets switch, mVolt+-compatible VFE hooks (experimental; worked on one RTX PRO 4000 SFF).
+- Blackwell: `nvbios vfe-layout` prints the layout document runtime offset tools read to trust the voltage-offset hooks.
+- Ada: cable sense levels may apply a direct and a threshold profile with different limits (RTX 4090 95.02.18.C0.75, untested).
+- Ada: REL ceiling, REL floor and ALT ceiling edits must keep REL at or below ALT at every temperature (RTX 4090 95.02.18).
+
 ## 0.1.41
 
 - Ada: cable sense entries may name the profile their level selects (RTX 4090 95.02.18.C0.75): power limit may unlock (untested).

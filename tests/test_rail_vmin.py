@@ -1315,6 +1315,30 @@ class AdaRelFloorTests(unittest.TestCase):
             edit(image, {'probe': 950}, field_registry=probe)
         self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
 
+    def test_rel_stays_at_or_below_alt_at_every_temperature(self):
+        # REL 1440 - 5 T clamped to 915..955 mV, ALT 1460 - 5 T clamped to 935..975 mV (same temperature variable).
+        image = from_bytes(synthetic_rom(copies=2, alt=True))
+        for changes, owner, text in (
+                ({'nvvdd_rel_equation_max_mv': 1000}, 'nvvdd_rel_equation_max_mv', 'raise nvvdd_alt_equation_max_mv'),
+                ({'nvvdd_alt_equation_max_mv': 950}, 'nvvdd_alt_equation_max_mv', 'raise nvvdd_alt_equation_max_mv'),
+                # An ALT ceiling lowered onto ALT's clamp minimum: raising it is the fix.
+                ({'nvvdd_alt_equation_max_mv': 935}, 'nvvdd_alt_equation_max_mv', 'raise nvvdd_alt_equation_max_mv'),
+                # ALT's clamp minimum (935 mV), which no field raises, caps the floor.
+                ({'nvvdd_rel_equation_min_mv': 936}, 'nvvdd_rel_equation_min_mv', 'at its clamp minimum'),
+                ({'nvvdd_rel_equation_min_mv': 1000, 'nvvdd_rel_equation_max_mv': 1000,
+                  'nvvdd_alt_equation_max_mv': 1000}, 'nvvdd_rel_equation_min_mv', 'at its clamp minimum')):
+            with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
+                edit(image, changes)
+            details = exc.exception.details
+            self.assertEqual((exc.exception.code, details['field'], details['bounds']), ('OUT_OF_BOUNDS', owner, None))
+            self.assertIn('nvvdd_alt_equation_max_mv', details['joint_fields'])
+            self.assertIn('NVVDD REL above ALT', str(exc.exception))
+            self.assertIn(text, str(exc.exception))
+        for changes in ({'nvvdd_rel_equation_max_mv': 1000, 'nvvdd_alt_equation_max_mv': 1000},
+                        {'nvvdd_alt_equation_max_mv': 955}, {'nvvdd_rel_equation_min_mv': 935}):
+            with self.subTest(changes=changes):
+                self.assertTrue(edit(image, changes).manifest['integrity']['valid'])
+
     def test_vmin_stays_below_the_floor_of_the_result(self):
         image = from_bytes(ada_vmin())  # REL 915..955 mV; VMIN 560 mV plus 0..75 mV
         raised = edit(image, {'nvvdd_rel_equation_min_mv': 950}).image

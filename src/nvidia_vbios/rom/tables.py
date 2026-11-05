@@ -80,9 +80,13 @@ ADA_PROFILE_FIELDS = {0: 'maximum', 1: 'default'}
 # into a code (bit 0 | bit 1 << 1) and votes the value of the entry holding that code (0: no vote).
 # Byte 1 of that entry is a direct profile, applied at once whatever the vote (0x17bbf34; 0xff: none):
 # 0xff on this board, the entry's code on a Gigabyte RTX 4090 image (95.02.18.C0.75). GSP-RM 620.70.06
-# reads the byte the same way.
+# reads the byte the same way. An already applied profile is skipped, and a disabled direct profile
+# fails the power setup.
 # Row 1 (type 2, param 0; 0x17bc09c) applies the profile of the last entry whose threshold is at or
 # below the vote. Rows 2 and 3 are off. Unused entries hold 00 ff 00 00 00 00 00.
+# The Gigabyte image (issue #32) names profiles 2/3 directly at codes 2/3 while row 1 selects 6/7:
+# both apply, direct first, and they set disjoint (row, field) limits, so the order does not change
+# the result; its thresholds 4/5 name disabled profiles that no vote selects (TableRom.profile_levels).
 ADA_SELECTION_HEADERS = (bytes.fromhex('01 08 00 00 00'), bytes.fromhex('02 00 00 00 00'))
 SELECTION_UNUSED = bytes.fromhex('00 ff 00 00 00 00 00')
 # The code read with both sense inputs asserted, the top level. That it is the 600 W state of a
@@ -732,15 +736,33 @@ class TableRom:
         return profiles
 
     def profile_selection(self, profiles=None):
-        """{sense code: profile index or None} through the reviewed Ada selection chain (ADA_SELECTION_HEADERS).
+        """{sense code: profile index or None} that row 1 (thresholds) selects through the reviewed Ada chain.
 
         None means no vote (the firmware then fails the power manager setup) or no
-        threshold reached. Raises FormatError for any other selection layout: other row
-        headers, a used row 2 or 3, codes other than exactly 0..3, a direct profile (sense
-        entry byte 1) other than 0xff or the entry's own code, or one that row 1 does not
-        select at a code with a nonzero vote, a threshold param other than 0xff,
-        thresholds not strictly ascending or naming a disabled profile.
+        threshold reached. Direct profiles (sense entry byte 1) are left out:
+        profile_levels lists every profile applied at each code. Raises FormatError for
+        any other selection layout (see profile_levels).
         """
+        return self._profile_chain(profiles)[0]
+
+    def profile_levels(self, profiles=None):
+        """{sense code: indices of the profiles the firmware applies at that code, in order}.
+
+        A code with a vote applies its direct profile (sense entry byte 1) first, when it
+        names one other than the threshold profile, then the profile row 1 selects; a
+        code without a vote, or whose vote reaches no threshold, applies none here (with
+        no vote the power setup fails). Raises FormatError for any other selection
+        layout: other row headers, a used row 2 or 3, codes other than exactly 0..3, a
+        direct profile other than 0xff or the entry's own code, a threshold param other
+        than 0xff, thresholds not strictly ascending, a threshold a vote selects that
+        names a disabled profile, and, at a code with a vote, a direct profile where row
+        1 selects none, or one that differs from row 1's profile and is disabled or sets
+        a limit (row and field) that profile sets too.
+        """
+        return self._profile_chain(profiles)[1]
+
+    def _profile_chain(self, profiles=None):
+        """(profile_selection, profile_levels) of the reviewed Ada selection chain (ADA_SELECTION_HEADERS)."""
         at, b = self.profile_table(), self.blob
         profiles = self.power_profiles() if profiles is None else profiles
         starts = [at + 0x0A + 0x3D * k for k in range(4)]
@@ -764,93 +786,145 @@ class TableRom:
                 any(p not in (0xFF, code) for p, _, code in sense) or
                 any(param != 0xFF for _, _, param in thresholds)):
             raise FormatError('unrecognized Ada override profile selection entry')
-        values, enabled = [value for _, value, _ in thresholds], {p['index'] for p in profiles}
-        if not values or values != sorted(set(values)) or any(p not in enabled for p, _, _ in thresholds):
-            raise FormatError('Ada override profile thresholds are not ascending or name a disabled profile')
-        levels = {}
+        values = [value for _, value, _ in thresholds]
+        if not values or values != sorted(set(values)):
+            raise FormatError('Ada override profile thresholds are not ascending')
+        held = {p['index']: {(e['policy'], e['field']) for e in p['entries']} for p in profiles}
+        levels, applied = {}, {}
         for direct, vote, code in sense:
             reached = [p for p, value, _ in thresholds if value <= vote] if vote else []
-            levels[code] = reached[-1] if reached else None
-            # A direct profile (byte 1) is applied before row 1. The chain stays the reviewed one only if row 1
-            # applies that same profile; with no vote the power setup fails either way.
-            if direct != 0xFF and vote and direct != levels[code]:
-                raise FormatError('unrecognized Ada override profile selection entry')
-        return levels
+            levels[code] = selected = reached[-1] if reached else None
+            applied[code] = () if selected is None else (selected,)
+            # The firmware applies only the threshold a vote selects, so one no vote reaches may name a disabled
+            # profile (RTX 4090 95.02.18.C0.75: profiles 4 and 5).
+            if selected is not None and selected not in held:
+                raise FormatError('Ada override profile threshold selected at code %d names disabled profile %d'
+                                  % (code, selected))
+            # A direct profile (byte 1) is applied before row 1; with no vote the power setup fails either way.
+            if direct == 0xFF or not vote or direct == selected:
+                continue
+            if selected is None or direct not in held:
+                raise FormatError('Ada override direct profile %d at code %d is disabled or row 1 selects no '
+                                  'profile there' % (direct, code))
+            # Both apply. The result is unambiguous only while they set different limits.
+            if held[direct] & held[selected]:
+                raise FormatError('Ada override profiles %d (direct) and %d (threshold) both set a limit at code %d'
+                                  % (direct, selected, code))
+            applied[code] = (direct, selected)
+        return levels, applied
 
-    def top_power_profile(self):
-        """The enabled profile the top sense code selects (TOP_SENSE_CODE), with selection_code and
-        selection_power_raw (that code's vote), or None (no profiles, or no profile at that level)."""
+    def top_power_profiles(self):
+        """The enabled profiles the top sense code (TOP_SENSE_CODE) applies, in order (direct first), each with
+        selection_code, selection_power_raw (that code's vote) and selected_by ('direct' or 'threshold')."""
         profiles = self.power_profiles()
         if not profiles:
-            return None
-        index = self.profile_selection(profiles)[TOP_SENSE_CODE]
-        if index is None:
-            return None
+            return []
+        levels, applied = self._profile_chain(profiles)
         at = self.profile_table() + 0x0A + 5
         vote = next(read(self.blob, '<I', at + 7 * j + 2)[0] for j in range(8)
                     if self.blob[at + 7 * j + 6] == TOP_SENSE_CODE)
-        return dict(next(p for p in profiles if p['index'] == index), selection_code=TOP_SENSE_CODE,
-                    selection_power_raw=vote)
+        return [dict(next(p for p in profiles if p['index'] == index), selection_code=TOP_SENSE_CODE,
+                     selection_power_raw=vote,
+                     selected_by='threshold' if index == levels[TOP_SENSE_CODE] else 'direct')
+                for index in applied[TOP_SENSE_CODE]]
+
+    def top_power_profile(self):
+        """The enabled profile row 1 selects at the top sense code (TOP_SENSE_CODE), with selection_code and
+        selection_power_raw (that code's vote), or None (no profiles, or no profile at that level). A direct
+        profile applied there too is listed by top_power_profiles."""
+        top = [p for p in self.top_power_profiles() if p['selected_by'] == 'threshold']
+        return {k: v for k, v in top[0].items() if k != 'selected_by'} if top else None
 
     def matching_power_profiles(self):
-        """The profiles written together with the base table: on Ada, the top-level profile when every
-        entry equals the base value it replaces. The other profiles replace the base at their own
+        """The profiles written together with the base table: on Ada, each top-level profile (top_power_profiles)
+        whose every entry equals the base value it replaces. The other profiles replace the base at their own
         sense level whatever their values, so they are never written with it."""
-        top = self.top_power_profile()
-        if top is None:
-            return []
         rows = self.power_rows()
-        return [top] if all(e['value_raw'] == rows[e['policy']][e['field'] + '_raw'] for e in top['entries']) else []
+        return [{k: v for k, v in p.items() if k != 'selected_by'} for p in self.top_power_profiles()
+                if all(e['value_raw'] == rows[e['policy']][e['field'] + '_raw'] for e in p['entries'])]
 
     def profile_binding(self, policies):
         """How the Ada override profiles bind the power rows policies for an edit of their base values.
 
-        None when the image has no enabled profile. Raises FormatError unless the top
-        sense level selects a profile equal to the base table (matching_power_profiles).
-        tied: {'maximum'|'default': value offsets, every duplicate chain} of the top
-        profile's entries on these rows, written with the base. The other profiles'
-        entries on these rows bound an edit: values (lower bounds) for the ceiling to
-        stay at or above, defaults (their rated values) for the rated value, ceilings
-        (upper bounds) for the floor to stay at or below. A profile no sense code
-        reaches (UNREACHED_PROFILE_FACTOR) bounds it with half its value as a lower
-        bound and twice it as an upper one; a profile a code reaches, with its value.
-        entries: the stored values, per field, as (profile index, value). outside: the
-        other profiles whose bound the stored base row breaks (its floor above an upper
-        bound, its ceiling or rated value below a lower one), where the stored values
-        could not be requested again. unreached: the profiles no sense code selects.
+        None when the image has no enabled profile. Raises FormatError when the top
+        sense level applies no profile. Only entries on these rows count: a top-level
+        profile that differs from the base on other rows does not matter here.
+        top: the threshold profile of the top level; top_direct: the direct profile
+        applied there first, or None. tied: {'maximum'|'default': value offsets, every
+        duplicate chain} of the top level's entries on these rows that equal the base,
+        written with it. differs: {'maximum'|'default': (profile index, value)} of the
+        top level's entries on these rows that differ from the base; such a field cannot
+        be edited through the base (the profile would replace it). The other profiles'
+        entries on these rows bound an edit: values (lower bounds) for the ceiling to stay
+        at or above (also a differing top-level rated value), defaults (their rated values)
+        for the rated value, ceilings (upper bounds) for the floor to stay at or below.
+        A profile no sense code reaches (UNREACHED_PROFILE_FACTOR) bounds it with half
+        its value as a lower bound and twice it as an upper one; a profile a code
+        reaches, with its value. rated_ceilings: (profile index, value) of each maximum a
+        sense level sets on a row whose rated value it leaves to the base. They are
+        information only, not bounds: how the firmware treats a base rated value above
+        such a maximum is not known (not analysed), and the editor leaves that to the
+        user. entries: the lower levels' stored values, per field, as (profile index,
+        value). outside: the profiles whose bound the stored base row breaks (its floor
+        above an upper bound, its ceiling or rated value below a lower one), where the
+        stored values could not be requested again. unreached: the profiles no sense
+        code selects.
         """
         profiles = self.power_profiles()
         if not profiles:
             return None
-        matching = self.matching_power_profiles()
-        if not matching:
-            raise FormatError('the top sense level of the Ada override profiles selects no profile equal to the '
-                              'base table')
-        top, rows = matching[0], self.power_rows()
-        tied, values, defaults, ceilings, outside = {'maximum': [], 'default': []}, [], [], [], set()
+        top = self.top_power_profiles()
+        if not any(p['selected_by'] == 'threshold' for p in top):
+            raise FormatError('the top sense level of the Ada override profiles selects no profile')
+        rows, levels = self.power_rows(), self.profile_levels(profiles)
+        top_indices = {p['index'] for p in top}
+        tied, differs = {'maximum': [], 'default': []}, {'maximum': [], 'default': []}
+        values, defaults, ceilings, rated_ceilings, outside = [], [], [], set(), set()
         entries = {'maximum': [], 'default': []}
-        reached = {index for index in self.profile_selection(profiles).values() if index is not None}
+        reached = {index for applied in levels.values() for index in applied}
         for p in profiles:
             for e in p['entries']:
                 if e['policy'] not in policies:
                     continue
-                if p['index'] == top['index']:
-                    tied[e['field']].extend(self.copy_offsets(e['value_offset'], 4))
-                    continue
                 row, value = rows[e['policy']], e['value_raw']
+                if p['index'] in top_indices:
+                    if value == row[e['field'] + '_raw']:
+                        tied[e['field']].extend(self.copy_offsets(e['value_offset'], 4))
+                        continue
+                    differs[e['field']].append((p['index'], value))
+                    # The top level runs this rated value under the base ceiling.
+                    if e['field'] == 'default':
+                        values.append(value)
+                        if row['maximum_raw'] < value:
+                            outside.add(p['index'])
+                    continue
+                entries[e['field']].append((p['index'], value))
                 factor = 1 if p['index'] in reached else UNREACHED_PROFILE_FACTOR
                 values.append(value // factor)
                 ceilings.append(value * factor)
-                entries[e['field']].append((p['index'], value))
                 if e['field'] == 'default':
                     defaults.append(value // factor)
                 # The stored base values must satisfy the same bounds, so they can be requested again.
                 if (row['minimum_raw'] > value * factor or row['maximum_raw'] < value // factor or
                         e['field'] == 'default' and row['default_raw'] < value // factor):
                     outside.add(p['index'])
-        return dict(top=top['index'], tied=tied, values=values, defaults=defaults, ceilings=ceilings,
-                    entries=entries, outside=sorted(outside), unreached=sorted(
-                        {p['index'] for p in profiles if p['index'] not in reached and p['index'] != top['index']}))
+        # A level that replaces a row's maximum but not its rated value runs the base rated value under that
+        # maximum (a tied top-level maximum moves with the base). Listed for the reasons only, not a bound.
+        by_index = {p['index']: p for p in profiles}
+        for applied in levels.values():
+            held = {(e['policy'], e['field']): (p['index'], e['value_raw'])
+                    for p in (by_index[i] for i in applied) for e in p['entries'] if e['policy'] in policies}
+            for (policy, field), (index, value) in held.items():
+                if (field != 'maximum' or (policy, 'default') in held or
+                        index in top_indices and value == rows[policy]['maximum_raw']):
+                    continue
+                rated_ceilings.add((index, value))
+        return dict(top=next(p['index'] for p in top if p['selected_by'] == 'threshold'),
+                    top_direct=next((p['index'] for p in top if p['selected_by'] == 'direct'), None),
+                    tied=tied, differs=differs, values=values, defaults=defaults, ceilings=ceilings,
+                    rated_ceilings=sorted(rated_ceilings), entries=entries, outside=sorted(outside),
+                    unreached=sorted({p['index'] for p in profiles
+                                      if p['index'] not in reached and p['index'] not in top_indices}))
 
     def clock_ranges(self):
         at = self.pointer('C', 8)

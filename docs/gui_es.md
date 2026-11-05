@@ -106,7 +106,11 @@ funcionando sin las dependencias gráficas.
    de fábrica; los límites de batería siguen rigiendo; en una RTX 2070 Laptop GPU con Windows,
    con los límites de fábrica, el deslizador del límite de potencia de MSI Afterburner funcionó
    y el 64 % (73,6 W) se mantuvo bajo carga, mientras que los portátiles Ampere y RTX 50 no se
-   probaron; la fila lo indica), en
+   probaron; la fila lo indica), **Offsets de voltaje en tiempo de ejecución** en las ROM RTX 50
+   (un interruptor, experimental, sin probar en hardware: activado agrega los hooks compatibles con
+   mVolt+ a los límites REL, ALT, OV y VMIN, para que una herramienta que escribe la variable VFE en
+   tiempo de ejecución sume un offset, en µV y limitado a ±1,25 V, sobre los voltajes fijados aquí;
+   sin esa herramienta no cambia nada; desactivado los quita; la fila lo indica), en
    Ada y Blackwell el límite de potencia del conector de alimentación auxiliar (**Canal de
    potencia de conector 1**, experimental: en una placa con un
    solo conector de 8 pines lo más probable es que frene ese conector en unos 150 W aunque el

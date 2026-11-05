@@ -18,7 +18,8 @@ from ..rom.tables import ADVANCED_TABLES, PROFILE_BYTES, TableRom, checksum_tail
 from .registry import (registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
                        fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
                        fixed_voltage, dram_offset_points, gpc_curve_offset, max_operating_temperature,
-                       factory_clocks, perf_cf_controllers, lpwr_features, rel_clamps, LPWR_ENABLED_ENTRIES,
+                       factory_clocks, perf_cf_controllers, lpwr_features, rel_clamps, runtime_voltage_offsets,
+                       rel_above_alt, LPWR_ENABLED_ENTRIES, RUNTIME_OFFSETS_SEMANTICS,
                        VMIN_SEMANTICS, VMIN_FIXED_SEMANTICS, FOLLOW_OV_SEMANTICS, FOLLOW_OV_VOLTAGE_SEMANTICS,
                        FIXED_SEMANTICS, REL_FLOOR_SEMANTICS, DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS,
                        MAX_TEMP_SEMANTICS, FACTORY_SEMANTICS, ADVANCED_SEMANTICS, PERF_CF_CONTROLLERS, fxp_percent,
@@ -31,18 +32,22 @@ ZERO_RPM_PAIR_SEMANTICS = ('stored-fan-zero-rpm-lower-temperature', 'stored-fan-
 REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
                       fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
                       fixed_voltage, dram_offset_points, gpc_curve_offset, max_operating_temperature, factory_clocks,
-                      perf_cf_controllers, lpwr_features, rel_clamps)
+                      perf_cf_controllers, lpwr_features, rel_clamps, runtime_voltage_offsets)
 # Fields that change otherwise preserved rail bytes, each only through its reviewed binding:
 # the evaluated VMIN equation and the switch that restores a VMIN tree root's stock clamp, the
 # XOC-style NVVDD REL/ALT selectors and the flat value they then share with OV, the fixed Ada/Ampere/Turing
 # REL/ALT values and the GB20x and Ada REL floors.
 RAIL_EXCEPTIONS = (VMIN_SEMANTICS, VMIN_FIXED_SEMANTICS, FOLLOW_OV_SEMANTICS, FOLLOW_OV_VOLTAGE_SEMANTICS,
                    FIXED_SEMANTICS, REL_FLOOR_SEMANTICS)
-# Layout fields whose bytes no other check rereads through the canonical parser, and the runtime power
-# limit switch (the TGP index of the power table header): only the reviewed complete binding (offsets,
-# encoding, scale and layout) may write them.
+# Layout fields whose bytes no other check rereads through the canonical parser, the runtime power
+# limit switch (the TGP index of the power table header) and the runtime voltage-offset hooks: only the
+# reviewed complete binding (offsets, encoding, scale and layout) may write them.
 COMPLETE_BINDING_SEMANTICS = (RAIL_EXCEPTIONS + (DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS, MAX_TEMP_SEMANTICS,
-                                                 RUNTIME_LIMIT_SEMANTICS) + FACTORY_SEMANTICS + ADVANCED_SEMANTICS)
+                                                 RUNTIME_LIMIT_SEMANTICS, RUNTIME_OFFSETS_SEMANTICS) +
+                              FACTORY_SEMANTICS + ADVANCED_SEMANTICS)
+# Fields that take the first unused VFE slot or move the NVVDD REL/ALT/OV selectors: each changes in another
+# edit than the runtime voltage-offset hooks, which take the first unused VFE entries and hold those selectors.
+HOOK_SEPARATE_FIELDS = ('gpc_curve_offset_mhz', 'nvvdd_rel_alt_follow_ov', 'nvvdd_rel_alt_follow_ov_mv')
 # GB20x Advanced section: the objects of its tables (BIT P offset -> object), which change only at
 # the bytes the canonical Advanced bindings declare.
 ADVANCED_OBJECTS = {0xA8: PERF_CF_TABLE[-1], 0xAC: PERF_CF_POLICIES[-1],
@@ -314,6 +319,36 @@ def _keep_notebook_base(parser, rebuilt, output, changes):
                               'joint_fields': sorted(changes)})
 
 
+def _keep_rel_below_alt(parser, rebuilt, changes, available):
+    """Refuse a voltage edit whose result puts REL above ALT on a rail where both can be evaluated (rel_above_alt).
+    A rail the source already has REL above ALT on is left alone while the edit changes neither equation nor any
+    of its REL/ALT fields (an image saved before this check stays editable elsewhere).
+    The requested REL field of that rail names the refusal (the floor first where only a lower REL helps; else its
+    ALT field, else the first requested voltage field), with the rail's editable ALT field as its partner. No bounds
+    are reported: the limit depends on both equations."""
+    before = {item['rail']: (item['rel'], item['alt']) for item in rel_above_alt(parser)}
+    for item in rel_above_alt(rebuilt):
+        prefix = item['rail'].lower() + '_'
+        own = sorted((k for k in changes if k.startswith((prefix + 'rel_', prefix + 'alt_'))),
+                     key=lambda k: (not k.startswith(prefix + 'rel_'), item['alt_floor'] != k.endswith('_min_mv'), k))
+        if not own and before.get(item['rail']) == (item['rel'], item['alt']):
+            continue
+        partners = [k for k in (prefix + 'alt_equation_max_mv', prefix + 'alt_fixed_mv')
+                    if k in available and available[k].descriptor['editable']]
+        key = (own or sorted(k for k in changes if available[k].descriptor['units'] == 'mV'))[0]
+        where = '' if item['variable'] is None else f" at input {item['x']:.1f} (VFE variable {item['variable']})"
+        if item['alt_floor']:
+            fix = 'ALT is at its clamp minimum there, which no field raises: lower REL (its floor)'
+            if prefix == 'nvvdd_' and 'nvvdd_rel_alt_follow_ov' in available:
+                fix += ' or set REL = ALT = OV with nvvdd_rel_alt_follow_ov'
+        else:
+            fix = 'raise ' + (' or '.join(partners) if partners else 'ALT') + ' in the same edit, or lower REL'
+        raise VbiosError('OUT_OF_BOUNDS', f"{key} would put {item['rail']} REL above ALT: {item['rel_uv'] / 1000:g} mV "
+                         f"against {item['alt_uv'] / 1000:g} mV{where}; REL must stay at or below ALT at every input "
+                         'value: ' + fix, details={'field': key, 'bounds': None,
+                                                   'joint_fields': sorted(set(own) | set(partners) | {key})})
+
+
 def _profile_pairs(profile):
     values = {(e['policy'], e['field']): e['value_raw'] for e in profile['entries']}
     return {policy: (values[(policy, 'default')], values[(policy, 'maximum')])
@@ -391,6 +426,23 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     if 'fan_channels' in changes and per_channel:
         raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change fan_channels and the fan limits, curves or zero-RPM flag '
                          'in separate edits', details={'fields': ['fan_channels'] + per_channel})
+    # The runtime voltage-offset hooks take the first unused VFE entries and hold the REL/ALT/OV selectors, which
+    # the GPC curve offset, the follow-OV switch and the flat follow-OV value's copy use too. Those fields requested
+    # at their current value with the switch change nothing and are left out (their bytes overlap the switch's).
+    def moves(key):
+        current = reviewed[key].descriptor['current'] if key in reviewed else None
+        return current is None or _amount(changes[key], key) != Decimal(str(current))
+    hooks = reviewed.get('runtime_voltage_offsets')
+    if ('runtime_voltage_offsets' in changes and hooks is not None and hooks.descriptor['editable'] and
+            moves('runtime_voltage_offsets')):
+        idle = {k for k in HOOK_SEPARATE_FIELDS if k in changes and k in canonical and not moves(k)}
+        changes = {k: v for k, v in changes.items() if k not in idle}
+        canonical = {k: v for k, v in canonical.items() if k not in idle}
+        others = sorted(k for k in HOOK_SEPARATE_FIELDS if k in changes)
+        if others:
+            raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change runtime_voltage_offsets and ' + ', '.join(others) +
+                             ' in separate edits: the hooks take the first unused VFE entries and hold the REL, ALT '
+                             'and OV selectors', details={'fields': ['runtime_voltage_offsets'] + others})
     # A VMIN tree root's value and its fixed switch write the same clamp bytes.
     pairs = sorted(key for key in changes if key in reviewed and
                    reviewed[key].descriptor['value_semantics'] == VMIN_FIXED_SEMANTICS and
@@ -650,6 +702,8 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                 raise VbiosError('OUT_OF_BOUNDS', f'{key} would be outside its range in the result; change it in the '
                                  'same edit', details={'field': key, 'bounds': None,
                                                        'joint_fields': sorted(set(changes) | {key})})
+    if voltages:
+        _keep_rel_below_alt(parser, rebuilt, changes, available)
     try:
         source_rows = parser.power_rows()
     except FormatError:
@@ -790,6 +844,13 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     flat_copy |= _companion_bytes(canonical.values(), FOLLOW_OV_VOLTAGE_SEMANTICS)
     if flat_copy:
         moved |= {('NVVDD', 'REL'), ('NVVDD', 'ALT'), ('NVVDD', 'OV')}
+    # The canonical runtime voltage-offset hook switch: its rail row words, and its VFE entries (the first unused
+    # ones, where a GPC curve offset would go too). The selectors keep reading the same equations through the
+    # hooks, so the rail checks below hold with only their runtime_hook entries changed.
+    hook_binding = next((b for b in canonical.values() if b.descriptor['value_semantics'] == RUNTIME_OFFSETS_SEMANTICS),
+                        None)
+    hook_words = set() if hook_binding is None else {at for start in hook_binding.offsets for at in (start, start + 1)}
+    hook_entries = _companion_bytes(canonical.values(), RUNTIME_OFFSETS_SEMANTICS)
     # Only the canonical fixed REL/ALT fields change an equation's constant (with its clamp maximum), a GB20x or Ada
     # REL floor its clamp minimum and the flat follow-OV value the clamp and constant of the OV constant; an equation
     # whose clamp minimum (byte 3) is declared may change its output minimum.
@@ -841,7 +902,8 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
             if len(source_roles) != len(target_roles):
                 raise VbiosError('PRESERVED_FIELD_CHANGED', 'rail role identity changed')
             for left, right in zip(source_roles, target_roles):
-                values = ('output_maximum_uv',) + minimum(left['equation_offset'])
+                values = ('output_maximum_uv',) + minimum(left['equation_offset']) + (
+                    ('runtime_hook',) if hook_binding is not None else ())
                 left_fixed = {k: v for k, v in left.items() if k not in values}
                 right_fixed = {k: v for k, v in right.items() if k not in values}
                 if (left['logical_rail_id'], left['role']) not in moved and left_fixed != right_fixed:
@@ -868,9 +930,42 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
         tables, length = [], 0
     follow = {at for binding in canonical.values() if binding.descriptor['value_semantics'] == FOLLOW_OV_SEMANTICS
               for start in binding.offsets for at in range(start, start + struct.calcsize(binding.encoding))}
-    follow |= flat_copy
+    follow |= flat_copy | hook_words
     if any(image.blob[i] != output.blob[i] and i not in follow for start in tables for i in range(start, start + length)):
         raise VbiosError('PRESERVED_FIELD_CHANGED', 'rail table bytes must be preserved')
+    # Runtime voltage-offset hooks change only through the canonical switch: the same state, slots and hook bytes.
+    try:
+        source_hooks = parser.runtime_hooks() if isinstance(parser, BlackwellRom) else None
+    except FormatError:
+        source_hooks = None
+    if source_hooks is not None:
+        try:
+            target_hooks = rebuilt.runtime_hooks()
+        except FormatError as exc:
+            raise VbiosError('PRESERVED_FIELD_CHANGED', 'edit invalidated the runtime voltage-offset hooks') from exc
+        keys = ('rail', 'role', 'word', 'hook', 'variable', 'target')
+        # Without hooks the words may move (the follow-OV switch); with hooks (or a partial set) nothing may.
+        shape = lambda hooks: (hooks['state'], [tuple(slot[k] for k in keys) for slot in hooks['slots']]
+                               if hooks['state'] != 'off' else [])
+        entries = [(slot[at], size) for slot in source_hooks['slots'] if slot['hook'] is not None
+                   for at, size in (('hook_offset', 25), ('variable_offset', 29))]
+        # Unless the switch changes value in this edit (requested at its current value, it holds the same bytes).
+        if (hook_binding is None or not moves('runtime_voltage_offsets')) and (
+                shape(source_hooks) != shape(target_hooks) or
+                any(image.blob[start:start + size] != output.blob[start:start + size] for start, size in entries)):
+            raise VbiosError('PRESERVED_FIELD_CHANGED', 'the runtime voltage-offset hooks change only through '
+                             'runtime_voltage_offsets')
+        # The unused VFE entries stay one end block under installed hooks, as the switch keeps them (mVolt+ refuses
+        # to install over a gap, no image has one, and how the firmware takes one is unknown): an edit that frees an
+        # entry before the hooks (the GPC curve offset set to 0 after the hooks were installed on top of it) waits
+        # until the hooks are removed.
+        if target_hooks['state'] == 'on' and source_hooks['unused_tail'] and not target_hooks['unused_tail']:
+            fields = sorted(k for k in changes if moves(k))
+            raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change ' + ', '.join(fields) + ' and runtime_voltage_offsets '
+                             'in separate edits: this edit frees an unused VFE entry before the runtime voltage-offset '
+                             'hooks, which need the unused entries as one block at the end of each table; set '
+                             'runtime_voltage_offsets to 0, make this edit, then set it to 1 again',
+                             details={'fields': ['runtime_voltage_offsets'] + fields})
     # The evaluated VMIN selector stays, and its equation changes only at the floats
     # the canonical *_vmin_mv binding declares (GB20x minimum, maximum and value;
     # Ada/Ampere clamp minimum and maximum) or its *_vmin_fixed switch writes back.
@@ -923,7 +1018,7 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     if source_curve is not None:
         curve_bytes = {at for binding in canonical.values() if binding.descriptor['value_semantics'] == GPC_CURVE_SEMANTICS
                        for start in binding.offsets for at in range(start, start + struct.calcsize(binding.encoding))}
-        curve_bytes |= clone_bytes | flat_copy
+        curve_bytes |= clone_bytes | flat_copy | hook_entries
         size, starts = source_curve['size'], (source_curve['root_offset'], source_curve['slot_offset'])
         if not isinstance(parser, BlackwellRom):
             starts = [copy for at in starts for copy in parser.copy_offsets(at, size)]

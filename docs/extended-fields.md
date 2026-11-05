@@ -68,9 +68,9 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 
 | IDs (`*` stands for the `nvvdd` or `msvdd` prefix) | Meaning | Offline support |
 | --- | --- | --- |
-| `*_rel_equation_max_mv` | VFE output clamp maximum addressed by REL selector | Reviewed Blackwell; Ada temperature-derated REL |
-| `*_rel_equation_min_mv` | VFE output clamp minimum (REL floor) addressed by REL selector: REL is the equation's value (GB20x: the chip value; Ada: a temperature value) clamped to the floor and the ceiling | Experimental, GB20x and Ada (NVVDD, every chain, a temperature-derated REL); editable with the REL ceiling while REL does not select the OV equation; 850 mV (Ada 830 mV and at least the highest VMIN set per chip; or the stored floor) up to the ceiling and at most OV (1200 mV), ordering group `*-rel-clamp` with it; GB20x hardware-tested on RTX PRO 6000 Max-Q and RTX PRO 4000 SFF boards |
-| `*_alt_equation_max_mv` | VFE output clamp maximum addressed by ALT selector | Reviewed Blackwell when present; Ada temperature-derated ALT (experimental) |
+| `*_rel_equation_max_mv` | VFE output clamp maximum addressed by REL selector | Reviewed Blackwell; Ada temperature-derated REL; REL stays at or below ALT on the result where both can be evaluated ([REL at or below ALT](#rel-at-or-below-alt)) |
+| `*_rel_equation_min_mv` | VFE output clamp minimum (REL floor) addressed by REL selector: REL is the equation's value (GB20x: the chip value; Ada: a temperature value) clamped to the floor and the ceiling | Experimental, GB20x and Ada (NVVDD, every chain, a temperature-derated REL); editable with the REL ceiling while REL does not select the OV equation; 850 mV (Ada 830 mV and at least the highest VMIN set per chip; or the stored floor) up to the ceiling and at most OV (1200 mV), ordering group `*-rel-clamp` with it; REL stays at or below ALT where both can be evaluated; GB20x hardware-tested on RTX PRO 6000 Max-Q and RTX PRO 4000 SFF boards |
+| `*_alt_equation_max_mv` | VFE output clamp maximum addressed by ALT selector | Reviewed Blackwell when present; Ada temperature-derated ALT (experimental); kept at or above REL where both can be evaluated |
 | `*_ov_equation_max_mv` | VFE output clamp maximum addressed by OV selector | Reviewed Blackwell |
 | `*_vmin_equation_max_mv` | VFE output clamp maximum addressed by the rail INFO VMIN slot (GB20x row+`0x21`, Ada/Ampere row byte 11); **not** the evaluated VMIN | Read-only |
 | `*_vmin_mv` | Evaluated minimum voltage (VMIN): the equation at GB20x row+`0x13`, Ada/Ampere row byte 7, Turing row byte 9 | Experimental, constant (GB20x) or clamp-pinned (Ada/Ampere/Turing) equations, kept below the lowest REL value; on the RTX 4090 95.02.3C images through a copy of the shared equation; a tree root (GB20x, Ampere) or per-chip equation (Ada) that nothing else names takes a value in its clamp, `current` `null` while stock |
@@ -416,7 +416,9 @@ it, stay at or below OV; a higher NVVDD voltage needs REL and ALT to follow OV (
 Floor and ceiling form one ordering group (`nvvdd-rel-clamp`, `msvdd-rel-clamp`): requested
 together they are checked on the result, so both can be raised in one edit, and a floor above
 the ceiling or above OV is refused. A higher floor raises the lowest REL value, which bounds
-VMIN. An import treats it like the ceiling, and the two come together.
+VMIN. An import treats it like the ceiling, and the two come together. Where ALT can be
+evaluated (Ada temperature-derated or constant ALT), REL also stays at or below ALT on the
+result ([REL at or below ALT](#rel-at-or-below-alt)); the GB20x ALT follows REL.
 
 **Hardware result.** On Linux (driver 615.78.08, Linux loader) three RTX PRO 6000 Blackwell
 Max-Q boards and one RTX PRO 4000 Blackwell SFF loaded copies with both floors at 1100 mV and
@@ -438,7 +440,9 @@ the RTX 4070) it stays above the maximum up to about 97 °C and reaches the mini
 ceiling holds REL there at every temperature. It goes from 830 mV, the lowest REL of any Ada
 image (the constant REL of the RTX 5000 Ada Generation Laptop GPU image), up to the ceiling and
 at most OV (1200 mV on every Ada image), with the ceiling in the `nvvdd-rel-clamp` group, as
-on GB20x; a floor below VMIN plus its chained terms needs VMIN lowered in the same edit. Where
+on GB20x. A temperature-derated ALT has no floor field, so its clamp minimum, the ALT of a hot
+GPU, also caps the REL floor (1060 mV on the RTX 4090 95.02.18 images; see [REL at or below
+ALT](#rel-at-or-below-alt)); a floor below VMIN plus its chained terms needs VMIN lowered in the same edit. Where
 each chip sets its own
 VMIN, no stored value stands for it, so the checks that keep VMIN below REL cannot hold it: the
 floor then stays at or above the highest VMIN of the board (its range plus what its chained
@@ -448,6 +452,52 @@ RTX 4000 Ada and the RTX 5000 Ada Laptop GPU image) takes its value through `nvv
 which the floor's reason names, and a compare REL (RTX 4060 family, RTX 4070 Ti SUPER, laptops)
 keeps both read-only. Not hardware-tested (on an RTX 2000 Ada a raised ceiling moved the
 evaluated REL).
+
+## REL at or below ALT
+
+Every voltage edit is checked on its result: on each rail where the editor can evaluate
+both REL and ALT, REL must stay at or below ALT at every value of their input, or the
+edit is refused with `OUT_OF_BOUNDS`. The message names the requested REL field (else the
+ALT field, else the requested voltage field) and a REL/ALT pair where REL passes ALT;
+`details.field` is that field, `details.bounds` is null (the limit depends on both
+equations) and `details.joint_fields` adds the rail's editable ALT field. The static bounds
+of the REL ceiling and floor do not carry this rule, so a value inside them can still be
+refused here. The message says whether a higher ALT ceiling would help or only a lower REL
+does. An image that already has REL above ALT on a rail (saved by an earlier version) stays
+editable: that rail is checked only when the edit changes its REL or ALT equation or names
+one of its REL/ALT fields. The REL and ALT ceilings are not capped at OV: how high they go
+stays the user's choice.
+
+Evaluated means that REL and ALT are each one clamped quadratic voltage equation (type 1,
+unit 2, no next equation), a constant or a sloped one, and the sloped ones read the same
+VFE variable: REL(x) = min(max(c0 + c1·x + c2·x², minimum), maximum), ALT alike. Between
+the points where either equation meets one of its clamps each side is a quadratic or a
+constant, so REL - ALT peaks at such a point, at a vertex (REL's, ALT's or their
+difference's), or beyond the outermost point, where both are clamped. The editor evaluates
+exactly those points, with 1 µV for float rounding. Every image of the corpus passes as
+stored.
+
+On the RTX 4090 95.02.18 images (PNY 95.02.18.80.B4, Galax 95.02.18.C0.66, Gigabyte
+95.02.18.C0.75) REL is
+1640 - 5.714·T clamped to 1040..1080 mV and ALT 1660 - 5.714·T clamped to 1060..1100 mV,
+T being the sensed-temperature variable (°C, inferred). A REL ceiling of 1195 mV alone is
+refused (REL would pass ALT's 1100 mV below about 94 °C); with the ALT ceiling raised as
+far, it is accepted. ALT has no floor field, and its clamp minimum (1060 mV, reached at
+about 105 °C) caps the REL floor at 1060 mV: a REL floor of 1195 mV with both ceilings at
+1195 mV is refused (ALT drops below REL above about 81 °C). A flat higher REL on such
+images is the follow-OV switch and its flat value (REL = ALT = OV), or a REL ceiling raised
+together with the ALT ceiling, which keeps both temperature slopes (reported by a user).
+
+Not checked: REL or ALT on any other shape, which the editor cannot evaluate: a chain, a
+compare on fused (speedo) inputs (the compare REL of the RTX 4060 family and the 4070 Ti
+SUPER), and the GB20x REL, a type 7 polynomial of the fused leakage. Where the GB20x REL is
+that polynomial, ALT is a +20 mV constant whose next equation is the REL equation, so ALT
+stays 20 mV above REL by construction, and REL floor and ceiling raises (for example
+1100/1125 mV) are not limited by ALT. On the NVVDD rail of the ASUS XOC and MSI Lightning
+images REL and ALT are both the 1200 mV OV constant, which the check evaluates (REL = ALT).
+An absent ALT has nothing to check, as on the Ada laptop images. The fixed REL and
+ALT values keep REL at most the lowest ALT value through their own bounds, and the
+follow-OV value sets REL = ALT.
 
 ## REL and ALT follow OV (`nvvdd_rel_alt_follow_ov`, opt-in)
 
@@ -565,6 +615,71 @@ byte 6 only with a 7-byte header; a 6-byte one has no margin equation) and volta
 whatever equation that index holds; it is not counted as a selector. While REL follows
 OV the NVVDD REL, ALT and OV ceilings, `nvvdd_rel_max_mv` and the NVVDD fixed values are
 read-only with the follow reason. Not hardware-tested on Ampere or Turing.
+
+## Runtime voltage offsets (`runtime_voltage_offsets`, opt-in)
+
+On drivers that ignore rail voltage offsets on RTX 50 cards (Windows 621.01 and newer), mVolt+
+sets its runtime offsets through VFE variables instead: in the BIOS override each voltage limit
+gets a hook, an equation that adds a dedicated variable to the original one, and at runtime it
+writes the variable (RM control 0x2080e0b4, NvAPI `PerfVfeVarSetControl`). This switch writes
+the same bytes, so a tool that does the same can apply offsets on top of the values this editor
+fixes in the VBIOS.
+
+- **What 1 writes.** For each REL (+0x0d), ALT (+0x0f), OV (+0x11) and evaluated VMIN (+0x13)
+  word of each rail that names an equation (below the equation count, as mVolt+ reads them; 0xffff
+  and other out-of-table words are skipped), NVVDD then MSVDD: a copy of the stock type-9 template variable
+  (`09`, 8 zero bytes, `07 08 00 04`, 5 zero bytes, `10`, 10 zero bytes; variables 4, 5, 11, 12 and 13
+  of every GB20x image) into the first unused variable, and into the first unused equation the
+  hook `01, variable, next low, -1250000.0f, +1250000.0f, 0.0f, 1.0f, 0.0f, 02, next high`, whose
+  next link is the word's original equation; the word then selects the hook. The hook's value is
+  the variable clamped to +-1.25 V, added to the original equation. The template's range is 0..0
+  and the image stores no offset, so with no runtime tool every limit is the original one. On the
+  RTX 5090 FE ROM that is variables 75..82 and equations 1908..1915; on the RTX PRO 4000 SFF,
+  which has no ALT word, 74..79 and 1818..1823. Words that name one equation (REL, ALT and OV of
+  the ASUS XOC and MSI Lightning ROMs, and of copies whose REL and ALT follow OV) each get their own
+  hook linking it, as mVolt+ installs them; its runtime requires distinct variables and hooks, and
+  no hook linking another, not distinct targets.
+- **What 0 writes.** The words select the original equations again and the hook entries get the
+  clean unused bytes (`00` x9, `ff`, `00` x8, `10`, `00` x10 for a variable). Install then remove
+  gives back the stock image, except on the RTX PRO 6000 Max-Q ROMs, whose first two unused
+  variables (type 0) hold leftover bytes; removal writes the clean bytes there and the reason says so.
+- **When it is read-only.** The VFE header (`30 0e 1d ff 19 00`, bytes 7..13 `00 00 01 08 05 00 20`)
+  and the BIT P token (at least 0xf8 bytes) must be those runtime tools accept; the words must name
+  equations in use; a stock template variable must exist; the unused variables and equations must
+  form one block at the end of each table with room for one of each per word (the hooks take the
+  first ones, so they stay one block), named by no VFE equation, rail row word or other table that
+  names equations (clock programming, FLL, voltage policy, P+0x104); and the rail table must be the
+  legacy object 0x21, whose hashes the edit repairs with the VFE object's, both directory digests
+  and the checksums. Every GB20x ROM of the corpus (35) passes. Removal is read-only while an edit
+  made after the hooks (the GPC curve offset or the flat follow-OV value's copy) holds the next
+  unused entries: set it back first. The other way round, with the hooks installed after a GPC curve
+  offset, that offset can change but not go back to 0 (`SEPARATE_EDIT_REQUIRED`): its unused slot
+  would sit before the hooks. Remove the hooks, set the offset to 0, then install them again.
+- **Detection.** The switch reads 1 when every word that names an equation selects a complete hook: the exact bytes,
+  a template copy as its variable, a target in use that is no hook, distinct hooks and variables,
+  each hook named by one rail row word and linked by no equation, each variable read by no other
+  equation, and a template variable left unused for runtime tools to read as the reference. That is
+  what mVolt+ writes too. A partial or foreign set is read-only, and the voltage fields of the words
+  that select one are read-only too.
+- **Other fields.** With hooks installed, the REL floor and ceilings, ALT and OV ceilings and VMIN
+  follow each hook to its original equation and edit the same bytes as without hooks, so the switch
+  and those values can be saved together or in either order with the same result. The follow-OV
+  switch and the copy of the flat follow-OV value would move the hooked words, so they are read-only
+  while hooks are installed; requesting the switch with them or with the GPC curve offset (which takes
+  the first unused slot too) at another value fails with `SEPARATE_EDIT_REQUIRED`.
+- **Older editors.** Open and edit copies with hooks only with 0.1.42 or newer. Older versions read
+  the word, not the equation the hook links: they show the hook clamp (1250 mV, and -1250 mV for the
+  REL floor) as the REL and OV ceilings, and editing those values writes the hook's clamp, which
+  breaks the hooks (this release then reads the set as partial) and leaves the real limit unchanged.
+
+Not hardware-tested: whether the Linux GSP firmware or the Windows driver accepts the added entries
+and applies a value written at runtime has not been checked here. The GSP-RM 615 and 620 VFE parsers
+read the hook entry like any type-1 equation, but the evaluator was not traced, so "each equation
+clamped to its own range, then added along its next links" rests on the RTX 2000 Ada VMIN hardware
+test and on mVolt+'s own runtime check. Two links of the hooks occur on no NVIDIA image: the VMIN
+hook (+0x13) links a min/max root (type 2) on most ROMs (the RTX PRO 4000 SFF NVVDD and MSVDD
+VMIN among them), and the RTX 5090 Laptop MSVDD REL hook links a type-7 equation whose output
+byte is 0x12. Removing the override brings the card back.
 
 ## Fixed REL and ALT values (`nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv`)
 
@@ -1249,7 +1364,9 @@ outside default <= base <= maximum. The base TGP bounds no other field: an edit 
 it is checked as if it did not exist. For example, raising the default to 900 W and the
 ceiling to 1000 W in one request is accepted, while the same default alone is
 refused. Clock rows are reparsed after every edit: their identities must be
-unchanged, and each range that contained 0 must still contain it.
+unchanged, and each range that contained 0 must still contain it. A voltage edit also keeps
+REL at or below ALT on every rail where both can be evaluated ([REL at or below
+ALT](#rel-at-or-below-alt)).
 
 A binding with the reviewed key, offsets, encoding and scale always uses the
 reviewed bounds, even when an extension supplies it. Other extension bindings keep
@@ -2381,12 +2498,14 @@ excluded) and the exact power-channel entry they read:
 Class-5 rows are hardware thresholds: their fields carry
 `policy_class: "hardware-threshold"`, are opt-in (shown under **Show advanced
 XOC-style fields**) and the GUI labels them "threshold", also for the Ada 12 V
-input current (the GB20x type-11 input policy keeps its "limit" labels). The 11
-images with the 12 V input rows store 16-45 A rated, about 1.2-1.69 × rated
-TGP / 12 V; thresholds 0 and 1 hold equal rated values on all of them, but the
-RTX 4500 Ada maxima differ (22000/21000 mA), so only its rated value is editable.
-The NVVDD threshold rated value is above the rated TGP on every image (122-650 W;
-the RTX 4050 Laptop GPU's 122 W is below its 140 W TGP ceiling).
+input current (the GB20x type-11 input policy keeps its "limit" labels). The 18
+stock images with the 12 V input rows store 16-66 A rated (the Galax RTX 4090
+95.02.18 image 66 A, with a 70 A maximum), about 1.2-1.69 × rated TGP / 12 V;
+thresholds 0 and 1 hold equal rated values on all of them, but the RTX 4500 Ada
+maxima differ (22000/21000 mA), so only its rated value is editable. The NVVDD
+threshold rated value is above the rated TGP on every image (122-700 W rated,
+maxima up to 900 W; the Galax RTX 4090 95.02.18 image stores 700/900 W; the RTX
+4050 Laptop GPU's 122 W is below its 140 W TGP ceiling).
 
 A field stays read-only when another row of the same class and unit reads the
 same power channel (`same_channel_rows` in the descriptor), because that row may
@@ -2446,14 +2565,14 @@ current threshold:
   --set input_current_max_ma=25000 --set input_current_rated_ma=25000
 ```
 
-**Override profiles picked by the cable sense pins (P+0xF4, experimental).** One Ada
-image, an MSI RTX 4090 (95.02.3C.40.EA), stores override profiles; every other Ada
-image of the corpus keeps them empty. The table has the GB20x layout, and GSP-RM 615.78.08
-parses it with the same code for Ada and GB20x. A profile entry names a power row
-and a limit (0 maximum, 1 rated). Static analysis shows that the selected entry
-replaces that row's value instead of clamping it: the firmware applies it with the
-same client it uses for the row value. The editor accepts exactly this selection
-chain:
+**Override profiles picked by the cable sense pins (P+0xF4, experimental).** Two Ada
+images store override profiles, an MSI RTX 4090 (95.02.3C.40.EA) and a Gigabyte RTX
+4090 (95.02.18.C0.75); every other Ada image of the corpus keeps them empty. The table
+has the GB20x layout, and GSP-RM 615.78.08 parses it with the same code for Ada and
+GB20x. A profile entry names a power row and a limit (0 maximum, 1 rated). Static
+analysis shows that the selected entry replaces that row's value instead of clamping
+it: the firmware applies it with the same client it uses for the row value. The
+editor accepts this selection chain, as stored on the MSI image:
 
 | Part | Stored | Meaning |
 | --- | --- | --- |
@@ -2472,45 +2591,83 @@ functions 0xee/0xed of this image also appear on a GB202 image without selection
 rows, so they do not identify the sense inputs by themselves.
 
 Byte 1 of each sense entry (row 0) names a direct profile: the firmware applies it as
-soon as that code is read, whatever the vote and before row 1 (static reading of
-GSP-RM 615.78.08 and 620.70.06); 0xff means none, as on this image. A Gigabyte RTX
-4090 image (95.02.18.C0.75, reported by a user) stores the entry's code there. The
-editor accepts that only when row 1 selects the same profile at every code that votes,
-so the firmware still applies one profile per level (with no vote the power setup
-fails either way).
+soon as that code is read, whatever the vote and before row 1, skips a profile it
+has already applied, and fails the power setup when the direct profile is disabled
+(static reading of GSP-RM 615.78.08 and 620.70.06); 0xff means none, as on the MSI
+image. The Gigabyte image (reported by a user in issue #32) stores the entry's code
+there, so at codes 2 and 3 the firmware applies two profiles:
+
+| Code (vote) | Direct profile (applied first) | Threshold profile (row 1) |
+| --- | --- | --- |
+| 2 (450 W) | 2: row 6 450 W maximum and rated, 12 V input thresholds 45 A maximum | 6: TGP 450 W maximum |
+| 3 (600 W) | 3: row 6 600 W maximum and rated, 12 V input thresholds 60 A maximum | 7: TGP 600 W maximum, equal to the base row 2 |
+
+Its row 1 thresholds 150 and 300 W name profiles 4 and 5, which are disabled. No
+vote selects them, so the firmware never applies them, and the editor accepts that.
+Row 6 is a class-4 mW row (the class of the slot power row) on power channel 5, the
+auxiliary connector input (rail 0xda), 600 W in the base table of the corpus image
+(a public dump of the same version whose profile table matches the reported one
+byte for byte); it has no field, because that channel holds a parameter byte the
+connector fields do not accept. The editor accepts a direct profile only as 0xff or
+the entry's own code. At a code that votes, it accepts one
+that differs from row 1's profile only when it is enabled and the two set different
+limits (no row and field in common): the two then apply one after the other with
+the same result in either order. A direct profile at a code whose vote reaches no
+threshold, a disabled one, or one that sets a limit row 1's profile sets too is
+refused. Codes that vote nothing are not checked further, since the power setup fails
+there either way.
 
 Because a selected profile replaces the base value, raising only the base would
-most likely be undone at the top level (static reading, not tested). So
-`power_max_w` and `power_default_w` write the base TGP row and the matching entry of
-the top-level profile together, in both chains. The other profiles keep their values
-and set the bounds: the ceiling stays at or above every other profile value on the
-row (480 W, the rated value, on this image), the rated value at or above their
-rated values (450 W), and `power_min_w` at or below all of them. A profile that no
-sense code selects (profiles 4 and 5 here) counts with twice its value as an upper
-bound and half as a lower one, so profile 4's 150 W lets the floor go up to 300 W;
-profile 6, selected at code 2, counts with its own values. The 12 V
-input current fields follow the same rule: profile 6 holds only their rated value (45 A), so
-both the rated value and the ceiling stay at or above it.
-`power_max_w` keeps no upper bound but the encoding. Its reason, and notes in the
-GUI, say that the top level is most likely a 600 W cable, that going past 600 W is
-the user's call, and that the 12 V input current thresholds (rated 48 A, about
-576 W at 12 V) may limit first, so `input_current_rated_ma` (opt-in) should be raised
-with it. Descriptors carry `override_profiles` (top profile, its sense code, the
-inferred 600 W level and the other profiles) and an evidence entry of kind
-`firmware-static-analysis`.
+most likely be undone at the top level (static reading, not tested). Each field
+therefore looks at the top level's entries on its own rows only. An entry there that
+equals the base is written with it, in both chains: `power_max_w` writes the base
+TGP maximum and profile 7's TGP maximum together, and `power_default_w` writes
+profile 7's rated entry with the base where one exists (MSI image); on the Gigabyte
+image profile 7 holds no rated entry, so `power_default_w` writes the base alone
+and its reason says that the base value applies at the top level. An entry there
+that differs from the base keeps that field read-only: on the Gigabyte
+image direct profile 3 sets the 12 V input maximum to 60 A against 58 A in the base,
+so `input_current_max_ma` is read-only and names profile 3; a TGP entry that differs
+hides the power fields. The other profiles keep their values and set the bounds: the
+ceiling stays at or above every other profile value on the row (480 W, the rated
+value, on the MSI image), the rated value at or above their rated values (450 W), and
+`power_min_w` at or below all of them. A profile that no sense code selects (profiles
+4 and 5 on the MSI image) counts with twice its value as an upper bound and half as a
+lower one, so profile 4's 150 W lets the floor go up to 300 W; a profile a code
+selects counts with its own values. Disabled profiles do not count. Where a level
+replaces a row's maximum but not its rated value, the base rated value runs under
+that maximum at that level: on the Gigabyte image profile 6 sets only the TGP
+maximum (450 W) at code 2, and profile 2 sets only the 12 V input maximum (45 A).
+How the firmware treats a rated value above that maximum is not known (not
+analysed), so the editor does not bound it: `power_default_w` and
+`input_current_rated_ma` keep the base ceiling as their upper bound (600 W and
+58 A on the Gigabyte image), and their reasons name the profile and the maximum it
+sets so the choice is the user's. The 12 V input
+current fields follow the same rules: on the MSI image profile 6 holds only their
+rated value (45 A), so both the rated value and the ceiling stay at or above it.
+`power_max_w` keeps no upper bound but the encoding; the other profiles bound it
+from below only. Its reason, and notes in the GUI, say that the top level is most
+likely a 600 W cable, that going past 600 W is the user's call, and that the 12 V
+input current thresholds (rated 48 A on the MSI image, about 576 W at 12 V) may
+limit first (45 A, about 540 W, on the Gigabyte image), so `input_current_rated_ma`
+(opt-in) should be raised with it. On the Gigabyte image the reason adds that
+profile 2 sets their maximum to 45 A at code 2, as above. Descriptors carry
+`override_profiles` (top profile, its sense code, the inferred 600 W level, the
+other profiles and, on the Gigabyte image, `top_direct_profile`) and an evidence
+entry of kind `firmware-static-analysis`.
 
 Anything else keeps the power fields hidden (the Power card then says some fields
 are not shown) and the slot, 12 V input and NVVDD threshold fields read-only: other
 selection headers (such as the presence gate bit), a used row 2 or 3, codes other
-than 0..3, a direct profile other than 0xff or the entry's own code, or one that row 1
-does not select too at a code that votes, a threshold param other than 0xff,
-thresholds out of order or naming a
-disabled profile, a profile entry with field 2 (minimum) or a malformed or
-duplicate entry, and a top-level profile that differs from the base table. A lower
-profile entry outside the stored range of its base row (below the floor, above the
-ceiling, or a rated entry above the rated value) also hides the power fields, or
-keeps that policy's fields read-only, because the stored value could not be requested
-again within the bounds. No image of the corpus has one.
+than 0..3, a direct profile other than 0xff or the entry's own code, a direct profile
+refused as above, a threshold param other than 0xff, thresholds out of order, a
+threshold a vote selects that names a disabled profile, a profile entry with field 2
+(minimum) or a malformed or duplicate entry, and a top level that selects no
+profile. A lower profile entry outside the stored range of its base row (below the
+floor, above the ceiling, or a rated entry above the rated value) also hides the
+power fields, or keeps that policy's fields read-only, because the stored
+value could not be requested again within the bounds. No image of the corpus has
+one.
 
 **Voltage (rail P+0x68, VFE P+0x20).** One V20 logic rail (NVVDD). Row selectors
 are u8: REL +4, ALT +5, OV +6 and VMIN +11 (0xff = absent); the RTX 2000 Ada runtime
