@@ -41,7 +41,7 @@ nvgpu `bios.h` structure definitions (MIT). No NVIDIA source file is included.
 | mingw-w64-ucrt-x86_64-gobject-introspection-runtime | 1.86.0-4 | LGPL-2.0-only | third_party/mingw-w64-ucrt-x86_64-gobject-introspection-runtime/ (standard text) | cairo-1.0.typelib freetype2-2.0.typelib |
 | mingw-w64-ucrt-x86_64-graphene | 1.10.8-3 | MIT | third_party/mingw-w64-ucrt-x86_64-graphene/ | libgraphene-1.0-0.dll Graphene-1.0.typelib |
 | mingw-w64-ucrt-x86_64-graphite2 | 1.3.15-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-graphite2/ | libgraphite2.dll |
-| mingw-w64-ucrt-x86_64-gst-plugins-bad-libs | 1.28.8-3 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-gst-plugins-bad-libs/ (standard text) | libgstd3d12-1.0-0.dll libgstd3dshader-1.0-0.dll libgstplay-1.0-0.dll |
+| mingw-w64-ucrt-x86_64-gst-plugins-bad-libs | 1.28.8-4 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-gst-plugins-bad-libs/ (standard text) | libgstd3d12-1.0-0.dll libgstd3dshader-1.0-0.dll libgstplay-1.0-0.dll |
 | mingw-w64-ucrt-x86_64-gst-plugins-base | 1.28.8-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-gst-plugins-base/ | libgstallocators-1.0-0.dll libgstaudio-1.0-0.dll libgstgl-1.0-0.dll libgstpbutils-1.0-0.dll libgsttag-1.0-0.dll libgstvideo-1.0-0.dll |
 | mingw-w64-ucrt-x86_64-gstreamer | 1.28.8-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-gstreamer/ (standard text) | libgstbase-1.0-0.dll libgstreamer-1.0-0.dll |
 | mingw-w64-ucrt-x86_64-gtk4 | 4.24.1-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-gtk4/ | libgtk-4-1.dll Gdk-4.0.typelib Gsk-4.0.typelib Gtk-4.0.typelib |
@@ -107,7 +107,7 @@ corresponding source of these packages on request: open an issue in the reposito
 | mingw-w64-gobject-introspection | 1.86.0-4 | https://repo.msys2.org/mingw/sources/mingw-w64-gobject-introspection-1.86.0-4.src.tar.zst |
 | mingw-w64-graphene | 1.10.8-3 | https://repo.msys2.org/mingw/sources/mingw-w64-graphene-1.10.8-3.src.tar.zst |
 | mingw-w64-graphite2 | 1.3.15-1 | https://repo.msys2.org/mingw/sources/mingw-w64-graphite2-1.3.15-1.src.tar.zst |
-| mingw-w64-gst-plugins-bad | 1.28.8-3 | https://repo.msys2.org/mingw/sources/mingw-w64-gst-plugins-bad-1.28.8-3.src.tar.zst |
+| mingw-w64-gst-plugins-bad | 1.28.8-4 | https://repo.msys2.org/mingw/sources/mingw-w64-gst-plugins-bad-1.28.8-4.src.tar.zst |
 | mingw-w64-gst-plugins-base | 1.28.8-1 | https://repo.msys2.org/mingw/sources/mingw-w64-gst-plugins-base-1.28.8-1.src.tar.zst |
 | mingw-w64-gstreamer | 1.28.8-1 | https://repo.msys2.org/mingw/sources/mingw-w64-gstreamer-1.28.8-1.src.tar.zst |
 | mingw-w64-gtk4 | 4.24.1-1 | https://repo.msys2.org/mingw/sources/mingw-w64-gtk4-4.24.1-1.src.tar.zst |
