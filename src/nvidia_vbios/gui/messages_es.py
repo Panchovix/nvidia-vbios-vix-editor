@@ -15,21 +15,21 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'section.fans': 'Ventiladores',
  'field.fan_pwm_frequency_hz': 'Frecuencia PWM de los ventiladores (experimental)',
  'field.fan_channels': 'Canales de ventilador (experimental)',
- 'field.fan_zero_rpm': 'Parada de ventiladores en reposo (avanzado, experimental)',
+ 'field.fan_zero_rpm': 'Parada de ventiladores en reposo (avanzado)',
  'reason.fan_layout': 'Esta tabla no guarda otra disposición de canales de ventilador, o los máximos de un canal '
                        'guardado quedan por debajo de las curvas adicionales.',
- 'field.fan_min_rpm': 'Velocidad mínima del ventilador {fan} (experimental)',
- 'field.fan_max_rpm': 'Velocidad máxima del ventilador {fan} (experimental)',
- 'field.fan_min_pct': 'Nivel mínimo del ventilador {fan} (avanzado, experimental)',
+ 'field.fan_min_rpm': 'Velocidad mínima del ventilador {fan}',
+ 'field.fan_max_rpm': 'Velocidad máxima del ventilador {fan}',
+ 'field.fan_min_pct': 'Nivel mínimo del ventilador {fan} (avanzado)',
  'field.fan_max_pct': 'Nivel máximo del ventilador {fan} (avanzado, experimental)',
  'field.fan_curve_temp_c': 'Curva del ventilador {fan}, punto {point}: temperatura (experimental)',
- 'field.fan_curve_rpm': 'Curva del ventilador {fan}, punto {point}: velocidad (experimental)',
- 'field.fan_curve_pct': 'Curva del ventilador {fan}, punto {point}: nivel (avanzado, experimental)',
+ 'field.fan_curve_rpm': 'Curva del ventilador {fan}, punto {point}: velocidad',
+ 'field.fan_curve_pct': 'Curva del ventilador {fan}, punto {point}: nivel (avanzado)',
  'field.fan_extra_curve_temp_c': 'Curva adicional {curve}, punto {point}: temperatura (experimental)',
  'field.fan_extra_curve_rpm': 'Curva adicional {curve}, punto {point}: velocidad (experimental)',
  'field.fan_extra_curve_pct': 'Curva adicional {curve}, punto {point}: nivel (avanzado, experimental)',
  'field.fan_zero_rpm_low_temp_c': 'Ventilador {fan}, parada en reposo: umbral inferior (avanzado, experimental)',
- 'field.fan_zero_rpm_high_temp_c': 'Ventilador {fan}, parada en reposo: umbral superior (avanzado, experimental)',
+ 'field.fan_zero_rpm_high_temp_c': 'Ventilador {fan}, parada en reposo: umbral superior (avanzado)',
  'field.fan_extra_zero_rpm_low_temp_c': ('Curva adicional {curve}, parada en reposo: umbral inferior '
                                          '(avanzado, experimental)'),
  'field.fan_extra_zero_rpm_high_temp_c': ('Curva adicional {curve}, parada en reposo: umbral superior '
@@ -304,17 +304,16 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.output_ocp_rated': 'Límite de corriente OCP de salida de {rail}, nominal (experimental)',
  'field.output_ocp_advanced': 'Techo del límite de corriente de salida de {rail} (avanzado, experimental)',
  'field.output_ocp_rated_advanced': 'Límite de corriente de salida de {rail}, nominal (avanzado, experimental)',
- 'field.slot_power_rated_w': 'Límite de potencia del slot PCIe, nominal (experimental)',
- 'field.slot_power_max_w': 'Techo de potencia del slot PCIe (experimental)',
+ 'field.slot_power_rated_w': 'Límite de potencia del slot PCIe, nominal',
+ 'field.slot_power_max_w': 'Techo de potencia del slot PCIe',
  'field.slot_current_threshold_rated_ma': 'Umbral de corriente del slot PCIe, nominal (avanzado, experimental)',
  'field.slot_current_threshold_max_ma': 'Techo del umbral de corriente del slot PCIe (avanzado, experimental)',
  'field.nvvdd_power_threshold_rated_w': 'Umbral de potencia de salida NVVDD, nominal (avanzado, experimental)',
  'field.nvvdd_power_threshold_max_w': 'Techo del umbral de potencia de salida NVVDD (avanzado, experimental)',
- 'field.connector_power_max': 'Techo del canal de potencia de conector {connector} (experimental)',
- 'field.connector_power_rated': 'Límite del canal de potencia de conector {connector}, nominal (experimental)',
- 'field.connector_power_max_advanced': 'Techo del canal de potencia de conector {connector} (avanzado, experimental)',
- 'field.connector_power_rated_advanced': ('Límite del canal de potencia de conector {connector}, nominal (avanzado, '
-                                          'experimental)'),
+ 'field.connector_power_max': 'Techo del canal de potencia de conector {connector}',
+ 'field.connector_power_rated': 'Límite del canal de potencia de conector {connector}, nominal',
+ 'field.connector_power_max_advanced': 'Techo del canal de potencia de conector {connector} (avanzado)',
+ 'field.connector_power_rated_advanced': 'Límite del canal de potencia de conector {connector}, nominal (avanzado)',
  'connector_input.rating': 'Este límite acota la potencia que entra por el conector de alimentación auxiliar. La '
                            'ROM no guarda el tipo de conector: un conector PCIe de 8 pines admite 150 W, y un cable '
                            '12V-2x6 (16 pines), el nivel que indican sus pines de detección. Pasar de lo que admiten '
@@ -456,9 +455,9 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                                            '(avanzado, experimental)'),
  'field.board_fixed_rated_w': 'Potencia nominal de las políticas fijas 2/7 de la placa (avanzado, estilo XOC, '
                               'experimental)',
- 'field.notebook_base_tgp_w': 'TGP base del portátil (experimental)',
+ 'field.notebook_base_tgp_w': 'TGP base del portátil',
  'field.runtime_power_limit_unlock': ('Permitir cambiar el límite de potencia en uso (nvidia-smi -pl, '
-                                      'Afterburner, experimental)'),
+                                      'Afterburner)'),
  'show_advanced': 'Mostrar campos avanzados (estilo XOC)',
  'shunt_multiplier': 'Multiplicador de shunt (x)',
  'shunt_help': 'Solo informativo: la VBIOS guarda los valores de los campos. Supone el mismo multiplicador en '
@@ -467,7 +466,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'shunt_real': 'Unos {value} {units} reales con un shunt x{factor}',
  'field.equation': 'Techo de ecuación {role} de {rail}',
  'field.rel_floor': 'Piso REL de {rail}',
- 'field.vmin': 'Voltaje mínimo (VMIN) de {rail} (experimental)',
+ 'field.vmin': 'Voltaje mínimo (VMIN) de {rail}',
  'field.vmin_fixed': 'VMIN fijo de {rail} (experimental)',
  'field.vmin_slot': 'Techo de la ecuación del slot VMIN de la info del riel {rail} (no es el VMIN evaluado)',
  'field.fixed': 'Voltaje fijo {role} de {rail} (experimental)',
@@ -475,27 +474,27 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.nvvdd_rel_alt_follow_ov': ('REL y ALT de NVVDD siguen a OV (límite de voltaje plano estilo XOC; avanzado, '
                                    'experimental)'),
  'field.nvvdd_rel_alt_follow_ov_mv': 'Voltaje plano de NVVDD (REL = ALT = OV)',
- 'field.runtime_voltage_offsets': ('Offsets de voltaje en tiempo de ejecución (hooks compatibles con mVolt+; avanzado, '
-                                   'experimental)'),
+ 'field.runtime_voltage_offsets': 'Offsets de voltaje en tiempo de ejecución (hooks compatibles con mVolt+; avanzado)',
  'runtime_offsets.note': ('Agrega hooks de offset de voltaje en tiempo de ejecución (compatibles con mVolt+) a los '
                           'límites REL, ALT, OV y VMIN de cada riel, para herramientas que escriben la variable VFE en '
                           'tiempo de ejecución: el valor que escriben, en µV y limitado a ±1,25 V, se suma a cada '
                           'límite. Sin esa herramienta queda en 0 y no cambia nada, y los voltajes fijados en esta '
                           'ventana siguen aplicando. Off quita los hooks. Abre y edita una copia con hooks solo con '
                           'esta versión del editor o una más nueva: las anteriores muestran el límite del hook '
-                          '(1250 mV) como techo de REL y OV, y editarlo rompe los hooks. Sin probar en hardware.'),
+                          '(1250 mV) como techo de REL y OV, y editarlo rompe los hooks. Probado en hardware en una '
+                          'RTX PRO 4000 SFF.'),
  'runtime_offsets.dirty': ('En esta ROM las entradas sin uso que toman los hooks ({entries}) tienen bytes sobrantes: '
                            'al desactivar se escriben ahí bytes limpios sin uso, así que una copia activada y luego '
                            'desactivada difiere del original en esos bytes.'),
- 'field.power_default_w': 'Potencia por defecto al arrancar (experimental)',
- 'field.input_current_rated_ma': 'Límite de corriente de entrada de 12 V, nominal (experimental)',
- 'field.input_current_max_ma': 'Techo de corriente de entrada de 12 V (experimental)',
- 'field.input_threshold_rated_ma': 'Umbral de corriente de entrada de 12 V, nominal (avanzado, experimental)',
- 'field.input_threshold_max_ma': 'Techo del umbral de corriente de entrada de 12 V (avanzado, experimental)',
- 'field.gpc_offset_max_mhz': 'Techo de offset del núcleo (GPC) (experimental)',
+ 'field.power_default_w': 'Potencia por defecto al arrancar',
+ 'field.input_current_rated_ma': 'Límite de corriente de entrada de 12 V, nominal',
+ 'field.input_current_max_ma': 'Techo de corriente de entrada de 12 V',
+ 'field.input_threshold_rated_ma': 'Umbral de corriente de entrada de 12 V, nominal (avanzado)',
+ 'field.input_threshold_max_ma': 'Techo del umbral de corriente de entrada de 12 V (avanzado)',
+ 'field.gpc_offset_max_mhz': 'Techo de offset del núcleo (GPC)',
  'field.gpc_offset_min_mhz': 'Piso de offset del núcleo (GPC) (experimental)',
- 'field.memory_offset_min_mhz': 'Piso de offset de memoria (experimental)',
- 'field.dram_min_table_mhz': 'Piso de offset de memoria (tabla, experimental)',
+ 'field.memory_offset_min_mhz': 'Piso de offset de memoria',
+ 'field.dram_min_table_mhz': 'Piso de offset de memoria (tabla)',
  'field.input_current_policy7_limit_ma': 'Límite de la política 7 ligado a la entrada de 12 V (experimental)',
  'field.clock_domain_max': 'Techo de offset de {domain} (experimental)',
  'field.clock_domain_min': 'Piso de offset de {domain} (experimental)',

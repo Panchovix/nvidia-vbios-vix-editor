@@ -3,6 +3,31 @@
 What each change does, where it applies, what was tested and its risks. CHANGELOG.md lists the same
 changes, one line each, in the same order.
 
+## 0.1.43
+
+- **Fields tested on hardware are no longer experimental on their GPU family.** One table in the registry
+  (`registry.HARDWARE_TESTED`) lists the fields tested per family. There they carry no experimental flag and no
+  badge in the window, and their notes name the test. The bytes an edit writes do not change.
+  - Turing: desktop board power and the connector power rows (RTX 2070 at 225 W, RTX 2080 Ti at 500 W with 250 W
+    per connector), and the runtime power limit switch (one RTX 2070 Laptop GPU).
+  - Ampere: board power, laptops included (RTX 3050 6GB Laptop GPU at 70/55 W, RTX A2000), PCIe slot power (RTX
+    A2000), the fan minimums (RTX 3090 blower, issue #24) and point 1 of a fan's own curve (HP RTX 3060, issue #22).
+  - Ada: board power (RTX 2000 Ada, RTX 4090 95.02.18 at 671 W), the NVVDD REL ceiling (RTX 2000 Ada, 1100 mV), the
+    GPC offset ceiling (RTX 4090, +1200 MHz), a pinned NVVDD VMIN (RTX 2000 Ada, 700 mV stored, 790 mV reported),
+    PCIe slot power (RTX 2000 Ada) and the fan minimums (RTX 4070, 800 RPM with the level at 15 %).
+  - Blackwell: the boot default power (RTX PRO 6000 Max-Q; RTX 5090 Laptop GPU with the base TGP and ceiling), the
+    notebook base TGP, the NVVDD and MSVDD REL floors (three RTX PRO 6000 Max-Q and an RTX PRO 4000 SFF at 1100 mV),
+    a constant NVVDD VMIN (RTX 5080, 800 -> 850 mV), the GPC offset ceiling, memory offset floor and 12 V input
+    current (RTX 50 boards), PCIe slot power and the runtime voltage offsets switch (RTX PRO 4000 SFF), zero RPM (HP
+    Omen RTX 5090), the fan speed maximum (RTX 5080, 3500 -> 4000 RPM) and the upper zero RPM threshold (Zotac RTX
+    5080 at 60 °C, issue #12).
+  - Still experimental: the lower zero RPM threshold, curve points 2 and 3 and the extra curves,
+    `input_current_policy7_limit_ma` and the Ada and Ampere input current thresholds, values bound to an override
+    profile (Ada cable sense profiles, the ASUS RTX 5090 XOC ROMs), the Ada and Turing notebook TGP, a VMIN set per
+    chip or through a min/max tree, the VMIN copy of the RTX 4090 95.02.3C ROMs, zero RPM where it writes another
+    board's values or leaves bit 4 clear, and every other field.
+  - For API users: those descriptors no longer carry `experimental`.
+
 ## 0.1.42
 
 - **Blackwell: runtime voltage offsets switch, mVolt+-compatible VFE hooks for runtime offset tools (experimental;

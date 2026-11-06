@@ -3,6 +3,10 @@
 One line per change. What each change does, where it applies and what was tested is in the
 [changelog details](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/changelog-details.md).
 
+## 0.1.43
+
+- Fields tested on hardware are no longer experimental on their GPU family (board, slot and connector power, VMIN, fans and more).
+
 ## 0.1.42
 
 - Blackwell: runtime voltage offsets switch, mVolt+-compatible VFE hooks (experimental; worked on one RTX PRO 4000 SFF).

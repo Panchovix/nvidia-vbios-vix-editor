@@ -279,7 +279,7 @@ def notebook_notes(field, family, language='en'):
     """Notes of the board power fields of a GB20x notebook TGP layout (notebook_tgp).
 
     The platform requests the running limit, and on the one laptop tested it moved only with the ceiling, the
-    boot default and the experimental base TGP (notebook_base_tgp_w, an advanced field) raised together. The
+    boot default and the base TGP (notebook_base_tgp_w, an advanced field) raised together. The
     base TGP bounds no other field, but the ceiling and the boot default name it so the three go together
     wherever the user starts; the base TGP note adds its own bounds and the risk.
     """
@@ -305,7 +305,7 @@ def runtime_limit_notes(field, family, language='en'):
 
 def runtime_offsets_notes(field, language='en'):
     """Notes of the runtime voltage-offset hook switch (runtime_voltage_offsets): what the hooks add, that nothing
-    changes without a runtime tool, and that it is untested; and where the unused entries an install takes hold
+    changes without a runtime tool, and the one board it was tested on; and where the unused entries an install takes hold
     leftover bytes (runtime_hooks dirty: the RTX PRO 6000 Max-Q ROMs), that off writes clean ones there."""
     if field.get('key') != 'runtime_voltage_offsets':
         return []

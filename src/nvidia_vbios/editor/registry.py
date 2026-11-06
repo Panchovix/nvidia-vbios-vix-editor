@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 import math
+import re
 import struct
 from ..rom.blackwell import (BlackwellRom, CONNECTOR_INPUT_CHANNEL, FAN_POLICY_FLAG_OFFSET, HOOK_PARTIAL_BLOCKED,
                              HOOK_REMOVE_WAITS)
@@ -134,25 +135,55 @@ def turing(parser):
     return isinstance(parser, TableRom) and parser.family == 'turing'
 
 
-# The only Ada board that runs edited images here. Booted edits: TGP ceiling
-# 100 W (NVML maximum) and NVVDD REL ceiling 1100 mV (runtime evaluated REL); a
-# second image also changed the GPC offset ceiling and the memory offset floor
-# (NVML ranges only, so those clock fields stay experimental). The power floor
-# keeps its reviewed status (NVML minimum = stored value). Every other Ada
-# field and every other Ada image is experimental.
-ADA_TESTED_BOARD = (0x28B0, '95.07.47.00.19')
-ADA_TESTED_FIELDS = ('power_max_w', 'power_min_w', 'nvvdd_rel_max_mv', 'nvvdd_rel_equation_max_mv')
+def family_name(parser):
+    """'turing', 'ampere' or 'ada' for a TableRom, 'gb20x' for a BlackwellRom, else None."""
+    if isinstance(parser, TableRom):
+        return parser.family
+    return 'gb20x' if isinstance(parser, BlackwellRom) else None
 
 
-def ada_tested(image, parser, key):
-    """True for the fields of the hardware-tested Ada board that keep their reviewed status."""
-    return (ada(parser) and key in ADA_TESTED_FIELDS and parser.legacy['device'] == ADA_TESTED_BOARD[0] and
-            ADA_TESTED_BOARD[1] in metadata(image)['versions'])
+# The fields tested on hardware, per family (N: any fan or connector number; a fan curve point keeps its number).
+# There they are not experimental and their reasons name the test; docs/changelog-details.md has the cards. Every
+# other field and family stays experimental, and so do the untested paths of a listed field: a value bound to an
+# override profile, the Ada and Turing notebook TGP, a VMIN tree root, per-chip equation or Ada VMIN copy, and the
+# GB20x fan zero RPM written with a template or with bit 4 clear.
+HARDWARE_TESTED = {
+    'power_max_w': ('turing', 'ampere', 'ada', 'gb20x'),
+    'power_min_w': ('turing', 'ampere', 'ada', 'gb20x'),
+    'power_default_w': ('turing', 'ampere', 'ada', 'gb20x'),
+    'connector_N_power_max_w': ('turing',),
+    'connector_N_power_rated_w': ('turing',),
+    'gpc_offset_max_mhz': ('ada', 'gb20x'),
+    'memory_offset_min_mhz': ('gb20x',),
+    'nvvdd_rel_equation_min_mv': ('gb20x',),
+    'msvdd_rel_equation_min_mv': ('gb20x',),
+    'nvvdd_rel_equation_max_mv': ('ada',),
+    'nvvdd_rel_max_mv': ('ada',),
+    'nvvdd_vmin_mv': ('ada', 'gb20x'),
+    'fan_zero_rpm': ('gb20x',),
+    'fan_N_zero_rpm_high_temp_c': ('gb20x',),
+    'fan_N_max_rpm': ('gb20x',),
+    'fan_N_min_rpm': ('ada', 'ampere'),
+    'fan_N_min_pct': ('ada', 'ampere'),
+    'fan_N_curve_1_rpm': ('ampere',),
+    'fan_N_curve_1_pct': ('ampere',),
+    'runtime_voltage_offsets': ('gb20x',),
+    'runtime_power_limit_unlock': ('turing',),
+    'notebook_base_tgp_w': ('gb20x',),
+    'slot_power_rated_w': ('ampere', 'ada', 'gb20x'),
+    'slot_power_max_w': ('ampere', 'ada', 'gb20x'),
+    'input_current_rated_ma': ('gb20x',),
+    'input_current_max_ma': ('gb20x',)}
 
 
-def experimental_flag(image, parser, key):
-    """{'experimental': True} for an Ada field outside the hardware-tested board and every Ampere field, else {}."""
-    return {} if not isinstance(parser, TableRom) or ada_tested(image, parser, key) else {'experimental': True}
+def hardware_tested(parser, key):
+    """True for a field HARDWARE_TESTED lists for the parser's family (fan_3_min_rpm reads as fan_N_min_rpm)."""
+    return family_name(parser) in HARDWARE_TESTED.get(re.sub(r'^(fan|connector)_\d+_', r'\1_N_', key), ())
+
+
+def experimental_flag(parser, key):
+    """{} for a field tested on hardware in the parser's family (HARDWARE_TESTED), else {'experimental': True}."""
+    return {} if hardware_tested(parser, key) else {'experimental': True}
 
 
 ADA_POWER_EVIDENCE = {
@@ -217,12 +248,41 @@ AMPERE_POWER_EVIDENCE = dict(
            '11..13 are ff ff 02 and byte 10 is ff or 02); class 1 mW on power channel 0 = class-2 sum on rail 0xf5',
     observation='the TGP row is row 2 on every image; its rated value is the board power of the model on the '
                 'desktop and workstation images (for example RTX A6000 300 W, RTX A4000 140 W, RTX 3060 170 W)')
-AMPERE_NOTEBOOK_REASON = ('experimental: stored notebook TGP; the platform (Dynamic Boost, nvidia-powerd) requests the '
-                          'running limit and may keep it lower; whether the loader accepts an Ampere laptop image is '
-                          'untested; not hardware-tested')
-AMPERE_NOTEBOOK_DEFAULT_REASON = ('experimental: stored notebook rated TGP; taken as the default power limit by '
-                                  'structural analogy with the GB20x notebook layout; no Ampere reading; the platform '
-                                  'requests the running limit; not hardware-tested')
+AMPERE_NOTEBOOK_REASON = ('stored notebook TGP; the platform (Dynamic Boost, nvidia-powerd) requests the running limit '
+                          'and may keep it lower; tested on hardware: on one RTX 3050 6GB Laptop GPU a ceiling lowered '
+                          'from 75 to 70 W loaded (Windows loader) and the driver reported a 70 W limit')
+AMPERE_NOTEBOOK_DEFAULT_REASON = ('stored notebook rated TGP; taken as the default power limit by structural analogy '
+                                  'with the GB20x notebook layout; the platform requests the running limit; tested on '
+                                  'hardware: on one RTX 3050 6GB Laptop GPU a 55 W boot default with a 70 W ceiling '
+                                  'loaded (Windows loader)')
+# The power fields where HARDWARE_TESTED drops the experimental flag: what ran on hardware, per family (the TGP row
+# of the power table; GB20x: the RTX PRO 6000 Blackwell Max-Q boards and one RTX 5090 Laptop GPU).
+# The Turing layout is inferred: the table decodes like the Ampere one.
+TURING_DECODES = 'the table decodes like the Ampere one on the Turing images examined'
+POWER_TESTED = {
+    'turing': (TURING_DECODES + '; tested on hardware (Windows loader): one RTX 2070 took a 225 W limit (stock '
+               '200 W) and reached it, and one RTX 2080 Ti a 500 W TGP, reaching about 458 W with the connector '
+               'power rows at 250 W each (near 300 W with them at stock); the signed hash list over this table, '
+               'which the editor cannot update, is left stale'),
+    'ampere': ('tested on hardware (Windows loader): one RTX 3050 6GB Laptop GPU took a ceiling lowered to 70 W, and '
+               'an RTX A2000 a 5 W floor'),
+    'ada': ('tested on hardware: an RTX 2000 Ada booted a 100 W ceiling, and an RTX 4090 (95.02.18, Windows loader) '
+            'took a 671 W limit')}
+DEFAULT_TESTED = {
+    'turing': (TURING_DECODES + '; tested on hardware: on one RTX 2080 Ti (Windows loader) nvidia-smi reported an '
+               'edited 500 W default; the signed hash list over this table, which the editor cannot update, is '
+               'left stale'),
+    'ampere': 'tested on hardware (Windows loader) on an RTX A2000 and on one RTX 3050 6GB Laptop GPU (55 W)',
+    'ada': 'tested on hardware on an RTX 4090 (Windows loader)',
+    'gb20x': 'tested on hardware on RTX PRO 6000 Blackwell Max-Q boards (Linux loader)'}
+# The board power floor: it ran with those edits, but what the firmware and the driver do with it is not known.
+POWER_MIN_TESTED = {
+    'turing': (TURING_DECODES + '; tested on hardware with the board power edits (one RTX 2070 and one RTX 2080 Ti, '
+               'Windows loader); the signed hash list over this table, which the editor cannot update, is left stale'),
+    'ampere': ('tested on hardware with the board power edits (an RTX A2000 took a 5 W floor, and one RTX 3050 6GB '
+               'Laptop GPU; Windows loader)'),
+    'ada': ('tested on hardware with the board power edits (an RTX 2000 Ada, where the NVML minimum equals the stored '
+            'value, and an RTX 4090 95.02.18)')}
 # Turing (TU102-TU117): structural rules checked on the 25 images of the Turing corpus.
 # On one RTX 2080 Ti (Windows loader) the override loaded and nvidia-smi reported an
 # edited TGP despite the stale signed hash list; with the connector power rows raised too,
@@ -253,9 +313,9 @@ TURING_NOTE = ('the table decodes like the Ampere one on the Turing images exami
                'with the connector power rows at stock and reached about 458 W with them raised to 250 W each; on '
                'one RTX 2070 a power limit raised from 200 to 225 W loaded (Windows loader) and the card reached 225 W')
 # The connector power rows ran on that card with the board power (500 W TGP, 250 W per connector).
-TURING_CONNECTOR_TESTED = ('on one RTX 2080 Ti (Windows loader) a 500 W TGP with 250 W per connector channel loaded '
-                           'and the card reached about 458 W under load (near 300 W with these rows at stock); the '
-                           'signed hash list over this table is left stale')
+TURING_CONNECTOR_TESTED = ('tested on hardware: on one RTX 2080 Ti (Windows loader) a 500 W TGP with 250 W per '
+                           'connector channel loaded and the card reached about 458 W under load (near 300 W with '
+                           'these rows at stock); the signed hash list over this table is left stale')
 # Reason ending of the other Turing fields: none of them has run on hardware.
 TURING_UNTESTED = ('not hardware-tested on Turing; the signed hash list over this table is left stale, as for the '
                    'board and connector power, whose edits a driver used on one RTX 2080 Ti')
@@ -515,19 +575,17 @@ NOTEBOOK_POWER_REASON = ('stored notebook TGP ceiling; on a laptop Dynamic Boost
                          'default or only the notebook base TGP, left the running limit at 175 W, and the three raised '
                          'together (190, 110 and 165 W) gave about 185 W; raise them together; output OCP, cooling '
                          'and the laptop VRM still apply')
-NOTEBOOK_DEFAULT_REASON = ('experimental: notebook default TGP (nvidia-smi Default Power Limit); Dynamic Boost '
-                           'requests the running limit at runtime, so this value alone may not move it: on one RTX '
+NOTEBOOK_DEFAULT_REASON = ('notebook default TGP (nvidia-smi Default Power Limit); Dynamic Boost requests the running '
+                           'limit at runtime, so this value alone may not move it; tested on hardware: on one RTX '
                            '5090 Laptop GPU, raising it with the ceiling left the running limit at 175 W, and raising '
                            'it with the ceiling and the notebook base TGP, by as many watts as the base (95 -> 110 W '
-                           'with the base 150 -> 165 W and a 190 W ceiling), gave about 185 W; not hardware-tested '
-                           'otherwise')
-NOTEBOOK_BASE_TGP_REASON = ('experimental, opt-in: the base TGP that Dynamic Boost adds its boost to (row 2 +73), as '
-                            'far as one RTX 5090 Laptop GPU shows: raised with the ceiling and the boot default it '
-                            'raised the running limit, with the ceiling alone it did not; raise the boot default by '
-                            'as many watts as this value is raised; an edited value stays between the boot default '
+                           'with the base 150 -> 165 W and a 190 W ceiling), gave about 185 W')
+NOTEBOOK_BASE_TGP_REASON = ('opt-in: the base TGP that Dynamic Boost adds its boost to (row 2 +73); tested on hardware '
+                            'on one RTX 5090 Laptop GPU: raised with the ceiling and the boot default it raised the '
+                            'running limit (to about 185 W), with the ceiling alone it did not; raise the boot default '
+                            'by as many watts as this value is raised; an edited value stays between the boot default '
                             'and the ceiling, so a value above the ceiling takes a higher ceiling in the same edit; '
-                            'other laptops untested; the laptop VRM, cooling and power adapter were sized for the '
-                            'stock limit')
+                            'the laptop VRM, cooling and power adapter were sized for the stock limit')
 # The runtime power limit switch (runtime_power_limit_unlock): the TGP index of the power policy header, which the
 # laptop images leave at 0xff (TableRom/BlackwellRom.runtime_limit_slot). Static analysis of closed firmware and
 # drivers; one Turing laptop has run an edited header (RUNTIME_LIMIT_TURING_HARDWARE), no Ampere or GB20x one.
@@ -580,11 +638,11 @@ RUNTIME_LIMIT_TURING_HARDWARE = {
                 'tried'}
 # The Turing ending of the switch's reason: that laptop, then the stale signed hash list of every Turing edit.
 RUNTIME_LIMIT_TURING_TESTED = (
-    "on one RTX 2070 Laptop GPU (Windows driver 621.01, Windows loader) MSI Afterburner's power limit slider, refused "
-    'before the edit, became available with the switch on and the power limits at stock, and at 64 % (73.6 W) the '
-    'GPU drew 71.1 W under load; nothing above the stock 115 W was tried, and other Turing laptops are untested; '
-    'the signed hash list over this table is left stale, as for the board and connector power, whose edits a driver '
-    'used on one RTX 2080 Ti')
+    "tested on hardware: on one RTX 2070 Laptop GPU (Windows driver 621.01, Windows loader) MSI Afterburner's power "
+    'limit slider, refused before the edit, became available with the switch on and the power limits at stock, and '
+    'at 64 % (73.6 W) the GPU drew 71.1 W under load; nothing above the stock 115 W was tried; the signed hash list '
+    'over this table is left stale, as for the board and connector power, whose edits a driver used on one RTX 2080 '
+    'Ti')
 
 
 def runtime_limit_reason(parser, row):
@@ -592,7 +650,7 @@ def runtime_limit_reason(parser, row):
     precedent = ('no NVIDIA driver did this on GB20x: R525, which did it by itself on older laptop images, predates '
                  'it' if isinstance(parser, BlackwellRom) else
                  'NVIDIA drivers through R525 (Linux 525.89.02, Windows 528.49) did this by themselves on such images')
-    return ('experimental, opt-in: 1 names the TGP row (row %d) in the power table header, where laptop images leave '
+    return ('%sopt-in: 1 names the TGP row (row %d) in the power table header, where laptop images leave '
             'the TGP index empty (0xff), so that the driver accepts runtime power limit changes (nvidia-smi -pl, MSI '
             'Afterburner); 0 writes 0xff back; %s, and later drivers refuse runtime power limit changes on laptops; '
             "Dynamic Boost and the laptop's configurable TGP (the NVIDIA platform framework, NVPCF, on Windows; "
@@ -604,7 +662,8 @@ def runtime_limit_reason(parser, row):
             'power_max_w over power_default_w), can stay at stock; the requests of Dynamic Boost and the '
             'configurable TGP are capped by power_max_w too, so with it raised they may go above the stock limit '
             'by themselves (the laptop VRM, cooling and power adapter were sized for the stock limit); %s'
-            % (row, precedent, RUNTIME_LIMIT_TURING_TESTED if turing(parser) else 'not hardware-tested'))
+            % ('' if hardware_tested(parser, 'runtime_power_limit_unlock') else 'experimental, ', row, precedent,
+               RUNTIME_LIMIT_TURING_TESTED if turing(parser) else 'not hardware-tested'))
 
 
 @registry.register
@@ -760,15 +819,20 @@ def power(image, parser):
     default_evidence = default_evidence + ([] if top else [dict(DEFAULT_LIMIT_EVIDENCE, **(
         {'use': 'structural analogy only: no NVML or nvidia-smi reading of an Ada laptop exists'}
         if notebook and ada(parser) else
-        {'use': 'structural analogy only: no NVML or nvidia-smi reading of an Ampere board exists'}
+        {'use': 'one Ampere reading: on an RTX 3050 6GB Laptop GPU (Windows loader) the driver reported the edited '
+                'limit (70 W ceiling, 55 W default)'}
         if ampere(parser) else
         {'use': 'one Turing reading: on an RTX 2080 Ti (Windows loader) nvidia-smi reported an edited TGP, 500 W '
                 'default and maximum'}
         if turing(parser) else {}))])
-    # Ada notebook TGP rows are never the hardware-tested board; Ampere is never tested.
-    flags = ({'experimental': True} if notebook and ada(parser) or binding else
-             experimental_flag(image, parser, 'power_max_w'))
-    untested = TURING_NOTE + '; ' if turing(parser) else 'not hardware-tested on this board; ' if flags else ''
+    # HARDWARE_TESTED decides per family; untested paths stay experimental: the Ada and Turing notebook TGP, a TGP
+    # bound to Ada override profiles and (power_max_w and power_default_w) the GB20x top-level profile.
+    untested_path = notebook and (ada(parser) or turing(parser)) or bool(binding)
+    flags = {'experimental': True} if untested_path else experimental_flag(parser, 'power_max_w')
+    default_flags = {'experimental': True} if untested_path or top else experimental_flag(parser, 'power_default_w')
+    untested = (TURING_NOTE + '; ' if turing(parser) else 'not hardware-tested on this board; ') if flags else ''
+    tested = POWER_TESTED[parser.family] + '; ' if isinstance(parser, TableRom) and not flags else ''
+    tested_min = POWER_MIN_TESTED[parser.family] + '; ' if tested else ''
     top_extra = {} if top is None else dict(bound_profile=top['index'], base_values={
         'power_max_w': rows[8]['maximum_raw'] / 1000, 'power_default_w': rows[8]['default_raw'] / 1000})
     # A notebook TGP is another quantity than a board TGP: the platform requests the running limit.
@@ -784,7 +848,7 @@ def power(image, parser):
                   'firmware/current/hardware restrictions remain' if untested else
                   'experimental: ' + top_profile_note(top, '%g W' % (rows[8]['maximum_raw'] / 1000)) +
                   'firmware/current/hardware restrictions remain' if top else
-                  'encoding ceiling only; firmware/current/hardware restrictions remain',
+                  'encoding ceiling only; ' + tested + 'firmware/current/hardware restrictions remain',
                   **layout, **profile_extra, **(dict(flags, experimental=True, **top_extra) if top else flags)),
             field('power_default_w', 'Boot default board power', 'W', tgp['default_raw'] / 1000,
                   (tgp['minimum_raw'] if default_lower is None else default_lower) / 1000,
@@ -792,7 +856,7 @@ def power(image, parser):
                   can_edit(image, parser),
                   default_evidence, offsets=default_offsets, encoding='<I', scale=1000, stored_units='mW',
                   policy_indices=list(policy_indices), value_semantics='stored-board-power-rated-default',
-                  format_scope=default_scope, experimental=True,
+                  format_scope=default_scope,
                   ordering_group='board-power', encoding_bounds=(0, 0x7FFFFFFF / 1000),
                   reason=ADA_NOTEBOOK_DEFAULT_REASON if notebook and ada(parser) else
                   AMPERE_NOTEBOOK_DEFAULT_REASON if notebook and ampere(parser) else
@@ -800,10 +864,10 @@ def power(image, parser):
                   NOTEBOOK_DEFAULT_REASON if notebook else
                   'experimental: ' + top_profile_note(top, '%g W' % (rows[8]['default_raw'] / 1000)) +
                   'rated TGP limit used at boot without a client cap' if top else
-                  'experimental: rated TGP limit used at boot without a client cap; ' + TURING_NOTE if turing(parser) else
                   'experimental: rated TGP limit used at boot without a client cap; ' + default_note +
-                  'not hardware-tested',
-                  **layout, **profile_extra, **top_extra),
+                  'not hardware-tested' if default_flags else
+                  'rated TGP limit used at boot without a client cap; ' + DEFAULT_TESTED[family_name(parser)],
+                  **layout, **profile_extra, **top_extra, **default_flags),
             field('power_min_w', 'Board power floor', 'W', tgp['minimum_raw'] / 1000,
                   1, minimum_upper / 1000, can_edit(image, parser), minimum_evidence or evidence,
                   offsets=minimum_offsets, encoding='<I', scale=1000, stored_units='mW',
@@ -812,13 +876,14 @@ def power(image, parser):
                   ordering_group='board-power', encoding_bounds=(1, 0x7FFFFFFF / 1000),
                   reason='experimental: encoded floor only; ' + minimum_note + untested +
                          'firmware acceptance and runtime minimum remain unknown' if untested else
-                  'encoded floor only; firmware acceptance and runtime minimum remain unknown',
+                  'encoded floor only; ' + tested_min + 'firmware acceptance and ' + ('the ' if tested else '') +
+                  'runtime minimum remain unknown',
                   **layout, **profile_extra, **flags)] + fixed_policy_rated(image, parser, rows, matching, top) + (
         [] if base is None else [notebook_base_tgp(image, parser, tgp, base)]) + runtime_power_limit(image, parser)
 
 
 def notebook_base_tgp(image, parser, tgp, base):
-    """Experimental opt-in base TGP of a Blackwell notebook layout (row 2 +73, BlackwellRom.notebook_base_tgp).
+    """Opt-in base TGP of a Blackwell notebook layout (row 2 +73, BlackwellRom.notebook_base_tgp).
 
     Bounded by the stored rated value and ceiling of row 2. It bounds neither of them: a request with
     it and them (ordering group board-power) keeps it between them in the result, and an edit without
@@ -829,13 +894,14 @@ def notebook_base_tgp(image, parser, tgp, base):
                  [dict(NOTEBOOK_BASE_TGP_EVIDENCE), dict(NOTEBOOK_POWER_HARDWARE)], offsets=[base['offset']],
                  encoding='<I', scale=1000, stored_units='mW', policy_indices=[2],
                  value_semantics='stored-notebook-base-tgp',
-                 format_scope='notebook TGP policy row 2 +73; no override profiles', experimental=True,
+                 format_scope='notebook TGP policy row 2 +73; no override profiles',
                  opt_in=True, ordering_group='board-power', encoding_bounds=(0, 0x7FFFFFFF / 1000),
-                 reason=NOTEBOOK_BASE_TGP_REASON, notebook_tgp=True)
+                 reason=NOTEBOOK_BASE_TGP_REASON, notebook_tgp=True, **experimental_flag(parser, 'notebook_base_tgp_w'))
 
 
 def runtime_power_limit(image, parser):
-    """Experimental opt-in switch of the TGP index of a laptop power table header (runtime_limit_slot).
+    """Opt-in switch of the TGP index of a laptop power table header (runtime_limit_slot); experimental except on
+    Turing.
 
     1 writes the TGP row there, so the driver serves runtime power limit changes; 0 writes the stock 0xff
     back, so a copy switched back equals the stock image. Every chain (both Turing banks); only this
@@ -857,9 +923,10 @@ def runtime_power_limit(image, parser):
                    dict(RUNTIME_LIMIT_LAYOUT_EVIDENCE, format=RUNTIME_LIMIT_FORMATS[form])] +
                   ([dict(RUNTIME_LIMIT_TURING_HARDWARE)] if turing(parser) else []),
                   offsets=offsets, encoding='<B' if editable else '', scale=1, layout=layout,
-                  writable_status=None if editable else 'unsupported', experimental=True, opt_in=True,
+                  writable_status=None if editable else 'unsupported', opt_in=True,
                   value_semantics=RUNTIME_LIMIT_SEMANTICS, policy_indices=[slot['row']], notebook_tgp=True,
-                  reason=runtime_limit_reason(parser, slot['row']))]
+                  reason=runtime_limit_reason(parser, slot['row']),
+                  **experimental_flag(parser, 'runtime_power_limit_unlock'))]
 
 
 def fixed_policy_rated(image, parser, rows, matching, top=None):
@@ -918,13 +985,18 @@ def voltage(image, parser):
         offsets = [rail['maximum_offset']] if isinstance(parser, BlackwellRom) else parser.copy_offsets(rail['maximum_offset'], 4)
         known_kind = rail['equation_type'] in (1, 7) if isinstance(parser, BlackwellRom) else rail['editable_ceiling']
         reason = 'float32 exact encoding required; runtime voltage may follow unchanged temperature curve'
+        # GB20x REL ceilings are not experimental; on the table formats HARDWARE_TESTED decides.
+        flags = experimental_flag(parser, key) if known_kind and isinstance(parser, TableRom) else {}
         if (label, 'REL') in follow:
             reason = follow_ov_reason(follow)
         elif isinstance(parser, TableRom) and not known_kind:
             reason = 'read-only: ' + ada_equation_reason(rail['equation_kind'])
-        elif experimental_flag(image, parser, key):
+        elif flags:
             reason = ('experimental: float32 exact encoding required; not hardware-tested on this board; runtime '
                       'voltage may follow unchanged temperature curve')
+        elif isinstance(parser, TableRom):
+            reason = ('float32 exact encoding required; ' + ADA_REL_TESTED + '; runtime voltage may follow unchanged '
+                      'temperature curve')
         result.append(field(key, label + ' REL equation ceiling', 'mV',
                             rail['output_maximum_uv'] / 1000, rail['output_minimum_uv'] / 1000,
                             0x7FFFFFFF / 1000, can_edit(image, parser) and known_kind and (label, 'REL') not in follow,
@@ -946,10 +1018,12 @@ def voltage(image, parser):
                             alias_of=label.lower() + '_rel_equation_max_mv', ui_visible=False,
                             runtime_offset={'units': 'uV', 'type': 'int32', 'signed': True,
                                             'current': None, 'writable': 'unknown'},
-                            reason=reason, **(experimental_flag(image, parser, key) if known_kind else {})))
+                            reason=reason, **flags))
     return result
 
 
+# The Ada NVVDD REL ceiling where HARDWARE_TESTED drops the experimental flag.
+ADA_REL_TESTED = 'tested on hardware: on an RTX 2000 Ada a 1100 mV REL ceiling moved the evaluated REL'
 # Ada VFE equation kinds that keep a role read-only (see TableRom._ada_equation_kind).
 ADA_EQUATION_REASONS = {
     'constant': 'constant equation (zero slopes); a ceiling-only edit would not change the evaluated voltage',
@@ -1113,15 +1187,15 @@ REL_FLOOR_HARDWARE = {
                 'tuning tool) evaluated 1000 mV, so a runtime offset still adds to the floor where the driver '
                 'applies it'}
 REL_FLOOR_REASON = (
-    'experimental: the clamp minimum (floor) of the REL equation; REL is the higher of the chip value and this '
-    'floor, up to the REL ceiling (the clamp maximum); the floor stays at most the OV value of the rail, so REL and '
-    'VMIN (kept below REL) stay at or below OV; the chip value comes from the fused leakage (about 990 to '
-    '1000 mV on RTX PRO 6000 Max-Q boards with a raised ceiling); on three RTX PRO 6000 Max-Q boards (Linux driver '
-    '615.78.08, Linux loader) floors of 1100 mV on both rails, with the ceilings at 1125 mV, made the driver evaluate '
-    'REL at 1100 mV on NVVDD and MSVDD without a runtime request; a tuning tool\'s runtime voltage offset still adds '
-    'to the floor on drivers that apply it (on an RTX PRO 4000 SFF with the same floors, -100 mV gave 1000 mV), '
-    'while on drivers that ignore runtime rail offsets on RTX 50 cards the VBIOS is the way to raise REL; other '
-    'boards are untested; more voltage means more heat, power and wear; removing the override brings the card back')
+    'the clamp minimum (floor) of the REL equation; REL is the higher of the chip value and this floor, up to the REL '
+    'ceiling (the clamp maximum); the floor stays at most the OV value of the rail, so REL and VMIN (kept below REL) '
+    'stay at or below OV; the chip value comes from the fused leakage (about 990 to 1000 mV on RTX PRO 6000 Max-Q '
+    'boards with a raised ceiling); tested on hardware: on three RTX PRO 6000 Max-Q boards (Linux driver 615.78.08, '
+    'Linux loader) floors of 1100 mV on both rails, with the ceilings at 1125 mV, made the driver evaluate REL at '
+    '1100 mV on NVVDD and MSVDD without a runtime request; a tuning tool\'s runtime voltage offset still adds to the '
+    'floor on drivers that apply it (on an RTX PRO 4000 SFF with the same floors, -100 mV gave 1000 mV), while on '
+    'drivers that ignore runtime rail offsets on RTX 50 cards the VBIOS is the way to raise REL; more voltage means '
+    'more heat, power and wear; removing the override brings the card back')
 ADA_REL_FLOOR_EVIDENCE = {
     'kind': 'structural-table', 'source': 'Ada VBIOS corpus',
     'format': 'Ada VFE equation (25 bytes) selected at rail row byte 4: clamp minimum float32 uV at byte 3, maximum '
@@ -1256,7 +1330,8 @@ def rel_floor(image, parser, item, records, ceiling, follow, evidence):
                                                 [dict(REL_FLOOR_EVIDENCE), dict(REL_FLOOR_HARDWARE)]),
                  offsets=offsets, encoding='<f' if editable else '',
                  scale=1000, stored_units='uV' if known else None,
-                 writable_status=None if editable else 'unsupported', experimental=True,
+                 writable_status=None if editable else 'unsupported',
+                 **experimental_flag(parser, rail.lower() + '_rel_equation_min_mv'),
                  value_semantics=REL_FLOOR_SEMANTICS, rail_identity=rail_identity(parser, item),
                  selector={'raw': item['selector_raw'], 'width_bits': item['selector_width_bits'],
                            'offset': item['selector_offset'], 'absent': item['absent'], **hook_selector(item)},
@@ -1406,10 +1481,13 @@ def equation_roles(image, parser):
             elif not item.get('editable_ceiling'):
                 reason = 'read-only: ' + ada_equation_reason(item.get('equation_kind'))
             elif editable:
-                flags = experimental_flag(image, parser, key)
+                flags = experimental_flag(parser, key)
                 if flags:
                     reason = ('experimental: equation clamp only; not hardware-tested on this board; evaluated '
                               'voltage and runtime offset remain unknown')
+                elif 'diagnostic' not in item:
+                    reason = ('equation clamp only; ' + ADA_REL_TESTED + '; the evaluated voltage of other boards '
+                              'and the runtime offset remain unknown')
         elif (item['logical_rail_id'], item['role']) in follow and editable:
             editable, reason = False, follow_ov_reason(follow)
         shared = [{'logical_rail_id': other['logical_rail_id'], 'role': other['role'],
@@ -1600,6 +1678,13 @@ def vmin_clone_reason(chained, clone):
             'test), and the offset may differ per board')
 
 
+# The constant (GB20x) or pinned (Ada) NVVDD VMIN where HARDWARE_TESTED drops the experimental flag.
+VMIN_TESTED = {'gb20x': ('tested on hardware: on an RTX 5080 800 -> 850 mV made the driver report VMIN 850 mV and the '
+                         'card idled at 850 mV'),
+               'ada': ('tested on hardware: on an RTX 2000 Ada the driver reported this value plus 90 mV (790 mV for '
+                       '700 mV stored), and the offset may differ per board')}
+
+
 @registry.register
 def evaluated_vmin(image, parser):
     """Evaluated minimum voltage (VMIN) of each rail: the GB20x row +0x13 equation, the Ada/Ampere row byte 7 one,
@@ -1652,6 +1737,8 @@ def evaluated_vmin(image, parser):
             reason = (f"read-only: the stock VMIN ({clone['stock_uv'] / 1000:g} mV), which restores the stock bytes, "
                       f'is outside {floor} mV up to {top:g} mV')
         editable = reason is None and can_edit(image, parser)
+        # A tree root, per-chip equation or Ada VMIN copy has not run on hardware: it stays experimental.
+        flags = {'experimental': True} if tree or clone else experimental_flag(parser, name.lower() + '_vmin_mv')
         offsets, companion = (), ()
         if editable:
             offsets = ([item['minimum_offset'], item['maximum_offset']] if family == 'gb20x' and tree else
@@ -1664,6 +1751,10 @@ def evaluated_vmin(image, parser):
             chained = (f'its chained equations add {added[0] / 1000:g} to {added[1] / 1000:g} mV, so the value stays '
                        f'at most the lowest REL value less {added[1] / 1000:g} mV')
             reason = vmin_clone_reason(chained, clone) if clone else {
+                'gb20x': 'constant equation selected at rail row +0x13, the evaluated VMIN; the edit writes its '
+                         'minimum, maximum and value; at most the lowest REL value; ' + VMIN_TESTED['gb20x'],
+                'ada': 'clamp of the equation selected at rail row byte 7, which pins the evaluated VMIN; the edit '
+                       f'writes the clamp minimum and maximum; {chained}; ' + VMIN_TESTED['ada']}[family] if not flags else {
                 'gb20x': 'experimental: constant equation selected at rail row +0x13, the evaluated VMIN; the edit '
                          'writes its minimum, maximum and value; at most the lowest REL value; hardware-tested '
                          'on an RTX 5080 (800 -> 850 mV: the driver reported VMIN 850 mV and the idle voltage was '
@@ -1689,7 +1780,7 @@ def evaluated_vmin(image, parser):
                             [dict(e) for e in evidence],
                             offsets=offsets, encoding='<f' if editable else '', scale=1000, stored_units='uV',
                             companion=companion,
-                            writable_status=None if editable else 'unsupported', experimental=True,
+                            writable_status=None if editable else 'unsupported', **flags,
                             value_semantics=VMIN_SEMANTICS, rail_identity=rail_identity(parser, item),
                             selector=selector, equation_offset=item['equation_offset'],
                             equation_type=item['equation_type'], runtime_role_candidate='VMIN', reason=reason,
@@ -2032,6 +2123,12 @@ def runtime_hooks_descriptor(hooks):
                        for slot in hooks['slots']], dirty=list(hooks['dirty']))
 
 
+# The runtime voltage offsets switch, which HARDWARE_TESTED lists for GB20x.
+RUNTIME_OFFSETS_TESTED = ('tested on hardware on one RTX PRO 4000 SFF (Linux, driver 615.78.08): the VFE masks and '
+                          'selectors the GSP firmware reports matched the hooks, and a runtime tool wrote the hook '
+                          'variables')
+
+
 @registry.register
 def runtime_voltage_offsets(image, parser):
     """GB20x runtime voltage-offset hooks (BlackwellRom.runtime_hooks), mVolt+-compatible.
@@ -2078,18 +2175,19 @@ def runtime_voltage_offsets(image, parser):
     slots = len(hooks['slots'])
     if reason is None:
         dirty = hooks['dirty']
-        reason = ('experimental, opt-in: 1 adds runtime voltage-offset hooks (mVolt+-compatible) to the REL, ALT, OV '
-                  f'and VMIN limits ({slots} here): tools that write the VFE variable at runtime add a value in uV, '
-                  'clamped to +-1.25 V, to each limit; with no such tool the value stays 0 and nothing changes, and '
-                  'the voltages set in the other fields still apply; 0 removes the hooks' +
+        reason = ('opt-in: 1 adds runtime voltage-offset hooks (mVolt+-compatible) to the REL, ALT, OV and VMIN '
+                  f'limits ({slots} here): tools that write the VFE variable at runtime add a value in uV, clamped to '
+                  '+-1.25 V, to each limit; with no such tool the value stays 0 and nothing changes, and the voltages '
+                  'set in the other fields still apply; 0 removes the hooks' +
                   (' (' + ' and '.join(dirty) + ' held leftover unused bytes, which removal replaces with the clean '
-                   'ones)' if dirty else '') + '; not hardware-tested')
+                   'ones)' if dirty else '') + '; ' + RUNTIME_OFFSETS_TESTED)
     return [field('runtime_voltage_offsets', 'Runtime voltage offsets (mVolt+-compatible hooks)', 'flag', state,
                   0 if editable else None, 1 if editable else None, editable,
                   [dict(RUNTIME_OFFSETS_EVIDENCE), dict(RUNTIME_OFFSETS_CORPUS_EVIDENCE), dict(LEGACY_DIRECTORY_EVIDENCE),
                    dict(SELECTOR_EVIDENCE)],
                   offsets=offsets, encoding='<H' if editable else '', scale=1, layout=layout, companion=companion,
-                  writable_status=None if editable else 'unsupported', experimental=True, opt_in=True,
+                  writable_status=None if editable else 'unsupported', opt_in=True,
+                  **experimental_flag(parser, 'runtime_voltage_offsets'),
                   value_semantics=RUNTIME_OFFSETS_SEMANTICS, runtime_hooks=runtime_hooks_descriptor(hooks),
                   reason=reason)]
 
@@ -2396,7 +2494,8 @@ def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, re
     names the connector_sum_power fields of a row that has them. upper_raw is the
     highest stored value either field may take (the u32 encoding's signed range
     unless a caller keeps a reserved value out of reach). blocked, a read-only
-    reason, keeps both values read-only (a caller's own second limit).
+    reason, keeps both values read-only (a caller's own second limit). Each field
+    is experimental unless HARDWARE_TESTED lists its key for the family.
     """
     watts = items[0]['units'] == 'mW'
     scale, units = (1000, 'W') if watts else (1, 'mA')
@@ -2422,7 +2521,7 @@ def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, re
                                               'rated': o['default_raw'], 'maximum': o['maximum_raw'],
                                               'units': o['units']} for o in summed])
     common = dict(encoding='<I', scale=scale, stored_units=items[0]['units'],
-                  policy_indices=[i['vbios_row_index'] for i in items], experimental=True, ordering_group=group,
+                  policy_indices=[i['vbios_row_index'] for i in items], ordering_group=group,
                   encoding_bounds=(0, upper_raw / scale), power_channel=items[0]['channel_index'],
                   immutable_row_sha256=[i['immutable_row_sha256'] for i in items],
                   raw_bounds=raw[0] if len(raw) == 1 else raw, **extra)
@@ -2529,12 +2628,13 @@ def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, re
     return [field(keys[0], labels[0], units, max(maxima) / scale if len(maxima) == 1 else None,
                   max_lower / scale, upper_raw / scale, editable and one_max, [dict(e) for e in evidence],
                   offsets=offsets('maximum_offset') + tied['maximum'], value_semantics='stored-policy-maximum',
-                  writable_status=None if one_max else 'unsupported', reason=max_reason, **common),
+                  writable_status=None if one_max else 'unsupported', reason=max_reason,
+                  **experimental_flag(parser, keys[0]), **common),
             field(keys[1], labels[1], units, max(rated) / scale if len(rated) == 1 else None,
                   rated_lower / scale, rated_upper / scale, editable and one_rated,
                   [dict(e) for e in evidence], offsets=offsets('default_offset') + tied['default'],
                   value_semantics='stored-policy-rated-default', writable_status=None if one_rated else 'unsupported',
-                  reason=rated_reason, **common)]
+                  reason=rated_reason, **experimental_flag(parser, keys[1]), **common)]
 
 
 ADA_SLOT_EVIDENCE = [
@@ -2830,6 +2930,10 @@ def output_ocp(image, parser):
     return result
 
 
+# The PCIe slot power fields where HARDWARE_TESTED drops the experimental flag (Turing stays experimental).
+SLOT_POWER_TESTED = {'ampere': 'tested on hardware on an RTX A2000 (Windows loader)',
+                     'ada': 'tested on hardware on an RTX 2000 Ada',
+                     'gb20x': 'tested on hardware on an RTX PRO 4000 SFF'}
 SLOT_POWER_EVIDENCE = {
     'kind': 'saved-get-policy-correlation', 'source': 'saved runtime GET capture',
     'format': 'GB20x power40/3d/66/14 row19 type2; byte1 0; monitor index 1; class8 monitor',
@@ -2859,11 +2963,12 @@ def slot_power(image, parser):
                        'raised TGP; ' + TURING_UNTESTED + '; the PCIe CEM rates the slot at 66 W (12 V) and 75 W in '
                        'all; stored value, not a hardware-safe slot rating')
         else:
-            reasons = ('experimental: ceiling of the PCIe slot power policy; SET and enforcement untested; '
-                       'stored value, not a hardware-safe slot rating',
-                       'experimental: rated slot power limit; on the RTX 2000 Ada it is enforced from boot (saved GET '
-                       'current = rated) and caps a slot-powered board; not hardware-tested; stored value, not a '
-                       'hardware-safe slot rating')
+            tested = SLOT_POWER_TESTED[parser.family]
+            reasons = ('ceiling of the PCIe slot power policy; ' + tested + '; stored value, not a hardware-safe slot '
+                       'rating',
+                       'rated slot power limit; on the RTX 2000 Ada it is enforced from boot (saved GET current = '
+                       'rated) and caps a slot-powered board; ' + tested + '; stored value, not a hardware-safe slot '
+                       'rating')
         return ada_policy_fields(
             image, parser, [item], ('slot_power_max_w', 'slot_power_rated_w'),
             ('PCIe slot power ceiling', 'PCIe slot power limit (rated)'), group='slot-power',
@@ -2883,24 +2988,25 @@ def slot_power(image, parser):
         evidence.insert(0, dict(STRUCTURAL_ROW_EVIDENCE,
                                 format=f'GB20x power40/38-or-3d/66/14 row{index} type2; byte1 0; monitor index 1',
                                 observation='same immutable shape as the GET-reviewed SFF row19 slot policy'))
-    common = dict(encoding='<I', scale=1000, stored_units='mW', policy_indices=[index], experimental=True,
+    common = dict(encoding='<I', scale=1000, stored_units='mW', policy_indices=[index],
                   ordering_group='slot-power', encoding_bounds=(0, 0x7FFFFFFF / 1000), vbios_policy_index=index,
                   monitor={'index': item['monitor_index'], 'class': 8},
                   raw_bounds={'minimum': item['minimum_raw'], 'rated': item['default_raw'],
                               'maximum': item['maximum_raw'], 'units': 'mW'})
+    tested = SLOT_POWER_TESTED['gb20x']
     return [field('slot_power_max_w', 'PCIe slot power ceiling', 'W', item['maximum_raw'] / 1000,
                   item['default_raw'] / 1000, 0x7FFFFFFF / 1000, editable, evidence,
                   offsets=[item['maximum_offset']], value_semantics='stored-policy-maximum',
-                  reason='experimental: ceiling of the PCIe slot power policy; SET and enforcement untested; '
-                         'stored value, not a hardware-safe slot rating', **common),
+                  reason='ceiling of the PCIe slot power policy; ' + tested + '; stored value, not a hardware-safe '
+                         'slot rating', **experimental_flag(parser, 'slot_power_max_w'), **common),
             field('slot_power_rated_w', 'PCIe slot power limit (rated)', 'W', item['default_raw'] / 1000,
                   item['minimum_raw'] / 1000, item['maximum_raw'] / 1000, editable, evidence,
                   offsets=[item['default_offset']], value_semantics='stored-policy-rated-default',
-                  reason='experimental: rated slot power limit enforced from boot (saved GET current = rated); '
-                         'not hardware-tested; stored value, not a hardware-safe slot rating' if reviewed else
-                         'experimental: rated slot power limit; on the GET-reviewed SFF it is enforced from boot '
-                         '(current = rated); this image has no saved GET; not hardware-tested; stored value, not a '
-                         'hardware-safe slot rating', **common)]
+                  reason='rated slot power limit enforced from boot (saved GET current = rated); ' + tested +
+                         '; stored value, not a hardware-safe slot rating' if reviewed else
+                         'rated slot power limit; on the GET-reviewed SFF it is enforced from boot (current = rated); '
+                         'this image has no saved GET; ' + tested + '; stored value, not a hardware-safe slot rating',
+                  **experimental_flag(parser, 'slot_power_rated_w'), **common)]
 
 
 CONNECTOR_INPUT_REPORT = {
@@ -3072,7 +3178,9 @@ def connector_power(image, parser):
         return connector_input_power(image, parser)
     if not (ampere(parser) or turing(parser)):
         return []
+    # Turing: tested on hardware (HARDWARE_TESTED), so the reasons name the test; Ampere stays experimental.
     tested = TURING_CONNECTOR_TESTED if turing(parser) else 'not hardware-tested'
+    prefix = '' if turing(parser) else 'experimental: '
     result = []
     for number, item in enumerate(parser.ampere_policies('connector_power'), 1):
         result += ada_policy_fields(
@@ -3080,11 +3188,11 @@ def connector_power(image, parser):
             (f'Connector power channel {number} ceiling', f'Connector power channel {number} limit (rated)'),
             group=f'connector-{number}-power', connector=number, channel_rail=item['channel_rail'],
             evidence=TURING_CONNECTOR_EVIDENCE if turing(parser) else AMPERE_CONNECTOR_EVIDENCE,
-            reasons=('experimental: ceiling of the power policy of one external 12 V connector channel (rail '
+            reasons=(prefix + 'ceiling of the power policy of one external 12 V connector channel (rail '
                      f"{item['channel_rail']:#04x}); " +
                      (TURING_CONNECTOR_TESTED if turing(parser) else 'SET and enforcement untested') +
                      '; stored value, not a hardware-safe connector rating',
-                     'experimental: rated power limit of one external 12 V connector channel (rail '
+                     prefix + 'rated power limit of one external 12 V connector channel (rail '
                      f"{item['channel_rail']:#04x}); with the slot limit it may cap the board power below a raised TGP; "
                      f'{tested}; stored value, not a hardware-safe connector rating'))
     return result
@@ -3118,6 +3226,10 @@ INPUT_CURRENT_EVIDENCE = {
     'indices_matched': 'row9 range/current equal on all seven reviewed sources', 'set_tested': False,
     'units_basis': 'row byte1 and GET INFO+8 are 1 on rows9-14 as on the mA output-OCP rows13/14; '
                    'GET INFO+8 is 0 on every mW row'}
+
+
+# The GB20x 12 V input current policy (row 9), which HARDWARE_TESTED lists.
+INPUT_CURRENT_TESTED = 'tested on hardware on RTX 50 boards'
 
 
 @registry.register
@@ -3181,7 +3293,7 @@ def input_current(image, parser):
                 dict(THIRD_PARTY_EVIDENCE, observation=(
                     'RM PWR_POLICIES INFO entry 9: type 0x1e, channel 9, limitUnit 1 (mA), 1/80000/80000 '
                     'on a Matrix; STATUS channel 9 read 46008 mA at 555 W board power'))]
-    common = dict(encoding='<I', scale=1, stored_units='mA', policy_indices=[9], experimental=True,
+    common = dict(encoding='<I', scale=1, stored_units='mA', policy_indices=[9],
                   ordering_group='input-current-12v', encoding_bounds=(0, 0x7FFFFFFF),
                   policy_types={'vbios': item['type'], 'rm': item['rm_policy_type'], 'api': item['api_policy_type']},
                   monitor={'index': item['monitor_index'], 'class': item['monitor_class']}, raw_bounds=raw_bounds)
@@ -3201,18 +3313,29 @@ def input_current(image, parser):
         return [base] + [e['value_offset'] for p in matching for e in p['entries']
                          if e['policy'] == 9 and e['field'] == name]
     bound_evidence = [TOP_PROFILE_EVIDENCE] + evidence if top is not None else evidence
+
+    def flags(key):
+        # A value bound to the top-level override profile has not run on hardware: it stays experimental.
+        return {'experimental': True} if top is not None else experimental_flag(parser, key)
+    tested = '; ' + INPUT_CURRENT_TESTED
     result = [field('input_current_max_ma', '12 V input current ceiling', 'mA', maximum,
                     maximum_lower, maximum_upper, editable, bound_evidence,
                     offsets=offsets('maximum', item['maximum_offset']), value_semantics='stored-policy-maximum',
                     reason='experimental: ' + note + 'client ceiling of the 12 V input-current policy' + reads +
-                           '; SET and enforcement untested; stored value, not a hardware-safe current rating',
-                    **common, **extra),
+                           '; SET and enforcement untested; stored value, not a hardware-safe current rating'
+                           if flags('input_current_max_ma') else
+                           'client ceiling of the 12 V input-current policy' + reads + tested +
+                           '; stored value, not a hardware-safe current rating',
+                    **flags('input_current_max_ma'), **common, **extra),
               field('input_current_rated_ma', '12 V input current limit (rated)', 'mA', rated,
                     rated_lower, rated_upper, editable, bound_evidence,
                     offsets=offsets('default', item['default_offset']), value_semantics='stored-policy-rated-default',
                     reason='experimental: ' + note + 'rated limit applied without a client request' + reads +
-                           '; enforcement not hardware-tested; stored value, not a hardware-safe current rating',
-                    **common, **extra)]
+                           '; enforcement not hardware-tested; stored value, not a hardware-safe current rating'
+                           if flags('input_current_rated_ma') else
+                           'rated limit applied without a client request' + reads + tested +
+                           '; stored value, not a hardware-safe current rating',
+                    **flags('input_current_rated_ma'), **common, **extra)]
     if item['linked_limit_recognized']:
         # Raising row9 alone may leave the effective 12 V limit at this value.
         # Kept as a separate field on purpose; which copy binds is still to
@@ -3599,6 +3722,20 @@ FAN_LIMIT_TESTED = {('max', 'rpm'): 'hardware-tested on an RTX 5080: the driver 
                                     'unknown; other boards not hardware-tested',
                     ('min', 'pct'): 'on an RTX 5080 a lower value left the driver fan-speed range at 30-100 %; '
                                     'other boards not hardware-tested'}
+# Reason endings of the fan limits and curve points where HARDWARE_TESTED drops the experimental flag (GB20x speed
+# maximum; Ada and Ampere minimums; Ampere point 1 of a channel curve).
+FAN_HARDWARE_TESTED = {
+    ('max', 'rpm'): ('tested on hardware: on an RTX 5080 a maximum raised from 3500 to 4000 RPM made the driver run '
+                     '100 % at this speed and map the percent linearly down to 30 % at the minimum'),
+    ('min', 'rpm'): ("tested on hardware: an RTX 4070 ran at 800 RPM at the driver's 30 % with the minimum level "
+                     'lowered to 15 % too (with the speed alone it stayed near 1050 RPM), and an RTX 3090 blower near '
+                     '2000 RPM (issue #24); lower the minimum level with it'),
+    ('min', 'pct'): ('tested on hardware: lowered with the minimum speed, to 15 % on an RTX 4070 (800 RPM) and to 30 % '
+                     'on an RTX 3090 blower (about 2000 RPM, issue #24); most likely the fan does not run slower than '
+                     'it spins at this level')}
+FAN_CURVE_TESTED = ('tested on hardware: point 1 at 2000 RPM and 45 % raised the idle speed of an HP RTX 3060 to about '
+                    '2000 RPM (issue #22), and at 2000 RPM and 40 %, with the minimums lowered, an RTX 3090 blower '
+                    'idled near 2000 RPM (issue #24)')
 FAN_SHAPE_REASON = 'fan row or policy curves hold values outside the reviewed shape'
 # (key unit, label noun, units, row byte of the minimum, of the maximum, encoding, ceiling). The RPM
 # ceiling is the signed 16-bit range of the driver's fan-curve RPM values, not the '<H' encoding.
@@ -3626,7 +3763,8 @@ def fan_shaped(curve):
 def fan_field(writable, parser, key, label, units, current, lo, hi, shaped, places, encoding, scale, ceiling, noun,
               evidence, reason, **extra):
     """One fan limit or curve point, in stored units, written at places (the value's offset, then the
-    same place in each unused policy entry copy: policy_mirrors) in every chain. It is editable when the
+    same place in each unused policy entry copy: policy_mirrors) in every chain, experimental unless
+    HARDWARE_TESTED lists it for the family. It is editable when the
     image is (writable), its row and curves hold the reviewed shape and it sits inside lo..hi. With lo ==
     hi (a curve point flush with its limit, a level maximum of 100 under a curve that reaches 100 %) a
     request for it alone keeps its value, but it can move with its partners in a joint edit. Bounds stay
@@ -3637,7 +3775,7 @@ def fan_field(writable, parser, key, label, units, current, lo, hi, shaped, plac
     offsets, _ = chain_copies(parser, places, struct.calcsize(encoding))
     return field(key, label, units, show(current), show(lo), show(hi), editable, evidence,
                  offsets=offsets if editable else (), encoding=encoding if editable else '', scale=scale,
-                 experimental=True, ordering_group=f'fan-{noun}' if editable else None,
+                 **experimental_flag(parser, key), ordering_group=f'fan-{noun}' if editable else None,
                  encoding_bounds=(0, show(ceiling)) if editable else None,
                  writable_status=None if editable else 'unsupported',
                  reason=reason if inside else FAN_SHAPE_REASON, **extra)
@@ -3684,17 +3822,19 @@ def fan_limits(writable, parser, table, evidence):
             for side, current, at, lo, hi in (('min', low, low_at, 0, min(floor, high - 1)),
                                               ('max', high, high_at, max(top, low + 1), ceiling)):
                 word = 'minimum' if side == 'min' else 'maximum'
+                flagged = not hardware_tested(parser, f'fan_{n}_{side}_{unit}')
+                tested = None if flagged else FAN_HARDWARE_TESTED.get((side, unit))
                 result.append(fan_field(
                     writable, parser, f'fan_{n}_{side}_{unit}', f'Fan {n} {word} {noun}', units, current, lo, hi,
                     shaped, [r['offset'] + at], encoding, 1, ceiling, noun,
                     [dict(FAN_LIMIT_EVIDENCE), dict(FAN_LIMIT_NVML), dict(FAN_LIMIT_HARDWARE)] +
                     [dict(e) for e in firmware + list(evidence)],
-                    f'experimental: {word} fan {noun} of channel {n}; ' +
+                    ('experimental: ' if flagged else '') + f'{word} fan {noun} of channel {n}; ' +
                     (f"the minimum stays at or below the channel's own fan curve{value}{below}, so it moves past "
                      'that curve only with its points in one edit; ' if side == 'min' else
                      f'the maximum stays at or above every stored fan curve{value}, so it moves past a curve only '
                      'with its points in one edit; ') +
-                    fan_untested(parser, FAN_LIMIT_TESTED.get((side, unit), 'not hardware-tested')),
+                    (tested or fan_untested(parser, FAN_LIMIT_TESTED.get((side, unit), 'not hardware-tested'))),
                     stored_units=units, value_semantics=f'stored-fan-{word}-{noun}', fan_rows=[r['index']],
                     fan_channel=r['index'], **({'opt_in': True} if unit == 'pct' else {})))
     return result
@@ -3737,16 +3877,19 @@ def fan_curves(writable, parser, table, evidence):
                 gap = 1 if unit == 'temp_c' else 0  # temperatures rise by at least 1/32 C
                 lo = max(values[k - 1] + gap, floor) if k else floor
                 hi = min(values[k + 1] - gap, top) if k < 2 else top
+                tested = hardware_tested(parser, f'{prefix}_curve_{k + 1}_{unit}')
                 result.append(fan_field(
                     writable, parser, f'{prefix}_curve_{k + 1}_{unit}', f'{name} point {k + 1} {noun}', units, values[k],
                     lo, hi, shaped, policy_mirrors(curve, curve['policy_offset'] + first + step * k), encoding,
                     scale, ceiling, noun,
                     [dict(FAN_LIMIT_EVIDENCE)] + [dict(e) for e in firmware + list(evidence)],
-                    f'experimental: {noun} of point {k + 1} of the stored {owner} fan curve; ' +
+                    ('' if tested else 'experimental: ') +
+                    f'{noun} of point {k + 1} of the stored {owner} fan curve; ' +
                     ('the temperatures rise strictly from point to point, from 0 to 110 C' if unit == 'temp_c' else
                      'the points stay in order and inside the fan limits' if 'fan_channel' in extra else
                      'the points stay in order and at or below the lowest maximum of the active channels, and may '
-                     'sit below their minimums') + '; ' + fan_untested(parser) + copied,
+                     'sit below their minimums') + '; ' + (FAN_CURVE_TESTED if tested else fan_untested(parser)) +
+                    copied,
                     stored_units=stored_units, value_semantics=f'stored-fan-curve-{noun}', fan_policy=curve['index'],
                     **extra, **copies, **({'opt_in': True} if unit == 'pct' else {})))
     return result
@@ -4030,6 +4173,11 @@ def fan_stop_template_info(parser, companion):
                                for i, (low, high) in zip(sorted(template), pairs)])
 
 
+# The GB20x zero RPM switch, which HARDWARE_TESTED lists (not where it writes a template or bit 4 is clear).
+FAN_ZERO_RPM_TESTED = ('tested on hardware on one HP Omen RTX 5090: with 1 the fans stood still at idle and started '
+                       'under load; setting 0 was not tried')
+
+
 @registry.register
 def fan_zero_rpm(image, parser):
     """GB20x: bits 1|2 of the flag byte (0x32) of every enabled fan policy entry, both set (1) or clear (0).
@@ -4044,8 +4192,9 @@ def fan_zero_rpm(image, parser):
     fan-stop parameters (fan_stop_parameters) in a block GSP-RM accepts (fan_stop_accepted), or a
     reviewed template supplies them: on the RTX PRO 6000 Max-Q, 1 also writes the Workstation blocks
     (fan_stop_template) and 0 on such a copy the stock zeros and 0xff. Each entry keeps its other flag
-    bits. Opt-in; setting 1 is hardware-tested on one HP Omen RTX 5090 (FAN_ZERO_RPM_HARDWARE). Ada and
-    Ampere: legacy_fan_zero_rpm.
+    bits. Opt-in; setting 1 is hardware-tested on one HP Omen RTX 5090 (FAN_ZERO_RPM_HARDWARE), so the field
+    is not experimental (HARDWARE_TESTED) except where it writes a template or bit 4 is clear. Ada and Ampere:
+    legacy_fan_zero_rpm.
     """
     if isinstance(parser, TableRom) and not turing(parser):
         return legacy_fan_zero_rpm(image, parser)
@@ -4090,6 +4239,14 @@ def fan_zero_rpm(image, parser):
               (1, tuple(bytes((b | FAN_ZERO_RPM_BITS,)) for b in flags)))
     note, template = fan_stop_template_info(parser, companion if editable else None)
     notes, extra = fan_zero_rpm_notes(parser, table, table['rows'][:most], state, note) if reason is None else ('', {})
+    # A template or a bit 4 clear writes a form no tested board ran: it stays experimental.
+    flags = ({'experimental': True} if companion or extra.get('channel_bit4_clear') else
+             experimental_flag(parser, 'fan_zero_rpm'))
+    common = ('bits 1 and 2 of the flag byte (0x32) of every enabled fan policy entry (the channel entries and the '
+              'enabled curves past them), both set (1) or both clear (0); GSP-RM decodes them as two separate '
+              'booleans; in the corpus every GeForce GB20x image sets both and every RTX PRO image clears both; each '
+              'entry keeps its other flag bits, and the stored channel entries a larger channel count enables take '
+              'the same bits; ')
     return [field('fan_zero_rpm', 'Fan zero RPM (fans may stand still at low temperature)', 'flag', state,
                   0 if editable else None, 1 if editable else None, editable,
                   [dict(FAN_ZERO_RPM_FIRMWARE_EVIDENCE), dict(FAN_ZERO_RPM_CORPUS_EVIDENCE),
@@ -4098,18 +4255,14 @@ def fan_zero_rpm(image, parser):
                   offsets=[e['flag_offset'] for e in entries] if editable else (),
                   encoding='<B' if editable else '', scale=1, layout=layout if editable else (),
                   companion=companion if editable and companion else (),
-                  writable_status=None if editable else 'unsupported', experimental=True, opt_in=True,
+                  writable_status=None if editable else 'unsupported', **flags, opt_in=True,
                   value_semantics='stored-fan-zero-rpm', fan_entries=[e['index'] for e in entries],
                   **({'fan_stop_template': template} if template else {}), **(extra if editable else {}),
-                  reason=reason or ('experimental, opt-in: bits 1 and 2 of the flag byte (0x32) of every enabled fan '
-                                    'policy entry (the channel entries and the enabled curves past them), both set '
-                                    '(1) or both clear (0); GSP-RM decodes them as two separate booleans; in the '
-                                    'corpus every GeForce GB20x image sets both and every RTX PRO image clears '
-                                    'both; each entry keeps its other flag bits, and the stored channel entries a '
-                                    'larger channel count enables take the same bits; hardware-tested on one HP '
-                                    'Omen RTX 5090: with 1 the fans stood still at idle and started under load; '
-                                    'other boards and setting 0 not hardware-tested' + notes +
-                                    FAN_ZERO_RPM_MANUAL_NOTE))]
+                  reason=reason or (('experimental, opt-in: ' + common + 'hardware-tested on one HP Omen RTX 5090: '
+                                     'with 1 the fans stood still at idle and started under load; other boards and '
+                                     'setting 0 not hardware-tested' if flags else
+                                     'opt-in: ' + common + FAN_ZERO_RPM_TESTED) +
+                                    notes + FAN_ZERO_RPM_MANUAL_NOTE))]
 
 
 LEGACY_FAN_ZERO_RPM_FIRMWARE_EVIDENCE = {
@@ -4303,6 +4456,9 @@ FAN_ZERO_RPM_TEMPS_HARDWARE = {
     'observed': 'with the stored 43/50 C the idle fans started at about 52 C; with the upper temperature set to '
                 '60 C the fans stayed at 0 RPM at 59 C during video playback; which entries were edited and whether '
                 'the lower temperature changed were not reported, and a start at 60 C was not observed'}
+# The GB20x upper temperature of a channel entry, where HARDWARE_TESTED drops the experimental flag.
+FAN_ZERO_RPM_HIGH_TESTED = ('tested on hardware on one Zotac RTX 5080: with the upper raised to 60 C the fans stayed '
+                            'stopped at 59 C (issue #12)')
 FAN_ZERO_RPM_TEMP_CEILING = 110 * 32  # an editor limit, as for the curve temperatures
 FAN_ZERO_RPM_TEMP_FLOOR = 1  # 1/32 C: the lower stays above 0 C, so an upper never goes below 2/32 C
 FAN_ZERO_RPM_TEMPS_OFF_REASON = ('read-only: fan_zero_rpm is read-only on this image (see its reason), so the editor '
@@ -4376,22 +4532,25 @@ def fan_zero_rpm_temperatures(image, parser):
                 ('low', 'lower', low, FAN_ZERO_RPM_TEMP_FLOOR, high - 1, at),
                 ('high', 'upper', high, FAN_ZERO_RPM_TEMP_FLOOR + 1 if stuck else low + 1, top, at + 2)):
             offsets, _ = chain_copies(parser, policy_mirrors(entry, offset), 2)
+            key = f'{prefix}_zero_rpm_{side}_temp_c'
+            flags = experimental_flag(parser, key)
             result.append(field(
-                f'{prefix}_zero_rpm_{side}_temp_c', f'{name} zero RPM {word} temperature', 'C', current / 32,
+                key, f'{name} zero RPM {word} temperature', 'C', current / 32,
                 lo / 32, hi / 32, editable, [dict(e) for e in evidence],
                 offsets=offsets if editable else (), encoding='<H' if editable else '', scale=32,
-                stored_units='1/32 C', experimental=True, opt_in=True,
+                stored_units='1/32 C', **flags, opt_in=True,
                 ordering_group='fan-temperature' if editable else None,
                 encoding_bounds=(0, FAN_ZERO_RPM_TEMP_CEILING / 32) if editable else None,
                 writable_status=None if editable else 'unsupported',
                 value_semantics=f'stored-fan-zero-rpm-{word}-temperature', fan_policy=entry['index'], **extra,
                 **copies,
-                reason=f'experimental, opt-in: the {word} of the two temperatures (bytes 30..33) of the {owner} fan '
-                       'policy entry, which the driver reads with the zero RPM flag bits; idle fans most likely stop '
-                       'below the lower and start again above the upper one, and other fan policies and sensors may '
-                       'still decide what the fans do; the lower stays above 0 C and below the upper, the upper at '
-                       'most point 1 of the same entry\'s fan curve and 110 C (an editor limit), and with zero RPM on '
-                       f'an edit that leaves the upper above point 1 is refused; {tested}{copied}{notes[side]}'
+                reason=('experimental, ' if flags else '') + f'opt-in: the {word} of the two temperatures (bytes '
+                       f'30..33) of the {owner} fan policy entry, which the driver reads with the zero RPM flag bits; '
+                       'idle fans most likely stop below the lower and start again above the upper one, and other fan '
+                       'policies and sensors may still decide what the fans do; the lower stays above 0 C and below '
+                       'the upper, the upper at most point 1 of the same entry\'s fan curve and 110 C (an editor '
+                       'limit), and with zero RPM on an edit that leaves the upper above point 1 is refused; '
+                       f'{tested if flags else FAN_ZERO_RPM_HIGH_TESTED}{copied}{notes[side]}'
                        if inside else
                        FAN_ZERO_RPM_TEMPS_OFF_REASON if not offered else
                        f'read-only: the {owner} fan policy entry stores a fan-stop block GSP-RM would refuse with '
@@ -4694,8 +4853,16 @@ ADA_CLOCK_BOOT_EVIDENCE = {
     'applied_offsets_tested': False}
 
 
+# The offset ranges where HARDWARE_TESTED drops the experimental flag.
+CLOCK_TESTED = {('gpc_offset_max_mhz', 'ada'): 'tested on hardware: an RTX 4090 (95.02.18, Windows loader) took a '
+                                               '+1200 MHz ceiling',
+                ('gpc_offset_max_mhz', 'gb20x'): 'tested on hardware on RTX 50 boards',
+                ('memory_offset_min_mhz', 'gb20x'): 'tested on hardware on RTX 50 boards'}
+
+
 def clock_offset_ranges(image, parser, rows):
-    """Experimental GB20x, Ada, Ampere and Turing offset ranges beyond the hardware-validated GB20x DRAM ceiling.
+    """GB20x, Ada, Ampere and Turing offset ranges beyond the hardware-validated GB20x DRAM ceiling (experimental
+    unless HARDWARE_TESTED lists them).
 
     Domain names come from the structurally gated rows (GB20x rows 0-4, Ada,
     Ampere and Turing GV HAL positions). A range must keep 0 inside it, so minima
@@ -4724,14 +4891,19 @@ def clock_offset_ranges(image, parser, rows):
         else:
             current, lo, hi, at = row['minimum_mhz'], -32768, min(0, row['maximum_mhz']), row['minimum_offset']
         blocked = None if blackwell else clock_read_only(parser, row)
+        # An alias (dram_min_table_mhz) writes the bytes of its primary, so it carries the primary's flag.
+        tested_key = extra.get('alias_of', key)
+        flags, word = experimental_flag(parser, tested_key), 'ceiling' if side == 'max' else 'floor'
         return field(key, label, units, factor * current, factor * lo, factor * hi, editable and not blocked,
                      [dict(item) for item in evidence],
                      offsets=[at] if blackwell else parser.copy_offsets(at, 2), encoding='<h',
                      scale=Decimal(1) / factor, stored_units='table MHz',
-                     value_semantics=f'stored-offset-range-{side}imum', experimental=True,
+                     value_semantics=f'stored-offset-range-{side}imum', **flags,
                      clock_domain=row['domain'], clock_row=row['row'],
-                     reason=blocked or f"experimental: firmware offset {'ceiling' if side == 'max' else 'floor'}; " +
-                     (TURING_UNTESTED if turing(parser) else 'edit not hardware-tested'),
+                     reason=blocked or (f'experimental: firmware offset {word}; ' +
+                                        (TURING_UNTESTED if turing(parser) else 'edit not hardware-tested')
+                                        if flags else f'firmware offset {word}; ' +
+                                        CLOCK_TESTED[tested_key, family_name(parser)]),
                      **({'writable_status': 'unsupported'} if blocked else {}), **extra)
     dram, gpc = named['DRAM'], named['GPC']
     result = [bound('memory_offset_min_mhz', 'Memory offset floor', dram, 'min', 'MHz', 2,

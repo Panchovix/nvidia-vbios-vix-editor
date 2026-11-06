@@ -276,12 +276,15 @@ class AdaConnectorInputTests(unittest.TestCase):
         self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
 
     def test_gui_labels_and_notes(self):
-        from nvidia_vbios.gui.presentation import connector_input_notes, field_label, field_section, shunt_scaled
+        from nvidia_vbios.gui.presentation import (connector_input_notes, field_label, field_section, row_title,
+                                                   shunt_scaled)
         fields = descriptors(self.image)
         values = list(fields.values())
-        self.assertEqual(field_label(fields[KEYS[0]]), 'Connector power channel 1 ceiling (advanced, experimental)')
+        self.assertEqual(field_label(fields[KEYS[0]]), 'Connector power channel 1 ceiling (advanced)')
         self.assertEqual(field_label(fields[KEYS[1]], 'es'),
-                         'Límite del canal de potencia de conector 1, nominal (avanzado, experimental)')
+                         'Límite del canal de potencia de conector 1, nominal (avanzado)')
+        # Not tested on hardware on Ada: the experimental badge follows the flag.
+        self.assertTrue(all(fields[k]['experimental'] and row_title(fields[k], 'es')[1] for k in KEYS))
         self.assertTrue(all(shunt_scaled(fields[k]) and field_section(fields[k]) == 'power' for k in KEYS))
         notes = connector_input_notes(fields[KEYS[0]], values)
         self.assertEqual(len(notes), 2)
@@ -300,7 +303,7 @@ class AdaConnectorInputTests(unittest.TestCase):
         self.assertEqual(connector_input_notes(dict(fields[KEYS[0]], editable=False), values), [])
         # The Ampere connector channel fields keep their labels and get no note.
         ampere = descriptors(from_bytes(synthetic_rom(family='ampere', policies=True)))
-        self.assertEqual(field_label(ampere[KEYS[0]]), 'Connector power channel 1 ceiling (experimental)')
+        self.assertEqual(row_title(ampere[KEYS[0]]), ('Connector power channel 1 ceiling', True))
         self.assertNotIn('opt_in', ampere[KEYS[0]])
         self.assertEqual(connector_input_notes(ampere[KEYS[0]], list(ampere.values())), [])
 

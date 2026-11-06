@@ -235,11 +235,14 @@ class RuntimeVoltageOffsetTests(unittest.TestCase):
 
     def test_switch_installs_the_layout_and_removal_gives_back_stock(self):
         field = descriptors(self.stock)['runtime_voltage_offsets']
-        self.assertEqual((field['current'], field['editable'], field['opt_in'], field['experimental']),
-                         (0, True, True, True))
+        # Tested on hardware on one RTX PRO 4000 SFF: not experimental.
+        self.assertEqual((field['current'], field['editable'], field['opt_in'], field.get('experimental', False)),
+                         (0, True, True, False))
         self.assertEqual((field['bounds']['minimum'], field['bounds']['maximum']), (0, 1))
-        for text in ('mVolt+-compatible', 'clamped to +-1.25 V', 'nothing changes', 'not hardware-tested'):
+        for text in ('mVolt+-compatible', 'clamped to +-1.25 V', 'nothing changes',
+                     'tested on hardware on one RTX PRO 4000 SFF'):
             self.assertIn(text, field['reason'])
+        self.assertNotIn('not hardware-tested', field['reason'])
         hooked = edit(self.stock, {'runtime_voltage_offsets': 1})
         check_installed(self, self.stock.blob, hooked.blob)
         check_evaluated(self, self.stock.blob, hooked.blob)

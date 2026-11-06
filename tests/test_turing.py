@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import struct
 import sys
 import tempfile
@@ -23,6 +24,8 @@ from nvidia_vbios.rom.turing import npde
 from test_ada_fields import THERMAL_FACTORY_KEYS, checked_elsewhere, patched
 
 POWER = ['power_max_w', 'power_default_w', 'power_min_w']
+# Tested on hardware on Turing besides the desktop board power (POWER), so not experimental there.
+TESTED = re.compile(r'connector_\d+_power_(max|rated)_w|runtime_power_limit_unlock')
 E0_END = 'turing-e0-end-v1'
 DESKTOP_CHANNELS = {0: '02 df 00 1b b7 00 00 10', 9: '02 f5 00 1b b7 00 00 10'}
 NOTEBOOK_CHANNELS = {0: '02 f5 00 1b b7 00 00 10'}
@@ -349,7 +352,7 @@ class TuringStructureTests(unittest.TestCase):
 
 
 class TuringPowerTests(unittest.TestCase):
-    def test_board_power_fields_are_experimental_with_the_turing_caveats(self):
+    def test_board_power_fields_are_hardware_tested_with_the_turing_caveats(self):
         image = from_bytes(synthetic_turing())
         report = inspect_image(image)
         fields = {f['key']: f for f in report['fields']}
@@ -359,10 +362,17 @@ class TuringPowerTests(unittest.TestCase):
         self.assertEqual(sorted(fields), sorted(POWER + ['current_limit_a', 'ocp_limit_a', 'memory_offset_max_mhz']))
         for key in POWER:
             field = fields[key]
-            self.assertTrue(field['experimental'], key)
-            for text in ('decodes like the Ampere one', 'nvidia-smi reported an edited TGP', 'signed hash list',
-                         'about 458 W with them raised'):
+            # Tested on an RTX 2070 and an RTX 2080 Ti (desktop): not experimental, the reason names the test.
+            self.assertNotIn('experimental', field, key)
+            for text in ('tested on hardware', 'RTX 2080 Ti', 'signed hash list'):
                 self.assertIn(text, field['reason'], key)
+            self.assertNotIn('not hardware-tested', field['reason'], key)
+            self.assertIn('decodes like the Ampere one', field['reason'], key)
+            if key == 'power_max_w':
+                self.assertIn('about 458 W with the connector power rows at 250 W', field['reason'], key)
+            if key == 'power_min_w':
+                self.assertIn('with the board power edits', field['reason'], key)
+                self.assertIn('the runtime minimum remain unknown', field['reason'], key)
             self.assertIn('Turing 30/2c/42', field['evidence'][0]['recognized_variants'])
             self.assertIn('integrity-observation', [e['kind'] for e in field['evidence']])
         # Same bounds as the Ampere fields: ceiling from the rated value, floor from 1 W.
@@ -378,6 +388,8 @@ class TuringPowerTests(unittest.TestCase):
         self.assertEqual([notebook[k]['current'] for k in POWER], [95, 80, 1])
         self.assertIn('stored notebook TGP', notebook['power_max_w']['reason'])
         self.assertIn('no Turing laptop reading', notebook['power_default_w']['reason'])
+        # The Turing notebook TGP has not run on hardware: it stays experimental.
+        self.assertTrue(all(notebook[k]['experimental'] for k in POWER))
 
     def test_tgp_row_must_read_the_only_board_total_channel(self):
         refused = (dict(tgp_channel=0),                                               # another class-2 sum
@@ -442,10 +454,11 @@ class TuringInputTests(unittest.TestCase):
             with self.subTest(key=key):
                 field = fields[key]
                 self.assertEqual(field['current'], value)
-                self.assertTrue(field['experimental'] and turing_evidence(field))
                 self.assertEqual(field.get('opt_in', False), key in THRESHOLDS)
                 # The connector power rows ran on one RTX 2080 Ti with the board power; the others did not.
                 tested = key.startswith('connector_') and key.endswith('_w')
+                self.assertTrue(turing_evidence(field))
+                self.assertEqual(field.get('experimental', False), not tested)
                 self.assertIn('reached about 458 W' if tested else 'not hardware-tested on Turing', field['reason'])
                 self.assertNotRegex(field['reason'], 'reading; not hardware|not hardware-tested; not hardware' +
                                     ('|untested' if tested else ''))

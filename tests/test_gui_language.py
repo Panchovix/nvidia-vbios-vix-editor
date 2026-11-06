@@ -94,7 +94,7 @@ class LanguageTests(unittest.TestCase):
 
     def test_vmin_labels_keep_the_evaluated_vmin_apart_from_the_info_slot(self):
         english, spanish = Messages(), Messages('es')
-        self.assertEqual(field_label({'key': 'msvdd_vmin_mv'}), 'MSVDD minimum voltage (VMIN, experimental)')
+        self.assertEqual(field_label({'key': 'msvdd_vmin_mv'}), 'MSVDD minimum voltage (VMIN)')
         self.assertEqual(field_label({'key': 'msvdd_vmin_mv'}, 'es'), spanish('field.vmin', rail='MSVDD'))
         slot = field_label({'key': 'nvvdd_vmin_equation_max_mv'})
         self.assertIn('not the evaluated VMIN', slot)

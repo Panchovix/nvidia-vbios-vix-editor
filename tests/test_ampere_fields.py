@@ -1,6 +1,7 @@
 """Ampere (GA10x) fields: generated images, and reference ROMs where they are available."""
 from decimal import Decimal
 import os
+import re
 from pathlib import Path
 import struct
 import sys
@@ -25,6 +26,9 @@ CLOCKS = ['dram_max_table_mhz', 'memory_offset_max_mhz', 'memory_offset_min_mhz'
           'gpc_offset_max_mhz', 'gpc_offset_min_mhz', 'xbar_max_table_mhz', 'xbar_min_table_mhz', 'sys_max_table_mhz',
           'sys_min_table_mhz', 'vid_max_table_mhz', 'vid_min_table_mhz']
 FANS = ['fan_channels', 'fan_pwm_frequency_hz']
+# Tested on hardware on Ampere, so not experimental there: board power, PCIe slot power, the fan minimums and point 1
+# of a channel's fan curve.
+TESTED = re.compile(r'power_(max|min|default)_w|slot_power_(max|rated)_w|fan_\d+_(min_(rpm|pct)|curve_1_(rpm|pct))')
 
 
 def connectors(count):
@@ -206,7 +210,8 @@ class AmperePowerTests(unittest.TestCase):
         for key, value in expected.items():
             with self.subTest(key=key):
                 self.assertEqual(fields[key]['current'], value)
-                self.assertTrue(fields[key]['editable'] and fields[key]['experimental'])
+                self.assertTrue(fields[key]['editable'])
+                self.assertEqual(fields[key].get('experimental', False), key not in SLOT)
                 threshold = 'threshold' in key or key.startswith('input_current')
                 self.assertEqual(fields[key].get('opt_in', False), threshold)
         self.assertEqual((fields['connector_1_power_max_w']['channel_rail'], fields['connector_2_power_max_w']['channel_rail']),
@@ -214,7 +219,8 @@ class AmperePowerTests(unittest.TestCase):
         self.assertEqual(fields['input_current_rated_ma']['policy_indices'], [10])
         self.assertEqual([(fields[k]['current'], fields[k]['editable'], fields[k]['opt_in']) for k in NVVDD_OCP],
                          [(226800, True, True)] * 2)
-        self.assertTrue(all(fields[k]['experimental'] for k in POWER))
+        self.assertFalse(any(fields[k].get('experimental') for k in POWER))
+        self.assertIn('RTX A2000', fields['power_default_w']['reason'])
         self.assertNotIn('nvvdd_power_threshold_max_w', fields)
 
     def test_policy_edits_write_their_rows_in_both_chains(self):
@@ -549,10 +555,11 @@ class AmperePowerTests(unittest.TestCase):
         image = from_bytes(synthetic_rom(family='ampere', copies=2, notebook=True))
         fields = descriptors(image)
         self.assertEqual([fields[k]['current'] for k in ('power_min_w', 'power_default_w', 'power_max_w')], [30, 70, 70])
-        self.assertTrue(all(fields[key]['experimental'] for key in POWER))
+        # Tested on an RTX 3050 6GB Laptop GPU: not experimental on Ampere laptops either.
+        self.assertFalse(any(fields[key].get('experimental') for key in POWER))
         for key in ('power_max_w', 'power_default_w'):
             self.assertIn('notebook', fields[key]['reason'])
-        self.assertIn('Ampere laptop', fields['power_max_w']['reason'])
+            self.assertIn('tested on hardware: on one RTX 3050 6GB Laptop GPU', fields[key]['reason'])
         self.assertEqual(backend(edit(image, {'power_max_w': 90}).image).power_rows()[2]['maximum_raw'], 90000)
 
 
@@ -762,7 +769,9 @@ class AmpereFanTests(unittest.TestCase):
         for key in ('fan_1_min_rpm', 'fan_1_min_pct', 'fan_1_max_pct', 'fan_1_max_rpm', 'fan_2_min_rpm'):
             with self.subTest(key=key):
                 self.assertTrue(fields[key]['editable'])
-                self.assertTrue(fields[key]['reason'].startswith('experimental:'))
+                # The minimums are tested on hardware on Ampere; the maximums stay experimental.
+                self.assertEqual(fields[key]['reason'].startswith('experimental:'), '_max_' in key)
+                self.assertEqual(fields[key].get('experimental', False), '_max_' in key)
         self.assertEqual((fields['fan_1_min_rpm']['current'], fields['fan_1_min_rpm']['bounds']['maximum']), (0, 0))
         with self.assertRaises(VbiosError) as exc:
             edit(stopped, {'fan_1_min_rpm': 500})

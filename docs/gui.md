@@ -63,8 +63,8 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    accepted ranges are in `nvbios fields` and the manifest, never hardware-safe maxima.
    **Board power floor** (`power_min_w`) accepts 1 W through the TGP rated
    default, with exact 0.001 W increments. **Board power ceiling** remains
-   bounded below by the rated defaults. Experimental fields (boot default power,
-   12 V input current, clock offset ranges) say so in their label; stage partners
+   bounded below by the rated defaults. Fields not tested on hardware on the ROM's
+   GPU family (most clock offset ranges, for example) carry the experimental badge; stage partners
    such as a new default and ceiling together, because the order
    minimum <= default <= maximum is checked on the combined result. On a laptop,
    Dynamic Boost requests the running power limit at runtime and the ceiling only caps
@@ -94,13 +94,13 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    ROMs it is read-only: they store a lower limit of the same kind (89 °C) and it is not
    known which one the GPU reaches first. **Show advanced XOC-style fields** (off by
    default) reveals opt-in fields such as the rated power of the fixed board
-   policies 2/7, the experimental **Notebook base TGP** of RTX 50 laptop ROMs with the
+   policies 2/7, the **Notebook base TGP** of RTX 50 laptop ROMs with the
    notebook layout (it behaved as the base Dynamic Boost adds its boost to on one RTX 5090 Laptop
    GPU; raise it with the ceiling and the boot default, see above), **Expose runtime power
-   limit** on Turing, Ampere and RTX 50 laptop ROMs (a switch, experimental: on writes the TGP
-   row into the TGP entry of the power table header, which laptop ROMs leave empty (`0xff`), so
-   current drivers accept power limit changes at runtime from `nvidia-smi -pl` or MSI
-   Afterburner, between the board power floor and ceiling (for more, raise only the ceiling:
+   limit** on Turing, Ampere and RTX 50 laptop ROMs (a switch, experimental on Ampere and RTX 50:
+   on writes the TGP row into the TGP entry of the power table header, which laptop ROMs leave
+   empty (`0xff`), so current drivers accept power limit changes at runtime from `nvidia-smi -pl`
+   or MSI Afterburner, between the board power floor and ceiling (for more, raise only the ceiling:
    the boot default, 100 % on Afterburner's slider, can stay at stock); drivers up to R525 did
    this by themselves on Turing and Ampere laptops, none did on RTX 50 laptops; Dynamic Boost
    keeps its own request on the same row and the lowest request wins, so while it holds one a
@@ -108,8 +108,8 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    itself; the battery limits still apply; on one RTX 2070 Laptop GPU on Windows, with the
    limits at stock, MSI Afterburner's power limit slider then worked and 64 % (73.6 W) held
    under load, while Ampere and RTX 50 laptops are not tested; the row notes
-   this), **Runtime voltage offsets** on RTX 50 ROMs (a switch, experimental, not tested on
-   hardware: on adds the mVolt+-compatible hooks to the REL, ALT, OV and VMIN limits, so a tool
+   this), **Runtime voltage offsets** on RTX 50 ROMs (a switch, tested on hardware on one RTX
+   PRO 4000 SFF: on adds the mVolt+-compatible hooks to the REL, ALT, OV and VMIN limits, so a tool
    that writes the VFE variable at runtime can add an offset, in µV and clamped to ±1.25 V, on top
    of the voltages set here; with no such tool nothing changes; off removes them; the row notes
    this), on Ada and Blackwell the power limit of the auxiliary power connector (**Connector power
@@ -131,9 +131,9 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    never below the highest VMIN where each chip sets its own) and,
    on Blackwell, Ada and Ampere, **Fan
    zero RPM** (a switch for the flag bits that let the fans stand still at idle,
-   hardware-tested on one RTX 5090, not on Ada, Ampere or the RTX PRO 6000 Max-Q;
-   experimental). On blower boards that store no fan-stop values (RTX PRO 6000
-   Max-Q, RTX 5000 and 6000 Ada, RTX A-series) the switch also writes the values
+   tested on hardware on one RTX 5090; experimental on Ada and Ampere, and where it writes
+   another board's fan-stop values or the bit 4 flag form below). On blower boards that
+   store no fan-stop values (RTX PRO 6000 Max-Q, RTX 5000 and 6000 Ada, RTX A-series) the switch also writes the values
    NVIDIA stores on another of its boards, and off on such a copy writes the stock
    bytes back; notes under the switch name that board and the risks: no blower card
    ships with fan stop on, a stopped blower most likely moves no air through the card,
@@ -157,7 +157,9 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    **zero RPM lower and upper thresholds** of each fan and extra curve (Blackwell, Ada
    and Ampere) are the two temperatures stored with those bits: idle fans most likely
    stop below the lower one and start above the upper one, and on one RTX 5080 a
-   raised upper threshold kept the fans stopped below it. The upper threshold goes up
+   raised upper threshold kept the fans stopped below it (so on RTX 50 ROMs the upper
+   threshold of each fan is not experimental; the lower one and those of the extra curves
+   are). The upper threshold goes up
    to point 1 of the same fan curve. With zero RPM on, a point 1 below the upper
    threshold, or zero RPM turned on with an upper threshold above point 1, is refused
    and the row to change says its allowed range; change them together (on an RTX 3090,
@@ -179,10 +181,10 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    is written to the ROM. On Ampere images where another power row also caps the
    sum of the connector channels, each connector row notes that row's rated and
    maximum values; where that row has a field, raise **Connector power sum** too.
-   Rated output OCP and the
-   SFF slot power fields are also experimental: a rated value is what the firmware
-   enforces from boot, so lowering it caps the card. On Blackwell the floor
-   edits TGP row8 and preserves the distinct rows2/7 minima; recognized profiles
+   Rated output OCP is also experimental, and so is the PCIe slot power on Turing (slot
+   power is tested on hardware on an RTX PRO 4000 SFF, an RTX A2000 and an RTX 2000 Ada).
+   For both a rated value is what the firmware enforces from boot, so lowering it caps the
+   card. On Blackwell the floor edits TGP row8 and preserves the distinct rows2/7 minima; recognized profiles
    override maximum/default only. Ada/Ampere use the header-indexed TGP row in
    every validated duplicate chain. These controls edit stored bounds;
    firmware acceptance and the runtime minimum remain unknown. Some Ada ROMs (an
@@ -232,9 +234,10 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    fan PWM frequency is shown and typed in kHz the same way; the Fans card also
    sets the number of fan channels and, per channel, the minimum and maximum speed
    in RPM, then the three points of the channel's stored fan curve (temperature in
-   °C, speed in RPM), and last the extra curves that serve every channel (all
-   experimental). Temperatures take steps of 1/32 °C (`60.5` is fine, `60.01` is not)
-   and show decimals only when they need them. A limit moves only as far as the
+   °C, speed in RPM), and last the extra curves that serve every channel (experimental
+   except the speed maximum on RTX 50, the minimums on Ada and Ampere and point 1 of a fan's
+   own curve on Ampere, which are tested on hardware). Temperatures take steps of 1/32 °C
+   (`60.5` is fine, `60.01` is not) and show decimals only when they need them. A limit moves only as far as the
    stored curves: to lower a maximum below them, type the new maximum and the curve
    points above it, including those of the extra curves, and they are checked and
    saved together as one copy. To raise a minimum, also raise the points of that
@@ -258,16 +261,19 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    ceiling of single-rail images while their value is unknown: no VBIOS row backs them.
    Each equation ceiling, including ALT, is an
    expression bound, not an evaluated VOP reading or runtime offset. On Blackwell,
-   **NVVDD REL floor** and **MSVDD REL floor** (experimental, under each REL ceiling)
+   **NVVDD REL floor** and **MSVDD REL floor** (under each REL ceiling; tested on hardware
+   on RTX PRO 6000 Max-Q and RTX PRO 4000 SFF boards)
    set the lowest REL: REL is the chip's own value kept between the floor and the
    ceiling, so a floor above it becomes the REL; raise both together to go past the
-   stored ceiling, up to OV (1200 mV). On Ada, **NVVDD REL floor** does the same where
-   REL follows the temperature (it falls as the GPU heats up), from 830 mV (or, where
+   stored ceiling, up to OV (1200 mV). On Ada, **NVVDD REL floor** (experimental) does
+   the same where REL follows the temperature (it falls as the GPU heats up), from 830 mV (or, where
    each chip sets its own VMIN, from the highest VMIN it can reach, or the stored floor if
    lower): the floor
    is then the REL of a hot GPU. **Minimum
-   voltage (VMIN)** (experimental) is the stored value of the equation the driver
-   evaluates as VMIN; on Ada the driver adds its chained terms (+90 mV on an RTX
+   voltage (VMIN)** (tested on hardware for NVVDD on an RTX 5080 and an RTX 2000 Ada;
+   experimental for MSVDD, on Ampere and Turing, in the per-chip cases and on the RTX 4090
+   95.02.3C copy below) is the stored value of the equation the driver evaluates as VMIN;
+   on Ada the driver adds its chained terms (+90 mV on an RTX
    2000 Ada), so the value goes up to the lowest REL value less the most those terms
    can add (753 mV on that board). The read-only "rail INFO VMIN-slot" ceiling
    is a different equation and does not set VMIN. Where each chip sets its own VMIN

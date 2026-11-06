@@ -100,10 +100,11 @@ class BlackwellVminTests(unittest.TestCase):
         image = from_bytes(blackwell_vmin())
         fields = descriptors(image)
         field = fields['nvvdd_vmin_mv']
-        self.assertEqual((field['label'], field['current'], field['editable'], field['experimental']),
-                         ('NVVDD minimum voltage (VMIN)', 800, True, True))
+        # A constant NVVDD VMIN is tested on hardware on GB20x (RTX 5080): not experimental.
+        self.assertEqual((field['label'], field['current'], field['editable'], field.get('experimental', False)),
+                         ('NVVDD minimum voltage (VMIN)', 800, True, False))
         self.assertEqual((field['bounds']['minimum'], field['bounds']['maximum']), (450, 900))
-        self.assertIn('RTX 5080', field['reason'])
+        self.assertIn('tested on hardware: on an RTX 5080', field['reason'])
         self.assertEqual(field['selector'], {'raw': 8, 'width_bits': 16, 'offset': field['selector']['offset'],
                                              'absent': False})
         # MSVDD selects an unclamped min/max root: its VMIN is set per chip (BlackwellVminTreeTests).
@@ -361,7 +362,8 @@ class AdaVminTests(unittest.TestCase):
         image = from_bytes(ada_vmin())
         parser = backend(image)
         field = descriptors(image)['nvvdd_vmin_mv']
-        self.assertEqual((field['current'], field['editable'], field['experimental']), (560, True, True))
+        # A pinned NVVDD VMIN clamp is tested on hardware on Ada (RTX 2000 Ada): not experimental.
+        self.assertEqual((field['current'], field['editable'], field.get('experimental', False)), (560, True, False))
         # REL is at least 915 mV and equation 7 adds up to 75 mV on top of the clamp.
         self.assertEqual((field['bounds']['minimum'], field['bounds']['maximum']), (400, 840))
         self.assertIn('add 0 to 75 mV', field['reason'])

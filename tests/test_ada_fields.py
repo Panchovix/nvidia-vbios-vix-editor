@@ -3,6 +3,7 @@ from decimal import Decimal
 import hashlib
 import os
 from pathlib import Path
+import re
 import struct
 import sys
 import unittest
@@ -24,6 +25,19 @@ THERMAL_FACTORY_KEYS = ('max_operating_temp_c', 'factory_gpc_offset_mhz', 'facto
 def checked_elsewhere(key, field):
     """True for a field whose editability another module checks image by image."""
     return key in THERMAL_FACTORY_KEYS or field.get('section') == 'advanced'
+
+
+# Tested on hardware on Ada, so not experimental there; the notebook TGP, a TGP bound to override profiles and a VMIN
+# tree, per-chip equation or VMIN copy stay experimental.
+ADA_TESTED = re.compile(r'power_(max|min|default)_w|nvvdd_rel_(equation_)?max_mv|gpc_offset_max_mhz|nvvdd_vmin_mv|'
+                        r'fan_\d+_min_(rpm|pct)|slot_power_(max|rated)_w')
+
+
+def ada_tested(field):
+    """True for an Ada field that is tested on hardware (ADA_TESTED) and takes no untested path."""
+    if field.get('notebook_tgp') or field.get('override_profiles') or field.get('vmin_tree') or field.get('vfe_clone'):
+        return False
+    return bool(ADA_TESTED.fullmatch(field['key']))
 
 GV_HAL = ['GPC', 'XBAR', 'DRAM', 'SYS', 'HUB', 'VID', 'PWR', 'DISP', 'PCIEGEN', 'HOST']
 
@@ -172,15 +186,22 @@ class AdaPowerTests(unittest.TestCase):
                 self.assertEqual(edit(result.image, {'power_max_w': 70, 'power_default_w': 70,
                                                      'power_min_w': 30}).blob, image.blob)
 
-    def test_reference_identity_keeps_reviewed_status_and_other_boards_are_experimental(self):
+    def test_hardware_tested_fields_are_not_experimental_on_every_ada_board(self):
         reference = descriptors(from_bytes(synthetic_rom()))
         other = descriptors(from_bytes(synthetic_rom(version=b'95.07.47.00.20')))
-        for key in ('power_max_w', 'power_min_w', 'nvvdd_rel_max_mv', 'nvvdd_rel_equation_max_mv'):
-            with self.subTest(key=key):
-                self.assertNotIn('experimental', reference[key])
-                self.assertTrue(other[key]['experimental'] and other[key]['editable'])
-                self.assertTrue(other[key]['reason'].startswith('experimental:'))
-        self.assertTrue(reference['power_default_w']['experimental'])
+        for key in ('power_max_w', 'power_min_w', 'power_default_w', 'nvvdd_rel_max_mv', 'nvvdd_rel_equation_max_mv'):
+            for fields in (reference, other):
+                with self.subTest(key=key):
+                    self.assertNotIn('experimental', fields[key])
+                    self.assertTrue(fields[key]['editable'])
+                    self.assertIn('tested on hardware', fields[key]['reason'])
+                    self.assertFalse(fields[key]['reason'].startswith('experimental'))
+        self.assertIn('RTX 4090', reference['power_max_w']['reason'])
+        # The floor ran with those edits; the runtime minimum is not claimed known.
+        self.assertIn('with the board power edits (an RTX 2000 Ada, where the NVML minimum equals the stored value',
+                      reference['power_min_w']['reason'])
+        self.assertIn('the runtime minimum remain unknown', reference['power_min_w']['reason'])
+        self.assertIn('1100 mV REL ceiling', reference['nvvdd_rel_equation_max_mv']['reason'])
 
     def test_notebook_header_names_row_2(self):
         image = from_bytes(synthetic_rom(copies=2, notebook=True))
@@ -268,7 +289,9 @@ class AdaPolicyTests(unittest.TestCase):
         for key, value in expected.items():
             with self.subTest(key=key):
                 self.assertEqual(fields[key]['current'], value)
-                self.assertTrue(fields[key]['editable'] and fields[key]['experimental'])
+                self.assertTrue(fields[key]['editable'])
+                # The slot power is tested on hardware (RTX 2000 Ada); the thresholds stay experimental.
+                self.assertEqual(fields[key].get('experimental', False), not key.startswith('slot_power'))
                 # Class-5 hardware thresholds (slot current, 12 V input, NVVDD power) are opt-in.
                 threshold = 'threshold' in key or key.startswith('input_current')
                 self.assertEqual(fields[key].get('opt_in', False), threshold)
@@ -380,14 +403,17 @@ class AdaPolicyTests(unittest.TestCase):
                     edit(image, {key: value})
 
     def test_ada_input_thresholds_use_threshold_labels_and_blackwell_keeps_limit(self):
-        from nvidia_vbios.gui.presentation import field_label
+        from nvidia_vbios.gui.presentation import field_label, row_title
         ada_fields = descriptors(self.image)
         blackwell = {'key': 'input_current_rated_ma'}
         self.assertEqual(field_label(ada_fields['input_current_rated_ma']),
-                         '12 V input current threshold, rated (advanced, experimental)')
+                         '12 V input current threshold, rated (advanced)')
         self.assertEqual(field_label(ada_fields['input_current_max_ma'], 'es'),
-                         'Techo del umbral de corriente de entrada de 12 V (avanzado, experimental)')
-        self.assertEqual(field_label(blackwell), '12 V input current limit, rated (experimental)')
+                         'Techo del umbral de corriente de entrada de 12 V (avanzado)')
+        self.assertEqual(field_label(blackwell), '12 V input current limit, rated')
+        # The Ada thresholds stay experimental: the badge follows the flag.
+        self.assertEqual([row_title(ada_fields[k], 'es')[1] for k in ('input_current_rated_ma', 'input_current_max_ma')],
+                         [True, True])
 
     def test_ampere_and_blackwell_offer_no_ada_policy_fields(self):
         for blob in (synthetic_rom(family='ampere'), synthetic_blackwell()):
@@ -714,7 +740,10 @@ class AdaClockTests(unittest.TestCase):
                            'sys_min_table_mhz': -1000, 'vid_max_table_mhz': 3000}.items():
             with self.subTest(key=key):
                 self.assertEqual(fields[key]['current'], value)
-                self.assertTrue(fields[key]['editable'] and fields[key]['experimental'])
+                self.assertTrue(fields[key]['editable'])
+                # The GPC offset ceiling is tested on hardware (RTX 4090 +1200 MHz); the other ranges are not.
+                self.assertEqual(fields[key].get('experimental', False), key != 'gpc_offset_max_mhz')
+        self.assertIn('+1200 MHz', fields['gpc_offset_max_mhz']['reason'])
         changes = {'gpc_offset_max_mhz': 1500, 'memory_offset_min_mhz': -5000, 'sys_max_table_mhz': 2000,
                    'vid_min_table_mhz': -1500, 'memory_offset_max_mhz': 8000}
         result = edit(image, changes)

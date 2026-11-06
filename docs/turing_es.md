@@ -15,7 +15,9 @@ tarjeta Turing, la guía del final nos dice qué funciona.
 
 ## Qué hace el editor
 
-Todos los campos Turing están marcados como experimentales. Los marcados como *avanzados* aparecen al marcar
+Todos los campos Turing están marcados como experimentales salvo los probados en hardware que se indican arriba:
+la potencia de la tarjeta de escritorio, las filas de potencia por conector (`connector_N_power_*_w`) y el
+interruptor del límite de potencia en uso. Los marcados como *avanzados* aparecen al marcar
 **Mostrar campos avanzados (estilo XOC)**.
 
 - **Potencia de la tarjeta**: `power_max_w` (techo), `power_default_w` (valor por defecto al arrancar) y

@@ -332,7 +332,8 @@ class EditorTests(unittest.TestCase):
         result = edit(image, {'power_max_w': 90})
         fields = {f['key']: f for f in result.manifest['after']['fields']}
         self.assertEqual(fields['power_max_w']['current'], 90)
-        self.assertTrue(fields['power_max_w']['experimental'])
+        # Tested on hardware on Ampere (RTX A2000, RTX 3050 6GB Laptop GPU): not experimental.
+        self.assertNotIn('experimental', fields['power_max_w'])
         # Constant REL equations: a ceiling-only edit would not change the voltage.
         self.assertFalse(fields['nvvdd_rel_max_mv']['editable'])
         self.assertFalse(any(f['key'].endswith('_policy7_limit_ma') or f['key'] == 'board_fixed_rated_w'

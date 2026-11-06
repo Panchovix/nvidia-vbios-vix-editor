@@ -14,8 +14,9 @@ you own a Turing card, the tester guide at the end tells us what works.
 
 ## What the editor does
 
-Every Turing field is marked experimental. Fields marked *advanced* appear after ticking **Show advanced
-XOC-style fields**.
+Every Turing field is marked experimental except the ones tested on hardware above: the desktop board power, the
+connector power rows (`connector_N_power_*_w`) and the runtime power limit switch. Fields marked *advanced* appear
+after ticking **Show advanced XOC-style fields**.
 
 - **Board power**: `power_max_w` (ceiling), `power_default_w` (boot default) and `power_min_w` (floor).
 - **Runtime power limit** (advanced, laptop and Max-Q laptop images): `runtime_power_limit_unlock`, a switch that

@@ -116,7 +116,7 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
 Offline editor for NVIDIA Blackwell (GB20x), Ada (AD10x), Ampere (GA10x) and Turing (TU10x/TU11x) VBIOS images.
 It edits when applicable: power limits, voltage ceilings, the minimum voltage
 (VMIN), clock offset ranges, 12 V input current and output OCP limits, fan PWM frequency, fan channels,
-per-channel fan speed limits, the stored fan curves and zero RPM (experimental).
+per-channel fan speed limits, the stored fan curves and zero RPM.
 A read-only **Memory** section (all four families) shows the memory configurations, the memory clock bands and
 their timing entries with decoded values and, on Blackwell, an undecoded board memory-training profile, and tells
 whether another ROM's tables are identical or differ. **Import from ROM…** copies the values of chosen sections
@@ -148,8 +148,10 @@ they are copied as stored numbers, so check that this board's hardware can take 
   from the software or its output, such as edited images, files, tools or other works,
   whoever makes, shares or uses them. The author accepts no responsibility or liability
   of any kind for any of it. If you do not accept this, do not use the software.
-- Fields marked *experimental* have not been tested on hardware, or only on the cards
-  named in their notes. Raising power, current or voltage limits can damage hardware.
+- Fields marked *experimental* have not been tested on hardware on that GPU family, or only
+  in part (their notes say what ran). A field without the mark was tested on some cards of
+  the family (named in its notes), not on every card. Raising power, current or voltage
+  limits can damage hardware.
 - Recognized images: GB20x object-directory v3 (GB202, GB203, GB205, GB206, GB207). Ada (AD10x),
   Ampere (GA10x) and Turing (TU10x/TU11x) images are supported with the same restriction as any other
   image: they can be inspected, and only the fields validated for them can be edited.
@@ -164,7 +166,7 @@ they are copied as stored numbers, so check that this board's hardware can take 
   requests the running power limit at runtime, and the power ceiling in the image only
   caps it. Monitoring tools show the stored ceiling, so raising **Board power ceiling**
   alone usually does not raise the running limit. On these laptops **Notebook base
-  TGP** (experimental, under **Show advanced XOC-style fields**) edits a stored value. On
+  TGP** (under **Show advanced XOC-style fields**) edits a stored value. On
   one RTX 5090 Laptop GPU it acted as the base Dynamic Boost adds its boost to: the
   ceiling alone, or with only one of **Boot default board power** and **Notebook base
   TGP**, left the GPU at about 175 W, while all three raised together (190, 110 and 165 W, from
@@ -181,12 +183,12 @@ they are copied as stored numbers, so check that this board's hardware can take 
   ROM of the same GPU stores 90 A), the likely cause, though not proven. **NVVDD output current
   limit ceiling** and **NVVDD output current limit, rated** (experimental, under **Show advanced
   XOC-style fields**) edit it; the limit likely protects the core VRM, which was sized for the
-  stock value. On Turing, Ampere and RTX 50 laptops, **Expose runtime power limit** (experimental,
-  under **Show advanced XOC-style fields**) fills in the TGP entry that laptop images leave empty,
-  so current drivers accept power limit changes from `nvidia-smi -pl` and MSI Afterburner, as
-  drivers up to R525 did by themselves on Turing and Ampere laptops. On one RTX 2070 Laptop GPU
-  on Windows the Afterburner slider then worked, with the limits at stock; other Turing laptops
-  and the Ampere and RTX 50 laptops are not tested yet. The slider's 100 % is
+  stock value. On Turing, Ampere and RTX 50 laptops, **Expose runtime power limit** (experimental
+  on Ampere and RTX 50, under **Show advanced XOC-style fields**) fills in the TGP entry that
+  laptop images leave empty, so current drivers accept power limit changes from `nvidia-smi -pl`
+  and MSI Afterburner, as drivers up to R525 did by themselves on Turing and Ampere laptops. On
+  one RTX 2070 Laptop GPU on Windows the Afterburner slider then worked, with the limits at stock;
+  other Turing laptops and the Ampere and RTX 50 laptops are not tested yet. The slider's 100 % is
   **Boot default board power** and its top is **Board power ceiling**, so to allow more, raise
   only the ceiling; nothing above the stock limit has been tried yet. While Dynamic Boost or the
   laptop's own power mode holds a request, it overrides the slider, and a raised ceiling may let

@@ -52,7 +52,10 @@ class RuntimeLimitTests(unittest.TestCase):
                 field = descriptors(from_bytes(blob))[KEY]
                 self.assertEqual((field['units'], field['current'], field['editable'], field['bounds']['minimum'],
                                   field['bounds']['maximum'], field['policy_indices']), ('flag', 0, True, 0, 1, [2]))
-                self.assertTrue(field['experimental'] and field['opt_in'] and field['notebook_tgp'])
+                self.assertTrue(field['opt_in'] and field['notebook_tgp'])
+                # Tested on one Turing laptop: not experimental there, experimental on Ampere and GB20x.
+                self.assertEqual(field.get('experimental', False), name != 'turing')
+                self.assertEqual(field['reason'].startswith('experimental, opt-in: '), name != 'turing')
                 self.assertEqual(field_section(field), 'power')
                 reason = field['reason']
                 # For more, the ceiling alone: the boot default is the slider's 100 % and may stay at stock.
@@ -69,7 +72,8 @@ class RuntimeLimitTests(unittest.TestCase):
                 self.assertEqual([(e['kind'], e['set_tested']) for e in field['evidence']],
                                  [('firmware-static-analysis', False), ('structural-row-comparison', False)] +
                                  ([('hardware-test', True)] if name == 'turing' else []))
-        for part in ('RTX 2070 Laptop GPU (Windows driver 621.01, Windows loader)', 'at 64 % (73.6 W)',
+        for part in ('tested on hardware: on one RTX 2070 Laptop GPU (Windows driver 621.01, Windows loader)',
+                     'at 64 % (73.6 W)',
                      'nothing above the stock 115 W was tried', 'signed hash list over this table is left stale'):
             self.assertIn(part, RUNTIME_LIMIT_TURING_TESTED)
         # Desktop headers name their TGP row already; the Ampere notebook header whose rows 0/1 R525 reads as class 1

@@ -656,13 +656,16 @@ class PresentationNumberTests(unittest.TestCase):
         self.assertEqual({field_section({'key': key}) for key in SHUNT_KEYS}, {'power', 'current'})
 
     def test_ampere_connector_labels_sections_and_shunt_scaling(self):
-        from nvidia_vbios.gui.presentation import field_label, field_section, shunt_scaled
+        from nvidia_vbios.gui.presentation import field_label, field_section, row_title, shunt_scaled
         from test_extended_fields import descriptors
         from nvidia_vbios.rom import from_bytes
         fields = descriptors(from_bytes(synthetic_rom(family='ampere', policies=True)))
-        self.assertEqual(field_label(fields['connector_2_power_rated_w']), 'Connector power channel 2 limit, rated (experimental)')
+        self.assertEqual(field_label(fields['connector_2_power_rated_w']), 'Connector power channel 2 limit, rated')
         self.assertEqual(field_label(fields['connector_1_power_max_w'], 'es'),
-                         'Techo del canal de potencia de conector 1 (experimental)')
+                         'Techo del canal de potencia de conector 1')
+        # Not tested on hardware on Ampere (only on Turing): the badge follows the experimental flag.
+        self.assertEqual([row_title(fields[k], 'es')[1] for k in ('connector_1_power_max_w', 'connector_2_power_rated_w')],
+                         [True, True])
         for key in ('connector_1_power_max_w', 'connector_1_power_rated_w', 'connector_2_power_max_w'):
             self.assertTrue(shunt_scaled(fields[key]))
             self.assertEqual(field_section(fields[key]), 'power')
@@ -792,8 +795,11 @@ class PresentationNumberTests(unittest.TestCase):
         self.assertIn('tantos vatios como subas este valor', spanish)
         self.assertIn('se dimensionaron para el límite de fábrica',
                       notebook_notes(fields['power_max_w'], family, 'es')[0])
-        self.assertEqual(field_label(fields['notebook_base_tgp_w']), 'Notebook base TGP (experimental)')
-        self.assertEqual(field_label(fields['notebook_base_tgp_w'], 'es'), 'TGP base del portátil (experimental)')
+        self.assertEqual(field_label(fields['notebook_base_tgp_w']), 'Notebook base TGP')
+        self.assertEqual(field_label(fields['notebook_base_tgp_w'], 'es'), 'TGP base del portátil')
+        # Tested on one RTX 5090 Laptop GPU: no experimental badge.
+        from nvidia_vbios.gui.presentation import row_title
+        self.assertEqual(row_title(fields['notebook_base_tgp_w'], 'es'), ('TGP base del portátil', False))
         self.assertTrue(shunt_scaled(fields['notebook_base_tgp_w']))
         # Without the base TGP field the ceiling and the boot default keep their notes; other families and layouts
         # have none.
@@ -937,10 +943,14 @@ class PresentationNumberTests(unittest.TestCase):
         from nvidia_vbios.rom import from_bytes
         fields = descriptors(from_bytes(synthetic_blackwell(fans=True)))
         self.assertEqual([field_label(fields[k]) for k in ('fan_2_min_rpm', 'fan_1_max_pct')],
-                         ['Fan 2 minimum speed (experimental)', 'Fan 1 maximum level (advanced, experimental)'])
+                         ['Fan 2 minimum speed', 'Fan 1 maximum level (advanced, experimental)'])
         self.assertEqual([field_label(fields[k], 'es') for k in ('fan_2_max_rpm', 'fan_1_min_pct')],
-                         ['Velocidad máxima del ventilador 2 (experimental)',
-                          'Nivel mínimo del ventilador 1 (avanzado, experimental)'])
+                         ['Velocidad máxima del ventilador 2',
+                          'Nivel mínimo del ventilador 1 (avanzado)'])
+        # On GB20x only the speed maximum is tested on hardware (RTX 5080): the badge follows the flag.
+        from nvidia_vbios.gui.presentation import row_title
+        self.assertEqual([row_title(fields[k], 'es')[1] for k in ('fan_2_min_rpm', 'fan_1_max_pct', 'fan_2_max_rpm',
+                                                                   'fan_1_min_pct')], [True, True, False, True])
         keys = [f'fan_{n}_{side}_{unit}' for n in (1, 2) for unit in ('rpm', 'pct') for side in ('max', 'min')]
         self.assertEqual([f['key'] for f in section_order(fields.values()) if f['key'] in keys], keys)
         for key in keys:
@@ -962,18 +972,21 @@ class PresentationNumberTests(unittest.TestCase):
         keys = ('fan_2_curve_1_temp_c', 'fan_1_curve_3_rpm', 'fan_1_curve_2_pct', 'fan_extra_2_curve_3_temp_c',
                 'fan_extra_2_curve_1_rpm', 'fan_extra_1_curve_2_pct')
         self.assertEqual([field_label(fields[k]) for k in keys],
-                         ['Fan 2 curve point 1 temperature (experimental)', 'Fan 1 curve point 3 speed (experimental)',
-                          'Fan 1 curve point 2 level (advanced, experimental)',
+                         ['Fan 2 curve point 1 temperature (experimental)', 'Fan 1 curve point 3 speed',
+                          'Fan 1 curve point 2 level (advanced)',
                           'Extra fan curve 2 point 3 temperature (experimental)',
                           'Extra fan curve 2 point 1 speed (experimental)',
                           'Extra fan curve 1 point 2 level (advanced, experimental)'])
         self.assertEqual([field_label(fields[k], 'es') for k in keys],
                          ['Curva del ventilador 2, punto 1: temperatura (experimental)',
-                          'Curva del ventilador 1, punto 3: velocidad (experimental)',
-                          'Curva del ventilador 1, punto 2: nivel (avanzado, experimental)',
+                          'Curva del ventilador 1, punto 3: velocidad',
+                          'Curva del ventilador 1, punto 2: nivel (avanzado)',
                           'Curva adicional 2, punto 3: temperatura (experimental)',
                           'Curva adicional 2, punto 1: velocidad (experimental)',
                           'Curva adicional 1, punto 2: nivel (avanzado, experimental)'])
+        # The GB20x curve points are not tested on hardware: every one keeps the experimental badge (the flag).
+        from nvidia_vbios.gui.presentation import row_title
+        self.assertTrue(all(row_title(fields[k], language)[1] for k in keys for language in ('en', 'es')))
         # Channels and PWM, then each channel's limits and curve points, then the extra curves, then zero RPM
         # and its temperature pairs.
         limits = lambda n: [f'fan_{n}_{side}_{unit}' for unit in ('rpm', 'pct') for side in ('max', 'min')]
@@ -1199,7 +1212,7 @@ class PresentationNumberTests(unittest.TestCase):
         from nvidia_vbios.rom import from_bytes
         field = descriptors(from_bytes(synthetic_blackwell(fans=True)))['fan_zero_rpm']
         self.assertEqual((field_label(field), field_label(field, 'es')),
-                         ('Fan zero RPM (advanced, experimental)', 'Parada de ventiladores en reposo (avanzado, experimental)'))
+                         ('Fan zero RPM (advanced)', 'Parada de ventiladores en reposo (avanzado)'))
         self.assertEqual([value_text(field, v) for v in (Decimal(0), Decimal(1), None)], ['Off', 'On', None])
         self.assertEqual([value_text(field, v, 'es') for v in (0, 1)], ['Desactivado', 'Activado'])
         # Other units keep the plain number, 0 and 1 included.

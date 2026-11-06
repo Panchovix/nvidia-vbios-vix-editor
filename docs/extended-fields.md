@@ -10,9 +10,33 @@ clock-range edits. The reviewed Ada image reports a **100 W** NVML maximum only 
 its reviewed relocated runtime payload, which is pinned to that one source; any other edited Ada
 copy deploys only through the experimental `ada-relocated-v2` representation. Its REL temperature
 input cannot be equated with NVML GPU temperature. The Ada fields are described in
-[Ada fields](#ada-fields); all of them are experimental except the power ceiling/floor and the REL
-ceiling of the hardware-tested RTX 2000 Ada (95.07.47.00.19). The RTX 3090 reference
+[Ada fields](#ada-fields); the ones [tested on hardware](#fields-tested-on-hardware) there are not experimental, and the others
+are. The RTX 3090 reference
 image is used only offline and must not be deployed (see [Ampere fields](#ampere-fields)).
+
+## Fields tested on hardware
+
+Fields marked experimental (`experimental: true` in the descriptor, a badge in the GUI)
+have not been tested on hardware on that GPU family, or only in part (their notes say what
+ran). The registry keeps the tested (field, family) pairs in one table (`HARDWARE_TESTED`);
+the [changelog details](changelog-details.md) name the cards.
+
+| Family | Not experimental | Tested on |
+| --- | --- | --- |
+| Turing | `power_max_w`, `power_min_w`, `power_default_w` (desktop), `connector_N_power_max_w`, `connector_N_power_rated_w`, `runtime_power_limit_unlock` | RTX 2070 at 225 W; RTX 2080 Ti at 500 W with 250 W per connector (Windows loader); one RTX 2070 Laptop GPU (the switch) |
+| Ampere | `power_max_w`, `power_min_w`, `power_default_w` (laptops too), `slot_power_rated_w`, `slot_power_max_w`, `fan_N_min_rpm`, `fan_N_min_pct`, `fan_N_curve_1_rpm`, `fan_N_curve_1_pct` | RTX 3050 6GB Laptop GPU (70 W ceiling, 55 W default); RTX A2000 (5 W floor, default, slot power); RTX 3090 blower (about 2000 RPM, issue #24); HP RTX 3060 (point 1 at 2000 RPM, issue #22) |
+| Ada | `power_max_w`, `power_min_w`, `power_default_w`, `nvvdd_rel_equation_max_mv` (and its alias `nvvdd_rel_max_mv`), `gpc_offset_max_mhz`, `nvvdd_vmin_mv` (pinned clamp), `slot_power_rated_w`, `slot_power_max_w`, `fan_N_min_rpm`, `fan_N_min_pct` | RTX 2000 Ada (100 W ceiling, 1100 mV REL ceiling, VMIN 700 mV read as 790 mV, slot power); RTX 4090 95.02.18 (671 W, +1200 MHz); RTX 4070 (800 RPM with the level at 15 %) |
+| GB20x | `power_default_w` (`power_max_w` and `power_min_w` never were experimental), `notebook_base_tgp_w`, `nvvdd_rel_equation_min_mv`, `msvdd_rel_equation_min_mv`, `nvvdd_vmin_mv` (constant), `gpc_offset_max_mhz`, `memory_offset_min_mhz`, `slot_power_rated_w`, `slot_power_max_w`, `input_current_rated_ma`, `input_current_max_ma`, `runtime_voltage_offsets`, `fan_zero_rpm`, `fan_N_max_rpm`, `fan_N_zero_rpm_high_temp_c` | Three RTX PRO 6000 Blackwell Max-Q and an RTX PRO 4000 SFF (REL floors 1100 mV); RTX PRO 6000 Blackwell Max-Q and RTX 5090 Laptop GPU (boot default; about 185 W on the laptop with the base TGP and ceiling); RTX PRO 4000 SFF (slot power, runtime voltage offsets); RTX 50 boards (12 V input current, GPC offset ceiling, memory offset floor); RTX 5080 (VMIN 800 -> 850 mV, fan maximum 3500 -> 4000 RPM, upper zero RPM threshold at 60 °C, issue #12); HP Omen RTX 5090 (zero RPM) |
+
+N stands for any fan or connector number; a curve point keeps its number. The untested
+paths of these fields stay experimental: a value bound to an override profile (the Ada
+cable sense profiles; the ASUS RTX 5090 XOC top-level profile, its 12 V input current
+too), the Ada and Turing notebook TGP, a VMIN set per chip (tree root or per-chip
+equation) and the VMIN copy of the RTX 4090 95.02.3C images, and the GB20x zero RPM switch
+where it writes a template or leaves bit 4 clear. So do the lower zero RPM threshold, the
+extra fan curves, curve points 2 and 3, `input_current_policy7_limit_ma`, the Ada and
+Ampere input current thresholds and every field not listed. The hidden `dram_min_table_mhz`
+alias writes the bytes of `memory_offset_min_mhz` and carries its flag.
 
 ## Capability and unit contract
 
@@ -69,43 +93,43 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | IDs (`*` stands for the `nvvdd` or `msvdd` prefix) | Meaning | Offline support |
 | --- | --- | --- |
 | `*_rel_equation_max_mv` | VFE output clamp maximum addressed by REL selector | Reviewed Blackwell; Ada temperature-derated REL; REL stays at or below ALT on the result where both can be evaluated ([REL at or below ALT](#rel-at-or-below-alt)) |
-| `*_rel_equation_min_mv` | VFE output clamp minimum (REL floor) addressed by REL selector: REL is the equation's value (GB20x: the chip value; Ada: a temperature value) clamped to the floor and the ceiling | Experimental, GB20x and Ada (NVVDD, every chain, a temperature-derated REL); editable with the REL ceiling while REL does not select the OV equation; 850 mV (Ada 830 mV and at least the highest VMIN set per chip; or the stored floor) up to the ceiling and at most OV (1200 mV), ordering group `*-rel-clamp` with it; REL stays at or below ALT where both can be evaluated; GB20x hardware-tested on RTX PRO 6000 Max-Q and RTX PRO 4000 SFF boards |
+| `*_rel_equation_min_mv` | VFE output clamp minimum (REL floor) addressed by REL selector: REL is the equation's value (GB20x: the chip value; Ada: a temperature value) clamped to the floor and the ceiling | GB20x, tested on hardware, and Ada (NVVDD, every chain, a temperature-derated REL), experimental; editable with the REL ceiling while REL does not select the OV equation; 850 mV (Ada 830 mV and at least the highest VMIN set per chip; or the stored floor) up to the ceiling and at most OV (1200 mV), ordering group `*-rel-clamp` with it; REL stays at or below ALT where both can be evaluated; GB20x hardware-tested on RTX PRO 6000 Max-Q and RTX PRO 4000 SFF boards |
 | `*_alt_equation_max_mv` | VFE output clamp maximum addressed by ALT selector | Reviewed Blackwell when present; Ada temperature-derated ALT (experimental); kept at or above REL where both can be evaluated |
 | `*_ov_equation_max_mv` | VFE output clamp maximum addressed by OV selector | Reviewed Blackwell |
 | `*_vmin_equation_max_mv` | VFE output clamp maximum addressed by the rail INFO VMIN slot (GB20x row+`0x21`, Ada/Ampere row byte 11); **not** the evaluated VMIN | Read-only |
-| `*_vmin_mv` | Evaluated minimum voltage (VMIN): the equation at GB20x row+`0x13`, Ada/Ampere row byte 7, Turing row byte 9 | Experimental, constant (GB20x) or clamp-pinned (Ada/Ampere/Turing) equations, kept below the lowest REL value; on the RTX 4090 95.02.3C images through a copy of the shared equation; a tree root (GB20x, Ampere) or per-chip equation (Ada) that nothing else names takes a value in its clamp, `current` `null` while stock |
+| `*_vmin_mv` | Evaluated minimum voltage (VMIN): the equation at GB20x row+`0x13`, Ada/Ampere row byte 7, Turing row byte 9 | Experimental except where [tested on hardware](#fields-tested-on-hardware) (a constant or pinned NVVDD VMIN on GB20x and Ada); constant (GB20x) or clamp-pinned (Ada/Ampere/Turing) equations, kept below the lowest REL value; on the RTX 4090 95.02.3C images through a copy of the shared equation; a tree root (GB20x, Ampere) or per-chip equation (Ada) that nothing else names takes a value in its clamp, `current` `null` while stock |
 | `*_vmin_fixed` | 1 while `*_vmin_mv` pins the clamp of a VMIN tree root or per-chip equation, 0 for its stock clamp (VMIN set per chip) | Experimental, GB20x, Ada and Ampere where `*_vmin_mv` is a tree root or per-chip equation; only 1 -> 0, which writes the stock clamp back byte for byte |
 | `nvvdd_rel_alt_follow_ov` | 1 when the NVVDD REL and ALT selectors (REL alone without ALT) point at the OV equation (XOC-style) | Experimental, opt-in, GB20x, Ada, Ampere and Turing; only 0 -> 1 |
 | `nvvdd_rel_alt_follow_ov_mv` | One NVVDD value for REL = ALT = OV while they follow OV: the OV constant, or a copy of it in the first unused VFE slot where other tables or the MSVDD row use it | Experimental, opt-in, GB20x, Ada, Ampere and Turing (in place only on Ada, Ampere and Turing); on a copy saved with `nvvdd_rel_alt_follow_ov` 1 and on the vendor XOC images; 850-1560 mV (Ada 830-1560 mV and Ampere 900-1430 mV, both at least the highest VMIN set per chip; Turing 950-1462 mV and at least the boot voltage and the highest VMIN) |
 | `nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv`, `msvdd_rel_fixed_mv`, `msvdd_alt_fixed_mv` | Value of a constant REL or ALT equation: its constant and clamp maximum | Experimental, Ada (NVVDD), Ampere (every rail, opt-in) and Turing (NVVDD, opt-in); from the clamp minimum up to the rail's OV value, REL <= ALT; on Turing also at least the boot voltage and the highest VMIN |
-| `fan_zero_rpm` | Bits 1\|2 of byte `0x32` of every enabled fan policy entry: 1 both set, 0 bit 2 clear (inferred meaning: the fans may stand still at low temperature) | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); 1 only where the entries store a fan-stop block the firmware accepts or a reviewed template supplies one (RTX PRO 6000 Max-Q, RTX 5000/6000 Ada, RTX A1000-A6000); read-only when the entries disagree, an entry sets bit 2 alone, or no block or template applies (RTX A2000) |
-| `fan_N_zero_rpm_low_temp_c`, `fan_N_zero_rpm_high_temp_c`, `fan_extra_M_zero_rpm_*_temp_c` | The two temperatures at bytes 30..33 (1/32 °C) of a channel's or an extra curve's fan policy entry, read with the zero RPM bits (inferred meaning: idle fans stop below the lower and start above the upper) | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); only where the entry stores a nonzero pair (the upper at least the lower) and byte 46 is not 0xff; editable where the entry's block passes the firmware validator, on Ada and Ampere where `fan_zero_rpm` is offered; an edit keeps lower > 0, lower < upper <= point 1 of the same curve and 110 °C; with zero RPM on, an edit may not leave the upper above point 1 (`ZERO_RPM_ABOVE_CURVE`) |
+| `fan_zero_rpm` | Bits 1\|2 of byte `0x32` of every enabled fan policy entry: 1 both set, 0 bit 2 clear (inferred meaning: the fans may stand still at low temperature) | Opt-in, GB20x ([tested on hardware](#fields-tested-on-hardware) except where it writes a template or bit 4 is clear), Ada and Ampere (experimental; not Turing); 1 only where the entries store a fan-stop block the firmware accepts or a reviewed template supplies one (RTX PRO 6000 Max-Q, RTX 5000/6000 Ada, RTX A1000-A6000); read-only when the entries disagree, an entry sets bit 2 alone, or no block or template applies (RTX A2000) |
+| `fan_N_zero_rpm_low_temp_c`, `fan_N_zero_rpm_high_temp_c`, `fan_extra_M_zero_rpm_*_temp_c` | The two temperatures at bytes 30..33 (1/32 °C) of a channel's or an extra curve's fan policy entry, read with the zero RPM bits (inferred meaning: idle fans stop below the lower and start above the upper) | Experimental except the GB20x `fan_N_zero_rpm_high_temp_c` ([tested on hardware](#fields-tested-on-hardware)), opt-in, GB20x, Ada and Ampere (not Turing); only where the entry stores a nonzero pair (the upper at least the lower) and byte 46 is not 0xff; editable where the entry's block passes the firmware validator, on Ada and Ampere where `fan_zero_rpm` is offered; an edit keeps lower > 0, lower < upper <= point 1 of the same curve and 110 °C; with zero RPM on, an edit may not leave the upper above point 1 (`ZERO_RPM_ABOVE_CURVE`) |
 | `*_rel/alt/ov/vmin_selector_index` | Full stored selector index | Read-only |
 | `*_boot_voltage_uv` | Stored boot voltage | Read-only, preserved |
 | `*_output_ocp_max_ma` | Reviewed output-OCP policy maximum (client ceiling) | Reviewed Blackwell rows13/14, also on the GB20x notebook layout; NVVDD row 13 on single-rail images, also on the notebook layout with the single-rail table (RTX 5050 Laptop GPU); Turing NVVDD row 13 (class 10, experimental, opt-in); Ampere NVVDD row 13 (class 0, experimental, opt-in) |
 | `*_output_ocp_rated_ma` | Reviewed output-OCP rated value, enforced from boot | Experimental, reviewed Blackwell rows13/14, also on the GB20x notebook layout; NVVDD row 13 on single-rail images, also on the notebook layout with the single-rail table (RTX 5050 Laptop GPU); Turing and Ampere NVVDD row 13 (opt-in) |
-| `slot_power_rated_w`, `slot_power_max_w` | PCIe slot power policy: row 19 (SFF), row 18 (5060 Ti), Ada and Ampere row 5, Turing row 3 | Experimental, reviewed row shapes only |
-| `connector_N_power_rated/max_w`, `connector_N_current_threshold_rated/max_ma` | Power policy and current hardware threshold of external 12 V connector sense channel N, numbered in power-row order; on Ada and GB20x the power policy of the auxiliary power connector input | Experimental: Ampere and Turing, current thresholds opt-in; Ada and GB20x (power only, opt-in), reviewed row shapes on the connector input channel |
+| `slot_power_rated_w`, `slot_power_max_w` | PCIe slot power policy: row 19 (SFF), row 18 (5060 Ti), Ada and Ampere row 5, Turing row 3 | Reviewed row shapes only; [tested on hardware](#fields-tested-on-hardware) on GB20x, Ada and Ampere, experimental on Turing |
+| `connector_N_power_rated/max_w`, `connector_N_current_threshold_rated/max_ma` | Power policy and current hardware threshold of external 12 V connector sense channel N, numbered in power-row order; on Ada and GB20x the power policy of the auxiliary power connector input | Experimental except the Turing power policies ([tested on hardware](#fields-tested-on-hardware)): Ampere and Turing, current thresholds opt-in; Ada and GB20x (power only, opt-in), reviewed row shapes on the connector input channel |
 | `slot_current_threshold_rated/max_ma`, `nvvdd_power_threshold_rated/max_w` | Hardware-threshold policies (slot 12 V current; Ada NVVDD output power) | Experimental, opt-in; slot current on Ada, Ampere and Turing, NVVDD power on Ada only |
 | `board_fixed_rated_w` | Rated value of the fixed board policies 2/7 | Experimental, opt-in (hidden in the GUI by default) |
-| `notebook_base_tgp_w` | Row 2 +73 of the GB20x notebook layout, the base TGP that Dynamic Boost adds its boost to (as one RTX 5090 Laptop GPU behaved) | Experimental, opt-in (hidden in the GUI by default), GB20x notebook layout only; hardware-tested on one RTX 5090 Laptop GPU, where it raised the running limit only together with `power_default_w` and `power_max_w`; an edited value stays between `power_default_w` and `power_max_w`, which it does not bound |
-| `runtime_power_limit_unlock` | TGP index of the power table header (3x byte 10, GB20x byte 22): 1 names the TGP row (row 2) there, 0 leaves it empty (`0xff`), as the laptop images ship, where current drivers refuse runtime power limit changes | Experimental, opt-in (hidden in the GUI by default), Turing, Ampere and GB20x notebook headers, not Ada; 0 gives back the stock bytes; hardware-tested on one RTX 2070 Laptop GPU (Turing, Windows) with the limits at stock, not on Ampere or GB20x; see [Runtime power limit switch](#runtime-power-limit-switch-runtime_power_limit_unlock-opt-in) |
-| `input_current_rated_ma`, `input_current_max_ma` | 12 V board input-current policy, row 9 (Ada: thresholds 0/1, rows 9/10) | Experimental, reviewed row shapes |
+| `notebook_base_tgp_w` | Row 2 +73 of the GB20x notebook layout, the base TGP that Dynamic Boost adds its boost to (as one RTX 5090 Laptop GPU behaved) | Opt-in (hidden in the GUI by default), GB20x notebook layout only; tested on hardware on one RTX 5090 Laptop GPU, so not experimental, where it raised the running limit only together with `power_default_w` and `power_max_w`; an edited value stays between `power_default_w` and `power_max_w`, which it does not bound |
+| `runtime_power_limit_unlock` | TGP index of the power table header (3x byte 10, GB20x byte 22): 1 names the TGP row (row 2) there, 0 leaves it empty (`0xff`), as the laptop images ship, where current drivers refuse runtime power limit changes | Opt-in (hidden in the GUI by default), Turing (not experimental), Ampere and GB20x (experimental) notebook headers, not Ada; 0 gives back the stock bytes; hardware-tested on one RTX 2070 Laptop GPU (Turing, Windows) with the limits at stock, not on Ampere or GB20x; see [Runtime power limit switch](#runtime-power-limit-switch-runtime_power_limit_unlock-opt-in) |
+| `input_current_rated_ma`, `input_current_max_ma` | 12 V board input-current policy, row 9 (Ada: thresholds 0/1, rows 9/10) | Reviewed row shapes; [tested on hardware](#fields-tested-on-hardware) on GB20x (experimental when bound to an override profile, and on Ada and Ampere) |
 | `input_current_policy7_limit_ma` | Policy 7 limit linked to the 12 V input policy | Experimental, reviewed Blackwell row shape |
 | `input_policy_9_max_raw` | Row 9 raw maximum; units unknown | Read-only, only when row 9 is unrecognized |
 | `fan_channels` | Active fan channels across the five fan tables | Experimental, Blackwell, Ada and Ampere, up to the stored channels; read-only on Turing |
 | `fan_pwm_frequency_hz` | PWM frequency of every active fan channel | Experimental, Blackwell, Ada, Ampere and Turing, 21-28 kHz |
-| `fan_N_min/max_rpm`, `fan_N_min/max_pct` | Speed (RPM) and level (%) limits of active fan channel N, numbered from 1 | Experimental, Blackwell, Ada, Ampere and Turing; move alone only as far as the stored fan curves (a minimum as far as the channel's own curve: the extra curves may sit below it), past them together with the curve points; level limits opt-in |
-| `fan_N_curve_K_temp_c/rpm/pct`, `fan_extra_M_curve_K_temp_c/rpm/pct` | Point K (1..3) of channel N's stored fan curve or of extra curve M: temperature (°C, 1/32 °C steps), speed (RPM), level (%) | Experimental, Blackwell, Ada, Ampere and Turing; points stay in order and inside the limits (an extra curve from 0 up to the lowest channel maximum, so it may sit below the minimums); levels opt-in |
-| `power_default_w` | Rated TGP value used at boot | Experimental; Blackwell, Ada, Ampere, Turing |
+| `fan_N_min/max_rpm`, `fan_N_min/max_pct` | Speed (RPM) and level (%) limits of active fan channel N, numbered from 1 | Blackwell, Ada, Ampere and Turing, experimental except where [tested on hardware](#fields-tested-on-hardware) (`fan_N_max_rpm` on GB20x, `fan_N_min_rpm` and `fan_N_min_pct` on Ada and Ampere); move alone only as far as the stored fan curves (a minimum as far as the channel's own curve: the extra curves may sit below it), past them together with the curve points; level limits opt-in |
+| `fan_N_curve_K_temp_c/rpm/pct`, `fan_extra_M_curve_K_temp_c/rpm/pct` | Point K (1..3) of channel N's stored fan curve or of extra curve M: temperature (°C, 1/32 °C steps), speed (RPM), level (%) | Blackwell, Ada, Ampere and Turing, experimental except `fan_N_curve_1_rpm` and `fan_N_curve_1_pct` on Ampere ([tested on hardware](#fields-tested-on-hardware)); points stay in order and inside the limits (an extra curve from 0 up to the lowest channel maximum, so it may sit below the minimums); levels opt-in |
+| `power_default_w` | Rated TGP value used at boot | Blackwell, Ada, Ampere, Turing; [tested on hardware](#fields-tested-on-hardware), experimental only on the Ada and Turing notebook TGP and where override profiles bind it |
 | `max_operating_temp_c` | Maximum operating temperature: the three temperatures (1/32 °C) of one thermal policy entry (P+0x50; GB20x entry 0, Turing, Ampere and Ada the entry header byte 9 names), written together | Experimental, GB20x, Ada, Ampere and Turing; 40 °C up to the product's stock value + 3 °C (only lower on products without a reviewed stock value); read-only where that entry is disabled or not named (XOC-style images) and on Ampere and Ada laptops (a lower limit of the same kind); never imported |
-| `gpc_offset_min/max_mhz`, `memory_offset_min_mhz` | Clock offset range in MHz (NVML scale) | Experimental, reviewed Blackwell and Ada; Ampere and Turing by analogy |
+| `gpc_offset_min/max_mhz`, `memory_offset_min_mhz` | Clock offset range in MHz (NVML scale) | Experimental except where [tested on hardware](#fields-tested-on-hardware) (`gpc_offset_max_mhz` on Blackwell and Ada, `memory_offset_min_mhz` on Blackwell); reviewed Blackwell and Ada; Ampere and Turing by analogy |
 | `gpc_curve_offset_mhz` | Default offset of the GPC VF curve: a constant MHz equation linked as the next equation of the GPC root in the VFE table | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); -500..+500 MHz; 0 restores the stock bytes |
 | `factory_gpc_offset_mhz` | Factory GPC offset: entry A0 of the factory clock record (P+0x98), a flag and a signed kHz value, applied at boot as the GPC clock frequency delta while the flag is 1 | Experimental, GB20x, Ada, Ampere and Turing; -500..+500 MHz in whole MHz on every image with the reviewed record; a value other than 0 sets the flag; imported with the clock offsets |
 | `factory_memory_offset_mhz` | Factory memory offset: entry A1 of the same record, applied as the memory clock frequency delta, in the memory clock `nvidia-smi` shows (half the transfer rate) | Experimental, GB20x, Ada, Ampere and Turing; -5000..+5000 MHz in whole MHz, with the rules of `factory_gpc_offset_mhz`; imported with the clock offsets |
 | `factory_rated_boost_mhz` | Rated boost clock of the factory clock record (entry B1) | Read-only, GB20x, Ada, Ampere and Turing, where B1 is enabled |
 | `memory_point_K_follows_offset` | Bit 4 of the flag byte of the K-th intermediate memory level (from the lowest) in the clock programming table: 1 when a memory offset was expected to move that level | Experimental, opt-in, GB20x, Ada and Ampere (not Turing); the levels with the bit stay the top ones; idle and top levels not offered; did not stop the drop on the one card tested (RTX 3050 Laptop GPU) |
-| `xbar/sys/vid_min/max_table_mhz`, `dram_min_table_mhz` | Clock offset range in table MHz | Experimental, reviewed Blackwell and Ada; Ampere; Turing `dram_min_table_mhz` only (its XBAR/SYS/VID rows store no range) |
+| `xbar/sys/vid_min/max_table_mhz`, `dram_min_table_mhz` | Clock offset range in table MHz | Experimental, reviewed Blackwell and Ada; Ampere; Turing `dram_min_table_mhz` only (its XBAR/SYS/VID rows store no range); `dram_min_table_mhz` carries the flag of `memory_offset_min_mhz` (not experimental on GB20x) |
 | `perf_cf_util_policy` | PERF_CF utilization policy (policy entry 0, bit 7): 1 on, 0 off | Experimental, GB20x, Ada, Ampere and Turing, Advanced section; see [Advanced section](#advanced-section-performance-controllers-and-idle-power) |
 | `perf_cf_D_target_pct`, `perf_cf_D_jump_pct`, `perf_cf_D_hysteresis_down`, `perf_cf_D_hysteresis_up` (D = `gpc`, `dram`, `vid`) | Utilization target and jump threshold (whole %) and decrease/increase hysteresis counts of the GPC, DRAM and video utilization controllers | Experimental, GB20x, Ada, Ampere and Turing, Advanced section; only while `perf_cf_util_policy` is 1 (`depends_on`) |
 | `lpwr_gr_power_gating`, `lpwr_mscg`, `lpwr_nvdec_gating`, `lpwr_nvenc_gating`, `lpwr_ofa_gating`, `lpwr_nvjpg_gating`, `lpwr_difr`, `lpwr_gr_rail_gating` | LPWR idle power feature switches: 1 Stock, 0 Off (bit 0 of the entries the image enables in stock) | Experimental, Advanced section; GR power gating and MSCG on every family, the video engines on GB20x, DIFR on GB20x and Ada, GR rail gating where the image enables it (in the corpus the RTX PRO 4000 SFF, RTX 5080 and 5090 Laptop GPU, GA102 RTX 3080/3090 and RTX A4500..A6000, A40); `lpwr_coverage: "enabled-entries"` on a product the editor has not reviewed ([which entries a switch covers](#lpwr-idle-power-switches-and-idle-times)) |
@@ -161,7 +185,8 @@ it is read-only and labelled as such:
 - **Ampere** stores the same row byte 7, mostly as a clamp-pinned constant; it has
   no hardware result.
 
-`*_vmin_mv` is offered, experimental, only on these shapes:
+`*_vmin_mv` is offered only on these shapes. It is experimental except for the NVVDD constant (GB20x) and
+clamp-pinned (Ada) equations, tested on hardware as above:
 
 - GB20x: a constant voltage equation (type 1, unit 2, minimum = maximum = value,
   zero coefficients, no next link) in object 0x14 that no other equation references
@@ -426,8 +451,8 @@ both REL ceilings at 1125 mV. On the Max-Q boards the driver evaluated REL at 11
 and MSVDD with no runtime request, where their chip value is about 990 to 1000 mV. On the RTX
 PRO 4000 SFF a runtime request of 1000 mV on both rails (an offset of -100 mV written by a
 tuning tool) evaluated 1000 mV: a runtime offset still adds to the floor where the driver
-applies it, so a negative one takes REL below the floor. Other boards are not tested.
-Experimental: more voltage means more heat, power and wear, and removing the override brings
+applies it, so a negative one takes REL below the floor. So the GB20x floors are not
+experimental. More voltage means more heat, power and wear, and removing the override brings
 the card back.
 
 **Ada.** `nvvdd_rel_equation_min_mv` writes the clamp minimum (+3) of the NVVDD REL equation
@@ -450,8 +475,8 @@ terms add) until VMIN is fixed. On the RTX 5000 Ada that is 1140.5 mV, above its
 floor, which there only goes up. A constant REL (the newer RTX 4090 image, the RTX 4080, the
 RTX 4000 Ada and the RTX 5000 Ada Laptop GPU image) takes its value through `nvvdd_rel_fixed_mv` instead,
 which the floor's reason names, and a compare REL (RTX 4060 family, RTX 4070 Ti SUPER, laptops)
-keeps both read-only. Not hardware-tested (on an RTX 2000 Ada a raised ceiling moved the
-evaluated REL).
+keeps both read-only. Not hardware-tested, so experimental (on an RTX 2000 Ada a raised
+ceiling moved the evaluated REL, so the Ada NVVDD REL ceiling is not experimental).
 
 ## REL at or below ALT
 
@@ -672,8 +697,10 @@ fixes in the VBIOS.
   REL floor) as the REL and OV ceilings, and editing those values writes the hook's clamp, which
   breaks the hooks (this release then reads the set as partial) and leaves the real limit unchanged.
 
-Not hardware-tested: whether the Linux GSP firmware or the Windows driver accepts the added entries
-and applies a value written at runtime has not been checked here. The GSP-RM 615 and 620 VFE parsers
+Tested on hardware on one RTX PRO 4000 SFF (Linux, driver 615.78.08): the VFE masks and selectors
+the GSP firmware reports matched the hooks, and a runtime tool wrote the hook variables, so the
+switch is not experimental. Other cards and drivers, the Windows driver among them, are untested.
+The GSP-RM 615 and 620 VFE parsers
 read the hook entry like any type-1 equation, but the evaluator was not traced, so "each equation
 clamped to its own range, then added along its next links" rests on the RTX 2000 Ada VMIN hardware
 test and on mVolt+'s own runtime check. Two links of the hooks occur on no NVIDIA image: the VMIN
@@ -887,12 +914,14 @@ The second command succeeds only if 100 W also meets that ROM's protected-defaul
 maximum bound. Removing `--dry-run` saves a new copy and JSON manifest; it does
 not deploy or activate the image.
 
-## Experimental boot default power, 12 V input current and clock ranges
+## Boot default power, 12 V input current and clock ranges
 
 Offline encoding, ownership, hashes and reparsing are verified like the other
-fields. **No edited value of these fields has
-been booted on hardware**, so each descriptor carries `experimental: true` and the
-GUI labels say "experimental" in English and Spanish. Runtime capability stays
+fields. Where no edited value of a field has been booted on hardware in a family, its
+descriptor carries `experimental: true` and the GUI shows the experimental badge, in
+English and Spanish. The boot default power, the GB20x 12 V input current, the Ada and
+GB20x GPC offset ceiling and the GB20x memory offset floor are [tested on
+hardware](#fields-tested-on-hardware) and carry no such flag. Runtime capability stays
 `unknown`.
 
 ### Boot default power (`power_default_w`)
@@ -999,7 +1028,8 @@ Raising them lets the board draw more than the PCIe slot rating, which is only
 appropriate with hardware that can supply that power. The fields are read-only when
 a profile table cannot be decoded. The 12 V
 input-current values (6600 mA on the SFF) may also bind and should be raised with
-them. Nothing here is hardware-tested.
+them. Tested on hardware on an RTX PRO 4000 SFF, an RTX A2000 and an RTX 2000 Ada, so
+not experimental on GB20x, Ampere and Ada; the Turing slot power stays experimental.
 
 ### Auxiliary power connector input, opt-in (`connector_1_power_rated_w`, `connector_1_power_max_w`)
 
@@ -1168,8 +1198,11 @@ and `nvmlDeviceGetMemClkMinMaxVfOffset` on the seven reviewed devices: GPC
 maxima 12000/13000 for tables 6000/6500. Every range must keep 0 inside it, so a
 minimum is at most 0 and a maximum at least 0. The existing
 `memory_offset_max_mhz`/`dram_max_table_mhz` ceiling keeps its hardware-validated
-status. Ada and Ampere rows are named by their GV HAL position (see [Ada fields](#ada-fields)
-and [Ampere fields](#ampere-fields)).
+status, and `gpc_offset_max_mhz` (also on Ada, where an RTX 4090 took a +1200 MHz ceiling)
+and `memory_offset_min_mhz` are [tested on hardware](#fields-tested-on-hardware) on RTX 50
+boards (so is the hidden `dram_min_table_mhz` alias of the floor); the other ranges stay experimental. Ada and
+Ampere rows are named by their GV HAL position (see [Ada fields](#ada-fields) and [Ampere
+fields](#ampere-fields)).
 
 ### GPC curve offset (`gpc_curve_offset_mhz`, opt-in)
 
@@ -1540,8 +1573,9 @@ policy table keeps the v0x40 format but places its rows differently:
   The adapter feeds the CPU and the GPU at full load together, and a battery that drains
   while plugged in is the sign that it falls short. On the notebook layout `power_max_w`,
   `power_default_w` and `notebook_base_tgp_w` carry this as a `hardware-test` evidence
-  entry (`set_tested: true`) whose scope names that one laptop.
-- **Base TGP, experimental and opt-in (`notebook_base_tgp_w`).** Row 2 +73 holds 150000 mW
+  entry (`set_tested: true`) whose scope names that one laptop, and none of the three is
+  experimental on the notebook layout.
+- **Base TGP, opt-in (`notebook_base_tgp_w`).** Row 2 +73 holds 150000 mW
   on the RTX 5080 and 5090 Laptop GPU and 60000 mW on the RTX 5050 Laptop GPU, the only
   such value in each image, and 0 on every desktop and Max-Q row 2.
   A public log from another RTX 5090 Laptop GPU shows the firmware's TGP policy base at
@@ -1665,8 +1699,9 @@ edit `nvidia-smi -pl` and MSI Afterburner's power limit slider were refused. Wit
 became available, and at 64 % the GPU was limited to 73.6 W (64 % of 115 W): under load (a
 Vulkan game at 99 % GPU use) it drew 71.1 W at 1245 MHz and 64 °C. Not reported: which of the
 two Turing loader files was loaded, whether Dynamic Boost was active and the behaviour on
-battery; nothing above the stock 115 W was tried. Other Turing laptops and the Ampere and GB20x
-laptops are not tested.
+battery; nothing above the stock 115 W was tried. So the switch is not experimental on Turing.
+Other Turing laptops and the Ampere and GB20x laptops are not tested, and there it stays
+experimental.
 
 What still limits the result (static analysis of GSP-RM 615.78.08 and the 621.01 driver; on
 Turing, of GSP-RM 621.01 `gsp_tu10x.bin` too):
@@ -1800,9 +1835,19 @@ and every active channel is stored. Fan fields are offered only when that holds.
   matched the unchanged 1050 RPM row minimum. A lowered minimum did not lower the fans on another
   RTX 5080 (Zotac, both channels): a copy with both minimums and the first point of
   every curve lowered from 1050 to 900 RPM loaded through the Windows loader (Verify
-  matched byte for byte), but at 30 % the fans still ran at 1053 and 1109 RPM. Whether
-  the driver, the fan controller or the fans hold that floor is not known. The other
-  limits, the curve points and other boards are not hardware-tested.
+  matched byte for byte), but at 30 % the fans still ran at 1053 and 1109 RPM, with the
+  level minimum left at stock. On an RTX 4070 (stock 1200 RPM and 25 %) the speed minimum
+  lowered to 800 RPM alone also stopped near 1050 RPM at 30 %, and with both level minimums
+  lowered to 15 % too the fans ran at 800 RPM; an RTX 3090 blower (stock 3000 RPM and 60 %)
+  idled near 2000 RPM with both minimums at 2000 RPM and 30 % and point 1 of both curves at
+  2000 RPM and 40 % ([issue #24](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/24)),
+  and on an HP OEM RTX 3060 12 GB point 1 at 2000 RPM and 45 % raised the idle speed to about
+  2000 RPM ([issue #22](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/22)). So
+  the level minimum most likely acts as a PWM floor: lower it with the speed minimum. Tested
+  on hardware, so not experimental: `fan_N_max_rpm` on GB20x, `fan_N_min_rpm` and
+  `fan_N_min_pct` on Ada and Ampere, and point 1 of a channel's own curve
+  (`fan_N_curve_1_rpm`, `fan_N_curve_1_pct`) on Ampere. The other limits, curve points and
+  families are not hardware-tested.
   `fan_N_min_rpm`, `fan_N_max_rpm`, `fan_N_min_pct` and `fan_N_max_pct`
   (N = row index + 1, active channels only) edit these bytes:
   - A minimum may go from 0 up to the first point of the channel's own curve, and
@@ -1893,8 +1938,8 @@ covers the reviewed table size at every fan pointer: when the tables do not deco
 agree in the source, including a table with another header, no byte of them may
 change. All fan fields are
 reviewed resolvers: an extension binding cannot unlock them, relax the band or the
-curve bounds, redirect their bytes or substitute a layout. Only the RTX 5080 limit
-test above and the zero RPM test below have booted a fan edit on hardware.
+curve bounds, redirect their bytes or substitute a layout. The fan edits booted on
+hardware are the limit and curve tests above and the zero RPM tests below.
 
 ### Zero RPM (`fan_zero_rpm`, opt-in)
 
@@ -2059,7 +2104,10 @@ Byte `0x32`, the last byte of each 51-byte policy entry, is a flag byte.
   (`PRESERVED_FIELD_CHANGED`, or `CONFLICTING_FIELDS` when both write them).
 
 The other policy entry bytes are preserved. Setting 1 is hardware-tested on that one
-HP Omen RTX 5090; other boards and setting 0 are not.
+HP Omen RTX 5090; other boards and setting 0 are not. So the GB20x field is not
+experimental, except where it writes a template or leaves bit 4 clear (the RTX PRO 6000
+Max-Q and Workstation ROMs), which no tested board ran; on Ada and Ampere it is
+experimental.
 
 ### Zero RPM temperatures (`fan_N_zero_rpm_low_temp_c`, `fan_N_zero_rpm_high_temp_c`, opt-in)
 
@@ -2182,7 +2230,9 @@ Bytes 30..33 of a policy entry hold two `<H` temperatures in 1/32 °C, the lower
 - **Effect.** Setting a higher upper value does not promise that the fans start at
   exactly that temperature: other fan policies, the extra curves and sensors may
   still decide. Hardware-tested on that one RTX 5080 only; not hardware-tested on Ada
-  or Ampere.
+  or Ampere. So the GB20x upper temperature of a fan channel
+  (`fan_N_zero_rpm_high_temp_c`) is not experimental; the lower one, those of the extra
+  curves and every Ada and Ampere pair are.
 - **Ada and Ampere.** Their policy tables have the same version (0x20) and 51-byte
   entries as GB20x, and the version byte is what selects the entry parser, both in
   GSP-RM (`gsp_ga10x.bin` is built for GA10x, AD10x and GB20x) and in the Windows
@@ -2462,9 +2512,12 @@ Every Ada rule is structural and was checked on each parseable image of the Ada
 corpus (20 of 21 images; the RTX 4090 Laptop image has no EFI image and is
 refused by the image-chain parser). Writes go to the same field in every
 duplicate chain, and the additive checksum of each touched image is repaired.
-Only the RTX 2000 Ada (10de:28b0, 95.07.47.00.19) runs edited images on the maintainers' Linux machine: its
-power ceiling/floor and REL ceiling keep their reviewed status; every other Ada
-field, and every field on any other Ada image, is marked experimental. The
+The RTX 2000 Ada (10de:28b0, 95.07.47.00.19) runs edited images on the maintainers' Linux machine, and
+an RTX 4090 (95.02.18, Windows loader) and an RTX 4070 (fan minimums) ran edited copies too. The
+fields [tested on hardware](#fields-tested-on-hardware) on Ada (board power, NVVDD REL ceiling,
+GPC offset ceiling, a pinned NVVDD VMIN, PCIe slot power and the fan minimums) are not
+experimental on any Ada image, except the notebook TGP and a TGP bound to override
+profiles; every other Ada field is marked experimental. The
 RTX 4070 Laptop image (95.06.15) ends its last data image with the empty closing
 table and three 0xff bytes instead of the 15-byte padding; that tail is also
 accepted as a checksum slot (see `editor-api.md`), so its fields are no longer
@@ -2694,8 +2747,9 @@ bytes); programming indices are not used for names, so the shifted indices of th
 RTX 4080 Laptop image keep their names. Fields mirror GB20x: GPC MHz = table
 (NVML), memory MHz = 2 × table (NVML; `dram_*_table_mhz` are table MHz), XBAR/SYS/VID
 in table MHz. The RTX 2000 Ada booted a GPC ceiling of 1500 and a memory floor of
--5000 MHz as reported NVML ranges; applied offsets were not tested, so the clock
-fields stay experimental. HUB, PWR, DISP, PCIEGEN and HOST stay unexposed.
+-5000 MHz as reported NVML ranges; applied offsets were not tested there, so the clock
+fields stay experimental except the GPC offset ceiling, which an RTX 4090 took at +1200 MHz.
+HUB, PWR, DISP, PCIEGEN and HOST stay unexposed.
 
 **Fans (P+0x58, 0x5C, 0x64, 0xDC, 0xE0).** The GB20x table set with a 6-byte cooler
 header and two entries per table. An Ada channel is stored when its mapping,
@@ -2727,8 +2781,10 @@ GPC and memory offsets](#factory-gpc-and-memory-offsets-factory_gpc_offset_mhz-f
 Ampere GA102-GA107 images use the Ada table set with narrower rows. Every rule
 below is structural and was checked on the 35 images of the Ampere corpus (desktop,
 workstation, datacenter and laptop); all are recognized. No Ampere board runs on
-the maintainers' Linux machine, so **every Ampere field is experimental** and none
-has a runtime reading there. An RTX A2000 took an edited power floor through the
+the maintainers' Linux machine, so no Ampere field has a runtime reading there, and every
+Ampere field is experimental except those [tested on hardware](#fields-tested-on-hardware)
+through the Windows loader: board power, PCIe slot power (RTX A2000), the fan minimums
+and point 1 of a fan's own curve. An RTX A2000 took an edited power floor through the
 Windows loader. An RTX 3050 6GB Laptop GPU (75 W HP BIOS) took a 70 W ceiling and a
 55 W boot default the same way, and the driver reported a 70 W limit. On the same
 laptop a 95 W ceiling with an 80 W boot default let it draw above its stock 75 W (about
@@ -2968,8 +3024,10 @@ the Windows loader (driver 617.70, GSP 615.78.08): `nvidia-smi` reported the edi
 (500 W default and maximum), but the card stopped near 300 W under load until the
 connector power rows were raised too (250 W each); it then reached about 458 W, and the
 voltage limiters (Reliability Voltage, Max Operating Voltage) triggered, not the power
-limiter. No other Turing field has run on hardware, so **every Turing field is
-experimental**. The tester guide is in [turing.md](turing.md).
+limiter. An RTX 2070 took a 225 W limit, and one RTX 2070 Laptop GPU ran the runtime power
+limit switch. So the desktop board power, the connector power rows and that switch are not
+experimental ([tested on hardware](#fields-tested-on-hardware)); every other Turing field,
+the notebook TGP included, is. The tester guide is in [turing.md](turing.md).
 
 **Image chains.** Each bank holds legacy + EFI + two E0 images (laptops without EFI:
 legacy marked last + two E0 images), and the second E0 image is not flagged last: a

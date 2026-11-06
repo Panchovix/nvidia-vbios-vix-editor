@@ -56,8 +56,8 @@ funcionando sin las dependencias gráficas.
    **Piso de potencia de la placa** (`power_min_w`) acepta desde 1 W hasta el
    valor TGP nominal por defecto, en pasos exactos de 0,001 W. El **Techo de
    potencia de la placa** mantiene como mínimo los valores nominales por defecto.
-   Los campos experimentales (potencia por defecto al arrancar, corriente de
-   entrada de 12 V y rangos de offset de reloj) llevan una insignia. Cambia
+   Los campos sin probar en hardware en la familia de GPU de la ROM (por ejemplo, la
+   mayoría de los rangos de offset de reloj) llevan la insignia experimental. Cambia
    juntos los valores relacionados, como un nuevo valor por defecto y su techo:
    el orden mínimo <= por defecto <= máximo se comprueba sobre el resultado
    combinado. En un portátil, Dynamic Boost pide el límite de potencia en uso mientras
@@ -90,11 +90,12 @@ funcionando sin las dependencias gráficas.
    guardan un límite más bajo del mismo tipo (89 °C) y no se sabe cuál alcanza primero la
    GPU. **Mostrar campos avanzados (estilo XOC)**
    (desmarcada por defecto) muestra campos opcionales como la potencia nominal de
-   las políticas fijas 2/7, el **TGP base del portátil** experimental de las ROM RTX 50 con
+   las políticas fijas 2/7, el **TGP base del portátil** de las ROM RTX 50 con
    la disposición de portátil (se comportó como la base a la que Dynamic Boost le suma su
    boost en una RTX 5090 Laptop GPU; súbelo junto con el techo y la potencia por defecto al arrancar,
    ver arriba), **Permitir cambiar el límite de potencia en uso** en las ROM de portátil
-   Turing, Ampere y RTX 50 (un interruptor, experimental: activado escribe la fila del TGP en
+   Turing, Ampere y RTX 50 (un interruptor, experimental en Ampere y RTX 50: activado escribe
+   la fila del TGP en
    la entrada del TGP del encabezado de la tabla de potencia, que las ROM de portátil dejan
    vacía (`0xff`), para que los drivers actuales acepten cambios del límite de potencia en uso
    desde `nvidia-smi -pl` o MSI Afterburner, entre el piso y el techo de potencia de la placa
@@ -107,7 +108,8 @@ funcionando sin las dependencias gráficas.
    con los límites de fábrica, el deslizador del límite de potencia de MSI Afterburner funcionó
    y el 64 % (73,6 W) se mantuvo bajo carga, mientras que los portátiles Ampere y RTX 50 no se
    probaron; la fila lo indica), **Offsets de voltaje en tiempo de ejecución** en las ROM RTX 50
-   (un interruptor, experimental, sin probar en hardware: activado agrega los hooks compatibles con
+   (un interruptor, probado en hardware en una RTX PRO 4000 SFF: activado agrega los hooks
+   compatibles con
    mVolt+ a los límites REL, ALT, OV y VMIN, para que una herramienta que escribe la variable VFE en
    tiempo de ejecución sume un offset, en µV y limitado a ±1,25 V, sobre los voltajes fijados aquí;
    sin esa herramienta no cambia nada; desactivado los quita; la fila lo indica), en
@@ -131,8 +133,9 @@ funcionando sin las dependencias gráficas.
    1462 mV, y nunca bajo el VMIN más alto donde cada chip fija el suyo) y, en
    Blackwell, Ada y Ampere, **Parada de
    ventiladores en reposo** (un interruptor para los bits que permiten que los
-   ventiladores se detengan en reposo, probado en hardware en una RTX 5090, no en Ada,
-   Ampere ni en la RTX PRO 6000 Max-Q; experimental). En las tarjetas blower que no
+   ventiladores se detengan en reposo, probado en hardware en una RTX 5090; experimental en
+   Ada y Ampere, y donde escribe los valores de parada de otra tarjeta o la forma de flags
+   con el bit 4 de más abajo). En las tarjetas blower que no
    guardan valores de parada (RTX PRO 6000 Max-Q, RTX 5000 y 6000 Ada, serie RTX A) el
    interruptor escribe además los valores que NVIDIA guarda en otra de sus tarjetas, y
    desactivarlo en esa copia escribe de vuelta los bytes de fábrica; unas notas bajo el
@@ -163,7 +166,9 @@ funcionando sin las dependencias gráficas.
    en reposo** de cada ventilador y curva adicional (Blackwell, Ada y Ampere) son las
    dos temperaturas guardadas junto a esos bits: lo más probable es que los
    ventiladores se detengan bajo el inferior y arranquen sobre el superior, y en una
-   RTX 5080 subir el superior los mantuvo detenidos por debajo. El umbral superior
+   RTX 5080 subir el superior los mantuvo detenidos por debajo (por eso en las ROM RTX 50
+   el umbral superior de cada ventilador no es experimental; el inferior y los de las
+   curvas adicionales sí). El umbral superior
    llega como mucho al punto 1 de la misma curva de ventilador. Con la parada
    activada, un punto 1 por debajo del umbral superior, o activar la parada con un
    umbral superior por encima del punto 1, se rechaza y la fila que hay que cambiar
@@ -190,9 +195,11 @@ funcionando sin las dependencias gráficas.
    canales de conector, cada fila de conector anota los valores nominal y máximo de
    esa fila; donde esa fila tiene un campo, sube también la **suma de potencia de
    conectores**. El
-   OCP nominal de salida y la potencia del slot de la SFF también son
-   experimentales: el valor nominal es el que el firmware aplica desde el arranque,
-   así que bajarlo limita la tarjeta.
+   OCP nominal de salida también es experimental, y también lo es la potencia del slot PCIe
+   en Turing (la potencia del slot está probada en hardware en una RTX PRO 4000 SFF, una
+   RTX A2000 y una RTX 2000 Ada).
+   En ambos el valor nominal es el que el firmware aplica desde el arranque, así que
+   bajarlo limita la tarjeta.
    En Blackwell, el piso modifica la fila TGP8 y conserva los mínimos distintos
    de las filas2/7; los perfiles reconocidos sólo reemplazan máximo y default.
    Ada/Ampere utilizan el índice TGP de la cabecera en cada cadena duplicada
@@ -260,7 +267,9 @@ PWM de los ventiladores se muestra y escribe en kHz de la misma forma; la tarjet
 Ventiladores también permite cambiar la cantidad de canales de ventilador y, por
 canal, la velocidad mínima y máxima en RPM, luego los tres puntos de la curva de
 ventilador guardada del canal (temperatura en °C, velocidad en RPM) y al final las
-curvas adicionales, que valen para todos los canales (todo experimental). Las
+curvas adicionales, que valen para todos los canales (experimental salvo la velocidad
+máxima en RTX 50, los mínimos en Ada y Ampere y el punto 1 de la curva propia de un
+ventilador en Ampere, que están probados en hardware). Las
 temperaturas avanzan de a 1/32 °C (`60.5` sirve, `60.01` no) y muestran decimales solo
 cuando hacen falta. Un límite solo llega hasta las curvas guardadas: para bajar un
 máximo por debajo de ellas, escribe el nuevo máximo y los puntos de curva que
@@ -286,14 +295,17 @@ solo lectura y su fila dice por qué. Los techos de
 salida OCP revisados se expresan en mA, pero editarlos no demuestra que el firmware
 los aplique. Un techo de ecuación REL/ALT/OV tampoco es un voltaje evaluado ni
 un offset runtime. En Blackwell, **Piso REL de NVVDD** y **Piso REL de MSVDD**
-(experimental, bajo cada techo REL) fijan el REL más bajo: el REL es el valor propio
+(bajo cada techo REL; probados en hardware en placas RTX PRO 6000 Max-Q y RTX PRO 4000
+SFF) fijan el REL más bajo: el REL es el valor propio
 del chip mantenido entre el piso y el techo, así que un piso por encima de ese valor
 pasa a ser el REL; sube ambos juntos para pasar del techo guardado, hasta OV (1200 mV).
-En Ada, **Piso REL de NVVDD** hace lo mismo donde el REL sigue a la temperatura (baja
+En Ada, **Piso REL de NVVDD** (experimental) hace lo mismo donde el REL sigue a la temperatura (baja
 cuando la GPU se calienta), desde 830 mV (o, donde cada chip fija su propio VMIN, desde
 el VMIN más alto que puede alcanzar, o desde el piso guardado si es menor): el piso es
 entonces el REL de una GPU caliente.
-**Voltaje mínimo (VMIN)** (experimental) es el valor guardado de la
+**Voltaje mínimo (VMIN)** (probado en hardware para NVVDD en una RTX 5080 y una RTX 2000
+Ada; experimental en MSVDD, en Ampere y Turing, en los casos por chip y en la copia de
+las ROM 95.02.3C de la RTX 4090 de más abajo) es el valor guardado de la
 ecuación que el driver evalúa como VMIN; en Ada el driver le suma sus términos
 encadenados (+90 mV en una RTX 2000 Ada), así que el valor llega hasta el REL más
 bajo menos lo máximo que esos términos pueden sumar (753 mV en esa placa). El

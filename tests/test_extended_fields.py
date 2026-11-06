@@ -356,8 +356,10 @@ class ExtendedFieldTests(unittest.TestCase):
         image = from_bytes(repair_fixture(blob))
         fields = descriptors(image)
         floor, ceiling = fields['nvvdd_rel_equation_min_mv'], fields['nvvdd_rel_equation_max_mv']
+        # Tested on hardware on GB20x (RTX PRO 6000 Max-Q and RTX PRO 4000 SFF): not experimental.
         self.assertEqual((floor['current'], floor['bounds']['minimum'], floor['bounds']['maximum'], floor['editable'],
-                          floor['experimental'], floor.get('opt_in')), (900, 850, 1000, True, True, None))
+                          floor.get('experimental', False), floor.get('opt_in')), (900, 850, 1000, True, False, None))
+        self.assertIn('tested on hardware: on three RTX PRO 6000 Max-Q boards', floor['reason'])
         self.assertEqual((floor['bounds']['encoding_maximum'], ceiling['bounds']['encoding_maximum']),
                          (1200, 0x7FFFFFFF / 1000))
         self.assertEqual((floor['ordering_group'], ceiling['ordering_group']), ('nvvdd-rel-clamp', 'nvvdd-rel-clamp'))
@@ -390,6 +392,9 @@ class ExtendedFieldTests(unittest.TestCase):
             result = edit(image, {'nvvdd_rel_equation_min_mv': floor_mv, 'nvvdd_rel_equation_max_mv': ceiling_mv})
             self.assertEqual(struct.unpack_from('<ff', result.blob, at + 3), (floor_mv * 1000, ceiling_mv * 1000))
         msvdd = fields['msvdd_rel_equation_min_mv']
+        # The MSVDD floor ran with the NVVDD one on the same boards: not experimental either.
+        self.assertFalse(msvdd.get('experimental', False))
+        self.assertIn('tested on hardware', msvdd['reason'])
         result = edit(image, {'msvdd_rel_equation_min_mv': 990})
         changed_bytes_within(self, image, result, [msvdd['equation_offset'] + 3])
         # Only the canonical binding writes the clamp minimum.
@@ -416,9 +421,9 @@ class ExtendedFieldTests(unittest.TestCase):
 
 
 class ClockRangeTests(unittest.TestCase):
-    """Experimental GB20x clock offset ranges beyond the validated DRAM ceiling."""
+    """GB20x clock offset ranges beyond the validated DRAM ceiling."""
 
-    def test_named_domains_are_signed_experimental_and_unit_explicit(self):
+    def test_named_domains_are_signed_and_unit_explicit_and_untested_ones_experimental(self):
         image = from_bytes(synthetic_blackwell())
         fields = descriptors(image)
         expected = {'gpc_offset_max_mhz': (3000, 'MHz', 0, 32767),
@@ -433,7 +438,12 @@ class ClockRangeTests(unittest.TestCase):
                 field = fields[key]
                 self.assertEqual((field['current'], field['units']), (current, units))
                 self.assertEqual((field['bounds']['minimum'], field['bounds']['maximum']), (lo, hi))
-                self.assertTrue(field['editable'] and field['experimental'])
+                self.assertTrue(field['editable'])
+                # The GPC offset ceiling and the memory offset floor are tested on hardware on GB20x (the floor's
+                # alias dram_min_table_mhz carries its flag).
+                tested = key in ('gpc_offset_max_mhz', 'memory_offset_min_mhz', 'dram_min_table_mhz')
+                self.assertEqual(field.get('experimental', False), not tested)
+                self.assertEqual(field['reason'].startswith('experimental:'), not tested)
                 self.assertTrue(field['unit_metadata']['storage_signed'])
                 self.assertEqual(field['stored_units'], 'table MHz')
         self.assertEqual(fields['dram_min_table_mhz']['alias_of'], 'memory_offset_min_mhz')
@@ -506,7 +516,9 @@ class PowerDefaultTests(unittest.TestCase):
         source = backend(image)
         field = descriptors(image)['power_default_w']
         self.assertEqual((field['current'], field['bounds']['minimum'], field['bounds']['maximum']), (70, 30, 100))
-        self.assertTrue(field['experimental'])
+        # Tested on hardware on GB20x (RTX PRO 6000 Max-Q boards): not experimental.
+        self.assertNotIn('experimental', field)
+        self.assertIn('tested on hardware', field['reason'])
         self.assertEqual(field['policy_indices'], [8])
         result = edit(image, {'power_default_w': 90})
         target = backend(result.image)
@@ -582,7 +594,10 @@ class InputCurrentTests(unittest.TestCase):
         self.assertEqual((ceiling['current'], ceiling['bounds']['minimum']), (80000, 80000))
         for field in (rated, ceiling):
             self.assertEqual((field['units'], field['stored_units']), ('mA', 'mA'))
-            self.assertTrue(field['editable'] and field['experimental'])
+            # Tested on hardware on GB20x: not experimental.
+            self.assertTrue(field['editable'])
+            self.assertNotIn('experimental', field)
+            self.assertIn('tested on hardware', field['reason'])
             self.assertEqual(field['policy_types'], {'vbios': 11, 'rm': 30, 'api': 25})
             self.assertEqual(field['monitor'], {'index': 9, 'class': 8})
             self.assertNotIn('rail_identity', field)
@@ -628,18 +643,25 @@ class InputCurrentTests(unittest.TestCase):
             edit(reviewed, {'alias': 50}, field_registry=custom_registry('alias', (row + 17,)))
         self.assertEqual(exc.exception.code, 'FACTORY_DEFAULT_CHANGED')
 
-    def test_labels_mark_new_fields_experimental_in_both_languages(self):
+    def test_labels_mark_untested_fields_experimental_in_both_languages(self):
         from nvidia_vbios.gui.i18n import Messages
-        from nvidia_vbios.gui.presentation import field_label, technical_field_keys
+        from nvidia_vbios.gui.presentation import field_label, row_title, technical_field_keys
         report = inspect_image(from_bytes(input_fixture()))
-        keys = ('power_default_w', 'input_current_rated_ma', 'input_current_max_ma', 'gpc_offset_max_mhz',
-                'gpc_offset_min_mhz', 'memory_offset_min_mhz', 'xbar_max_table_mhz', 'vid_min_table_mhz',
-                'dram_min_table_mhz', 'input_current_policy7_limit_ma')
+        keys = ('gpc_offset_min_mhz', 'xbar_max_table_mhz', 'vid_min_table_mhz', 'input_current_policy7_limit_ma')
+        # Tested on hardware on GB20x: no experimental mark in the title nor badge (the hidden alias
+        # dram_min_table_mhz carries the flag of memory_offset_min_mhz).
+        tested = ('power_default_w', 'input_current_rated_ma', 'input_current_max_ma', 'gpc_offset_max_mhz',
+                  'memory_offset_min_mhz', 'dram_min_table_mhz')
         fields = {f['key']: f for f in report['fields']}
         for language in ('en', 'es'):
             for key in keys:
                 with self.subTest(language=language, key=key):
                     self.assertIn('experimental', field_label(fields[key], language))
+                    self.assertTrue(row_title(fields[key], language)[1])
+            for key in tested:
+                with self.subTest(language=language, key=key):
+                    self.assertNotIn('experimental', field_label(fields[key], language))
+                    self.assertFalse(row_title(fields[key], language)[1])
         self.assertEqual(field_label(fields['sys_min_table_mhz'], 'es'), Messages('es')('field.clock_domain_min', domain='SYS'))
         self.assertIn('dram_min_table_mhz', technical_field_keys(report))
         self.assertNotIn('memory_offset_min_mhz', technical_field_keys(report))
@@ -816,14 +838,17 @@ class ReviewRegressionTests(unittest.TestCase):
 
     def test_new_fields_cite_third_party_research_nvml_capture_and_experimental_reasons(self):
         fields = descriptors(from_bytes(input_fixture()))
-        for key in ('power_default_w', 'input_current_rated_ma', 'input_current_max_ma', 'gpc_offset_max_mhz',
-                    'memory_offset_min_mhz', 'xbar_min_table_mhz', 'input_current_policy7_limit_ma'):
+        # Tested on hardware on GB20x, so their reasons name the test instead.
+        tested = ('power_default_w', 'input_current_rated_ma', 'input_current_max_ma', 'gpc_offset_max_mhz',
+                  'memory_offset_min_mhz')
+        for key in tested + ('xbar_min_table_mhz', 'input_current_policy7_limit_ma'):
             with self.subTest(key=key):
                 third = [e for e in fields[key]['evidence'] if e['kind'] == 'third-party-research']
                 self.assertEqual(len(third), 1)
                 self.assertEqual(third[0]['source'], 'independent GB202 research (see acknowledgements)')
                 if fields[key]['editable']:
-                    self.assertTrue(fields[key]['reason'].startswith('experimental:'))
+                    self.assertEqual(fields[key]['reason'].startswith('experimental:'), key not in tested)
+                    self.assertEqual('tested on hardware' in fields[key]['reason'], key in tested)
         def apis(key):
             return {e.get('api') for e in fields[key]['evidence']}
         self.assertIn('nvmlDeviceGetPowerManagementDefaultLimit', apis('power_default_w'))
@@ -1045,7 +1070,10 @@ class SlotPowerTests(unittest.TestCase):
         rated, ceiling = fields['slot_power_rated_w'], fields['slot_power_max_w']
         self.assertEqual((rated['current'], rated['bounds']['maximum'], ceiling['bounds']['minimum']), (66, 66, 66))
         self.assertEqual((rated['units'], rated['stored_units'], rated['policy_indices']), ('W', 'mW', [19]))
-        self.assertTrue(rated['experimental'] and ceiling['experimental'] and rated['editable'])
+        # Tested on hardware on the RTX PRO 4000 SFF: not experimental.
+        self.assertTrue(rated['editable'])
+        self.assertFalse(rated.get('experimental') or ceiling.get('experimental'))
+        self.assertIn('tested on hardware on an RTX PRO 4000 SFF', rated['reason'])
         result = edit(image, {'slot_power_rated_w': 90, 'slot_power_max_w': 100})
         target = backend(result.image)
         for i, (before, after) in enumerate(zip(source.power_rows(), target.power_rows())):
@@ -1101,13 +1129,16 @@ class SlotPowerTests(unittest.TestCase):
             'probe', (rows[19]['offset'] + 21,), scale=1000)).manifest['integrity']['valid'])
         self.assertFalse(any(key.startswith('slot_power_') for key in descriptors(from_bytes(input_fixture()))))
 
-    def test_labels_mark_ocp_rated_and_slot_power_experimental(self):
-        from nvidia_vbios.gui.presentation import field_label
+    def test_labels_mark_ocp_rated_experimental_and_not_slot_power(self):
+        from nvidia_vbios.gui.presentation import field_label, row_title
         fields = descriptors(from_bytes(sff_fixture()))
         for language in ('en', 'es'):
             for key in ('nvvdd_output_ocp_rated_ma', 'msvdd_output_ocp_rated_ma', 'slot_power_rated_w', 'slot_power_max_w'):
                 with self.subTest(language=language, key=key):
-                    self.assertIn('experimental', field_label(fields[key], language))
+                    # The slot power is tested on hardware on GB20x; the rated output OCP is not.
+                    tested = key.startswith('slot_power')
+                    self.assertEqual('experimental' in field_label(fields[key], language), not tested)
+                    self.assertEqual(row_title(fields[key], language)[1], not tested)
 
 
 class FixedPolicyRatedTests(unittest.TestCase):
@@ -1642,8 +1673,10 @@ class NotebookLayoutTests(unittest.TestCase):
         fields = {f['key']: f for f in report['fields']}
         base = fields['notebook_base_tgp_w']
         self.assertEqual((base['current'], base['bounds']['minimum'], base['bounds']['maximum']), (150, 80, 175))
-        for flag in ('editable', 'opt_in', 'experimental', 'notebook_tgp'):
+        for flag in ('editable', 'opt_in', 'notebook_tgp'):
             self.assertTrue(base[flag], flag)
+        # Tested on hardware on one RTX 5090 Laptop GPU: not experimental.
+        self.assertNotIn('experimental', base)
         self.assertEqual((base['ordering_group'], base['units'], base['stored_units'], base['policy_indices']),
                          ('board-power', 'W', 'mW', [2]))
         self.assertEqual([(e['kind'], e['set_tested']) for e in base['evidence']],
@@ -2733,7 +2766,9 @@ class FanCoolerTests(unittest.TestCase):
         for key in ('fan_pwm_frequency_hz', 'fan_channels', 'fan_1_min_rpm', 'fan_2_max_rpm', 'fan_1_min_pct',
                     'fan_1_curve_2_temp_c', 'fan_extra_2_curve_3_rpm'):
             self.assertFalse(fields[key]['editable'])
-            self.assertTrue(fields[key]['reason'].startswith('experimental:'), fields[key]['reason'])
+            # The GB20x speed maximum is tested on hardware (RTX 5080), the others are experimental.
+            self.assertEqual(fields[key]['reason'].startswith('experimental:'), key != 'fan_2_max_rpm',
+                             fields[key]['reason'])
 
     def test_channel_limits_stop_at_the_stored_curves(self):
         image = from_bytes(synthetic_blackwell(fans=True))
@@ -2749,12 +2784,16 @@ class FanCoolerTests(unittest.TestCase):
                     self.assertEqual((f['current'], f['bounds']['minimum'], f['bounds']['maximum'], f['editable']),
                                      (current, low, high, editable))
                     speed = name.endswith('rpm')
-                    self.assertEqual((f['units'], f['experimental'], f['fan_channel'], f['fan_rows'], bool(f.get('opt_in'))),
-                                     ('RPM' if speed else '%', True, n - 1, [n - 1], not speed))
+                    # The GB20x speed maximum is tested on hardware (RTX 5080): not experimental.
+                    self.assertEqual((f['units'], f.get('experimental', False), f['fan_channel'], f['fan_rows'],
+                                      bool(f.get('opt_in'))),
+                                     ('RPM' if speed else '%', name != 'max_rpm', n - 1, [n - 1], not speed))
                     self.assertEqual(f['ordering_group'], f"fan-{'speed' if speed else 'level'}")
                     self.assertEqual(f['value_semantics'], 'stored-fan-%s-%s' % (
                         'minimum' if name.startswith('min') else 'maximum', 'speed' if speed else 'level'))
-        self.assertTrue(all(fields[k]['reason'].startswith('experimental:') for k in ('fan_1_max_pct', 'fan_1_max_rpm')))
+        self.assertTrue(fields['fan_1_max_pct']['reason'].startswith('experimental:'))
+        self.assertIn('tested on hardware: on an RTX 5080 a maximum raised from 3500 to 4000 RPM',
+                      fields['fan_1_max_rpm']['reason'])
         # The driver percent maps linearly: 30 % runs at the row minimum, 100 % at the row maximum.
         minimum_reason = fields['fan_1_min_rpm']['reason']
         self.assertIn("the driver's 30 % setting matched the unchanged 1050 RPM minimum", minimum_reason)
@@ -2874,7 +2913,9 @@ class FanCoolerTests(unittest.TestCase):
                 for key, expected in editable.items():
                     f = fields[key]
                     self.assertEqual(f['editable'], expected, key)
-                    self.assertTrue(f['reason'].startswith('experimental:') if expected else
+                    # The GB20x speed maximum is tested on hardware: its reason does not start with experimental.
+                    start = 'maximum fan speed' if key.endswith('_max_rpm') else 'experimental:'
+                    self.assertTrue(f['reason'].startswith(start) if expected else
                                     f['reason'] == 'fan row or policy curves hold values outside the reviewed shape', key)
                     self.assertTrue(all(isinstance(f['bounds'][k], int) for k in ('minimum', 'maximum')), key)
                     if not expected:
@@ -3062,6 +3103,57 @@ class FanCoolerTests(unittest.TestCase):
         with self.assertRaises(VbiosError) as exc:
             edit(image, {'fan_1_curve_3_rpm': 33000})
         self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+
+
+class HardwareTestedTableTests(unittest.TestCase):
+    def test_every_hardware_tested_pair_has_its_reason_text(self):
+        """Each (key, family) of registry.HARDWARE_TESTED has the text its reason names the test with, so a new
+        entry cannot drop the experimental flag with an untested reason."""
+        import importlib
+        r = importlib.import_module('nvidia_vbios.editor.registry')
+        fans = {key: r.FAN_HARDWARE_TESTED.get(tuple(key.split('_')[2:4])) for key in
+                ('fan_N_max_rpm', 'fan_N_min_rpm', 'fan_N_min_pct')}
+        texts = {'power_max_w': r.POWER_TESTED, 'power_min_w': r.POWER_MIN_TESTED, 'power_default_w': r.DEFAULT_TESTED,
+                 'connector_N_power_max_w': {'turing': r.TURING_CONNECTOR_TESTED},
+                 'connector_N_power_rated_w': {'turing': r.TURING_CONNECTOR_TESTED},
+                 'gpc_offset_max_mhz': {f: t for (k, f), t in r.CLOCK_TESTED.items() if k == 'gpc_offset_max_mhz'},
+                 'memory_offset_min_mhz': {f: t for (k, f), t in r.CLOCK_TESTED.items()
+                                           if k == 'memory_offset_min_mhz'},
+                 'nvvdd_rel_equation_min_mv': {'gb20x': r.REL_FLOOR_REASON},
+                 'msvdd_rel_equation_min_mv': {'gb20x': r.REL_FLOOR_REASON},
+                 'nvvdd_rel_equation_max_mv': {'ada': r.ADA_REL_TESTED}, 'nvvdd_rel_max_mv': {'ada': r.ADA_REL_TESTED},
+                 'nvvdd_vmin_mv': r.VMIN_TESTED, 'fan_zero_rpm': {'gb20x': r.FAN_ZERO_RPM_TESTED},
+                 'fan_N_zero_rpm_high_temp_c': {'gb20x': r.FAN_ZERO_RPM_HIGH_TESTED},
+                 **{key: {'gb20x': fans[key]} if key == 'fan_N_max_rpm' else {'ada': fans[key], 'ampere': fans[key]}
+                    for key in fans},
+                 'fan_N_curve_1_rpm': {'ampere': r.FAN_CURVE_TESTED}, 'fan_N_curve_1_pct': {'ampere': r.FAN_CURVE_TESTED},
+                 'runtime_voltage_offsets': {'gb20x': r.RUNTIME_OFFSETS_TESTED},
+                 'runtime_power_limit_unlock': {'turing': r.RUNTIME_LIMIT_TURING_TESTED},
+                 'notebook_base_tgp_w': {'gb20x': r.NOTEBOOK_BASE_TGP_REASON},
+                 'slot_power_rated_w': r.SLOT_POWER_TESTED, 'slot_power_max_w': r.SLOT_POWER_TESTED,
+                 'input_current_rated_ma': {'gb20x': r.INPUT_CURRENT_TESTED},
+                 'input_current_max_ma': {'gb20x': r.INPUT_CURRENT_TESTED}}
+        # The GB20x board power ceiling and floor never were experimental: their reasons name no test.
+        exempt = {('power_max_w', 'gb20x'), ('power_min_w', 'gb20x')}
+        self.assertEqual(sorted(r.HARDWARE_TESTED), sorted(texts))
+        for key, families in r.HARDWARE_TESTED.items():
+            for family in families:
+                if (key, family) in exempt:
+                    continue
+                with self.subTest(key=key, family=family):
+                    self.assertIn('tested on hardware', texts[key].get(family) or '')
+
+    def test_fan_reason_prefix_follows_the_flag(self):
+        # Fan limits tested on GB20x (the speed maximum) carry neither the flag nor the prefix; the others both.
+        blob = synthetic_blackwell(shared_objects=True, power_topology=True, fans=True)
+        fields = descriptors(from_bytes(blob))
+        keys = [k for k in fields if re.fullmatch(r'fan_\d+_(min|max)_(rpm|pct)', k) and fields[k]['editable']]
+        # Both cases occur: a tested maximum and an untested minimum.
+        self.assertEqual({bool(fields[k].get('experimental')) for k in keys}, {False, True})
+        for key in keys:
+            with self.subTest(key=key):
+                self.assertEqual(fields[key]['reason'].startswith('experimental: '),
+                                 bool(fields[key].get('experimental')))
 
 
 def top_profile_fixture(*, stage1_type=1, stage2_target=7, top_code_power=600000, mutate=None):
