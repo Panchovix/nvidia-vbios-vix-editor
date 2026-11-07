@@ -3,6 +3,10 @@
 One line per change. What each change does, where it applies and what was tested is in the
 [changelog details](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/changelog-details.md).
 
+## 0.1.44
+
+- Ada: the power connector limit on 16-pin boards that store it (RTX 4090 95.02.18.C0.75, untested).
+
 ## 0.1.43
 
 - Fields tested on hardware are no longer experimental on their GPU family (board, slot and connector power, VMIN, fans and more).

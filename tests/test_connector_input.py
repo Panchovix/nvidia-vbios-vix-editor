@@ -142,7 +142,11 @@ class AdaConnectorInputTests(unittest.TestCase):
                  'rail 0xe8': (dict(rail=0xE8), False), 'slot rail': (dict(rail=0xFF), False),
                  '12 V input rail': (dict(rail=0xE0), False), 'provider byte 3': (dict(provider=3), False),
                  'not added by channel 0': (dict(summed=False), False),
-                 'current correction byte': (dict(entry=channel[:10] + b'\xc8' + channel[11:]), False),
+                 # Byte 10 0xc8 alone: the connector input of every 16-pin board in the corpus.
+                 '16-pin byte 10': (dict(entry=channel[:10] + b'\xc8' + channel[11:]), True),
+                 'byte 10 other value': (dict(entry=channel[:10] + b'\x64' + channel[11:]), False),
+                 'byte 9 0xc8': (dict(entry=channel[:9] + b'\xc8' + channel[10:]), False),
+                 'byte 10 0xc8 and byte 12': (dict(entry=channel[:10] + b'\xc8\x00\x01' + channel[13:]), False),
                  'class-2 channel': (dict(entry=b'\x02' + channel[1:]), False),
                  'class 0 row': (dict(identity={0: 0x00, 1: 5, 41: 1}), False),
                  'mA row': (dict(identity={0: 0x14, 1: 5, 41: 1}), False),
@@ -180,6 +184,33 @@ class AdaConnectorInputTests(unittest.TestCase):
                                    'at 12 V). It cannot be edited here and may hold the connector first.')
         self.assertIn('umbral de corriente de 12.34 A', connector_input_notes(fields[KEYS[0]], list(fields.values()),
                                                                              'es')[2])
+
+    def test_the_16pin_channel_with_class_0_rows_only_gives_no_field(self):
+        # As on the other RTX 4090 and 4080 images: channel 5 holds the 16-pin bytes and only class-0 rows read it.
+        entry = bytes.fromhex('05 da 00 1b b7 00 00 10 00 00 c8 00 00 00 00 01') + bytes(10)
+        blob = ada_connector(entry=entry, identity={0: 0x00, 1: 5, 41: 1}, limits=(1, 450000, 450000))
+        blob = ada_connector(blob, row=7, entry=entry, identity={0: 0x10, 1: 5, 41: 1}, limits=(1, 57500, 75000))
+        self.assertFalse(any(k.startswith('connector_') for k in descriptors(from_bytes(blob))))
+
+    def test_a_class_0_current_limit_on_the_connector_input_is_named(self):
+        # A class-0 mA row on the connector channel, as row 8 of the Gigabyte RTX 4090 95.02.18.C0.75.
+        blob = ada_connector(ada_connector(), row=7, identity={0: 0x10, 1: 5, 41: 1}, limits=(1, 57500, 75000))
+        fields = descriptors(from_bytes(blob))
+        from nvidia_vbios.gui.presentation import connector_input_notes
+        for key in KEYS:
+            with self.subTest(key=key):
+                field = fields[key]
+                self.assertTrue(field['editable'])
+                self.assertNotIn('threshold_rows', field)
+                self.assertEqual(field['current_limit_rows'], [{'row': 7, 'parameter_byte_0': 0, 'minimum': 1,
+                                                                'rated': 57500, 'maximum': 75000, 'units': 'mA'}])
+                self.assertIn('; row 7, a 57.5 A current limit (class 0, enforcement unknown) on this connector '
+                              'input, about 690 W at 12 V, has no field and may bind next', field['reason'])
+        notes = connector_input_notes(fields[KEYS[0]], list(fields.values()))
+        self.assertEqual(notes[2], 'Row 7 also holds a 57.5 A current limit on this connector input (about 690 W at '
+                                   '12 V; enforcement unknown). It cannot be edited here and may limit next.')
+        self.assertIn('límite de corriente de 57.5 A', connector_input_notes(fields[KEYS[0]], list(fields.values()),
+                                                                            'es')[2])
 
     def test_an_unrecognized_policy_on_another_connector_input_keeps_the_fields_read_only(self):
         # Row 7: class 4 mW of another shape (parameter byte 0 = 1) on a second connector input (channel 6, 0xfb).

@@ -238,7 +238,8 @@ def connector_input_notes(field, fields, language='en'):
 
     Shown on the ceiling, or on the rated limit when the ceiling is read-only: the connector ratings (the
     ROM does not store the connector type) and the risk of going past them, the limits that still apply
-    after it, and one note per hardware current threshold on the same connector input (threshold_rows).
+    after it, one note per hardware current threshold on the same connector input (threshold_rows) and one per
+    class-0 current limit on it (current_limit_rows).
     """
     match = CONNECTOR_KEY.fullmatch(field['key'])
     if not match or field.get('power_input') != 'auxiliary-connector' or not field.get('editable'):
@@ -250,7 +251,9 @@ def connector_input_notes(field, fields, language='en'):
     text = Messages(language)
     return [text('connector_input.rating'), text('connector_input.limits')] + [
         text('connector_input.threshold', row=row['row'], amps=number(Decimal(row['rated']) / 1000),
-             watts=number(round(Decimal(row['rated']) * 12 / 1000))) for row in field.get('threshold_rows', ())]
+             watts=number(round(Decimal(row['rated']) * 12 / 1000))) for row in field.get('threshold_rows', ())] + [
+        text('connector_input.current_limit', row=row['row'], amps=number(Decimal(row['rated']) / 1000),
+             watts=number(round(Decimal(row['rated']) * 12 / 1000))) for row in field.get('current_limit_rows', ())]
 
 
 def sense_profile_notes(field, fields, language='en'):

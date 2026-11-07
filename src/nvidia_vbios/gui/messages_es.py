@@ -324,6 +324,9 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'connector_input.threshold': 'La fila {row} también guarda un umbral de corriente de {amps} A en esta entrada del '
                               'conector (unos {watts} W a 12 V). No se puede editar aquí y puede frenar el conector '
                               'antes.',
+ 'connector_input.current_limit': 'La fila {row} también guarda un límite de corriente de {amps} A en esta entrada '
+                                  'del conector (unos {watts} W a 12 V; no se sabe si se aplica). No se puede editar '
+                                  'aquí y puede limitar después.',
  'field.connector_sum_power_max_w': 'Techo de la suma de potencia de conectores (experimental)',
  'field.connector_sum_power_rated_w': 'Límite de la suma de potencia de conectores, nominal (experimental)',
  'summed_cap.connectors': 'La fila {row} también limita la suma de los canales de potencia de conector {channels} a '

@@ -315,6 +315,9 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
                            'where needed. Not tested on hardware.',
  'connector_input.threshold': 'Row {row} also holds a {amps} A current threshold on this connector input (about '
                               '{watts} W at 12 V). It cannot be edited here and may hold the connector first.',
+ 'connector_input.current_limit': 'Row {row} also holds a {amps} A current limit on this connector input (about '
+                                  '{watts} W at 12 V; enforcement unknown). It cannot be edited here and may limit '
+                                  'next.',
  'field.connector_sum_power_max_w': 'Connector power sum ceiling (experimental)',
  'field.connector_sum_power_rated_w': 'Connector power sum limit, rated (experimental)',
  'summed_cap.connectors': 'Row {row} also caps the sum of connector power channels {channels} at {rated} {units} '

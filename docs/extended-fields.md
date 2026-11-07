@@ -2574,18 +2574,25 @@ the PCIe CEM slot rating. Laptop-only rows and placeholder rows stay unexposed.
 **Auxiliary power connector input (opt-in).** A row qualifies by the slot row shape (its
 channel byte excluded) on a board input channel: a class-5 single input at 12 V that
 channel 0 (the class-2 board total, rail 0xf5) adds with weight 1.0, on rail 0xda, 0xdb,
-0xdc, 0xfa, 0xfb, 0xfc or 0xe4, with no parameter but the provider byte 15 (0..2).
-Notebook images are left out: their DC input channel holds the same bytes. The images of
-seven products have one such row, all on channel 5: 150 W on the RTX 4070 (rail 0xfa),
-the RTX 4060 Ti 8 GB and 16 GB and the RTX 4000 Ada (rail 0xda), and 300 W on the RTX
-4500 Ada (row 6) and the RTX 5000 and 6000 Ada (row 5; rail 0xda). Rail 0xda is the
+0xdc, 0xfa, 0xfb, 0xfc or 0xe4, with no parameter but the provider byte 15 (0..2) and,
+on the 16-pin boards, bytes 10..13 = 200 (`05 da 00 1b b7 00 00 10 00 00 c8 00 00 00 00 01`;
+as the Turing current correction offset, nvgpu `curr_corr_offset`, about 0.2 A; only that
+exact value is accepted, any other parameter rejects the channel). Notebook images are left out: their DC
+input channel holds the same bytes. The images of eight products have one such row, all
+on channel 5: 150 W on the RTX 4070 (rail 0xfa), the RTX 4060 Ti 8 GB and 16 GB and the
+RTX 4000 Ada (rail 0xda), 300 W on the RTX 4500 Ada (row 6) and the RTX 5000 and 6000
+Ada (row 5; rail 0xda), and 600 W on the Gigabyte RTX 4090 95.02.18.C0.75 (row 6, the
+16-pin channel; its cable sense profiles 2 and 3 set it to 450 and 600 W). Rail 0xda is the
 auxiliary connector input that the GB20x saved GET identifies (see the GB20x auxiliary
 power connector input above), and 0xfa is the first connector channel rail of Ampere,
 whose rows there hold 150-175 W. The rail does not name the connector type: the 8-pin
-RTX 4060 Ti and the 16-pin boards both use 0xda. The RTX 4090, 4080, 4080 SUPER, 4070 Ti
-SUPER and 4070 SUPER images read their connector channel only with class-0 rows of
-unknown meaning, so they get no field; the RTX 4070 also keeps its class-0 mA row 8
-(58 A rated, 75 A maximum) on that channel. The fields follow the other Ada policy rows:
+RTX 4060 Ti and the 16-pin boards both use 0xda. The other RTX 4090, 4080, 4080 SUPER,
+4070 Ti SUPER and 4070 SUPER images read their connector channel only with class-0 rows
+of unknown meaning, so they get no field. A class-0 mA row on the connector channel (row
+8 of the RTX 4070, RTX 4500 Ada and Gigabyte RTX 4090: 58 A or 57.5 A rated, 75 A
+maximum; row 10 of the RTX 4000 Ada, 29 A) is a current limit of unknown enforcement: it
+has no field, the descriptor lists it in `current_limit_rows`, and the reason and the GUI
+name it as a limit that may bind next. The fields follow the other Ada policy rows:
 the keys and numbering of the Ampere connector channels (`connector_1_*`, then
 `connector_2_*` on an image with a second such row), every duplicate chain written,
 read-only while another class-4 mW row reads the same channel or a class-4 mW row of
@@ -2660,8 +2667,8 @@ vote selects them, so the firmware never applies them, and the editor accepts th
 Row 6 is a class-4 mW row (the class of the slot power row) on power channel 5, the
 auxiliary connector input (rail 0xda), 600 W in the base table of the corpus image
 (a public dump of the same version whose profile table matches the reported one
-byte for byte); it has no field, because that channel holds a parameter byte the
-connector fields do not accept. The editor accepts a direct profile only as 0xff or
+byte for byte); since 0.1.44 it is the `connector_1_power_*_w` field (see the auxiliary
+power connector input above). The editor accepts a direct profile only as 0xff or
 the entry's own code. At a code that votes, it accepts one
 that differs from row 1's profile only when it is enabled and the two set different
 limits (no row and field in common): the two then apply one after the other with

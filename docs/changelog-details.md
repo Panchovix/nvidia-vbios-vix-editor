@@ -3,6 +3,22 @@
 What each change does, where it applies, what was tested and its risks. CHANGELOG.md lists the same
 changes, one line each, in the same order.
 
+## 0.1.44
+
+- **Ada: the power connector limit on 16-pin boards that store it (RTX 4090 95.02.18.C0.75, untested).** A Gigabyte
+  RTX 4090 ROM (95.02.18.C0.75) stores a power limit on its 16-pin connector input (row 6, 600 W), and its cable
+  sense profiles change it: profile 2 sets 450 W, profile 3 (the top level) 600 W. The editor did not show it because
+  the 16-pin connector input carries a value in bytes 10..13 (200, as the Turing current correction offset, nvgpu
+  curr_corr_offset) that the 8-pin boards do not. That exact value is now accepted; any other parameter still rejects the channel. **Connector power channel 1** now shows it
+  under **Show advanced XOC-style fields**, like on the other boards with this limit. An edit writes the base row and
+  profile 3's entries in every chain; profile 2 keeps 450 W and bounds the values from below. A class-0 current
+  limit on the same connector (row 8 here, 57.5 A, about 690 W at 12 V; its enforcement is unknown) has no field,
+  and the row names it as a limit that may bind next; the RTX 4070, RTX 4000 Ada and RTX 4500 Ada rows now name
+  theirs too. The other 16-pin images (RTX 4090, 4080 and others) read that connector only with class-0 rows and
+  still get no field. The bytes an edit writes on the other boards do not change. Not tested on hardware. Reported
+  in [issue #32](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/32). For API users: the descriptors may
+  carry `current_limit_rows`.
+
 ## 0.1.43
 
 - **Fields tested on hardware are no longer experimental on their GPU family.** One table in the registry

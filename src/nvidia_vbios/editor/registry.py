@@ -3023,10 +3023,14 @@ ADA_CONNECTOR_INPUT_EVIDENCE = [
          format='Ada power row class 4 mW with the slot power row shape (830b68bb) minus its channel byte (e48af26e), '
                 'on a board input channel: a class-5 single input at 12 V that channel 0 (the class-2 board total, '
                 'rail 0xf5) adds with weight 1.0, rail 0xda, 0xdb, 0xdc, 0xfa, 0xfb, 0xfc or 0xe4, no parameter but '
-                'the provider byte 15 (0..2); notebook images excluded',
-         observation='one such row on the images of seven products, all on channel 5: 150 W on the RTX 4070 '
+                'the provider byte 15 (0..2) and, on the 16-pin boards, bytes 10..13 = 200 (channel 05da001bb7000010 '
+                '0000c80000000001; as the Turing current correction offset, nvgpu curr_corr_offset, about 0.2 A); '
+                'notebook images excluded',
+         observation='one such row on the images of eight products, all on channel 5: 150 W on the RTX 4070 '
                      '(rail 0xfa), the RTX 4060 Ti 8 GB and 16 GB and the RTX 4000 Ada (rail 0xda), 300 W on the '
-                     'RTX 4500, 5000 and 6000 Ada (rail 0xda); the RTX 4090, 4080, 4080 SUPER, 4070 Ti SUPER and '
+                     'RTX 4500, 5000 and 6000 Ada (rail 0xda), 600 W on a Gigabyte RTX 4090 95.02.18.C0.75 (rail '
+                     '0xda, the 16-pin channel with bytes 10..13 = 200; its cable sense override profiles 2 and 3 set it to '
+                     '450 and 600 W; GitHub issue #32); the other RTX 4090, 4080, 4080 SUPER, 4070 Ti SUPER and '
                      '4070 SUPER images read their connector channel only with class-0 rows and get no field; '
                      'rail 0xda is the auxiliary connector input of the GB20x saved GET (monitor class 8, rail '
                      '218), 0xfa the first Ampere connector channel (150-175 W); the rail does not name the '
@@ -3050,8 +3054,8 @@ def connector_input_limits(image, parser, item):
     """The limits that still apply after the auxiliary connector input limit, naming the fields of this image.
 
     The slot and 12 V input current limits are named only where the image has their fields; the
-    hardware current thresholds on the connector channel itself (Ada threshold_rows) are named
-    with their stored value.
+    hardware current thresholds on the connector channel itself (Ada threshold_rows) and its class-0
+    current limits (Ada current_limit_rows) are named with their stored value.
     """
     def keys(resolver):
         try:
@@ -3072,6 +3076,10 @@ def connector_input_limits(image, parser, item):
         text += (f"; row {row['row']}, a {row['default_raw'] / 1000:g} A current threshold (rated) on this connector "
                  f"input, about {row['default_raw'] * 12 / 1000:.0f} W at 12 V, has no field and may hold the "
                  'connector first')
+    for row in item.get('current_limit_rows', ()):
+        text += (f"; row {row['row']}, a {row['default_raw'] / 1000:g} A current limit (class 0, enforcement unknown) "
+                 f"on this connector input, about {row['default_raw'] * 12 / 1000:.0f} W at 12 V, has no field and "
+                 'may bind next')
     return text
 
 
@@ -3110,8 +3118,12 @@ def connector_input_power(image, parser):
         thresholds = [{'row': t['row'], 'parameter_byte_0': t['parameter_byte_0'], 'minimum': t['minimum_raw'],
                        'rated': t['default_raw'], 'maximum': t['maximum_raw'], 'units': t['units']}
                       for t in item.get('threshold_rows', ())]
+        currents = [{'row': t['row'], 'parameter_byte_0': t['parameter_byte_0'], 'minimum': t['minimum_raw'],
+                     'rated': t['default_raw'], 'maximum': t['maximum_raw'], 'units': t['units']}
+                    for t in item.get('current_limit_rows', ())]
         extra = dict(opt_in=True, connector=number, channel_rail=item['channel_rail'],
-                     power_input='auxiliary-connector', **({'threshold_rows': thresholds} if thresholds else {}))
+                     power_input='auxiliary-connector', **({'threshold_rows': thresholds} if thresholds else {}),
+                     **({'current_limit_rows': currents} if currents else {}))
         if ada(parser):
             loose = item['unrecognized_rows']
             blocked = None

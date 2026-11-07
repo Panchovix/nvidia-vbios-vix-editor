@@ -54,7 +54,8 @@ ADA_POLICIES = {
 # Auxiliary power connector input rows (TableRom.ada_connector_policies): the slot_power row shape
 # with its channel byte excluded (sha256 over entry byte 0 and bytes 14..0x52; class 4 mW), on a
 # board input: a class-5 single input at 12 V that channel 0 (the class-2 board total) adds with
-# weight 1.0, on a connector rail, with no parameter but the provider byte 15 (0..2). Rail 0xda is
+# weight 1.0, on a connector rail, with no parameter but the provider byte 15 (0..2) and, on the 16-pin
+# boards, byte 10 (CONNECTOR_16PIN_PARAMETERS). Rail 0xda is
 # the auxiliary connector input that saved GET identifies on every connector-powered GB20x source
 # (monitor class 8, rail 218); 0xdb/0xdc are the next inputs (the spare Ada channels 26..28 list
 # da/db/dc on providers 0/1/2; the MSI 2500 W GB20x image adds a 0xdb input on provider 2). 0xfa,
@@ -62,6 +63,10 @@ ADA_POLICIES = {
 # image uses 0xfa. The rail does not name the connector type: the 8-pin RTX 4060 Ti uses 0xda too.
 ADA_CONNECTOR_SHAPE = 'e48af26eb4a825082b0d78339ae3ec74adfc17de9718493db5dbe39435fbe085'
 ADA_CONNECTOR_RAILS = (0xDA, 0xDB, 0xDC, 0xFA, 0xFB, 0xFC, 0xE4)
+# Channel bytes 8..14 of the connector input on every 16-pin Ada board in the corpus (RTX 4090, 4080, Dell
+# and PNY images): bytes 10..13 = 200 (byte 10 0xc8; as the Turing current correction offset below,
+# nvgpu curr_corr_offset), the rest zero. The 8-pin boards and the RTX PRO Ada boards hold zeros.
+CONNECTOR_16PIN_PARAMETERS = bytes.fromhex('0000c800000000')
 # Power override profile table (P+0xF4), version 0x10, parsed for Ada and GB20x by the same GSP-RM
 # 615.78.08 code (0x17cd67c, gsp_ga10x.bin): a 10-byte header, four 0x3d-byte selection rows (5-byte
 # header {u8 type, u32 param}, eight 7-byte entries {u8 flags, u8 profile, u32 value, u8 param}) and
@@ -490,14 +495,17 @@ class TableRom:
         A row qualifies by ADA_CONNECTOR_SHAPE (the slot_power shape without its
         channel byte) and a connector input channel: one that channel 0 adds with
         weight 1.0 (relationships), a class-5 single input at 12 V on an
-        ADA_CONNECTOR_RAILS rail with bytes 8..14 and 16..25 zero and the provider
-        byte 15 at 0..2. Notebook images (notebook_power) give no row: their DC
-        input channel holds the same bytes. Limits are not pinned; the row must
-        keep 0 <= minimum <= rated <= maximum. same_channel_rows lists every other
-        row of the same class and unit on a byte-identical channel entry, as in
+        ADA_CONNECTOR_RAILS rail with bytes 16..25 zero, the provider byte 15 at
+        0..2 and bytes 8..14 zero or, as on every 16-pin board in the corpus,
+        00 00 c8 00 00 00 00 (byte 10 0xc8 only; any other parameter rejects the
+        channel). Notebook images (notebook_power) give no row: their DC input
+        channel holds the same bytes. Limits are not pinned; the row must keep
+        0 <= minimum <= rated <= maximum. same_channel_rows lists every other row
+        of the same class and unit on a byte-identical channel entry, as in
         ada_policy; threshold_rows the class-5 mA rows (hardware current
-        thresholds) on it; unrecognized_rows the class-4 mW rows on another
-        connector input channel that do not qualify (they may bind instead).
+        thresholds) on it; current_limit_rows the class-0 mA rows on it (current
+        limits of unknown enforcement); unrecognized_rows the class-4 mW rows on
+        another connector input channel that do not qualify (they may bind instead).
         """
         if self.family != 'ada':
             return []
@@ -511,7 +519,8 @@ class TableRom:
                 return False
             channel = self.power_channel(index)
             return (channel[0] == 5 and channel[1] in ADA_CONNECTOR_RAILS and channel[2:8] == CHANNEL_12V and
-                    not any(channel[8:15]) and channel[15] in (0, 1, 2) and not any(channel[16:]))
+                    channel[8:15] in (bytes(7), CONNECTOR_16PIN_PARAMETERS) and channel[15] in (0, 1, 2) and
+                    not any(channel[16:]))
 
         def entry(o):
             return dict(row=o['row'], parameter_byte_0=self.blob[o['offset'] + 14], minimum_raw=o['minimum_raw'],
@@ -536,13 +545,15 @@ class TableRom:
             same = [entry(o) for o in rows if o['row'] != row['row'] and o['type'] == row['type'] and
                     o['limit_unit'] == row['limit_unit'] and on(channel, o)]
             thresholds = [entry(o) for o in rows if o['type'] == 5 and o['limit_unit'] == 'mA' and on(channel, o)]
+            currents = [entry(o) for o in rows if o['type'] == 0 and o['limit_unit'] == 'mA' and on(channel, o)]
             unrecognized = [dict(entry(o), channel_index=self.blob[o['offset'] + 1],
                                  channel_rail=self.power_channel(self.blob[o['offset'] + 1])[1])
                             for o in loose if not on(channel, o)]
             result.append(dict(row, vbios_row_index=row['row'], units='mW', channel_index=index,
                                channel_rail=channel[1], immutable_row_sha256=hashlib.sha256(raw[:2] + tail).hexdigest(),
                                minimum_offset=row['offset'] + 2, default_offset=row['offset'] + 6,
-                               same_channel_rows=same, threshold_rows=thresholds, unrecognized_rows=unrecognized))
+                               same_channel_rows=same, threshold_rows=thresholds, current_limit_rows=currents,
+                               unrecognized_rows=unrecognized))
         return result
 
     def ampere_policies(self, role):
