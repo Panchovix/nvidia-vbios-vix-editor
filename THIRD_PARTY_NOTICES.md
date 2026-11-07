@@ -72,7 +72,7 @@ nvgpu `bios.h` structure definitions (MIT). No NVIDIA source file is included.
 | mingw-w64-ucrt-x86_64-python-gobject | 3.58.1-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-python-gobject/ (standard text) | _gi.cp314-mingw_x86_64_ucrt_gnu.pyd _gi_cairo.cp314-mingw_x86_64_ucrt_gnu.pyd |
 | mingw-w64-ucrt-x86_64-vulkan-loader | 1~1.4.363.0-1 | Apache-2.0 | third_party/mingw-w64-ucrt-x86_64-vulkan-loader/ | vulkan-1.dll |
 | mingw-w64-ucrt-x86_64-xz | 5.8.4-1 | 0BSD AND LGPL-2.1-or-later AND GPL-2.0-or-later | third_party/mingw-w64-ucrt-x86_64-xz/ | liblzma-5.dll |
-| mingw-w64-ucrt-x86_64-zlib | 1.3.2-3 | Zlib | third_party/mingw-w64-ucrt-x86_64-zlib/ | zlib1.dll |
+| mingw-w64-ucrt-x86_64-zlib | 1.4-2 | Zlib | third_party/mingw-w64-ucrt-x86_64-zlib/ | zlib1.dll |
 | mingw-w64-ucrt-x86_64-zstd | 1.5.7-2 | BSD-3-Clause OR GPL-2.0-or-later | third_party/mingw-w64-ucrt-x86_64-zstd/ | libzstd.dll |
 
 ## Corresponding source
@@ -136,5 +136,5 @@ corresponding source of these packages on request: open an issue in the reposito
 | mingw-w64-vulkan-loader | 1~1.4.363.0-1 | https://repo.msys2.org/mingw/sources/mingw-w64-vulkan-loader-1~1.4.363.0-1.src.tar.zst |
 | mingw-w64-winpthreads | 14.0.0.r598.ge3d18511f-1 | https://repo.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r598.ge3d18511f-1.src.tar.zst |
 | mingw-w64-xz | 5.8.4-1 | https://repo.msys2.org/mingw/sources/mingw-w64-xz-5.8.4-1.src.tar.zst |
-| mingw-w64-zlib | 1.3.2-3 | https://repo.msys2.org/mingw/sources/mingw-w64-zlib-1.3.2-3.src.tar.zst |
+| mingw-w64-zlib | 1.4-2 | https://repo.msys2.org/mingw/sources/mingw-w64-zlib-1.4-2.src.tar.zst |
 | mingw-w64-zstd | 1.5.7-2 | https://repo.msys2.org/mingw/sources/mingw-w64-zstd-1.5.7-2.src.tar.zst |
