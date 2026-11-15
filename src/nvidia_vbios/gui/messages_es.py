@@ -340,6 +340,9 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                           'Este valor se aplica en el nivel más alto, probablemente un cable de {watts} W (deducido, '
                           'sin probar). Los niveles más bajos mantienen sus propios límites.',
  'sense_profiles.past_top': 'Pasar de {watts} W supera lo que admite ese cable. Es decisión tuya.',
+ 'fixed_rated.ceiling': ('Esta copia se guardó subiendo solo el techo: las políticas fijas 2/7 de la placa siguen en '
+                         '{watts} W, no en {ceiling} W, así que la tarjeta puede quedar limitada a {watts} W. Ajusta '
+                         'el techo en la ROM original, o cámbialo aquí a otro valor, y ellas lo siguen.'),
  'notebook.ceiling': 'En un portátil, Dynamic Boost pide el límite de potencia en uso mientras funciona y este techo '
                      'solo lo acota. Las herramientas de monitoreo muestran este techo guardado, así que subir solo '
                      'el techo por lo general no sube el límite en uso. En una RTX 5090 Laptop GPU el límite en uso '
@@ -456,8 +459,6 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                                              '(avanzado, experimental)'),
  'field.connector_current_threshold_max': ('Techo del umbral de corriente del canal de conector {connector} '
                                            '(avanzado, experimental)'),
- 'field.board_fixed_rated_w': 'Potencia nominal de las políticas fijas 2/7 de la placa (avanzado, estilo XOC, '
-                              'experimental)',
  'field.notebook_base_tgp_w': 'TGP base del portátil',
  'field.runtime_power_limit_unlock': ('Permitir cambiar el límite de potencia en uso (nvidia-smi -pl, '
                                       'Afterburner)'),

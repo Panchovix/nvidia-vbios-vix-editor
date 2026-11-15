@@ -750,6 +750,29 @@ class PresentationNumberTests(unittest.TestCase):
         plain = {f['key']: f for f in inspect_image(from_bytes(synthetic_rom(copies=2, policies=True)))['fields']}
         self.assertEqual(sense_profile_notes(plain['power_max_w'], list(plain.values())), [])
 
+    def test_a_ceiling_raised_alone_notes_the_fixed_board_policies(self):
+        from nvidia_vbios.gui.presentation import fixed_rated_notes
+        from nvidia_vbios.rom import from_bytes, inspect_image
+        from test_extended_fields import stock_ceiling_fixture
+        # synthetic_blackwell stores rows 2/7 at 70 W rated under a 100 W ceiling, as a copy saved with the ceiling
+        # raised alone.
+        fields = {f['key']: f for f in inspect_image(from_bytes(synthetic_blackwell()))['fields']}
+        self.assertEqual(fixed_rated_notes(fields['power_max_w']), [
+            'This copy was saved with the ceiling raised alone: the fixed board policies 2/7 still hold 70 W, not '
+            '100 W, so the card can stay limited to 70 W. Set the ceiling in the original ROM, or change it here to '
+            'another value, and they follow it.'])
+        self.assertEqual(fixed_rated_notes(fields['power_max_w'], 'es'), [
+            'Esta copia se guardó subiendo solo el techo: las políticas fijas 2/7 de la placa siguen en 70 W, no en '
+            '100 W, así que la tarjeta puede quedar limitada a 70 W. Ajusta el techo en la ROM original, o cámbialo '
+            'aquí a otro valor, y ellas lo siguen.'])
+        self.assertEqual(fixed_rated_notes(fields['power_default_w']), [])
+        # Rows 2/7 at the ceiling (every stock image) and other families: no note.
+        stock = {f['key']: f for f in inspect_image(stock_ceiling_fixture())['fields']}
+        ada = {f['key']: f for f in inspect_image(from_bytes(synthetic_rom()))['fields']}
+        for field in (stock['power_max_w'], ada['power_max_w']):
+            for language in ('en', 'es'):
+                self.assertEqual(fixed_rated_notes(field, language), [])
+
     def test_notebook_notes_name_the_running_limit_and_the_base_tgp(self):
         from nvidia_vbios.gui.presentation import field_label, notebook_notes, shunt_scaled
         from nvidia_vbios.rom import from_bytes, inspect_image

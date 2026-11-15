@@ -111,7 +111,6 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `slot_power_rated_w`, `slot_power_max_w` | PCIe slot power policy: row 19 (SFF), row 18 (5060 Ti), Ada and Ampere row 5, Turing row 3 | Reviewed row shapes only; [tested on hardware](#fields-tested-on-hardware) on GB20x, Ada and Ampere, experimental on Turing |
 | `connector_N_power_rated/max_w`, `connector_N_current_threshold_rated/max_ma` | Power policy and current hardware threshold of external 12 V connector sense channel N, numbered in power-row order; on Ada and GB20x the power policy of the auxiliary power connector input | Experimental except the Turing power policies ([tested on hardware](#fields-tested-on-hardware)): Ampere and Turing, current thresholds opt-in; Ada and GB20x (power only, opt-in), reviewed row shapes on the connector input channel |
 | `slot_current_threshold_rated/max_ma`, `nvvdd_power_threshold_rated/max_w` | Hardware-threshold policies (slot 12 V current; Ada NVVDD output power) | Experimental, opt-in; slot current on Ada, Ampere and Turing, NVVDD power on Ada only |
-| `board_fixed_rated_w` | Rated value of the fixed board policies 2/7 | Experimental, opt-in (hidden in the GUI by default) |
 | `notebook_base_tgp_w` | Row 2 +73 of the GB20x notebook layout, the base TGP that Dynamic Boost adds its boost to (as one RTX 5090 Laptop GPU behaved) | Opt-in (hidden in the GUI by default), GB20x notebook layout only; tested on hardware on one RTX 5090 Laptop GPU, so not experimental, where it raised the running limit only together with `power_default_w` and `power_max_w`; an edited value stays between `power_default_w` and `power_max_w`, which it does not bound |
 | `runtime_power_limit_unlock` | TGP index of the power table header (3x byte 10, GB20x byte 22): 1 names the TGP row (row 2) there, 0 leaves it empty (`0xff`), as the laptop images ship, where current drivers refuse runtime power limit changes | Opt-in (hidden in the GUI by default), Turing (not experimental), Ampere and GB20x (experimental) notebook headers, not Ada; 0 gives back the stock bytes; hardware-tested on one RTX 2070 Laptop GPU (Turing, Windows) with the limits at stock, not on Ampere or GB20x; see [Runtime power limit switch](#runtime-power-limit-switch-runtime_power_limit_unlock-opt-in) |
 | `input_current_rated_ma`, `input_current_max_ma` | 12 V board input-current policy, row 9 (Ada: thresholds 0/1, rows 9/10) | Reviewed row shapes; [tested on hardware](#fields-tested-on-hardware) on GB20x (experimental when bound to an override profile, and on Ada and Ampere) |
@@ -835,14 +834,16 @@ hardware protection.
 It accepts exact 1 mW increments from **1 W** through the TGP rated default,
 which stays unchanged unless `power_default_w` is requested too. The writer
 enforces `minimum <= default <= maximum`;
-the existing `power_max_w` lower bound continues to protect every rated/default
-value in its coordinated policy group. These are encoding and preservation
+the `power_max_w` lower bound keeps the ceiling at or above the rated values it
+does not write (on GB20x desktop images the TGP rated default, see [Board power
+ceiling and the fixed board policies 2/7](#board-power-ceiling-and-the-fixed-board-policies-27)).
+These are encoding and preservation
 bounds, not a promise of hardware acceptance or a measured runtime minimum.
 Both controls display the ROM's rated default in the GUI.
 
 On the reviewed Blackwell V40 `40/38-or-3d/66` layout, the floor is the type 12
-TGP policy **row 8**, at row+13. Rows 2/7 participate in the existing coordinated
-maximum edit, but their distinct permissive minima remain unchanged. The real
+TGP policy **row 8**, at row+13. Rows 2/7 take part in the coordinated ceiling
+edit, but their distinct permissive minima remain unchanged. The real
 corpus stores 1 mW in rows 2/7 while row 8 stores the 60–400 W board floor; assuming
 all three source minima agree would reject the reviewed ROMs. The descriptor
 includes `policy_indices` and `format_scope` to make the narrower minimum scope
@@ -879,7 +880,9 @@ Every one of these conditions must hold, or the fields stay hidden as before:
 The bound fields write only that profile's entries. The maximum and rated values of
 base rows 2/7/8/9 are never written; each bound field is capped by the same base
 value (a rated field also by the base rated value), and a value above it is refused
-with `OUT_OF_BOUNDS`. `power_min_w`
+with `OUT_OF_BOUNDS`. `power_max_w` also writes the profile's `(2, default)` and
+`(7, default)`, so the base rows 2/7 rated value caps it too (see [Board power
+ceiling and the fixed board policies 2/7](#board-power-ceiling-and-the-fixed-board-policies-27)). `power_min_w`
 still writes base row 8 and is capped by the profile's `(8, default)`;
 `input_current_policy7_limit_ma` still writes row 7+61. The descriptors carry
 `bound_profile` and `base_values`, are experimental, and their reason names the
@@ -937,10 +940,10 @@ default power limit equal to this stored value in the deployed payload tables on
 the seven reviewed Blackwell devices and on the reviewed Ada device. The capture
 is not distributed.
 
-Rows 2 and 7 keep their own rated values, which equal their stored maxima in every
-reviewed source. They behave as fixed policies (current = rated). Whether they bind
-when the TGP default or ceiling is raised above them is **untested**; check NVML and
-the measured board power before relying on a raised default.
+`power_default_w` does not write rows 2 and 7. They are fixed policies (current =
+rated), and every stock image stores their rated value equal to the ceiling, which
+writes it (see [Board power ceiling and the fixed board policies
+2/7](#board-power-ceiling-and-the-fixed-board-policies-27)).
 
 ### 12 V input current (`input_current_rated_ma`, `input_current_max_ma`)
 
@@ -994,23 +997,51 @@ The reviewed vendor XOC and 2500 W images agree with this model:
 - The MSI 2500 W image has no profiles. It stores 250000 mA in both row 9 and row 7.
 - Both vendors also raise the rated values of rows 2/7 together with their maxima.
 
-### Fixed board policies 2/7, opt-in (`board_fixed_rated_w`)
+### Board power ceiling and the fixed board policies 2/7
 
 Rows 2 and 7 are fixed board policies: in the saved GET their CONTROL current equals
-their rated value, even on boots where their maxima had been raised (MaxQ3 at
-325000 of 350000 mW, the SFF at 70000 of 100000 mW). `power_max_w` raises only their
-maxima. The ASUS XOC and MSI 2500 W images instead store rated = maximum in both
-rows. Raising the ceiling above the factory rated value may therefore stay capped
-until this rated value follows it. Whether that cap applies is untested.
+their rated value, even on boots where only their maxima had been raised (MaxQ3 at
+325000 of 350000 mW, the SFF at 70000 of 100000 mW). Every stock RTX 50 desktop and
+workstation image of the corpus stores that rated value equal to the ceiling (the
+rows 2/7/8 maximum), also where row 8, the boot default, is lower: 600000 mW on the
+FE, whose row 8 is rated 575000 mW, and 350000 mW on the RTX 5070 Ti, whose row 8 is
+rated 300000 mW. The ASUS XOC and MSI 2500 W images do the same. Users reported that
+a raised ceiling had no effect until this rated value was raised to the same value.
 
-`board_fixed_rated_w` writes the rated value (row+17) of rows 2 and 7, which must
-be equal in the source, plus the `(2, default)` and `(7, default)` entries of
-complete matching profiles; on a top-level profile binding it writes only that
-profile's `(2, default)` and `(7, default)`. It is in the `board-power` ordering group, so it can
-never exceed the ceiling of the same result. A typical XOC-style request sets it
-together with `power_max_w`, for example to 1000 W on the 5090. The descriptor has
-`opt_in: true`. The GUI hides it until **Show advanced XOC-style fields** is ticked;
-the box is off by default. CLI and API callers opt in by naming the key.
+On RTX 50 desktop and workstation images (not the notebook layout) `power_max_w`
+therefore writes it too. Where rows 2 and 7 hold the same rated value, the ceiling
+writes the maximum (row+21) of rows 2/7/8 and the rated value (row+17) of rows 2
+and 7, plus the `(2, maximum)`, `(7, maximum)`, `(8, maximum)`, `(2, default)` and
+`(7, default)` entries of complete matching profiles. The rated value of row 8 is
+the boot default (`power_default_w`); the ceiling never writes it. On a top-level
+profile binding it writes only that profile's entries. The descriptor carries
+`rated_policy_indices: [2, 7]`, and the manifest lists `power_max_w` under
+`preservation.changed_rated_defaults` when it changed one of these rated values.
+
+Since rows 2/7 move with the ceiling, they no longer bound it from below. Its minimum
+is the boot default (and the rows 2/7 minima, 1 mW in the corpus), so it can be
+lowered to the boot default alone; to go lower, lower `power_default_w` in the same
+edit. On a top-level profile binding the minimum is that profile's `(8, default)`
+and the matching entries of the other profiles, and the maximum is the base row 8
+maximum and the base rows 2/7 rated value. Where rows 2 and 7 hold different rated
+values (no image of the corpus does), the ceiling writes only the maxima and those
+rated values bound it from below, as before.
+
+A copy saved by an older version with only the ceiling raised (for example the RTX
+PRO 4000 SFF at 106 W over 70 W rated) still holds the old rated value. Its
+`power_max_w` descriptor carries that value as `fixed_policy_rated_w`, and its reason
+says so. Setting the ceiling again writes it, also at the stored value:
+
+```sh
+./nvbios edit original.rom modified.rom --set power_max_w=106 --dry-run
+```
+
+The GUI shows a note under **Board power ceiling** on such a copy. It stages only
+values that differ from the stored ones, so there enter another ceiling, save, and
+set the wanted one on that copy.
+
+The experimental flag of `power_max_w` does not change: on GB20x it is set only on a
+top-level profile binding.
 
 ### PCIe slot power (`slot_power_rated_w`, `slot_power_max_w`)
 
@@ -1079,13 +1110,12 @@ that is the user's call. The board power limit, the slot limit (`slot_power_*`) 
 12 V input current limit (`input_current_*` and `input_current_policy7_limit_ma`; 18 A on
 the RTX 5060 Ti, about 216 W at 12 V) still apply and may bind next. To raise the
 connector limit of an RTX 5060 Ti to 200 W (above the 150 W rating of an 8-pin
-connector) together with a 220 W board limit and a 25 A input current limit
-(`board_fixed_rated_w` raises the rated value of the fixed board policies 2/7 with the
-ceiling):
+connector) together with a 220 W board limit and a 25 A input current limit (the
+ceiling also raises the rated value of the fixed board policies 2/7):
 
 ```sh
 ./nvbios edit original.rom modified.rom --set power_max_w=220 --set power_default_w=220 \
-  --set board_fixed_rated_w=220 --set connector_1_power_max_w=200 --set connector_1_power_rated_w=200 \
+  --set connector_1_power_max_w=200 --set connector_1_power_rated_w=200 \
   --set input_current_max_ma=25000 --set input_current_rated_ma=25000 --set input_current_policy7_limit_ma=25000
 ```
 
@@ -1377,7 +1407,7 @@ boolean; the code that applies an offset was not traced.
 ### Joint validation
 
 `power_min_w`, `power_default_w` and `power_max_w` form the `board-power` ordering
-group (with `board_fixed_rated_w`, and on the GB20x notebook layout with
+group (on the GB20x notebook layout with
 `notebook_base_tgp_w`, see [Notebook images](#notebook-images-rtx-5050-5080-and-5090-laptop-gpu));
 the two input-current fields form `input-current-12v`; each output-OCP rail's
 rated and maximum fields form `nvvdd-output-ocp` or `msvdd-output-ocp`; the slot
@@ -1406,13 +1436,16 @@ reviewed bounds, even when an extension supplies it. Other extension bindings ke
 their own bounds, as before. Only a canonical `power_min_w`, `power_default_w`,
 `input_current_rated_ma`, `*_output_ocp_rated_ma`, `slot_power_rated_w`,
 `slot_current_threshold_rated_ma`, `nvvdd_power_threshold_rated_w`,
-`connector_N_power_rated_w`, `connector_sum_power_rated_w`,
-`connector_N_current_threshold_rated_ma` or `board_fixed_rated_w` binding may change
+`connector_N_power_rated_w`, `connector_sum_power_rated_w` or
+`connector_N_current_threshold_rated_ma` binding may change
 a minimum or rated value, and only the
 canonical `input_current_policy7_limit_ma` binding may write row 7's opaque bytes
 61:65 (the canonical `notebook_base_tgp_w` binding, likewise, row 2's bytes 73:77 on the
 GB20x notebook layout, and the canonical `runtime_power_limit_unlock` binding the TGP index of the
 power table header). Any other binding with one of these keys fails with `INVALID_FIELD_EVIDENCE`.
+On GB20x desktop images the canonical `power_max_w` binding also changes the rated value
+of rows 2/7 (its `rated_policy_indices`); another ceiling binding or an alias that would
+change it fails with `FACTORY_DEFAULT_CHANGED`.
 Aliases, partial offsets, other rows and non-matching profiles stay protected.
 Override profiles that matched the base must still match after the edit, and no
 profile may end with a policy default above its maximum. On a top-level profile

@@ -538,12 +538,16 @@ class PowerDefaultTests(unittest.TestCase):
         result = edit(image, {'power_default_w': 150, 'power_max_w': 160})
         rows = backend(result.image).power_rows()
         self.assertEqual([(rows[i]['default_raw'], rows[i]['maximum_raw']) for i in (2, 7, 8)],
-                         [(70000, 160000), (70000, 160000), (150000, 160000)])
+                         [(160000, 160000), (160000, 160000), (150000, 160000)])
+        # Rows 2/7 rated follow the ceiling, so it goes below their stored 70 W with the boot default.
+        rows = backend(edit(image, {'power_default_w': 60, 'power_max_w': 65}).image).power_rows()
+        self.assertEqual([(rows[i]['default_raw'], rows[i]['maximum_raw']) for i in (2, 7, 8)],
+                         [(65000, 65000), (65000, 65000), (60000, 65000)])
         self.assertEqual(edit(image, {'power_min_w': 75, 'power_default_w': 80}).manifest['integrity']['valid'], True)
         self.assertEqual(backend(edit(image, {'power_default_w': 20, 'power_min_w': 10}).image).power_rows()[8]
                          ['minimum_raw'], 10000)
         for changes in ({'power_default_w': 101}, {'power_default_w': 20}, {'power_default_w': 150, 'power_max_w': 140},
-                        {'power_min_w': 80, 'power_default_w': 75}, {'power_default_w': 60, 'power_max_w': 65}):
+                        {'power_min_w': 80, 'power_default_w': 75}, {'power_default_w': 60, 'power_max_w': 55}):
             with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
                 edit(image, changes)
             self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
@@ -797,7 +801,10 @@ class ProfileAndManifestGuardTests(unittest.TestCase):
         changed = edit(image, {'power_default_w': 90, 'input_current_rated_ma': 50000}).manifest['preservation']
         self.assertFalse(changed['factory_defaults'])
         self.assertEqual(changed['changed_rated_defaults'], ['input_current_rated_ma', 'power_default_w'])
-        kept = edit(image, {'power_max_w': 120, 'power_default_w': 70}).manifest['preservation']
+        ceiling = edit(image, {'power_max_w': 120, 'power_default_w': 70}).manifest['preservation']
+        self.assertFalse(ceiling['factory_defaults'])
+        self.assertEqual(ceiling['changed_rated_defaults'], ['power_max_w'])
+        kept = edit(image, {'power_min_w': 20, 'power_default_w': 70}).manifest['preservation']
         self.assertTrue(kept['factory_defaults'])
         self.assertEqual(kept['changed_rated_defaults'], [])
 
@@ -1141,69 +1148,141 @@ class SlotPowerTests(unittest.TestCase):
                     self.assertEqual(row_title(fields[key], language)[1], not tested)
 
 
-class FixedPolicyRatedTests(unittest.TestCase):
-    """Opt-in rated value of fixed board policies 2/7, as XOC-style images raise it."""
+def stock_ceiling_fixture():
+    """synthetic_blackwell with rows 2/7 rated = ceiling (100 W) in the base and in profile 0, as every stock
+    GB20x desktop image stores them; row 8 keeps its 70 W rated value."""
+    blob = bytearray(synthetic_blackwell())
+    parsed = backend(from_bytes(bytes(blob)))
+    for i in (2, 7):
+        struct.pack_into('<I', blob, parsed.power_rows()[i]['offset'] + 17, 100000)
+        struct.pack_into('<I', blob, profile_entry(parsed, 0, i, 'default')['value_offset'], 100000)
+    return from_bytes(repair_fixture(blob))
 
-    def test_opt_in_field_writes_rows_2_7_and_matching_profile_defaults(self):
-        from nvidia_vbios.gui.presentation import field_label, opt_in_field_keys
-        image = from_bytes(synthetic_blackwell())
+
+class CeilingFixedRatedTests(unittest.TestCase):
+    """The GB20x desktop ceiling also writes the rated value of the fixed board policies 2/7."""
+
+    def test_ceiling_writes_rows_2_7_rated_and_matching_profile_defaults(self):
+        from nvidia_vbios.gui.presentation import opt_in_field_keys
+        image = stock_ceiling_fixture()
         source = backend(image)
         report = inspect_image(image)
-        field = {f['key']: f for f in report['fields']}['board_fixed_rated_w']
-        self.assertEqual((field['current'], field['bounds']['minimum'], field['bounds']['maximum']), (70, 30, 100))
-        self.assertTrue(field['opt_in'] and field['experimental'] and field['editable'])
-        self.assertEqual((field['policy_indices'], field['ordering_group']), ([2, 7], 'board-power'))
-        # The XOC-style REL/ALT selector field and its flat voltage are opt-in too (read-only here: no legacy
-        # directory).
-        self.assertEqual(opt_in_field_keys(report), {'board_fixed_rated_w', 'nvvdd_rel_alt_follow_ov',
-                                                     'nvvdd_rel_alt_follow_ov_mv'})
-        for language in ('en', 'es'):
-            self.assertIn('XOC', field_label(field, language))
-        result = edit(image, {'board_fixed_rated_w': 90})
+        field = {f['key']: f for f in report['fields']}['power_max_w']
+        # Rows 2/7 move with the ceiling, so only the boot default (row 8 rated) bounds it from below.
+        self.assertEqual((field['current'], field['bounds']['minimum']), (100, 70))
+        self.assertEqual(field['rated_policy_indices'], [2, 7])
+        self.assertNotIn('fixed_policy_rated_w', field)
+        self.assertNotIn('experimental', field)
+        self.assertIn('also writes the rated value of the fixed board policies 2/7', field['reason'])
+        self.assertLessEqual({'structural-row-comparison', 'user-reports', 'saved-get-policy-correlation'},
+                             {e['kind'] for e in field['evidence']})
+        self.assertEqual(field['version_metadata']['format_variant'],
+                         'GB20x power v40 rows 2/7/8 and complete matching profiles')
+        self.assertNotIn('board_fixed_rated_w', {f['key'] for f in report['fields']})
+        self.assertEqual(opt_in_field_keys(report), {'nvvdd_rel_alt_follow_ov', 'nvvdd_rel_alt_follow_ov_mv'})
+        result = edit(image, {'power_max_w': 120})
         target = backend(result.image)
         for i, (before, after) in enumerate(zip(source.power_rows(), target.power_rows())):
-            self.assertEqual(after, dict(before, default_raw=90000) if i in (2, 7) else before)
+            self.assertEqual(after, dict(before, default_raw=120000, maximum_raw=120000) if i in (2, 7) else
+                             dict(before, maximum_raw=120000) if i == 8 else before)
         values = {(e['policy'], e['field']): e['value_raw'] for e in target.power_profiles()[0]['entries']}
-        self.assertEqual((values[(2, 'default')], values[(7, 'default')], values[(8, 'default')]), (90000, 90000, 70000))
+        self.assertEqual({k: v for k, v in values.items() if k[0] != 9},
+                         {(2, 'maximum'): 120000, (7, 'maximum'): 120000, (8, 'maximum'): 120000,
+                          (2, 'default'): 120000, (7, 'default'): 120000, (8, 'default'): 70000})
         self.assertEqual([p['index'] for p in target.matching_power_profiles()], [0])
-        self.assertEqual(result.manifest['preservation']['changed_rated_defaults'], ['board_fixed_rated_w'])
-        profile = {(e['policy'], e['field']): e['value_offset'] for e in source.power_profiles()[0]['entries']}
-        changed_bytes_within(self, image, result, [source.power_rows()[2]['offset'] + 17, source.power_rows()[7]['offset'] + 17,
-                                                   profile[(2, 'default')], profile[(7, 'default')]])
+        self.assertEqual(result.manifest['preservation'],
+                         dict(result.manifest['preservation'], factory_defaults=False,
+                              changed_rated_defaults=['power_max_w']))
+        changed_bytes_within(self, image, result, [
+            *(source.power_rows()[i]['offset'] + at for i in (2, 7, 8) for at in (17, 21) if (i, at) != (8, 17)),
+            *(profile_entry(source, 0, i, name)['value_offset'] for i in (2, 7, 8) for name in ('maximum', 'default')
+              if (i, name) != (8, 'default'))])
+        self.assertEqual(edit(result.image, {'power_max_w': 100}).blob, image.blob)
 
-    def test_joint_with_ceiling_and_guards(self):
-        from nvidia_vbios.editor.registry import power
-        image = from_bytes(synthetic_blackwell())
-        rows = backend(edit(image, {'board_fixed_rated_w': 150, 'power_max_w': 150}).image).power_rows()
+    def test_ceiling_goes_down_to_the_boot_default_and_below_it_with_the_default(self):
+        image = stock_ceiling_fixture()
+        rows = backend(edit(image, {'power_max_w': 70}).image).power_rows()
         self.assertEqual([(rows[i]['default_raw'], rows[i]['maximum_raw']) for i in (2, 7, 8)],
-                         [(150000, 150000), (150000, 150000), (70000, 150000)])
-        rows = backend(edit(image, {'board_fixed_rated_w': 80, 'power_max_w': 85}).image).power_rows()
-        self.assertEqual((rows[2]['default_raw'], rows[2]['maximum_raw']), (80000, 85000))
-        for changes in ({'board_fixed_rated_w': 150}, {'board_fixed_rated_w': 150, 'power_max_w': 140},
-                        {'board_fixed_rated_w': 20}):
+                         [(70000, 70000)] * 3)
+        rows = backend(edit(image, {'power_max_w': 65, 'power_default_w': 60}).image).power_rows()
+        self.assertEqual([(rows[i]['default_raw'], rows[i]['maximum_raw']) for i in (2, 7, 8)],
+                         [(65000, 65000), (65000, 65000), (60000, 65000)])
+        for changes in ({'power_max_w': 69}, {'power_max_w': 65, 'power_default_w': 66}):
             with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
                 edit(image, changes)
             self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
-        row2 = backend(image).power_rows()[2]['offset'] + 17
-        row7 = backend(image).power_rows()[7]['offset'] + 17
-        cases = ((custom_registry('board_fixed_rated_w', (row2, row7)), {'board_fixed_rated_w': 90}, 'INVALID_FIELD_EVIDENCE'),
+
+    def test_a_ceiling_raised_alone_by_an_older_version_takes_the_rated_value_at_the_same_value(self):
+        # synthetic_blackwell stores rows 2/7 at 70 W rated under a 100 W ceiling.
+        image = from_bytes(synthetic_blackwell())
+        source = backend(image)
+        field = descriptors(image)['power_max_w']
+        self.assertEqual((field['current'], field['fixed_policy_rated_w'], field['rated_policy_indices']),
+                         (100, 70, [2, 7]))
+        self.assertIn('the fixed board policies 2/7 still hold 70 W and take the ceiling when it is set',
+                      field['reason'])
+        result = edit(image, {'power_max_w': 100})
+        rated = [source.power_rows()[i]['offset'] + 17 for i in (2, 7)] + [
+            profile_entry(source, 0, i, 'default')['value_offset'] for i in (2, 7)]
+        self.assertEqual(sorted(e['offset'] for e in result.manifest['edits']), sorted(rated))
+        self.assertEqual({e['after'] for e in result.manifest['edits']}, {100000})
+        self.assertEqual(result.manifest['preservation']['changed_rated_defaults'], ['power_max_w'])
+        rows = backend(result.image).power_rows()
+        self.assertEqual([rows[i]['default_raw'] for i in (2, 7, 8)], [100000, 100000, 70000])
+        after = descriptors(result.image)['power_max_w']
+        self.assertNotIn('fixed_policy_rated_w', after)
+        self.assertNotIn('still hold', after['reason'])
+        self.assertEqual(edit(result.image, {'power_max_w': 100}).blob, result.blob)
+
+    def test_unequal_rows_2_7_keep_the_previous_behaviour(self):
+        blob = bytearray(synthetic_blackwell())
+        parsed = backend(from_bytes(bytes(blob)))
+        struct.pack_into('<I', blob, parsed.power_rows()[7]['offset'] + 17, 60000)
+        struct.pack_into('<I', blob, profile_entry(parsed, 0, 7, 'default')['value_offset'], 60000)
+        image = from_bytes(repair_fixture(blob))
+        source = backend(image)
+        field = descriptors(image)['power_max_w']
+        self.assertFalse({'rated_policy_indices', 'fixed_policy_rated_w'} & set(field))
+        self.assertNotIn('fixed board policies', field['reason'])
+        self.assertEqual(field['bounds']['minimum'], 70)
+        result = edit(image, {'power_max_w': 120})
+        for before, after in zip(source.power_rows(), backend(result.image).power_rows()):
+            self.assertEqual(after['default_raw'], before['default_raw'])
+        self.assertEqual(result.manifest['preservation']['changed_rated_defaults'], [])
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'power_max_w': 69})
+        self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+
+    def test_only_the_canonical_ceiling_changes_rows_2_7_rated(self):
+        from nvidia_vbios.editor.registry import power
+        image = from_bytes(synthetic_blackwell())
+        source = backend(image)
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'board_fixed_rated_w': 90})
+        self.assertEqual(exc.exception.code, 'UNKNOWN_FIELD')
+        canonical = next(b for b in power(image, source) if b.descriptor['key'] == 'power_max_w')
+        row2, row7, row8 = (source.power_rows()[i]['offset'] + 17 for i in (2, 7, 8))
+        profile7 = profile_entry(source, 0, 7, 'default')['value_offset']
+        cases = ((custom_registry('power_max_w', (row2, row7)), {'power_max_w': 90}, 'FACTORY_DEFAULT_CHANGED'),
+                 (custom_registry('alias', canonical.offsets), {'alias': 90}, 'FACTORY_DEFAULT_CHANGED'),
                  (custom_registry('alias', (row7,)), {'alias': 90}, 'FACTORY_DEFAULT_CHANGED'),
-                 (custom_registry('alias', (backend(image).power_rows()[8]['offset'] + 17,), include=(power,)),
-                  {'board_fixed_rated_w': 90, 'alias': 60}, 'FACTORY_DEFAULT_CHANGED'))
+                 (custom_registry('alias', (row8,), include=(power,)), {'power_max_w': 90, 'alias': 60},
+                  'FACTORY_DEFAULT_CHANGED'),
+                 (custom_registry('alias', (profile7,), include=(power,)), {'alias': 90}, 'PRESERVED_FIELD_CHANGED'))
         for custom, changes, code in cases:
             with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
                 edit(image, changes, field_registry=custom)
             self.assertEqual(exc.exception.code, code)
 
-    def test_unequal_rows_or_non_blackwell_offer_no_field(self):
-        blob = bytearray(synthetic_blackwell())
-        parsed = backend(from_bytes(bytes(blob)))
-        struct.pack_into('<I', blob, parsed.power_rows()[7]['offset'] + 17, 60000)
-        entry = next(e for e in parsed.power_profiles()[0]['entries'] if (e['policy'], e['field']) == (7, 'default'))
-        struct.pack_into('<I', blob, entry['value_offset'], 60000)
-        self.assertNotIn('board_fixed_rated_w', descriptors(from_bytes(repair_fixture(blob))))
-        for family in ('ada', 'ampere'):
-            self.assertNotIn('board_fixed_rated_w', descriptors(from_bytes(synthetic_rom(family=family))))
+    def test_notebook_layout_and_other_families_keep_their_ceiling(self):
+        images = {'notebook': from_bytes(notebook_fixture())}
+        images.update((family, from_bytes(synthetic_rom(family=family))) for family in ('ada', 'ampere'))
+        for name, image in images.items():
+            with self.subTest(name=name):
+                fields = descriptors(image)
+                self.assertFalse({'rated_policy_indices', 'fixed_policy_rated_w'} & set(fields['power_max_w']))
+                self.assertNotIn('fixed board policies', fields['power_max_w']['reason'])
+                self.assertNotIn('board_fixed_rated_w', fields)
 
 
 class SingleRailLayoutTests(unittest.TestCase):
@@ -1491,7 +1570,6 @@ class NotebookLayoutTests(unittest.TestCase):
             self.assertEqual(fields[key]['evidence'][0]['format'], 'GB20x notebook rows13/14 type7; monitors 27/28')
             self.assertFalse(fields[key]['evidence'][0]['runtime_get'])
         self.assertIn('no saved GET', fields['msvdd_output_ocp_rated_ma']['reason'])
-        self.assertNotIn('board_fixed_rated_w', fields)
         self.assertNotIn('input_current_rated_ma', fields)
         self.assertFalse(any(key.startswith('fan_') for key in fields))
         self.assertIsNone(backend(image).fan_coolers())
@@ -3207,9 +3285,9 @@ class TopLevelProfileTests(unittest.TestCase):
         self.assertEqual((parser.top_power_profile()['index'], parser.top_power_profile()['selection_power_raw']),
                          (7, 600000))
         fields = descriptors(image)
-        expected = {'power_max_w': (90, 90, 100), 'power_default_w': (80, 50, 90), 'power_min_w': (30, 1, 80),
-                    'board_fixed_rated_w': (90, 60, 90), 'input_current_max_ma': (60000, 60000, 80000),
-                    'input_current_rated_ma': (60000, 40000, 60000)}
+        # The ceiling writes the profile's rows 2/7 rated values too: its own (8, default) bounds it from below.
+        expected = {'power_max_w': (90, 80, 100), 'power_default_w': (80, 50, 90), 'power_min_w': (30, 1, 80),
+                    'input_current_max_ma': (60000, 60000, 80000), 'input_current_rated_ma': (60000, 40000, 60000)}
         for key, (current, low, high) in expected.items():
             with self.subTest(key=key):
                 f = fields[key]
@@ -3221,6 +3299,9 @@ class TopLevelProfileTests(unittest.TestCase):
                                   f['reason'])
                     self.assertIn('is preserved', f['reason'])
         self.assertEqual(fields['power_max_w']['base_values'], {'power_max_w': 100, 'power_default_w': 100})
+        self.assertEqual(fields['power_max_w']['rated_policy_indices'], [2, 7])
+        self.assertIn('also writes the rated value of the fixed board policies 2/7', fields['power_max_w']['reason'])
+        self.assertNotIn('board_fixed_rated_w', fields)
         self.assertIn('the base table holds 80000 mA', fields['input_current_max_ma']['reason'])
         from nvidia_vbios.editor.registry import registry
         top = {e['value_offset'] for e in parser.top_power_profile()['entries']}
@@ -3231,23 +3312,28 @@ class TopLevelProfileTests(unittest.TestCase):
                     self.assertEqual(offsets[key], {parser.power_rows()[8]['offset'] + 13})
                 else:
                     self.assertTrue(offsets[key] and offsets[key] <= top)
+        self.assertEqual(offsets['power_max_w'], {e['value_offset'] for e in parser.top_power_profile()['entries']
+                                                  if e['policy'] in (2, 7) or e['field'] == 'maximum' and
+                                                  e['policy'] == 8})
 
     def test_edits_write_only_the_bound_profile_and_revert(self):
         image = top_profile_fixture()
         parser = backend(image)
         top = parser.top_power_profile()
-        changes = {'power_max_w': 100, 'board_fixed_rated_w': 95, 'power_default_w': 85,
-                   'input_current_max_ma': 75000, 'input_current_rated_ma': 70000}
+        changes = {'power_max_w': 100, 'power_default_w': 85, 'input_current_max_ma': 75000,
+                   'input_current_rated_ma': 70000}
         result = edit(image, changes)
         changed_bytes_within(self, image, result, [e['value_offset'] for e in top['entries']])
         target = backend(result.image)
         self.assertEqual(target.power_rows(), parser.power_rows())
         self.assertEqual(target.top_power_profile()['values'],
                          {(2, 'maximum'): 100000, (7, 'maximum'): 100000, (8, 'maximum'): 100000,
-                          (2, 'default'): 95000, (7, 'default'): 95000, (8, 'default'): 85000,
+                          (2, 'default'): 100000, (7, 'default'): 100000, (8, 'default'): 85000,
                           (9, 'maximum'): 75000, (9, 'default'): 70000})
-        back = edit(result.image, {'power_max_w': 90, 'board_fixed_rated_w': 90, 'power_default_w': 80,
-                                   'input_current_max_ma': 60000, 'input_current_rated_ma': 60000})
+        self.assertEqual(result.manifest['preservation']['changed_rated_defaults'],
+                         ['input_current_rated_ma', 'power_default_w', 'power_max_w'])
+        back = edit(result.image, {'power_max_w': 90, 'power_default_w': 80, 'input_current_max_ma': 60000,
+                                   'input_current_rated_ma': 60000})
         self.assertEqual(back.blob, image.blob)
         self.assertEqual(edit(image, {'power_min_w': 40}).manifest['edits'][0]['offset'],
                          parser.power_rows()[8]['offset'] + 13)
@@ -3261,14 +3347,14 @@ class TopLevelProfileTests(unittest.TestCase):
         refused = {
             'override profile 7 would no longer be the profile selected at the top level: override profile 0 '
             'policy 2 maximum exceeds the same entry of override profile 7':
-                {'power_max_w': 55, 'board_fixed_rated_w': 55, 'power_default_w': 55},
+                {'power_max_w': 55, 'power_default_w': 55},
             'override profile 7 would no longer be the profile selected at the top level: override profile 0 '
             'policy 9 maximum exceeds the same entry of override profile 7':
                 {'input_current_max_ma': 30000, 'input_current_rated_ma': 30000},
             'override profile 7 would no longer be the profile selected at the top level: it would equal the base '
             'table and become a matching profile; keep at least one of its values below the base table':
-                {'power_max_w': 100, 'board_fixed_rated_w': 100, 'power_default_w': 100,
-                 'input_current_max_ma': 80000, 'input_current_rated_ma': 80000}}
+                {'power_max_w': 100, 'power_default_w': 100, 'input_current_max_ma': 80000,
+                 'input_current_rated_ma': 80000}}
         for message, changes in refused.items():
             with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
                 edit(image, changes)
@@ -3279,7 +3365,7 @@ class TopLevelProfileTests(unittest.TestCase):
         fields = descriptors(image)
         self.assertIn('(code 3 -> 600 W; probably the highest 12V-2x6 sense level, inferred)',
                       fields['power_max_w']['reason'])
-        for key in ('power_max_w', 'power_default_w', 'board_fixed_rated_w', 'input_current_max_ma'):
+        for key in ('power_max_w', 'power_default_w', 'input_current_max_ma'):
             self.assertTrue(fields[key]['version_metadata']['format_variant'].startswith(
                 'GB20x override profile bound through selection stage 1'), key)
         self.assertNotIn('read-only-nvml-correlation', [e['kind'] for e in fields['power_default_w']['evidence']])
@@ -3287,7 +3373,7 @@ class TopLevelProfileTests(unittest.TestCase):
                          'GB20x power v40 rows 2/7/8 and complete matching profiles')
         cases = (({'power_default_w': 95, 'power_max_w': 92}, 'power_default_w',
                   'power_default_w violates the minimum/default/maximum ordering of the joint result'),
-                 ({'power_max_w': 55, 'board_fixed_rated_w': 55, 'power_default_w': 55}, 'power_max_w',
+                 ({'power_max_w': 55, 'power_default_w': 55}, 'power_max_w',
                   'override profile 7 would no longer be the profile selected at the top level: override profile 0 '
                   'policy 2 maximum exceeds the same entry of override profile 7'))
         for changes, key, message in cases:
@@ -3311,13 +3397,15 @@ class TopLevelProfileTests(unittest.TestCase):
         image = top_profile_fixture(mutate=lower_base_rated)
         self.assertEqual(backend(image).top_power_profile()['index'], 7)
         fields = descriptors(image)
-        for key, high in (('power_default_w', 85), ('board_fixed_rated_w', 90), ('input_current_rated_ma', 60000)):
+        # The ceiling writes the profile's rows 2/7 rated values, which stay at or below the base ones (95 W).
+        for key, high in (('power_default_w', 85), ('power_max_w', 95), ('input_current_rated_ma', 60000)):
             self.assertEqual(fields[key]['bounds']['maximum'], high, key)
-        self.assertEqual(edit(image, {'power_max_w': 100, 'board_fixed_rated_w': 95}).manifest['edits'][-1]['after'],
-                         95000)
+        values = backend(edit(image, {'power_max_w': 95}).image).top_power_profile()['values']
+        self.assertEqual([values[(i, name)] for i in (2, 7) for name in ('default', 'maximum')], [95000] * 4)
+        # Requested with a partner it is checked on the result: the error names the ceiling for (2, default).
         with self.assertRaises(VbiosError) as exc:
-            edit(image, {'power_max_w': 100, 'board_fixed_rated_w': 96})
-        self.assertEqual((exc.exception.details['field'], str(exc.exception)), ('board_fixed_rated_w',
+            edit(image, {'power_max_w': 96, 'power_default_w': 80})
+        self.assertEqual((exc.exception.details['field'], str(exc.exception)), ('power_max_w',
                          'override profile 7 would no longer be the profile selected at the top level: '
                          'override profile 7 policy 2 default exceeds the base table'))
 

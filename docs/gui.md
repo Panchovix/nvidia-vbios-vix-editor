@@ -62,8 +62,12 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    the selected interface language. The ROM's rated defaults remain visible;
    accepted ranges are in `nvbios fields` and the manifest, never hardware-safe maxima.
    **Board power floor** (`power_min_w`) accepts 1 W through the TGP rated
-   default, with exact 0.001 W increments. **Board power ceiling** remains
-   bounded below by the rated defaults. Fields not tested on hardware on the ROM's
+   default, with exact 0.001 W increments. **Board power ceiling** stays at or above
+   the boot default. On RTX 50 desktop and workstation ROMs it also writes the rated
+   value of the fixed board policies 2/7, which every stock ROM stores equal to the
+   ceiling. A copy saved with the ceiling raised alone shows a note under the ceiling
+   with the value those policies still hold: set the ceiling to another value to write them.
+   Fields not tested on hardware on the ROM's
    GPU family (most clock offset ranges, for example) carry the experimental badge; stage partners
    such as a new default and ceiling together, because the order
    minimum <= default <= maximum is checked on the combined result. On a laptop,
@@ -93,8 +97,7 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    GPU it can only be lowered, since it has no reviewed stock value). On Ampere and Ada laptop
    ROMs it is read-only: they store a lower limit of the same kind (89 °C) and it is not
    known which one the GPU reaches first. **Show advanced XOC-style fields** (off by
-   default) reveals opt-in fields such as the rated power of the fixed board
-   policies 2/7, the **Notebook base TGP** of RTX 50 laptop ROMs with the
+   default) reveals opt-in fields such as the **Notebook base TGP** of RTX 50 laptop ROMs with the
    notebook layout (it behaved as the base Dynamic Boost adds its boost to on one RTX 5090 Laptop
    GPU; raise it with the ceiling and the boot default, see above), **Expose runtime power
    limit** on Turing, Ampere and RTX 50 laptop ROMs (a switch, experimental on Ampere and RTX 50:
@@ -413,8 +416,8 @@ the value both ROMs hold. Nothing is written until **Save Copy…**, and pending
 
 Related fields come whole from the other ROM or not at all: a minimum, rated value and maximum;
 a fan curve (the fan limits and each point's temperature, speed and level); the 12 V input limit
-and its policy 7 copy. When one of them differs but is left out, for example the rated power of
-the fixed board policies, an advanced field you did not include, the others are held back too.
+and its policy 7 copy. When one of them differs but is left out, for example **Notebook base TGP**,
+an advanced field you did not include, the others are held back too.
 The levels of a fan curve are advanced fields too, but they come with their curve even when the
 advanced fields are not ticked: each ROM pairs its fan speeds with levels set for its own fans, so
 speeds without their levels would run the fans at other speeds than the curve says. They show in

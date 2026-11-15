@@ -64,33 +64,29 @@ class ImportTests(unittest.TestCase):
 
     def test_opt_in_fields_are_imported_only_when_included(self):
         # Fan curve levels are the exception: they come with their curve (test_a_set_waits_for_its_differing...).
-        donor = donor_of(self.blob, {'fan_zero_rpm': 1, 'board_fixed_rated_w': 80})
+        donor = donor_of(self.blob, {'fan_zero_rpm': 1})
         report, result = import_fields(self.target, donor, ['fans', 'power'])
         self.assertIsNone(result)
-        self.assertEqual([(e['field'], e['reason']) for e in report['skipped']],
-                         [('board_fixed_rated_w', 'opt_in'), ('fan_zero_rpm', 'opt_in')])
+        self.assertEqual([(e['field'], e['reason']) for e in report['skipped']], [('fan_zero_rpm', 'opt_in')])
         report, result = import_fields(self.target, donor, ['fans', 'power'], include_opt_in=True)
-        self.assertEqual((report['changes'], report['skipped']), ({'board_fixed_rated_w': 80, 'fan_zero_rpm': 1}, []))
+        self.assertEqual((report['changes'], report['skipped']), ({'fan_zero_rpm': 1}, []))
         self.assertEqual(values(result.image)['fan_zero_rpm'], 1)
 
-    def test_a_set_waits_for_its_differing_opt_in_partner(self):
-        # Without the fixed board policies the lower ceiling would leave them above it, a mix of both ROMs.
-        # A fan curve point comes whole with its level, an advanced field that comes with its curve all the same.
+    def test_a_lower_ceiling_brings_the_fixed_board_policies_and_a_curve_point_its_level(self):
+        # The ceiling writes the rated value of the fixed board policies 2/7, so a lower ceiling leaves no mix of
+        # both ROMs. A fan curve point comes whole with its level, an advanced field that comes with its curve all
+        # the same.
         lower, point = {'power_max_w': 65, 'power_default_w': 60}, {'fan_1_curve_2_rpm': 2000, 'fan_1_curve_2_pct': 40}
-        donor = donor_of(self.blob, dict(lower, board_fixed_rated_w=60, **point))
+        donor = donor_of(self.blob, dict(lower, **point))
         report, result = import_fields(self.target, donor, ['power', 'fans'])
-        self.assertEqual(report['changes'], point)
-        self.assertEqual({e['field']: (e['reason'], e.get('partners')) for e in report['skipped']},
-                         {'power_max_w': ('held_back', ['board_fixed_rated_w']),
-                          'power_default_w': ('held_back', ['board_fixed_rated_w']),
-                          'board_fixed_rated_w': ('opt_in', None)})
+        self.assertEqual((report['changes'], report['skipped']), (dict(lower, **point), []))
+        rows = backend(result.image).power_rows()
+        self.assertEqual([rows[i]['default_raw'] for i in (2, 7, 8)], [65000, 65000, 60000])
         self.assertEqual(values(result.image)['fan_1_curve_2_pct'], 40)
-        report, result = import_fields(self.target, donor, ['power', 'fans'], include_opt_in=True)
-        self.assertEqual((report['changes'], report['skipped']), (dict(lower, board_fixed_rated_w=60, **point), []))
 
     def test_a_notebook_base_tgp_comes_with_the_notebook_board_power(self):
         # The base TGP is an opt-in member of the board power set: a donor's edited base left out holds back the
-        # ceiling it was raised with, as the fixed board policies' rated power does on a desktop.
+        # ceiling it was raised with.
         from test_extended_fields import notebook_fixture
         target = from_bytes(notebook_fixture(base=150000), 'laptop.rom')
         donor = donor_of(notebook_fixture(base=150000), {'power_max_w': 225, 'notebook_base_tgp_w': 200})

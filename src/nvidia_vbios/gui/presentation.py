@@ -29,7 +29,7 @@ FIELD_KEYS = frozenset(('power_min_w', 'power_max_w', 'nvvdd_rel_max_mv', 'msvdd
                         'gpc_offset_max_mhz', 'gpc_offset_min_mhz',
                         'memory_offset_min_mhz', 'dram_min_table_mhz',
                         'input_current_policy7_limit_ma', 'slot_power_rated_w', 'slot_power_max_w',
-                        'board_fixed_rated_w', 'notebook_base_tgp_w', 'runtime_power_limit_unlock',
+                        'notebook_base_tgp_w', 'runtime_power_limit_unlock',
                         'fan_pwm_frequency_hz', 'fan_channels',
                         'nvvdd_rel_alt_follow_ov', 'nvvdd_rel_alt_follow_ov_mv', 'runtime_voltage_offsets',
                         'fan_zero_rpm',
@@ -276,6 +276,16 @@ def sense_profile_notes(field, fields, language='en'):
             amps = Decimal(str(rated)) / 1000
             notes.append(text('sense_profiles.input_current', amps=number(amps), watts=number(round(amps * 12))))
     return notes
+
+
+def fixed_rated_notes(field, language='en'):
+    """Note of a GB20x desktop ceiling whose fixed board policies 2/7 hold another rated value (fixed_policy_rated_w,
+    a copy saved with the ceiling raised alone): the ceiling writes them, but the window stages only a value that
+    differs from the stored one."""
+    rated = field.get('fixed_policy_rated_w')
+    if field.get('key') != 'power_max_w' or rated is None:
+        return []
+    return [Messages(language)('fixed_rated.ceiling', watts=number(rated), ceiling=number(field['current']))]
 
 
 def notebook_notes(field, family, language='en'):
@@ -658,7 +668,7 @@ def to_stored(field, text):
 # inputs), the 12 V input current, an external 12 V connector (Ampere, Turing; power
 # or current) or their sum (Ampere) or the PCIe slot input. NVVDD/MSVDD output current
 # and NVVDD output power are VRM sensors and are not scaled.
-SHUNT_KEYS = frozenset(('power_min_w', 'power_default_w', 'power_max_w', 'board_fixed_rated_w', 'notebook_base_tgp_w',
+SHUNT_KEYS = frozenset(('power_min_w', 'power_default_w', 'power_max_w', 'notebook_base_tgp_w',
                         'slot_power_rated_w', 'slot_power_max_w', 'input_current_rated_ma',
                         'input_current_max_ma', 'input_current_policy7_limit_ma',
                         'slot_current_threshold_rated_ma', 'slot_current_threshold_max_ma',

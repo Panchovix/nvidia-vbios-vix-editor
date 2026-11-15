@@ -21,7 +21,8 @@ from .controller import (Controller, compare_memory, controls, import_from, load
                          open_document, reset_document, save_document, stage_document)
 from .presentation import (ADVANCED_SECTION, advanced_group, change_rows, change_value, classify_number,
                            connector_input_notes, dependency_reason, display_units, fan_channel_reason,
-                           fan_curve_hint, fan_stop_notes, field_label, field_section, import_summary, linux_value,
+                           fan_curve_hint, fan_stop_notes, field_label, field_section, fixed_rated_notes,
+                           import_summary, linux_value,
                            lpwr_notes, number, memory_columns, memory_comparison, memory_configuration, memory_raw_text,
                            MEMORY_TIMINGS, notebook_notes, opt_in_field_keys, output_current_notes, parse_number,
                            per_chip, primary_preview, read_only_reason, row_title, runtime_limit_notes,
@@ -877,7 +878,7 @@ class EditorWindow(Gtk.ApplicationWindow):
         family = (report.get('architecture') or {}).get('family')
         for note in (summed_cap_notes(field, fields, self.language) +
                      connector_input_notes(field, fields, self.language) +
-                     sense_profile_notes(field, fields, self.language) +
+                     sense_profile_notes(field, fields, self.language) + fixed_rated_notes(field, self.language) +
                      notebook_notes(field, family, self.language) + runtime_limit_notes(field, family, self.language) +
                      runtime_offsets_notes(field, self.language) +
                      output_current_notes(field, family, self.language) + lpwr_notes(field, self.language) +

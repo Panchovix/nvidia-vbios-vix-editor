@@ -75,13 +75,15 @@ class PowerMinimumTests(unittest.TestCase):
                 json.dumps(result.manifest, allow_nan=False)
 
     def test_minimum_and_maximum_transaction_preserves_order_and_defaults(self):
-        for blob in (synthetic_rom(), synthetic_rom(family='ampere'), synthetic_blackwell()):
+        for blob, rated in ((synthetic_rom(), []), (synthetic_rom(family='ampere'), []),
+                            (synthetic_blackwell(), ['power_max_w'])):
             image = from_bytes(blob)
             result = edit(image, {'power_min_w': 70, 'power_max_w': 150})
             after = fields(result.image)
             self.assertEqual(after['power_min_w']['current'], 70)
             self.assertEqual(after['power_max_w']['current'], 150)
-            self.assertTrue(result.manifest['preservation']['factory_defaults'])
+            # The GB20x ceiling also writes the rated value of rows 2/7; every other rated value is kept.
+            self.assertEqual(result.manifest['preservation']['changed_rated_defaults'], rated)
             for row in backend(result.image).power_rows():
                 self.assertLessEqual(row['minimum_raw'], row['default_raw'])
                 self.assertLessEqual(row['default_raw'], row['maximum_raw'])
@@ -151,7 +153,8 @@ class PowerMinimumTests(unittest.TestCase):
         image = from_bytes(repair_fixture(blob))
         source = backend(image)
         self.assertEqual(fields(image)['power_min_w']['bounds']['maximum'], 70)
-        self.assertEqual(fields(image)['power_max_w']['bounds']['minimum'], 80)
+        # Rows 2/7 rated follow the ceiling: only row 8 rated bounds it.
+        self.assertEqual(fields(image)['power_max_w']['bounds']['minimum'], 70)
         self.assertEqual(edit(image, {'power_min_w': 30}).blob, image.blob)
         result = edit(image, {'power_min_w': 1})
         target = backend(result.image)

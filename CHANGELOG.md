@@ -3,6 +3,10 @@
 One line per change. What each change does, where it applies and what was tested is in the
 [changelog details](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/changelog-details.md).
 
+## 0.1.45
+
+- Blackwell desktop: Board power ceiling also writes the rated value of the fixed board policies 2/7; their own field is gone.
+
 ## 0.1.44
 
 - Ada: the power connector limit on 16-pin boards that store it (RTX 4090 95.02.18.C0.75, untested).

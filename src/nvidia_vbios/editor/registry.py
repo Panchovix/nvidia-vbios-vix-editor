@@ -466,6 +466,25 @@ TOP_PROFILE_EVIDENCE = {
     'runtime_active_profile': 'inferred from the selection chain; not measured here', 'set_tested': False}
 
 
+# GB20x desktop board power: the ceiling also writes the rated value of the fixed board policies 2/7.
+FIXED_RATED_NOTE = ('also writes the rated value of the fixed board policies 2/7, which every stock image stores '
+                    'equal to the ceiling; ')
+FIXED_RATED_EVIDENCE = [
+    {'kind': 'reviewed-layout', 'format': 'GB20x power v40 rows 2/7 rated value and complete matching profiles',
+     'source': 'reviewed table layout', 'runtime_active_profile': 'unknown'},
+    {'kind': 'saved-get-policy-correlation', 'source': 'saved runtime GET capture', 'set_tested': False,
+     'observed': 'policies 2/7: CONTROL current = rated, also when their maxima were raised (325000 of 350000 mW '
+                 'and 70000 of 100000 mW)',
+     'units_basis': 'GET INFO+8 is 0 (mW) on rows 2/7'},
+    {'kind': 'vendor-image-comparison',
+     'observed': 'ASUS XOC and MSI 2500 W images store rows 2/7 rated = maximum (2001000/2500000 mW)'},
+    {'kind': 'structural-row-comparison', 'source': 'GB20x desktop and workstation VBIOS corpus',
+     'observation': 'every stock image stores rows 2/7 rated = rows 2/7/8 maximum (600000 mW on the FE, where row 8 '
+                    'rated is 575000 mW); only copies saved by this editor with the ceiling raised alone differ'},
+    {'kind': 'user-reports', 'source': 'reports from users of edited images',
+     'observed': 'a raised ceiling had no effect until the rated value of rows 2/7 was raised to the same value'}]
+
+
 def top_profile_note(top, base):
     """Reason prefix of a field bound to the top-level override profile instead of the base table."""
     return ('value of override profile %d, reached at the top level of the ROM selection table (code %d -> %g W; '
@@ -674,7 +693,7 @@ def power(image, parser):
     notebook = isinstance(parser, BlackwellRom) and parser.notebook_power_layout()
     top, maximum_upper, default_lower, default_upper, minimum_evidence = None, 0x7FFFFFFF, None, None, None
     binding, profile_extra, maximum_note, default_note, minimum_note = None, {}, '', '', ''
-    base = None
+    base, maximum_extra, maximum_evidence = None, {}, []
     if notebook:
         tgp = rows[2]
         if not 0 <= tgp['minimum_raw'] <= tgp['default_raw'] <= tgp['maximum_raw']:
@@ -709,15 +728,22 @@ def power(image, parser):
         # corpus). Only row8 is the reviewed TGP floor; coordinating their
         # maxima does not establish a shared minimum value or meaning.
         policy_indices = (8,)
-        tgp, minimum = rows[8], max(rows[i]['default_raw'] for i in (2, 7, 8))
+        # Fixed board policies 2/7 (CONTROL current = rated): every stock image stores their rated value equal to
+        # the ceiling, so where the two rows agree the ceiling writes it too and they no longer bound it.
+        coupled, rated = rows[2]['default_raw'] == rows[7]['default_raw'], rows[2]['default_raw']
+        tgp, minimum = rows[8], (max(rows[8]['default_raw'], rows[2]['minimum_raw'], rows[7]['minimum_raw'])
+                                 if coupled else max(rows[i]['default_raw'] for i in (2, 7, 8)))
         minimum_upper = tgp['default_raw']
         minimum_offsets = [tgp['offset'] + 13]
         minimum_scope = 'base TGP policy8 only; rows2/7 minima preserved; profiles override maximum/default only'
         offsets = [rows[i]['offset'] + 21 for i in (2, 7, 8)]
         offsets.extend(e['value_offset'] for p in matching for e in p['entries']
                        if e['policy'] in (2, 7, 8) and e['field'] == 'maximum')
+        rated_offsets = [rows[i]['offset'] + 17 for i in (2, 7)]
+        rated_offsets.extend(e['value_offset'] for p in matching for e in p['entries']
+                             if e['policy'] in (2, 7) and e['field'] == 'default')
         # The rated value of row8 is the boot default. Rows2/7 keep their own
-        # rated values; whether they bind above that value is untested.
+        # rated values here; where they agree, power_max_w writes them.
         default_offsets = [tgp['offset'] + 17]
         default_offsets.extend(e['value_offset'] for p in matching for e in p['entries']
                                if e['policy'] == 8 and e['field'] == 'default')
@@ -734,12 +760,17 @@ def power(image, parser):
             # ADA_PROFILE_EVIDENCE), so the base rows only bound the edit.
             values = top['values']
             tgp = dict(rows[8], default_raw=values[(8, 'default')], maximum_raw=values[(8, 'maximum')])
-            minimum = max([values[(i, 'default')] for i in (2, 7, 8)] +
-                          top_profile_bounds(profiles, top, (2, 7, 8), 'maximum'))
-            minimum_upper, maximum_upper = tgp['default_raw'], rows[8]['maximum_raw']
+            coupled, rated = coupled and values[(2, 'default')] == values[(7, 'default')], values[(2, 'default')]
+            # Coupled, the profile's rows 2/7 rated values move with it and stay at or below the base ones.
+            minimum = max([values[(8, 'default')]] + top_profile_bounds(profiles, top, (2, 7, 8), 'maximum') + (
+                [rows[2]['minimum_raw'], rows[7]['minimum_raw']] + top_profile_bounds(profiles, top, (2, 7), 'default')
+                if coupled else [values[(2, 'default')], values[(7, 'default')]]))
+            minimum_upper = tgp['default_raw']
+            maximum_upper = min(rows[8]['maximum_raw'], rows[2]['default_raw']) if coupled else rows[8]['maximum_raw']
             default_lower = max([tgp['minimum_raw']] + top_profile_bounds(profiles, top, (8,), 'default'))
             default_upper = min(tgp['maximum_raw'], rows[8]['default_raw'])
             offsets = top_profile_offsets(top, (2, 7, 8), 'maximum')
+            rated_offsets = top_profile_offsets(top, (2, 7), 'default')
             default_offsets = top_profile_offsets(top, (8,), 'default')
             default_scope = ('override profile %d policy8 rated value only; base row 8 rated value preserved'
                              % top['index'])
@@ -747,6 +778,16 @@ def power(image, parser):
             # correlations were taken where the profile equals the base, so they are dropped.
             minimum_evidence, evidence = evidence, [TOP_PROFILE_EVIDENCE] + evidence
             default_evidence = evidence
+        if coupled:
+            offsets = offsets + rated_offsets
+            maximum_extra = dict(rated_policy_indices=[2, 7])
+            maximum_note = FIXED_RATED_NOTE
+            if rated != tgp['maximum_raw']:
+                # A copy saved with the ceiling raised alone (older versions): the next ceiling edit writes them.
+                maximum_extra['fixed_policy_rated_w'] = rated / 1000
+                maximum_note += ('the fixed board policies 2/7 still hold %g W and take the ceiling when it is set; '
+                                 % (rated / 1000))
+            maximum_evidence = [dict(e) for e in FIXED_RATED_EVIDENCE]
     else:
         tgp = rows[parser.tgp_index]
         notebook = parser.notebook_power
@@ -838,7 +879,7 @@ def power(image, parser):
     # A notebook TGP is another quantity than a board TGP: the platform requests the running limit.
     layout = {'notebook_tgp': True} if notebook else {}
     return [field('power_max_w', 'Board power ceiling', 'W', tgp['maximum_raw'] / 1000,
-                  minimum / 1000, maximum_upper / 1000, can_edit(image, parser), evidence,
+                  minimum / 1000, maximum_upper / 1000, can_edit(image, parser), evidence + maximum_evidence,
                   offsets=offsets, encoding='<I', scale=1000, stored_units='mW',
                   factory_default=tgp['default_raw'] / 1000,
                   ordering_group='board-power', encoding_bounds=(0, 0x7FFFFFFF / 1000),
@@ -847,9 +888,10 @@ def power(image, parser):
                   'experimental: encoding ceiling only; ' + maximum_note + untested +
                   'firmware/current/hardware restrictions remain' if untested else
                   'experimental: ' + top_profile_note(top, '%g W' % (rows[8]['maximum_raw'] / 1000)) +
-                  'firmware/current/hardware restrictions remain' if top else
-                  'encoding ceiling only; ' + tested + 'firmware/current/hardware restrictions remain',
-                  **layout, **profile_extra, **(dict(flags, experimental=True, **top_extra) if top else flags)),
+                  maximum_note + 'firmware/current/hardware restrictions remain' if top else
+                  'encoding ceiling only; ' + maximum_note + tested + 'firmware/current/hardware restrictions remain',
+                  **layout, **profile_extra, **maximum_extra,
+                  **(dict(flags, experimental=True, **top_extra) if top else flags)),
             field('power_default_w', 'Boot default board power', 'W', tgp['default_raw'] / 1000,
                   (tgp['minimum_raw'] if default_lower is None else default_lower) / 1000,
                   (tgp['maximum_raw'] if default_upper is None else default_upper) / 1000,
@@ -878,7 +920,7 @@ def power(image, parser):
                          'firmware acceptance and runtime minimum remain unknown' if untested else
                   'encoded floor only; ' + tested_min + 'firmware acceptance and ' + ('the ' if tested else '') +
                   'runtime minimum remain unknown',
-                  **layout, **profile_extra, **flags)] + fixed_policy_rated(image, parser, rows, matching, top) + (
+                  **layout, **profile_extra, **flags)] + (
         [] if base is None else [notebook_base_tgp(image, parser, tgp, base)]) + runtime_power_limit(image, parser)
 
 
@@ -927,49 +969,6 @@ def runtime_power_limit(image, parser):
                   value_semantics=RUNTIME_LIMIT_SEMANTICS, policy_indices=[slot['row']], notebook_tgp=True,
                   reason=runtime_limit_reason(parser, slot['row']),
                   **experimental_flag(parser, 'runtime_power_limit_unlock'))]
-
-
-def fixed_policy_rated(image, parser, rows, matching, top=None):
-    """Opt-in rated value of the fixed board policies 2/7 (Blackwell only).
-
-    Their CONTROL current equals the rated value in saved GET, and vendor XOC and
-    2500 W images raise it together with the ceiling. Hidden behind an explicit
-    opt-in in the GUI; requires equal rated values in rows 2 and 7 (in the bound
-    top-level profile instead when one replaces the base).
-    """
-    if (not isinstance(parser, BlackwellRom) or parser.notebook_power_layout() or
-            rows[2]['default_raw'] != rows[7]['default_raw']):
-        return []
-    offsets = [rows[i]['offset'] + 17 for i in (2, 7)]
-    offsets.extend(e['value_offset'] for p in matching for e in p['entries']
-                   if e['policy'] in (2, 7) and e['field'] == 'default')
-    current, lower = rows[2]['default_raw'], max(rows[2]['minimum_raw'], rows[7]['minimum_raw'])
-    upper, extra, reason = rows[2]['maximum_raw'], {}, ''
-    if top is not None:
-        values = top['values']
-        if values[(2, 'default')] != values[(7, 'default')]:
-            return []
-        current, upper = values[(2, 'default')], min(values[(2, 'maximum')], rows[2]['default_raw'])
-        offsets = top_profile_offsets(top, (2, 7), 'default')
-        lower = max([lower] + top_profile_bounds(parser.power_profiles(), top, (2, 7), 'default'))
-        extra = dict(bound_profile=top['index'], base_values={'board_fixed_rated_w': rows[2]['default_raw'] / 1000})
-        reason = top_profile_note(top, '%g W' % (rows[2]['default_raw'] / 1000))
-    evidence = [{'kind': 'reviewed-layout', 'format': 'GB20x power v40 rows 2/7 rated value and complete matching profiles',
-                 'source': 'reviewed table layout', 'runtime_active_profile': 'unknown'},
-                dict(INPUT_CURRENT_EVIDENCE, kind='saved-get-policy-correlation',
-                     observed='policies 2/7: CONTROL current = rated, also when their maxima were raised',
-                     units_basis='GET INFO+8 is 0 (mW) on rows 2/7'),
-                {'kind': 'vendor-image-comparison',
-                 'observed': 'ASUS XOC and MSI 2500 W images store rows 2/7 rated = maximum (2001000/2500000 mW)'}]
-    if top is not None:
-        evidence.insert(0, TOP_PROFILE_EVIDENCE)
-    return [field('board_fixed_rated_w', 'Fixed board policies 2/7 rated power', 'W', current / 1000,
-                  lower / 1000, upper / 1000, can_edit(image, parser), evidence, offsets=offsets, encoding='<I',
-                  scale=1000, stored_units='mW',
-                  policy_indices=[2, 7], value_semantics='stored-board-fixed-policy-rated', experimental=True,
-                  opt_in=True, ordering_group='board-power', encoding_bounds=(0, 0x7FFFFFFF / 1000),
-                  reason='experimental, opt-in: ' + reason + 'rated value of the fixed board policies 2/7 (current = '
-                         'rated); XOC-style images raise it with the ceiling; not hardware-tested', **extra)]
 
 
 @registry.register

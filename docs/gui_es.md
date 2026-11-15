@@ -55,7 +55,11 @@ funcionando sin las dependencias gráficas.
    VBIOS los respalda); `nvbios fields` los lista.
    **Piso de potencia de la placa** (`power_min_w`) acepta desde 1 W hasta el
    valor TGP nominal por defecto, en pasos exactos de 0,001 W. El **Techo de
-   potencia de la placa** mantiene como mínimo los valores nominales por defecto.
+   potencia de la placa** no baja de la potencia por defecto al arrancar. En las ROM
+   RTX 50 de escritorio y de estación de trabajo escribe además la potencia nominal de
+   las políticas fijas 2/7 de la placa, que toda ROM de fábrica guarda igual al techo.
+   Una copia guardada subiendo solo el techo muestra una nota bajo el techo con el valor
+   que esas políticas aún tienen: pon el techo en otro valor para escribirlas.
    Los campos sin probar en hardware en la familia de GPU de la ROM (por ejemplo, la
    mayoría de los rangos de offset de reloj) llevan la insignia experimental. Cambia
    juntos los valores relacionados, como un nuevo valor por defecto y su techo:
@@ -89,8 +93,7 @@ funcionando sin las dependencias gráficas.
    un valor de fábrica revisado). En las ROM de portátil Ampere y Ada es de solo lectura:
    guardan un límite más bajo del mismo tipo (89 °C) y no se sabe cuál alcanza primero la
    GPU. **Mostrar campos avanzados (estilo XOC)**
-   (desmarcada por defecto) muestra campos opcionales como la potencia nominal de
-   las políticas fijas 2/7, el **TGP base del portátil** de las ROM RTX 50 con
+   (desmarcada por defecto) muestra campos opcionales como el **TGP base del portátil** de las ROM RTX 50 con
    la disposición de portátil (se comportó como la base a la que Dynamic Boost le suma su
    boost en una RTX 5090 Laptop GPU; súbelo junto con el techo y la potencia por defecto al arrancar,
    ver arriba), **Permitir cambiar el límite de potencia en uso** en las ROM de portátil
@@ -431,8 +434,8 @@ hasta **Guardar copia…**, y los valores pendientes de otras secciones se manti
 Los campos relacionados vienen completos de la otra ROM o no vienen: un mínimo, un valor nominal
 y un máximo; una curva de ventilador (los límites de los ventiladores y la temperatura, la
 velocidad y el nivel de cada punto); el límite de entrada de 12 V y su copia en la política 7.
-Si uno de ellos difiere pero queda fuera, por ejemplo la potencia nominal de las políticas fijas
-de la placa, un campo avanzado que no incluiste, los demás también se retienen. Los niveles de
+Si uno de ellos difiere pero queda fuera, por ejemplo el **TGP base del portátil**, un campo
+avanzado que no incluiste, los demás también se retienen. Los niveles de
 una curva de ventilador también son campos avanzados, pero vienen con su curva aunque no marques
 los campos avanzados: cada ROM empareja sus velocidades de ventilador con niveles ajustados para
 sus propios ventiladores, así que las velocidades sin sus niveles harían girar los ventiladores a

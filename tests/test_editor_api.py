@@ -336,8 +336,8 @@ class EditorTests(unittest.TestCase):
         self.assertNotIn('experimental', fields['power_max_w'])
         # Constant REL equations: a ceiling-only edit would not change the voltage.
         self.assertFalse(fields['nvvdd_rel_max_mv']['editable'])
-        self.assertFalse(any(f['key'].endswith('_policy7_limit_ma') or f['key'] == 'board_fixed_rated_w'
-                             for f in fields.values()))
+        self.assertFalse(any(f['key'].endswith('_policy7_limit_ma') for f in fields.values()))
+        self.assertNotIn('rated_policy_indices', fields['power_max_w'])
 
     def test_extension_cannot_change_factory_defaults_or_thermal_coefficients(self):
         import struct
@@ -388,7 +388,8 @@ class BlackwellEditorTests(unittest.TestCase):
         self.assertEqual(target.power_rows()[9], source.power_rows()[9])
         for row in (2, 7, 8):
             self.assertEqual(target.power_rows()[row]['maximum_raw'], 150000)
-            self.assertEqual(target.power_rows()[row]['default_raw'], 70000)
+            # Rows 2/7 rated follow the ceiling; row 8 rated is the boot default.
+            self.assertEqual(target.power_rows()[row]['default_raw'], 70000 if row == 8 else 150000)
         self.assertEqual(target.power_profiles()[0]['entries'][0]['value_raw'], 150000)
         fields = {f['key']: f for f in result.manifest['after']['fields']}
         self.assertEqual(fields['dram_max_table_mhz']['current'], 5000)

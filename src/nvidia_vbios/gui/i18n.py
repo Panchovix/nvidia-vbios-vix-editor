@@ -295,7 +295,6 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'field.output_ocp_rated_advanced': '{rail} output current limit, rated (advanced, experimental)',
  'field.slot_power_rated_w': 'PCIe slot power limit, rated',
  'field.slot_power_max_w': 'PCIe slot power ceiling',
- 'field.board_fixed_rated_w': 'Fixed board policies 2/7 rated power (advanced, XOC-style, experimental)',
  'field.notebook_base_tgp_w': 'Notebook base TGP',
  'field.runtime_power_limit_unlock': 'Expose runtime power limit (nvidia-smi -pl, Afterburner)',
  'field.slot_current_threshold_rated_ma': 'PCIe slot current threshold, rated (advanced, experimental)',
@@ -330,6 +329,9 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
                           'top level, most likely a {watts} W cable (inferred, not tested). Lower levels keep their '
                           'own limits.',
  'sense_profiles.past_top': 'Going past {watts} W is more than that cable is rated for. That is your call.',
+ 'fixed_rated.ceiling': ('This copy was saved with the ceiling raised alone: the fixed board policies 2/7 still hold '
+                         '{watts} W, not {ceiling} W, so the card can stay limited to {watts} W. Set the ceiling in the '
+                         'original ROM, or change it here to another value, and they follow it.'),
  'notebook.ceiling': 'On a laptop, Dynamic Boost requests the running power limit at runtime and this ceiling only '
                      'caps it. Monitoring tools show this stored ceiling, so raising it alone usually does not raise '
                      'the running limit. On one RTX 5090 Laptop GPU the running limit went from 175 to about 185 W '

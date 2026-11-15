@@ -60,7 +60,7 @@ PRESERVATION_EXCEPTIONS = {'power_min_w': 'minimum_raw', 'power_default_w': 'def
                            'notebook_base_tgp_w': 'base_tgp',
                            'input_current_rated_ma': 'default_raw',
                            'nvvdd_output_ocp_rated_ma': 'default_raw', 'msvdd_output_ocp_rated_ma': 'default_raw',
-                           'slot_power_rated_w': 'default_raw', 'board_fixed_rated_w': 'default_raw',
+                           'slot_power_rated_w': 'default_raw',
                            'slot_current_threshold_rated_ma': 'default_raw',
                            'nvvdd_power_threshold_rated_w': 'default_raw',
                            'input_current_policy7_limit_ma': 'linked_limit',
@@ -74,8 +74,8 @@ PRESERVATION_EXCEPTIONS = {'power_min_w': 'minimum_raw', 'power_default_w': 'def
 # corpus images: x86 filler (cs: mov eax, eax) and then the checksum byte; others end with a
 # tail checksum_tail accepts.
 X86_FILLER_TAIL = bytes.fromhex('2e8bc0') * 6 + b'\x8b'
-TOP_PROFILE_ENTRIES = {'power_max_w': {(2, 'maximum'), (7, 'maximum'), (8, 'maximum')},
-                       'power_default_w': {(8, 'default')}, 'board_fixed_rated_w': {(2, 'default'), (7, 'default')},
+TOP_PROFILE_ENTRIES = {'power_max_w': {(2, 'maximum'), (7, 'maximum'), (8, 'maximum'), (2, 'default'), (7, 'default')},
+                       'power_default_w': {(8, 'default')},
                        'input_current_max_ma': {(9, 'maximum')}, 'input_current_rated_ma': {(9, 'default')}}
 
 
@@ -154,6 +154,19 @@ def _lpwr_off_without_switch(binding, value, key, rebuilt):
     except FormatError:
         return False
     return table is not None and not any(e['value'] & 1 for e in table['entries'])
+
+
+def _rated_ceiling_offsets(parser, canonical):
+    """The offsets of the rated values of the fixed board policies 2/7 (rated_policy_indices) that a canonical GB20x
+    board power ceiling request writes: base rows at +17 and the profile default entries among its offsets."""
+    binding = canonical.get('power_max_w')
+    indices = binding.descriptor.get('rated_policy_indices') if binding is not None else None
+    if not indices or not isinstance(parser, BlackwellRom):
+        return set()
+    rated = {row['offset'] + 17 for i, row in enumerate(parser.power_rows()) if i in indices}
+    rated.update(e['value_offset'] for p in parser.power_profiles() for e in p['entries']
+                 if e['policy'] in indices and e['field'] == 'default')
+    return rated & set(binding.offsets)
 
 
 def _same(left, right):
@@ -484,6 +497,11 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
             if key not in canonical:
                 raise VbiosError('INVALID_FIELD_EVIDENCE', f'{key} must use the reviewed complete binding')
             exceptions.setdefault(attribute, set()).update(canonical[key].descriptor['policy_indices'])
+    # The canonical GB20x desktop ceiling also writes the rated value of the fixed board policies 2/7; an alias or
+    # another binding of the ceiling may not.
+    rated_ceiling = _rated_ceiling_offsets(parser, canonical)
+    if rated_ceiling:
+        exceptions.setdefault('default_raw', set()).update(canonical['power_max_w'].descriptor['rated_policy_indices'])
     # Partners requested together (for example default and maximum) are
     # checked against the reviewed bounds of the joint result after building.
     groups = {}
@@ -763,8 +781,8 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
         # Matching max/default overrides are unchanged by a floor-only edit.
         # Profile defaults stay immutable through aliases; only the canonical
         # rated-default bindings may change their own matching-profile entries.
-        default_offsets = {at for key, binding in canonical.items()
-                           if PRESERVATION_EXCEPTIONS.get(key) == 'default_raw' for at in binding.offsets}
+        default_offsets = rated_ceiling | {at for key, binding in canonical.items()
+                                           if PRESERVATION_EXCEPTIONS.get(key) == 'default_raw' for at in binding.offsets}
         try:
             source_profiles = parser.power_profiles()
         except FormatError:
@@ -1169,7 +1187,8 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     affected_fields += [dict(field=key, before=before_fields[key]['current'], after=0,
                              units=before_fields[key]['units'], requested=True)
                         for key in sorted(switched_off) if before_fields[key]['current'] != 0]
-    rated_changes = sorted({e['field'] for e in edits if PRESERVATION_EXCEPTIONS.get(e['field']) == 'default_raw'})
+    rated_changes = sorted({e['field'] for e in edits if PRESERVATION_EXCEPTIONS.get(e['field']) == 'default_raw' or
+                            e['field'] == 'power_max_w' and e['offset'] in rated_ceiling})
     manifest = dict(schema_version=1, operation='plan' if dry_run else 'edit',
                     source=image.name, source_sha256=image.sha256, original_source_sha256=image.source_sha256,
                     output_sha256=output.sha256, size=len(output.blob), pci_device=after['pci_device'],

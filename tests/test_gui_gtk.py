@@ -1805,21 +1805,17 @@ class GtkSmokeTests(unittest.TestCase):
                 self.assertNotIn('encoding:', field_text)
                 self.assertNotIn('(tabla)', field_text)
                 self.assertFalse(window.dirty)
-                # XOC-style opt-in fields appear only after ticking the box; typed values survive.
+                # Ticking the advanced XOC-style fields keeps typed values. The fixed board policies 2/7 are no
+                # field of their own on either side: Board power ceiling writes their rated value.
                 self.assertFalse(window.advanced_toggle.get_active())
                 self.assertNotIn('board_fixed_rated_w', window.entries)
                 window.entries['power_max_w'].set_text('150')
                 window.advanced_toggle.set_active(True)
-                self.assertIn('board_fixed_rated_w', window.entries)
+                self.assertNotIn('board_fixed_rated_w', window.entries)
                 self.assertEqual(window.entries['power_max_w'].get_text(), '150')
                 window.advanced_toggle.set_active(False)
                 self.assertNotIn('board_fixed_rated_w', window.entries)
-                # A value typed into a field that is then hidden still reaches the stage.
-                window.advanced_toggle.set_active(True)
-                window.entries['board_fixed_rated_w'].set_text('90')
-                window.advanced_toggle.set_active(False)
                 self.assertTrue(window.dirty)
-                self.assertIn('90', window.preview_text())
                 # Typing updates the row and the change list at once, and verifies after a pause.
                 window.entries['power_max_w'].set_text('150')
                 window.entries['power_min_w'].set_text('1')
@@ -1833,7 +1829,6 @@ class GtkSmokeTests(unittest.TestCase):
                 self.assertEqual(window.controller.document.changes['power_max_w'], '150')
                 self.assertEqual(window.controller.document.changes['power_min_w'], '1')
                 self.assertEqual(window.controller.document.changes['memory_offset_max_mhz'], '10000')
-                self.assertEqual(window.controller.document.changes['board_fixed_rated_w'], '90')
                 self.assertTrue(window.lookup_action('save').get_enabled())
                 self.assertTrue(window.save_button.is_sensitive())
                 self.assertIn('6000 → 10000 MHz', window.preview_text())
@@ -1879,10 +1874,10 @@ class GtkSmokeTests(unittest.TestCase):
                 self.assertEqual(window.controller.document.changes['power_max_w'], '170')
                 self.assertTrue(window.lookup_action('save').get_enabled())
                 self.assertEqual(window.status.get_text(), failure)
-                # Re-verifying with the box unticked keeps the staged opt-in value.
+                # Re-verifying with the box unticked keeps the staged values.
                 window.activate_action('win.stage', None)
                 until(lambda: not window.verifying and not window.dirty)
-                self.assertEqual(window.controller.document.changes['board_fixed_rated_w'], '90')
+                self.assertEqual(window.controller.document.changes['power_max_w'], '170')
                 screenshot = os.environ.get('VBIOS_GUI_SCREENSHOT')
                 if screenshot:
                     if language == 'es':

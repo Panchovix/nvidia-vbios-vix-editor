@@ -3,6 +3,25 @@
 What each change does, where it applies, what was tested and its risks. CHANGELOG.md lists the same
 changes, one line each, in the same order.
 
+## 0.1.45
+
+- **Blackwell desktop: Board power ceiling also writes the rated value of the fixed board policies 2/7; their own
+  field is gone.** On RTX 50 desktop and workstation ROMs (not the laptop layout) rows 2 and 7 are fixed board
+  policies that run at their rated value, and every stock ROM stores that value equal to the board power ceiling.
+  Users raised **Board power ceiling** and saw no effect until they also raised **Fixed board policies 2/7 rated
+  power**, an advanced field, to the same value. The ceiling now writes that rated value too, in the base table and
+  in the override profiles that match it (on the ASUS RTX 5090 XOC ROMs, only in the profile the ROM selects). The
+  advanced field is removed, and `--set board_fixed_rated_w` is no longer accepted (`UNKNOWN_FIELD`). Since the
+  fixed policies follow the ceiling, they no longer bound it from below: the ceiling goes down to the boot default
+  alone, and below it together with **Boot default board power**, which the ceiling never writes. A copy saved by an
+  older version with only the ceiling raised still holds the old rated value: set the ceiling again.
+  `--set power_max_w` writes it even at the stored value. The window shows a note under the ceiling on such a copy,
+  and since it stages only a value that differs, enter another ceiling there first. Tested offline: on every RTX 50 desktop and workstation ROM of the corpus (51 images, edited copies
+  included), a ceiling 10 W higher and one lowered to the boot default give the bytes the previous version wrote
+  with both fields set to that value. Not tested on hardware beyond those user reports. For API users: the
+  `power_max_w` descriptor carries `rated_policy_indices` (and `fixed_policy_rated_w` on such a copy), and
+  `preservation.changed_rated_defaults` lists `power_max_w` when it changed one of these values.
+
 ## 0.1.44
 
 - **Ada: the power connector limit on 16-pin boards that store it (RTX 4090 95.02.18.C0.75, untested).** A Gigabyte
