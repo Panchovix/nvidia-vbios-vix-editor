@@ -41,7 +41,7 @@ nvgpu `bios.h` structure definitions (MIT). No NVIDIA source file is included.
 | mingw-w64-ucrt-x86_64-gobject-introspection-runtime | 1.86.0-4 | LGPL-2.0-only | third_party/mingw-w64-ucrt-x86_64-gobject-introspection-runtime/ (standard text) | cairo-1.0.typelib freetype2-2.0.typelib |
 | mingw-w64-ucrt-x86_64-graphene | 1.10.8-3 | MIT | third_party/mingw-w64-ucrt-x86_64-graphene/ | libgraphene-1.0-0.dll Graphene-1.0.typelib |
 | mingw-w64-ucrt-x86_64-graphite2 | 1.3.15-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-graphite2/ | libgraphite2.dll |
-| mingw-w64-ucrt-x86_64-gst-plugins-bad-libs | 1.28.9-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-gst-plugins-bad-libs/ (standard text) | libgstd3d12-1.0-0.dll libgstd3dshader-1.0-0.dll libgstplay-1.0-0.dll |
+| mingw-w64-ucrt-x86_64-gst-plugins-bad-libs | 1.28.9-2 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-gst-plugins-bad-libs/ (standard text) | libgstd3d12-1.0-0.dll libgstd3dshader-1.0-0.dll libgstplay-1.0-0.dll |
 | mingw-w64-ucrt-x86_64-gst-plugins-base | 1.28.9-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-gst-plugins-base/ | libgstallocators-1.0-0.dll libgstaudio-1.0-0.dll libgstgl-1.0-0.dll libgstpbutils-1.0-0.dll libgsttag-1.0-0.dll libgstvideo-1.0-0.dll |
 | mingw-w64-ucrt-x86_64-gstreamer | 1.28.9-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-gstreamer/ (standard text) | libgstbase-1.0-0.dll libgstreamer-1.0-0.dll |
 | mingw-w64-ucrt-x86_64-gtk4 | 4.24.1-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-gtk4/ | libgtk-4-1.dll Gdk-4.0.typelib Gsk-4.0.typelib Gtk-4.0.typelib |
@@ -51,7 +51,7 @@ nvgpu `bios.h` structure definitions (MIT). No NVIDIA source file is included.
 | mingw-w64-ucrt-x86_64-libdatrie | 0.2.14-1 | LGPL | third_party/mingw-w64-ucrt-x86_64-libdatrie/ | libdatrie-1.dll |
 | mingw-w64-ucrt-x86_64-libdeflate | 1.26-1 | MIT | third_party/mingw-w64-ucrt-x86_64-libdeflate/ | libdeflate.dll |
 | mingw-w64-ucrt-x86_64-libepoxy | 1.5.10-7 | MIT | third_party/mingw-w64-ucrt-x86_64-libepoxy/ | libepoxy-0.dll |
-| mingw-w64-ucrt-x86_64-libffi | 3.8.0-1 | MIT | third_party/mingw-w64-ucrt-x86_64-libffi/ | libffi-8.dll |
+| mingw-w64-ucrt-x86_64-libffi | 3.8.1-1 | MIT | third_party/mingw-w64-ucrt-x86_64-libffi/ | libffi-8.dll |
 | mingw-w64-ucrt-x86_64-libgcc | 16.2.0-7 | GPL-3.0-or-later WITH GCC-exception-3.1 AND GFDL-1.3-or-later | third_party/mingw-w64-ucrt-x86_64-libgcc/ | libgcc_s_seh-1.dll |
 | mingw-w64-ucrt-x86_64-libiconv | 1.19.1-1 | LGPL-2.1-or-later  documentation:GPL-3.0-or-later | third_party/mingw-w64-ucrt-x86_64-libiconv/ | libiconv-2.dll |
 | mingw-w64-ucrt-x86_64-libjpeg-turbo | 3.2.1-1 | custom:BSD-like | third_party/mingw-w64-ucrt-x86_64-libjpeg-turbo/ | libjpeg-8.dll |
@@ -63,12 +63,12 @@ nvgpu `bios.h` structure definitions (MIT). No NVIDIA source file is included.
 | mingw-w64-ucrt-x86_64-libwinpthread | 14.0.0.r598.ge3d18511f-1 | MIT AND BSD-3-Clause | third_party/mingw-w64-ucrt-x86_64-libwinpthread/ | libwinpthread-1.dll |
 | mingw-w64-ucrt-x86_64-lzo2 | 2.10-3 | GPL-2.0-or-later | third_party/mingw-w64-ucrt-x86_64-lzo2/ | liblzo2-2.dll |
 | mingw-w64-ucrt-x86_64-mpdecimal | 4.0.1-3 | BSD-2-Clause | third_party/mingw-w64-ucrt-x86_64-mpdecimal/ | libmpdec-4.dll |
-| mingw-w64-ucrt-x86_64-openssl | 3.6.5-1 | Apache-2.0 | third_party/mingw-w64-ucrt-x86_64-openssl/ | libcrypto-3-x64.dll libssl-3-x64.dll |
+| mingw-w64-ucrt-x86_64-openssl | 4.1.0-1 | Apache-2.0 | third_party/mingw-w64-ucrt-x86_64-openssl/ | libcrypto-4-x64.dll libssl-4-x64.dll |
 | mingw-w64-ucrt-x86_64-orc | 0.4.44-1 | custom | third_party/mingw-w64-ucrt-x86_64-orc/ | liborc-0.4-0.dll |
 | mingw-w64-ucrt-x86_64-pango | 1.58.2-1 | LGPL-2.1 | third_party/mingw-w64-ucrt-x86_64-pango/ | libpango-1.0-0.dll libpangocairo-1.0-0.dll libpangoft2-1.0-0.dll libpangowin32-1.0-0.dll Pango-1.0.typelib PangoCairo-1.0.typelib |
 | mingw-w64-ucrt-x86_64-pcre2 | 10.49-2 | BSD-3-Clause | third_party/mingw-w64-ucrt-x86_64-pcre2/ | libpcre2-8-0.dll |
 | mingw-w64-ucrt-x86_64-pixman | 0.46.4-3 | MIT | third_party/mingw-w64-ucrt-x86_64-pixman/ | libpixman-1-0.dll |
-| mingw-w64-ucrt-x86_64-python | 3.14.10-3 | PSF-2.0 | third_party/mingw-w64-ucrt-x86_64-python/ | libpython3.14.dll (Python runtime and standard library compiled into the programs) |
+| mingw-w64-ucrt-x86_64-python | 3.14.10-4 | PSF-2.0 | third_party/mingw-w64-ucrt-x86_64-python/ | libpython3.14.dll (Python runtime and standard library compiled into the programs) |
 | mingw-w64-ucrt-x86_64-python-gobject | 3.58.1-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-python-gobject/ (standard text) | _gi.cp314-mingw_x86_64_ucrt_gnu.pyd _gi_cairo.cp314-mingw_x86_64_ucrt_gnu.pyd |
 | mingw-w64-ucrt-x86_64-vulkan-loader | 1~1.4.363.0-1 | Apache-2.0 | third_party/mingw-w64-ucrt-x86_64-vulkan-loader/ | vulkan-1.dll |
 | mingw-w64-ucrt-x86_64-xz | 5.8.4-1 | 0BSD AND LGPL-2.1-or-later AND GPL-2.0-or-later | third_party/mingw-w64-ucrt-x86_64-xz/ | liblzma-5.dll |
@@ -107,7 +107,7 @@ corresponding source of these packages on request: open an issue in the reposito
 | mingw-w64-gobject-introspection | 1.86.0-4 | https://repo.msys2.org/mingw/sources/mingw-w64-gobject-introspection-1.86.0-4.src.tar.zst |
 | mingw-w64-graphene | 1.10.8-3 | https://repo.msys2.org/mingw/sources/mingw-w64-graphene-1.10.8-3.src.tar.zst |
 | mingw-w64-graphite2 | 1.3.15-1 | https://repo.msys2.org/mingw/sources/mingw-w64-graphite2-1.3.15-1.src.tar.zst |
-| mingw-w64-gst-plugins-bad | 1.28.9-1 | https://repo.msys2.org/mingw/sources/mingw-w64-gst-plugins-bad-1.28.9-1.src.tar.zst |
+| mingw-w64-gst-plugins-bad | 1.28.9-2 | https://repo.msys2.org/mingw/sources/mingw-w64-gst-plugins-bad-1.28.9-2.src.tar.zst |
 | mingw-w64-gst-plugins-base | 1.28.9-1 | https://repo.msys2.org/mingw/sources/mingw-w64-gst-plugins-base-1.28.9-1.src.tar.zst |
 | mingw-w64-gstreamer | 1.28.9-1 | https://repo.msys2.org/mingw/sources/mingw-w64-gstreamer-1.28.9-1.src.tar.zst |
 | mingw-w64-gtk4 | 4.24.1-1 | https://repo.msys2.org/mingw/sources/mingw-w64-gtk4-4.24.1-1.src.tar.zst |
@@ -117,7 +117,7 @@ corresponding source of these packages on request: open an issue in the reposito
 | mingw-w64-libdatrie | 0.2.14-1 | https://repo.msys2.org/mingw/sources/mingw-w64-libdatrie-0.2.14-1.src.tar.zst |
 | mingw-w64-libdeflate | 1.26-1 | https://repo.msys2.org/mingw/sources/mingw-w64-libdeflate-1.26-1.src.tar.zst |
 | mingw-w64-libepoxy | 1.5.10-7 | https://repo.msys2.org/mingw/sources/mingw-w64-libepoxy-1.5.10-7.src.tar.zst |
-| mingw-w64-libffi | 3.8.0-1 | https://repo.msys2.org/mingw/sources/mingw-w64-libffi-3.8.0-1.src.tar.zst |
+| mingw-w64-libffi | 3.8.1-1 | https://repo.msys2.org/mingw/sources/mingw-w64-libffi-3.8.1-1.src.tar.zst |
 | mingw-w64-libiconv | 1.19.1-1 | https://repo.msys2.org/mingw/sources/mingw-w64-libiconv-1.19.1-1.src.tar.zst |
 | mingw-w64-libjpeg-turbo | 3.2.1-1 | https://repo.msys2.org/mingw/sources/mingw-w64-libjpeg-turbo-3.2.1-1.src.tar.zst |
 | mingw-w64-libpng | 1.6.59-2 | https://repo.msys2.org/mingw/sources/mingw-w64-libpng-1.6.59-2.src.tar.zst |
@@ -126,13 +126,13 @@ corresponding source of these packages on request: open an issue in the reposito
 | mingw-w64-libwebp | 1.6.0-1 | https://repo.msys2.org/mingw/sources/mingw-w64-libwebp-1.6.0-1.src.tar.zst |
 | mingw-w64-lzo2 | 2.10-3 | https://repo.msys2.org/mingw/sources/mingw-w64-lzo2-2.10-3.src.tar.zst |
 | mingw-w64-mpdecimal | 4.0.1-3 | https://repo.msys2.org/mingw/sources/mingw-w64-mpdecimal-4.0.1-3.src.tar.zst |
-| mingw-w64-openssl | 3.6.5-1 | https://repo.msys2.org/mingw/sources/mingw-w64-openssl-3.6.5-1.src.tar.zst |
+| mingw-w64-openssl | 4.1.0-1 | https://repo.msys2.org/mingw/sources/mingw-w64-openssl-4.1.0-1.src.tar.zst |
 | mingw-w64-orc | 0.4.44-1 | https://repo.msys2.org/mingw/sources/mingw-w64-orc-0.4.44-1.src.tar.zst |
 | mingw-w64-pango | 1.58.2-1 | https://repo.msys2.org/mingw/sources/mingw-w64-pango-1.58.2-1.src.tar.zst |
 | mingw-w64-pcre2 | 10.49-2 | https://repo.msys2.org/mingw/sources/mingw-w64-pcre2-10.49-2.src.tar.zst |
 | mingw-w64-pixman | 0.46.4-3 | https://repo.msys2.org/mingw/sources/mingw-w64-pixman-0.46.4-3.src.tar.zst |
 | mingw-w64-pygobject | 3.58.1-1 | https://repo.msys2.org/mingw/sources/mingw-w64-pygobject-3.58.1-1.src.tar.zst |
-| mingw-w64-python | 3.14.10-3 | https://repo.msys2.org/mingw/sources/mingw-w64-python-3.14.10-3.src.tar.zst |
+| mingw-w64-python | 3.14.10-4 | https://repo.msys2.org/mingw/sources/mingw-w64-python-3.14.10-4.src.tar.zst |
 | mingw-w64-vulkan-loader | 1~1.4.363.0-1 | https://repo.msys2.org/mingw/sources/mingw-w64-vulkan-loader-1~1.4.363.0-1.src.tar.zst |
 | mingw-w64-winpthreads | 14.0.0.r598.ge3d18511f-1 | https://repo.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r598.ge3d18511f-1.src.tar.zst |
 | mingw-w64-xz | 5.8.4-1 | https://repo.msys2.org/mingw/sources/mingw-w64-xz-5.8.4-1.src.tar.zst |
