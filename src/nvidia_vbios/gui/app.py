@@ -21,7 +21,8 @@ from .controller import (Controller, compare_memory, controls, import_from, load
                          open_document, reset_document, save_document, stage_document)
 from .presentation import (ADVANCED_SECTION, advanced_group, change_rows, change_value, classify_number,
                            connector_input_notes, dependency_reason, display_units, fan_channel_reason,
-                           fan_curve_hint, fan_stop_notes, field_label, field_section, fixed_rated_notes,
+                           fan_control_notes, fan_curve_hint, fan_level_notes, fan_stop_notes, field_label,
+                           field_section, fixed_rated_notes,
                            import_summary, linux_value,
                            lpwr_notes, number, memory_columns, memory_comparison, memory_configuration, memory_raw_text,
                            MEMORY_TIMINGS, notebook_notes, opt_in_field_keys, output_current_notes, parse_number,
@@ -883,7 +884,8 @@ class EditorWindow(Gtk.ApplicationWindow):
                      runtime_offsets_notes(field, self.language) +
                      output_current_notes(field, family, self.language) + lpwr_notes(field, self.language) +
                      vmin_clone_notes(field, self.language) + vmin_tree_notes(field, family, self.language) +
-                     fan_stop_notes(field, family, self.language)):
+                     fan_stop_notes(field, family, self.language) + fan_control_notes(field, self.language) +
+                     fan_level_notes(field, family, self.language)):
             left.append(label(note, wrap=True, css=('vb-note',)))
         top.append(left)
         if field['units'] == 'flag':

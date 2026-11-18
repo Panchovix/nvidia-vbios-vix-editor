@@ -215,8 +215,9 @@ funcionando sin las dependencias gráficas.
    mínimos aceptados (experimental, sin probar en hardware). Las notas bajo las
    filas dicen que el nivel más alto probablemente es un cable de 600 W
    (deducido), que pasar de 600 W es decisión tuya y que el umbral de corriente de
-   entrada de 12 V (unos 576 W a 12 V en esa ROM, un campo avanzado) puede limitar
-   antes, así que conviene subirlo también.
+   entrada de 12 V (unos 576 W a 12 V en esa ROM, un campo avanzado) también puede
+   limitar, aunque no se sabe si lo hace, así que conviene subirlo también si la
+   potencia se queda corta.
 3. La vista previa es en vivo. Al escribir, la fila se marca y muestra original →
    nuevo valor, y la barra inferior lista los cambios al instante. Tras una pausa
    de 350 ms la copia se genera en memoria y se verifica en segundo plano; los

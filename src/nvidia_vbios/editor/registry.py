@@ -208,8 +208,10 @@ ADA_PROFILE_EVIDENCE = {
                    'is applied too, first; it must be enabled and set other limits (row and field) than the '
                    'threshold profile, so the order does not change the result; thresholds no vote selects are '
                    'never applied; the top sense code\'s entries on the edited rows equal the base and are written '
-                   'with it (a differing one keeps that field read-only); the other profiles keep their values and '
-                   'bound the edit',
+                   'with it; a differing one keeps that field read-only, except a 12 V input current maximum the '
+                   'top code only raises (one value above the base on both rows, and every other code that votes '
+                   'replaces it too), which is written with the base so they end equal; the other profiles keep '
+                   'their values and bound the edit',
     'inferred': 'static analysis only: that code 3 is the 600 W level of a 12V-2x6 cable (the RTX PRO 6000 Max-Q '
                 'images map codes 0..3 to 150/300/450/600 W) and that raising only the base would be undone by '
                 'the top profile; DCB GPIO functions 0xee/0xed are on this image but also on a GB202 image without '
@@ -530,10 +532,39 @@ def profile_rows(profile):
             'rows %s and %d' % (', '.join(map(str, rows[:-1])), rows[-1]))
 
 
-def ada_profile_note(parser, binding, ceiling=False):
+def direct_profile_note(image, parser, index):
+    """Reason clause of the TGP fields on the direct profile the top sense level applies first: the rows it sets,
+    the fields that write its entries with their base rows, and the rows of the entries none of them writes."""
+    profile = next(p for p in parser.power_profiles() if p['index'] == index)
+    rows = {at: e['policy'] for e in profile['entries'] for at in parser.copy_offsets(e['value_offset'], 4)}
+    keys, written = [], set()
+    # The resolvers of the other Ada policy rows: each writes the top level's entries on its own rows.
+    for resolver in (slot_power, connector_power, input_current, power_thresholds):
+        try:
+            found = resolver(image, parser)
+        except VbiosError:
+            continue
+        for b in found:
+            if b.descriptor['editable'] and rows.keys() & set(b.offsets):
+                keys.append(b.descriptor['key'])
+                written |= rows.keys() & set(b.offsets)
+    kept = sorted({rows[at] for at in rows.keys() - written})
+    note = ('; at that level the firmware first applies direct profile %d (sense entry byte 1), which sets other '
+            'limits (%s)' % (index, profile_rows(profile)))
+    if keys:
+        note += ' that %s write%s with their base rows' % (
+            ' and '.join([', '.join(keys[:-1]), keys[-1]] if len(keys) > 1 else keys), '' if len(keys) > 1 else 's')
+    if kept and keys:
+        note += '; its entries on %s are kept as stored' % profile_rows({'entries': [{'policy': r} for r in kept]})
+    elif kept:
+        note += ' and is kept as stored'
+    return note
+
+
+def ada_profile_note(parser, binding, first, ceiling=False):
     """Reason clause of a TGP field on an Ada image whose override profiles follow the cable sense inputs: the
-    ceiling (power_max_w) when ceiling, else the rated value (power_default_w)."""
-    profiles = {p['index']: p for p in parser.power_profiles()}
+    ceiling (power_max_w) when ceiling, else the rated value (power_default_w). first is the clause on the direct
+    profile the top level applies first (direct_profile_note), or ''."""
     # Only the lower-level profiles with an entry on the TGP row bound it; a direct profile that sets other rows
     # (profile 2 on the Gigabyte 95.02.18.C0.75 image) does not.
     bounding = {index for found in binding['entries'].values() for index, _ in found}
@@ -560,10 +591,6 @@ def ada_profile_note(parser, binding, ceiling=False):
     else:
         reached = '; %s%s are selected' % (only, ' and '.join('%s at %s' % (label(index), named(found))
                                                               for index, found in sorted(codes.items())))
-    first = ('' if binding['top_direct'] is None else
-             '; at that level the firmware first applies direct profile %d (sense entry byte 1), which sets other '
-             'limits (%s) and is kept as stored'
-             % (binding['top_direct'], profile_rows(profiles[binding['top_direct']])))
     held = ('holds the same value and is written with it (a selected profile replaces the base value, so raising '
             'the base alone would likely be undone; static analysis)'
             if binding['tied']['maximum' if ceiling else 'default'] else
@@ -577,8 +604,11 @@ def ada_profile_note(parser, binding, ceiling=False):
         note += 'going past %d W exceeds that cable rating and is your call; ' % SENSE_TOP_LEVEL_W
         rated, cap = ada_input_rated_ma(parser), ada_input_rated_cap(parser)
         if rated is not None:
-            note += ('the 12 V input current thresholds (rated %g A, about %d W at 12 V) may limit first: raise '
-                     'input_current_rated_ma (opt-in) with it; ' % (rated / 1000, round(rated * 12 / 1000)))
+            # One report: the stock 45 A (about 540 W) did not hold a Gigabyte RTX 4090 at that board power.
+            note += ('the 12 V input current thresholds (rated %g A, about %d W at 12 V) may also limit, though '
+                     'whether they bind is not known (one RTX 4090, 95.02.18.C0.75, reached about 670 W with them '
+                     'rated 45 A; one report): raise input_current_rated_ma (opt-in) with it if the power stops '
+                     'short; ' % (rated / 1000, round(rated * 12 / 1000)))
         if rated is not None and cap is not None:
             note += ('override profile %d sets their maximum to %g A at its lower sense level and leaves the rated '
                      'value to the base, so a rated value above that runs under that maximum there; how the firmware '
@@ -830,8 +860,9 @@ def power(image, parser):
                              if binding['tied']['default'] else
                              'header-indexed TGP rated value in every validated duplicate chain; override profile %d '
                              '(top sense level) holds no TGP rated entry' % binding['top'])
-            maximum_note = ada_profile_note(parser, binding, ceiling=True)
-            default_note = ada_profile_note(parser, binding)
+            first = '' if binding['top_direct'] is None else direct_profile_note(image, parser, binding['top_direct'])
+            maximum_note = ada_profile_note(parser, binding, first, ceiling=True)
+            default_note = ada_profile_note(parser, binding, first)
             if binding['rated_ceilings']:
                 # A lower level replaces the TGP maximum but not the rated value: the base rated value runs under that
                 # maximum there. Not a bound (firmware handling not analysed): the user decides.
@@ -2480,7 +2511,7 @@ def profiles_decoded(parser):
 
 
 def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, reasons, upper_raw=0x7FFFFFFF,
-                      blocked=None, **extra):
+                      blocked=None, raised_risk=None, **extra):
     """Maximum and rated fields of Ada policy rows written together in every duplicate chain.
 
     items share one role (one row, or the two 12 V input thresholds). A value is
@@ -2493,8 +2524,12 @@ def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, re
     names the connector_sum_power fields of a row that has them. upper_raw is the
     highest stored value either field may take (the u32 encoding's signed range
     unless a caller keeps a reserved value out of reach). blocked, a read-only
-    reason, keeps both values read-only (a caller's own second limit). Each field
-    is experimental unless HARDWARE_TESTED lists its key for the family.
+    reason, keeps both values read-only (a caller's own second limit). raised_risk,
+    a reason clause, lets the ceiling take an Ada top cable sense level that only
+    raises it (one value above the base on every row, and no other level that votes
+    runs the base): the field shows that value, writes it with the base and carries
+    the base in stored_base_maximum; without it such a ceiling stays read-only. Each
+    field is experimental unless HARDWARE_TESTED lists its key for the family.
     """
     watts = items[0]['units'] == 'mW'
     scale, units = (1000, 'W') if watts else (1, 'mA')
@@ -2550,7 +2585,7 @@ def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, re
     one_max, one_rated = len(maxima) == 1 and not others, len(rated) == 1 and not others
     max_lower, rated_lower = max(rated), max(i['minimum_raw'] for i in items)
     rated_upper = min(maxima)
-    differ_max = differ_rated = None
+    differ_max = differ_rated = top_maximum = None
     tied = {'maximum': [], 'default': []}
     if not profiles_decoded(parser):
         # As for the TGP: an undecoded override profile may target this policy.
@@ -2586,7 +2621,18 @@ def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, re
                         'keeps that profile as stored' % (
                             TOP_SENSE_CODE, ', '.join(map(str, indices)), what,
                             ', '.join(amount(v) for v in sorted({v for _, v in found}))))
-            if binding['differs']['maximum']:
+            raised = binding['differs_entries']['maximum']
+            above = {value for _, value, _ in raised}
+            if (raised_risk and raised and not others and len(maxima) == len(above) == 1 and
+                    min(above) > max(maxima) and {policy for policy, _, _ in raised} == own and
+                    not binding['base_levels']['maximum']):
+                # The top level only raises this ceiling, on every row of the policy, and no level that votes runs
+                # the base one (Gigabyte 95.02.18.C0.75: direct profile 3 holds 60 A, the base 58 A, profile 2 45 A
+                # at code 2): the edit writes the base and those entries together, so they end equal, and the value
+                # shown is the one in force at the top level.
+                top_maximum = min(above)
+                tied = dict(tied, maximum=tied['maximum'] + [at for _, _, found in raised for at in found])
+            elif binding['differs']['maximum']:
                 differ_max = top_differs(binding['differs']['maximum'], 'this ceiling')
             if binding['differs']['default']:
                 differ_rated = top_differs(binding['differs']['default'], 'this rated value')
@@ -2613,6 +2659,16 @@ def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, re
                            'rated value to the base, so a value above that runs under that ceiling there; how the '
                            'firmware treats that is not known (not analysed) and the editor leaves it to you'
                            % (cap[0], amount(cap[1])) if cap is not None else ''))
+            if top_maximum is not None:
+                reasons = (reasons[0] + '; at the top cable sense level (code %d) override profile %s replaces the '
+                           'base ceiling (%s) with this value: the edit writes both, so they end equal; the base '
+                           'ceiling is in force at no other level either, since every other level that votes replaces '
+                           'it too and a code without a vote fails the power setup (inferred, static analysis); %s' % (
+                               TOP_SENSE_CODE, ', '.join(str(i) for i in sorted({i for i, _ in
+                                                                                 binding['differs']['maximum']})),
+                               amount(max(maxima)), raised_risk),
+                           reasons[1] + '; above the base ceiling (%s) it needs %s in the same edit' % (
+                               amount(max(maxima)), keys[0]))
     if blocked:
         one_max = one_rated = False
         differ = blocked
@@ -2624,11 +2680,14 @@ def ada_policy_fields(image, parser, items, keys, labels, *, group, evidence, re
         one_rated, rated_reason = False, differ_rated
     else:
         rated_reason = reasons[1] if one_rated else differ
-    return [field(keys[0], labels[0], units, max(maxima) / scale if len(maxima) == 1 else None,
+    shown = top_maximum if top_maximum is not None else max(maxima) if len(maxima) == 1 else None
+    # The stored base, when the value shown is the top level's: requesting the shown value again rewrites it.
+    base = {} if top_maximum is None else dict(stored_base_maximum=max(maxima) / scale)
+    return [field(keys[0], labels[0], units, shown / scale if shown is not None else None,
                   max_lower / scale, upper_raw / scale, editable and one_max, [dict(e) for e in evidence],
                   offsets=offsets('maximum_offset') + tied['maximum'], value_semantics='stored-policy-maximum',
                   writable_status=None if one_max else 'unsupported', reason=max_reason,
-                  **experimental_flag(parser, keys[0]), **common),
+                  **experimental_flag(parser, keys[0]), **base, **common),
             field(keys[1], labels[1], units, max(rated) / scale if len(rated) == 1 else None,
                   rated_lower / scale, rated_upper / scale, editable and one_rated,
                   [dict(e) for e in evidence], offsets=offsets('default_offset') + tied['default'],
@@ -3255,7 +3314,8 @@ def input_current(image, parser):
             image, parser, items, ('input_current_max_ma', 'input_current_rated_ma'),
             ('12 V input current threshold ceiling', '12 V input current threshold (rated)'),
             group='input-current-12v', evidence=ADA_INPUT_EVIDENCE if ada(parser) else AMPERE_INPUT_EVIDENCE,
-            opt_in=True,
+            opt_in=True, raised_risk='a higher limit lets more current through the 16-pin cable and connector than '
+                                     'their rating, which is your call',
             reasons=('experimental, opt-in: client ceiling of both 12 V input-current hardware thresholds (written '
                      'together); SET and enforcement untested; stored value, not a hardware-safe current rating',
                      'experimental, opt-in: rated 12 V input-current hardware threshold, thresholds 0 and 1 written '
@@ -3482,9 +3542,17 @@ FAN_EVIDENCE = [
                     'whose active rows hold 25000 at bytes 11..13'}]
 # 4-wire PWM fan specification band; outside it fans may not regulate.
 FAN_PWM_BAND_HZ = (21000, 28000)
+# Bit 0 of the fan policy entry flag byte (0x32): the control unit, set for an RPM target held on the tachometer,
+# clear for a percent that sets the PWM (FAN_CONTROL_FIRMWARE_EVIDENCE, FAN_CLOSED_LOOP_FIRMWARE_EVIDENCE).
+FAN_CLOSED_LOOP_BIT = 0x01
 
 
-def fan_layouts(parser, table):
+def fan_unit(parser, entry):
+    """Bit 0 of the flag byte (0x32) of a v0x20 fan policy entry (a cooler row's or an extra curve's)."""
+    return parser.blob[entry['policy_offset'] + FAN_POLICY_FLAG_OFFSET] & FAN_CLOSED_LOOP_BIT
+
+
+def fan_layouts(parser, table, *, control_unit=True):
     """Channel counts this image can hold and restore, with the bytes each writes.
 
     A count sets the cooler list (header bytes 4..7) and byte 0 of entries
@@ -3498,7 +3566,14 @@ def fan_layouts(parser, table):
       or below the lowest active maximum, fan_curves, so an edited extra curve
       cannot end up above a channel enabled later; like the active minimums, a
       stored channel's minimums may sit above them). They take channel 0's
-      enable byte in each table.
+      enable byte in each table. Raising also stops at a stored channel whose
+      policy entry has another control unit (bit 0 of its flag byte, fan_unit)
+      than the enabled entries: its control entry would combine it with the
+      extra curves, and GSP-RM rejects a control entry whose policies do not
+      share the unit (FAN_CLOSED_LOOP_FIRMWARE_EVIDENCE; the ASUS XOC images
+      store their third channel at 0x17 next to 0x16/0x06). control_unit=False
+      leaves that stop out, for fan_closed_loop, whose entries must not depend
+      on its own value.
     - Lowering clears the last channels in all five tables, as the two-channel
       ASUS XOC image does for the Matrix's third channel. It is offered only down
       to the lowest channel above which every active channel has its own
@@ -3525,10 +3600,12 @@ def fan_layouts(parser, table):
                           for unit, high in (('rpm', 'rpm_maximum'), ('pct', 'level_maximum')))
     enables = (('offset', 'enable'), ('policy_offset', 'policy_enable'), ('mapping_offset', 'mapping_enable'),
                ('control_offset', 'control_enable'), ('speed_offset', 'speed_enable'))
+    units = {fan_unit(parser, e) for e in active + table['extra_curves']}
     most = len(active)
     for row in rows[most:]:
         if (identity(row) in {identity(r) for r in rows[:row['index']]} or
-                row['pwm_frequency_hz'] != frequency or b[row['offset'] + 13] or not row['stored'] or not holds(row)):
+                row['pwm_frequency_hz'] != frequency or b[row['offset'] + 13] or not row['stored'] or not holds(row) or
+                control_unit and units != {fan_unit(parser, row)}):
             break
         most += 1
     least = len(active)
@@ -3747,6 +3824,28 @@ FAN_HARDWARE_TESTED = {
 FAN_CURVE_TESTED = ('tested on hardware: point 1 at 2000 RPM and 45 % raised the idle speed of an HP RTX 3060 to about '
                     '2000 RPM (issue #22), and at 2000 RPM and 40 %, with the minimums lowered, an RTX 3090 blower '
                     'idled near 2000 RPM (issue #24)')
+# Reason ending of a speed limit where bit 0 of the channel's policy flag byte is clear (fan_unit): the tests above
+# ran with an RPM target, which GSP-RM does not use then. The speed limits stay experimental there.
+FAN_OPEN_LOOP_SPEED = ("bit 0 of this channel's fan policy flag byte (0x32) is clear (fan_closed_loop 0, as on the "
+                       'ASUS XOC and MSI Lightning images), so a manual percent sets the PWM as a share of the level '
+                       'maximum and GSP-RM uses neither speed limit for manual control or the reported percent (the '
+                       'fan controller still receives them); the hardware tests of the speed limits ran with bit 0 '
+                       'set; not hardware-tested with bit 0 clear')
+# Appended to a level limit where bit 0 is clear: GSP-RM then uses the level limits for manual control.
+FAN_OPEN_LOOP_LEVEL = ("; bit 0 of this channel's fan policy flag byte (0x32) is clear (fan_closed_loop 0), so a "
+                       'manual percent sets the PWM as a share of the level maximum')
+# Appended to a GB20x curve speed point where bit 0 of the curve's entry is clear: the one card run that way followed
+# the level points, but the fan controller code that runs the curves is encrypted.
+FAN_OPEN_LOOP_CURVE_SPEED = ("; bit 0 of this curve's fan policy flag byte (0x32) is clear (fan_closed_loop 0), so a "
+                             'percent sets the PWM; on the one card tested that way the fans followed the level points '
+                             'of the curves, not the speed points (the fan controller code is encrypted, so this is '
+                             'not verified)')
+# Appended to the GB20x level maximum and top level point of a curve (issue #33); no bound follows from it.
+FAN_LOW_LEVEL_NOTE = ('; every GB20x ROM ships a level maximum of 100 % and no GB20x curve tops out below 81 %; on one '
+                      'ASUS ROG RTX 5090 whose channel 2 tachometer read 0 RPM (a damaged fan header), a copy '
+                      "with that channel's level maximum at 45 % and level points 2 and 3 of its curve and of both "
+                      'extra curves at 40 and 45 % loaded, and about two minutes after boot Windows removed the GPU as '
+                      'failing (issue #33); the cause is unknown, so lower these values far below stock with care')
 FAN_SHAPE_REASON = 'fan row or policy curves hold values outside the reviewed shape'
 # (key unit, label noun, units, row byte of the minimum, of the maximum, encoding, ceiling). The RPM
 # ceiling is the signed 16-bit range of the driver's fan-curve RPM values, not the '<H' encoding.
@@ -3772,21 +3871,23 @@ def fan_shaped(curve):
 
 
 def fan_field(writable, parser, key, label, units, current, lo, hi, shaped, places, encoding, scale, ceiling, noun,
-              evidence, reason, **extra):
+              evidence, reason, *, untested=False, **extra):
     """One fan limit or curve point, in stored units, written at places (the value's offset, then the
     same place in each unused policy entry copy: policy_mirrors) in every chain, experimental unless
-    HARDWARE_TESTED lists it for the family. It is editable when the
-    image is (writable), its row and curves hold the reviewed shape and it sits inside lo..hi. With lo ==
-    hi (a curve point flush with its limit, a level maximum of 100 under a curve that reaches 100 %) a
-    request for it alone keeps its value, but it can move with its partners in a joint edit. Bounds stay
-    numeric, so the joint recheck refuses a request that breaks the order on the edited result."""
+    HARDWARE_TESTED lists it for the family and the path is a tested one (untested False). It is
+    editable when the image is (writable), its row and curves hold the reviewed shape and it sits
+    inside lo..hi. With lo == hi (a curve point flush with its limit, a level maximum of 100 under a
+    curve that reaches 100 %) a request for it alone keeps its value, but it can move with its partners
+    in a joint edit. Bounds stay numeric, so the joint recheck refuses a request that breaks the order
+    on the edited result."""
     inside = shaped and lo <= current <= hi
     editable = inside and writable
     show = (lambda v: v / scale) if scale != 1 else (lambda v: v)
     offsets, _ = chain_copies(parser, places, struct.calcsize(encoding))
     return field(key, label, units, show(current), show(lo), show(hi), editable, evidence,
                  offsets=offsets if editable else (), encoding=encoding if editable else '', scale=scale,
-                 **experimental_flag(parser, key), ordering_group=f'fan-{noun}' if editable else None,
+                 **({'experimental': True} if untested else experimental_flag(parser, key)),
+                 ordering_group=f'fan-{noun}' if editable else None,
                  encoding_bounds=(0, show(ceiling)) if editable else None,
                  writable_status=None if editable else 'unsupported',
                  reason=reason if inside else FAN_SHAPE_REASON, **extra)
@@ -3811,7 +3912,12 @@ def fan_limits(writable, parser, table, evidence):
     highest point of every curve and that value, and above the minimum, up to the
     ceiling. A limit moves past a curve only together with the curve points
     (fan_curves), in one joint edit. Each side is read-only when its row and curves
-    hold another shape (fan_shaped).
+    hold another shape (fan_shaped). On GB20x, where bit 0 of the channel's policy flag
+    byte is clear (fan_unit: the ASUS XOC and MSI Lightning images, a copy saved with
+    fan_closed_loop 0), the reasons say a manual percent sets the PWM, and the speed
+    limits stay experimental: their hardware tests ran with an RPM target. Every Ada
+    and Ampere image sets the bit and no field clears it there. On GB20x the level
+    maximum also names the issue #33 report (FAN_LOW_LEVEL_NOTE).
     """
     firmware = [] if turing(parser) else [FAN_CURVE_FIRMWARE_EVIDENCE, FAN_CONTROL_FIRMWARE_EVIDENCE]
     result = []
@@ -3821,6 +3927,7 @@ def fan_limits(writable, parser, table, evidence):
         n = r['index'] + 1
         curves = [r] + table['extra_curves']
         shaped = all(fan_shaped(c) for c in curves)
+        open_loop = isinstance(parser, BlackwellRom) and not fan_unit(parser, r)
         for unit, noun, units, low_at, high_at, encoding, ceiling in FAN_LIMITS:
             low, high = ((r['rpm_minimum'], r['rpm_maximum']) if unit == 'rpm' else
                          (r['level_minimum'], r['level_maximum']))
@@ -3833,8 +3940,14 @@ def fan_limits(writable, parser, table, evidence):
             for side, current, at, lo, hi in (('min', low, low_at, 0, min(floor, high - 1)),
                                               ('max', high, high_at, max(top, low + 1), ceiling)):
                 word = 'minimum' if side == 'min' else 'maximum'
-                flagged = not hardware_tested(parser, f'fan_{n}_{side}_{unit}')
+                speed_open = open_loop and unit == 'rpm'
+                flagged = speed_open or not hardware_tested(parser, f'fan_{n}_{side}_{unit}')
                 tested = None if flagged else FAN_HARDWARE_TESTED.get((side, unit))
+                ending = (FAN_OPEN_LOOP_SPEED if speed_open else
+                          tested or fan_untested(parser, FAN_LIMIT_TESTED.get((side, unit), 'not hardware-tested')))
+                ending += ((FAN_OPEN_LOOP_LEVEL if open_loop and unit == 'pct' else '') +
+                           (FAN_LOW_LEVEL_NOTE if isinstance(parser, BlackwellRom) and (side, unit) == ('max', 'pct')
+                            else ''))
                 result.append(fan_field(
                     writable, parser, f'fan_{n}_{side}_{unit}', f'Fan {n} {word} {noun}', units, current, lo, hi,
                     shaped, [r['offset'] + at], encoding, 1, ceiling, noun,
@@ -3844,10 +3957,9 @@ def fan_limits(writable, parser, table, evidence):
                     (f"the minimum stays at or below the channel's own fan curve{value}{below}, so it moves past "
                      'that curve only with its points in one edit; ' if side == 'min' else
                      f'the maximum stays at or above every stored fan curve{value}, so it moves past a curve only '
-                     'with its points in one edit; ') +
-                    (tested or fan_untested(parser, FAN_LIMIT_TESTED.get((side, unit), 'not hardware-tested'))),
+                     'with its points in one edit; ') + ending,
                     stored_units=units, value_semantics=f'stored-fan-{word}-{noun}', fan_rows=[r['index']],
-                    fan_channel=r['index'], **({'opt_in': True} if unit == 'pct' else {})))
+                    fan_channel=r['index'], untested=speed_open, **({'opt_in': True} if unit == 'pct' else {})))
     return result
 
 
@@ -3865,7 +3977,10 @@ def fan_curves(writable, parser, table, evidence):
     limit and the points above it in one joint edit, and raising a minimum above a
     channel curve takes that curve's points below it. Every point stays inside the
     containment, so a stored point above it does not widen its neighbor's range.
-    A point is also written to each unused copy of its entry (policy_mirrors).
+    A point is also written to each unused copy of its entry (policy_mirrors). On GB20x
+    the top level point names the issue #33 report (FAN_LOW_LEVEL_NOTE), and the speed
+    points of a curve whose entry has bit 0 clear say what was seen there
+    (FAN_OPEN_LOOP_CURVE_SPEED).
     """
     active = [r for r in table['rows'] if r['active']]
     if not active:
@@ -3877,6 +3992,7 @@ def fan_curves(writable, parser, table, evidence):
     curves += [(f'fan_extra_{m}', f'Extra fan curve {m}', f'extra {m}', c, shared,
                 dict(fan_rows=[r['index'] for r in active])) for m, c in enumerate(table['extra_curves'], 1)]
     firmware = [] if turing(parser) else [FAN_CURVE_FIRMWARE_EVIDENCE]
+    gb20x = isinstance(parser, BlackwellRom)
     result = []
     for prefix, name, owner, curve, limits, extra in curves:
         shaped = fan_shaped(curve) and all(low < high for low, high in limits.values())
@@ -3900,7 +4016,9 @@ def fan_curves(writable, parser, table, evidence):
                      'the points stay in order and inside the fan limits' if 'fan_channel' in extra else
                      'the points stay in order and at or below the lowest maximum of the active channels, and may '
                      'sit below their minimums') + '; ' + (FAN_CURVE_TESTED if tested else fan_untested(parser)) +
-                    copied,
+                    copied + (FAN_LOW_LEVEL_NOTE if gb20x and unit == 'pct' and k == 2 else
+                              FAN_OPEN_LOOP_CURVE_SPEED if gb20x and unit == 'rpm' and not fan_unit(parser, curve)
+                              else ''),
                     stored_units=stored_units, value_semantics=f'stored-fan-curve-{noun}', fan_policy=curve['index'],
                     **extra, **copies, **({'opt_in': True} if unit == 'pct' else {})))
     return result
@@ -4274,6 +4392,129 @@ def fan_zero_rpm(image, parser):
                                      'setting 0 not hardware-tested' if flags else
                                      'opt-in: ' + common + FAN_ZERO_RPM_TESTED) +
                                     notes + FAN_ZERO_RPM_MANUAL_NOTE))]
+
+
+FAN_CLOSED_LOOP_FIRMWARE_EVIDENCE = {
+    'kind': 'static-firmware-analysis',
+    'source': 'GSP-RM firmware 615.78.08 (gsp_ga10x.bin): v0x20 fan policy entry parser 0x11cb000 and fan control '
+              'entry validator 0x12f9130, read with the GA102-GA107 chip settings',
+    'observation': 'the parser decodes bit 0 of the flag byte (0x32) inverted into a boolean of its own (0x11cb3d4), '
+                   'apart from bits 1|2, 3 and 4; the validator compares the control unit of each policy in the first '
+                   'policy mask of a control entry with the unit the control entry holds (0x12f923e/0x12f9242) and '
+                   'on a mismatch logs, asserts and returns 0x40 (NV_ERR_INVALID_STATE); every stored GB20x control '
+                   'entry names its own channel entry and the extra curves 4 and 5 in that mask (byte 5 = 0x30 | '
+                   '1 << i), so every channel shares the unit with the extra curves and so with every other channel; '
+                   'whether a mismatch stops the GPU or only fan control was not traced', 'set_tested': False}
+FAN_CLOSED_LOOP_CORPUS_EVIDENCE = {
+    'kind': 'structural-table', 'source': 'GB20x, Ada and Ampere VBIOS corpus',
+    'observation': 'every enabled fan policy entry sets bit 0 (GeForce 0x17/0x07, RTX PRO 0x11/0x01 or 0x01) except '
+                   'on the two ASUS RTX 5090 XOC images and the MSI RTX 5090 Lightning image (0x16 on the channel '
+                   'entries, 0x06 on the extra curves), which are also the only images whose active cooler rows store '
+                   'byte 0 = 1 (2 on every other GB20x, Ada and Ampere image); no image mixes bit 0 across its enabled '
+                   'entries; the XOC images keep their stored, disabled third channel entry at 0x17, the Lightning at '
+                   '0x16; every Ada and Ampere image sets bit 0 on every entry; no shipped image stores bit 0 clear '
+                   'with cooler byte 0 = 2'}
+FAN_CLOSED_LOOP_HARDWARE = {
+    'kind': 'hardware-test', 'set_tested': True,
+    'source': 'owner report with a contributed patch (issue #33): an edited image loaded as an override (Windows '
+              'loader, driver 621.01)',
+    'scope': 'one ASUS ROG RTX 5090 (VBIOS 98.02.2E.40.E0, outside the reviewed corpus) whose fan channel 2 '
+             'reads 0 RPM (one fan disconnected, its header damaged); only 0 was tried',
+    'observed': 'with the stock image the centre fan of channel 2 ran at full speed whenever the fans started; with '
+                'bit 0 cleared on entries 0, 1 and 2 (0x17 -> 0x16) and on the extra curves (0x07 -> 0x06) both '
+                'channels followed the stock curve by percent, channel 2 reported the same percent as channel 1 '
+                'instead of 0 % and its centre fan no longer ran flat out; at idle both channels read 0 % with the '
+                'fans stopped (zero RPM kept working); the side fans ran faster per percent than with the stock image '
+                '(about 722 RPM at 33 % against about 555 RPM at 31 %); the driver fan duty range stayed 30-100 %'}
+# Cooler row byte 0 of every image that ships bit 0 set; the images that store another value (1: the ASUS XOC and
+# MSI Lightning RTX 5090) ship it clear, so the field leaves them as stored.
+FAN_CLOSED_LOOP_COOLER = 2
+FAN_CLOSED_LOOP_COOLER_REASON = (
+    'read-only: an active fan cooler row of this image stores byte 0 other than 2, the value of every ROM that ships '
+    'bit 0 of its fan policy flag bytes (0x32) set; the ASUS XOC and MSI Lightning RTX 5090 images store 1 there '
+    'with bit 0 clear, and no shipped ROM sets bit 0 with that value, so the editor leaves the control unit as '
+    'stored; with bit 0 clear a manual percent sets the PWM as a share of the level maximum, and on the one card '
+    'tested that way the fans followed the level points of the curves, not the speed points (the fan controller code '
+    'is encrypted, so this is not verified)')
+# The reason of an offered switch: what each value does, why all entries move together, and what rests on issue #33.
+FAN_CLOSED_LOOP_REASON = (
+    'experimental, opt-in: bit 0 of the flag byte (0x32) of every fan policy entry (the channel entries, the stored '
+    'channel entries a larger channel count enables and the enabled curves past them); 1, the form of every shipped '
+    'ROM but the ASUS XOC and MSI Lightning ones, makes a percent an RPM target the fan controller holds on the '
+    'tachometer, 0 makes it set the PWM as a share of the level maximum; GSP-RM requires the policies of a control '
+    "entry to share the bit and every channel's control entry combines its own entry with the extra curves, so all "
+    'channels change together; with 0 the same percent can give another speed and 100 % PWM may run a fan past the '
+    'speed maximum of its row; each entry keeps its other flag bits; the form 0 gives here (bit 0 clear with cooler '
+    'row byte 0 = 2) is in no shipped ROM (the XOC and Lightning ones store byte 0 = 1) and rests on one hardware '
+    'result: on an ASUS ROG RTX 5090 whose channel 2 tachometer read 0 RPM, both channels followed the curve by '
+    'percent, the fans followed the level points of the curves, not the speed points (the fan controller code is '
+    'encrypted, so this is not verified), and zero RPM kept working (issue #33); not hardware-tested on a card whose '
+    'tachometers work')
+
+
+@registry.register
+def fan_closed_loop(image, parser):
+    """GB20x desktop and workstation: bit 0 of the flag byte (0x32) of every fan policy entry, 1 or 0 on all.
+
+    1, the form of every shipped ROM but the ASUS XOC and MSI Lightning RTX 5090 ones, makes a percent an
+    RPM target the fan controller holds on the tachometer (closed loop); 0 makes it set the PWM as a share
+    of the level maximum (open loop), for a channel whose tachometer reads nothing (FAN_CLOSED_LOOP_HARDWARE).
+    The entries are the ones fan_zero_rpm covers: the active channels', the stored channel entries a
+    larger channel count could enable and the enabled curves past the cooler rows. GSP-RM rejects a
+    control entry whose policies do not share the bit, and every channel's control entry combines its own
+    entry with the extra curves, so all entries move together, each keeping its other flag bits. The
+    stored entries are those fan_layouts reaches without its control unit stop, so they do not depend on
+    this field's value; one whose bit differs from the enabled entries (fan_layouts stops below it)
+    leaves the field read-only, as do enabled entries that disagree. It is offered only where every active
+    cooler row stores byte 0 = 2 (FAN_CLOSED_LOOP_COOLER), the value of every ROM that ships bit 0 set; the
+    XOC and Lightning images store 1 with bit 0 clear and stay read-only. The 0 it offers (bit 0 clear
+    with byte 0 = 2) is in no shipped ROM either and rests on one hardware result. Experimental, opt-in;
+    not on Ada, Ampere or Turing, nor on the notebook layout (its fans belong to the system).
+    """
+    if not isinstance(parser, BlackwellRom):
+        return []
+    table = parser.fan_coolers()
+    if table is None:
+        return []
+    try:
+        notebook = parser.notebook_power_layout()
+    except FormatError:
+        notebook = True  # an unrecognized power table: no claim about the layout
+    active = [r for r in table['rows'] if r['active']]
+    enabled = active + list(table['extra_curves'])
+    if notebook or not enabled:
+        return []
+    shared = (len({r['pwm_frequency_hz'] for r in active}) == 1 and
+              all(parser.blob[r['offset'] + 13] == 0 for r in active))
+    most = fan_layouts(parser, table, control_unit=False)[1] if shared else len(active)
+    later = table['rows'][len(active):most]
+    entries = table['rows'][:most] + list(table['extra_curves'])
+    bits = {fan_unit(parser, e) for e in enabled}
+    state = bits.pop() if len(bits) == 1 else None
+    if state is None:
+        reason = ('read-only: the enabled fan policy entries disagree about bit 0 of their flag byte (0x32), the '
+                  'control unit that the policies of one control entry must share')
+    elif any(r['enable'] != FAN_CLOSED_LOOP_COOLER for r in active):
+        reason = FAN_CLOSED_LOOP_COOLER_REASON
+    elif any(fan_unit(parser, r) != state for r in later):
+        reason = ('read-only: a stored fan channel entry that a larger channel count would enable differs from the '
+                  'enabled entries in bit 0 of its flag byte (0x32), so the channel count stops below it, and the '
+                  'editor leaves the control unit as stored')
+    else:
+        reason = None
+    editable = reason is None and can_edit(image, parser)
+    flags = [parser.blob[e['flag_offset']] for e in entries]
+    layout = ((0, tuple(bytes((b & ~FAN_CLOSED_LOOP_BIT,)) for b in flags)),
+              (1, tuple(bytes((b | FAN_CLOSED_LOOP_BIT,)) for b in flags)))
+    return [field('fan_closed_loop', 'Fan RPM-target control (0: a percent sets the PWM)', 'flag', state,
+                  0 if editable else None, 1 if editable else None, editable,
+                  [dict(FAN_CLOSED_LOOP_FIRMWARE_EVIDENCE), dict(FAN_CONTROL_FIRMWARE_EVIDENCE),
+                   dict(FAN_CLOSED_LOOP_CORPUS_EVIDENCE), dict(FAN_CLOSED_LOOP_HARDWARE)],
+                  offsets=[e['flag_offset'] for e in entries] if editable else (),
+                  encoding='<B' if editable else '', scale=1, layout=layout if editable else (),
+                  writable_status=None if editable else 'unsupported', **experimental_flag(parser, 'fan_closed_loop'),
+                  opt_in=True, value_semantics='stored-fan-control-unit', fan_entries=[e['index'] for e in entries],
+                  reason=reason or FAN_CLOSED_LOOP_REASON)]
 
 
 LEGACY_FAN_ZERO_RPM_FIRMWARE_EVIDENCE = {

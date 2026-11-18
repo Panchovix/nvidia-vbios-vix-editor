@@ -11,7 +11,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from nvidia_vbios.editor import edit, plan
 from nvidia_vbios.editor.registry import registry
-from nvidia_vbios.rom import VbiosError, from_bytes, inspect_image, load
+from nvidia_vbios.rom import VbiosError, from_bytes, inspect_image, load, normalize
 from nvidia_vbios.rom.image import backend
 from nvidia_vbios.rom.tables import PROFILE_BYTES
 from test_extended_fields import changed_bytes_within, curve_step, custom_registry, descriptors, fan_stop_refusals
@@ -583,8 +583,10 @@ class AdaDirectAndThresholdProfileTests(unittest.TestCase):
         fields = descriptors(self.image)
         # A lower level that replaces a maximum but not the rated value (profile 6 TGP, profile 2 input current)
         # does not bound the base rated value: the firmware's handling of rated > max is not analysed.
+        # The 12 V input ceiling shows profile 3's 60 A, the value in force at the top level (see below).
         expected = {'power_max_w': (600, 450, 2147483.647), 'power_default_w': (450, 150, 600),
-                    'power_min_w': (150, 1, 450), 'input_current_rated_ma': (45000, 1000, 58000)}
+                    'power_min_w': (150, 1, 450), 'input_current_rated_ma': (45000, 1000, 58000),
+                    'input_current_max_ma': (60000, 45000, 2147483647)}
         for key, (current, low, high) in expected.items():
             with self.subTest(key=key):
                 field = fields[key]
@@ -595,15 +597,19 @@ class AdaDirectAndThresholdProfileTests(unittest.TestCase):
                          {'top_profile': 7, 'top_sense_code': 3, 'top_sense_level_w': 600,
                           'top_sense_level_basis': 'inferred', 'other_profiles': [2, 6], 'top_direct_profile': 3})
         reason = fields['power_max_w']['reason']
-        for text in ('direct profile 3 (sense entry byte 1), which sets other limits (rows 6, 9 and 10)',
+        # Row 6 has no field on this synthetic image (on the corpus image connector_1_power_* write it).
+        for text in ('direct profile 3 (sense entry byte 1), which sets other limits (rows 6, 9 and 10) that '
+                     'input_current_max_ma writes with their base rows; its entries on row 6 are kept as stored',
                      'the other profiles (6; 6 is selected, at code 2) keep their own limits',
                      'from below only: it has no upper bound but the encoding',
                      'override profile 7, used at the top level (code 3, most likely a 600 W cable; inferred, not '
                      'tested), holds the same value and is written with it',
+                     'may also limit, though whether they bind is not known',
                      'raise input_current_rated_ma (opt-in) with it',
                      'override profile 2 sets their maximum to 45 A at its lower sense level',
                      'not known (not analysed) and the editor leaves it to you'):
             self.assertIn(text, reason)
+        self.assertNotIn('may limit first', reason)
         # Profile 7 holds no TGP rated entry: power_default_w writes the base alone and says so.
         reason = fields['power_default_w']['reason']
         self.assertIn('override profile 7, used at the top level (code 3, most likely a 600 W cable; inferred, not '
@@ -611,15 +617,24 @@ class AdaDirectAndThresholdProfileTests(unittest.TestCase):
         self.assertNotIn('holds the same value', reason)
         self.assertIn('override profile 6 sets the TGP maximum to 450 W at its sense level', reason)
         self.assertIn('the editor leaves it to you', reason)
-        # At code 3 direct profile 3 replaces the 12 V input maximum with 60 A: the base ceiling would be undone.
+        # At code 3 direct profile 3 raises the 12 V input maximum to 60 A (base 58 A), and at code 2 profile 2 sets
+        # 45 A, so the base ceiling is in force at no level: the field writes it with profile 3's entries.
         field = fields['input_current_max_ma']
-        self.assertFalse(field['editable'])
-        self.assertIn('override profile 3 replaces this ceiling with 60000 mA', field['reason'])
+        self.assertTrue(field['experimental'] and field['opt_in'])
+        self.assertEqual(field['stored_base_maximum'], 58000)
+        for text in ('at a lower cable sense level override profile 2 replaces this value with 45000 mA',
+                     'at the top cable sense level (code 3) override profile 3 replaces the base ceiling (58000 mA) '
+                     'with this value: the edit writes both, so they end equal',
+                     'the base ceiling is in force at no other level either',
+                     'more current through the 16-pin cable and connector than their rating'):
+            self.assertIn(text, field['reason'])
         self.assertIn('override profile 2 sets the ceiling to 45000 mA', fields['input_current_rated_ma']['reason'])
         self.assertIn('the editor leaves it to you', fields['input_current_rated_ma']['reason'])
+        self.assertIn('above the base ceiling (58000 mA) it needs input_current_max_ma in the same edit',
+                      fields['input_current_rated_ma']['reason'])
         from nvidia_vbios.gui.presentation import sense_profile_notes
         notes = sense_profile_notes(fields['power_max_w'], list(fields.values()))
-        self.assertIn('Raise it too', notes[2])
+        self.assertIn('If the power stops short, raise it too', notes[2])
 
     def test_power_max_edit_writes_the_base_and_profile_7_in_both_chains(self):
         result = edit(self.image, {'power_max_w': 800})
@@ -651,9 +666,76 @@ class AdaDirectAndThresholdProfileTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
                 edit(self.image, changes)
             self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
-        with self.assertRaises(VbiosError) as exc:
-            edit(self.image, {'input_current_max_ma': 60000})
-        self.assertNotEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+
+    def test_input_current_max_writes_the_base_and_profile_3_in_both_chains(self):
+        rows = self.parser.power_rows()
+        profiles = {p['index']: p for p in self.parser.power_profiles()}
+        base = [rows[9]['maximum_offset'], rows[10]['maximum_offset']]
+        top = [e['value_offset'] for e in profiles[3]['entries'] if e['policy'] in (9, 10)]
+        checksums = {end - 1 for _, end in self.parser.image_regions}
+
+        def changed(result):
+            return {i for i, (a, b) in enumerate(zip(self.blob, result.blob)) if a != b}
+
+        def spans(offsets, size):
+            return {at + k for o in offsets for at in self.parser.copy_offsets(o, 4) for k in range(size)}
+        result = edit(self.image, {'input_current_max_ma': 72000})
+        # 58000 and 60000 -> 72000 change three bytes of each value; one checksum byte per chain.
+        self.assertEqual(len(changed(result)), 26)
+        self.assertEqual(changed(result) - checksums, spans(base + top, 3))
+        after = backend(result.image)
+        self.assertEqual(after.profile_levels(), self.parser.profile_levels())
+        self.assertEqual([p for p in after.power_profiles() if p['index'] != 3],
+                         [p for p in self.parser.power_profiles() if p['index'] != 3])
+        self.assertEqual([e['value_raw'] for e in after.power_profiles()[1]['entries']],
+                         [600000, 600000, 72000, 72000])
+        # Profile 3 now equals the base on these rows and is written with it; the rated value may follow up to it.
+        fields = descriptors(result.image)
+        self.assertEqual((fields['input_current_max_ma']['current'],
+                          fields['input_current_rated_ma']['bounds']['maximum']), (72000, 72000))
+        self.assertNotIn('replaces the base ceiling', fields['input_current_max_ma']['reason'])
+        self.assertNotIn('stored_base_maximum', fields['input_current_max_ma'])
+        # The value shown (60 A) rewrites only the base maxima, 58000 -> 60000 (two bytes each), and 72 A goes
+        # back to that copy, not to the stored 58 A.
+        shown = edit(self.image, {'input_current_max_ma': 60000})
+        self.assertEqual(changed(shown) - checksums, spans(base, 2))
+        self.assertEqual(edit(result.image, {'input_current_max_ma': 60000}).blob, shown.blob)
+        joint = edit(self.image, {'input_current_max_ma': 72000, 'input_current_rated_ma': 70000})
+        self.assertEqual([(row['default_raw'], row['maximum_raw']) for row in
+                          (backend(joint.image).power_rows()[i] for i in (9, 10))], [(70000, 72000)] * 2)
+        self.assertEqual(backend(joint.image).power_profiles()[0], profiles[2])
+        # Profile 2 (45 A at code 2) bounds the ceiling from below; the rated value stays at or below it.
+        for changes in ({'input_current_max_ma': 44999}, {'input_current_rated_ma': 59000},
+                        {'input_current_max_ma': 72000, 'input_current_rated_ma': 72001}):
+            with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
+                edit(self.image, changes)
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+
+    def test_top_ceilings_that_do_not_only_raise_the_base_stay_read_only(self):
+        at = self.parser.profile_table()
+        two, three = (0xFE + index * 0x49 + 1 for index in (2, 3))   # entries (6 max, 6 rated, 9 max, 10 max)
+        variants = (
+            ('lower than the base', [(three + 2 * 9 + 5, struct.pack('<I', 50000)),
+                                     (three + 3 * 9 + 5, struct.pack('<I', 50000))], '50000 mA'),
+            ('one row only', [(three + 3 * 9, bytes(9))], '60000 mA'),
+            ('a value per row', [(three + 3 * 9 + 5, struct.pack('<I', 61000))], '60000 mA, 61000 mA'),
+            # Profile 2 leaves rows 9 and 10 to the base at code 2, which votes: the base ceiling is in force there.
+            ('base in force at code 2', [(two + 2 * 9, bytes(18))], '60000 mA'))
+        for name, patches, values in variants:
+            with self.subTest(name=name):
+                blob = self.blob
+                for offset, data in patches:
+                    blob = patched(blob, at + offset, data)
+                image = from_bytes(blob)
+                self.assertFalse(inspect_image(image)['diagnostics'])
+                field = descriptors(image)['input_current_max_ma']
+                self.assertEqual((field['current'], field['editable']), (58000, False))
+                self.assertNotIn('stored_base_maximum', field)
+                self.assertIn('override profile 3 replaces this ceiling with %s, not the base value' % values,
+                              field['reason'])
+                with self.assertRaises(VbiosError) as exc:
+                    edit(image, {'input_current_max_ma': 72000})
+                self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
 
     def test_layouts_whose_result_is_ambiguous_stay_refused(self):
         at = self.parser.profile_table()

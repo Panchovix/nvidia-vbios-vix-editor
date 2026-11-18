@@ -16,10 +16,10 @@ from ..rom.blackwell import (BlackwellRom, FAN_POLICY_FLAG_OFFSET, LPWR_TABLES,
 from ..rom.image import backend, inspect_image
 from ..rom.tables import ADVANCED_TABLES, PROFILE_BYTES, TableRom, checksum_tail
 from .registry import (registry, power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
-                       fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
-                       fixed_voltage, dram_offset_points, gpc_curve_offset, max_operating_temperature,
-                       factory_clocks, perf_cf_controllers, lpwr_features, rel_clamps, runtime_voltage_offsets,
-                       rel_above_alt, LPWR_ENABLED_ENTRIES, RUNTIME_OFFSETS_SEMANTICS,
+                       fan_closed_loop, fan_zero_rpm_temperatures, connector_power, connector_sum_power,
+                       evaluated_vmin, rail_follow_ov, fixed_voltage, dram_offset_points, gpc_curve_offset,
+                       max_operating_temperature, factory_clocks, perf_cf_controllers, lpwr_features, rel_clamps,
+                       runtime_voltage_offsets, rel_above_alt, LPWR_ENABLED_ENTRIES, RUNTIME_OFFSETS_SEMANTICS,
                        VMIN_SEMANTICS, VMIN_FIXED_SEMANTICS, FOLLOW_OV_SEMANTICS, FOLLOW_OV_VOLTAGE_SEMANTICS,
                        FIXED_SEMANTICS, REL_FLOOR_SEMANTICS, DRAM_POINT_SEMANTICS, GPC_CURVE_SEMANTICS,
                        MAX_TEMP_SEMANTICS, FACTORY_SEMANTICS, ADVANCED_SEMANTICS, PERF_CF_CONTROLLERS, fxp_percent,
@@ -30,9 +30,10 @@ from .registry import (registry, power, input_current, output_ocp, slot_power, p
 ZERO_RPM_PAIR_SEMANTICS = ('stored-fan-zero-rpm-lower-temperature', 'stored-fan-zero-rpm-upper-temperature')
 # Reviewed resolvers whose bindings are canonical for range and joint checks.
 REVIEWED_RESOLVERS = (power, input_current, output_ocp, slot_power, power_thresholds, fans, fan_zero_rpm,
-                      fan_zero_rpm_temperatures, connector_power, connector_sum_power, evaluated_vmin, rail_follow_ov,
-                      fixed_voltage, dram_offset_points, gpc_curve_offset, max_operating_temperature, factory_clocks,
-                      perf_cf_controllers, lpwr_features, rel_clamps, runtime_voltage_offsets)
+                      fan_closed_loop, fan_zero_rpm_temperatures, connector_power, connector_sum_power,
+                      evaluated_vmin, rail_follow_ov, fixed_voltage, dram_offset_points, gpc_curve_offset,
+                      max_operating_temperature, factory_clocks, perf_cf_controllers, lpwr_features, rel_clamps,
+                      runtime_voltage_offsets)
 # Fields that change otherwise preserved rail bytes, each only through its reviewed binding:
 # the evaluated VMIN equation and the switch that restores a VMIN tree root's stock clamp, the
 # XOC-style NVVDD REL/ALT selectors and the flat value they then share with OV, the fixed Ada/Ampere/Turing
@@ -432,13 +433,20 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                              f"{dependency['value']}; set {switch} to {dependency['value']} in the same edit",
                              details={'field': key, 'bounds': None, 'depends_on': dict(dependency)})
     # A channel count adds or removes per-channel fan fields, changes the limits every extra
-    # curve has to fit and the policy entries fan_zero_rpm covers: change it and the fan
-    # limits, curves or zero-RPM flag and temperatures in separate edits.
+    # curve has to fit and the policy entries the flag switches (fan_entries: fan_zero_rpm,
+    # fan_closed_loop) cover: change it and the fan limits, curves, flags and temperatures in
+    # separate edits.
     per_channel = sorted(k for k in changes if k in reviewed and
-                         ({'fan_channel', 'fan_policy'} & set(reviewed[k].descriptor) or k == 'fan_zero_rpm'))
+                         {'fan_channel', 'fan_policy', 'fan_entries'} & set(reviewed[k].descriptor))
     if 'fan_channels' in changes and per_channel:
-        raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change fan_channels and the fan limits, curves or zero-RPM flag '
-                         'in separate edits', details={'fields': ['fan_channels'] + per_channel})
+        raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change fan_channels and the fan limits, curves, zero-RPM flag or '
+                         'control unit in separate edits', details={'fields': ['fan_channels'] + per_channel})
+    # The zero RPM switch and the control unit switch each write the whole flag byte (0x32) of the same
+    # policy entries, computed from the source: one per edit.
+    if 'fan_zero_rpm' in changes and 'fan_closed_loop' in changes and 'fan_closed_loop' in reviewed:
+        raise VbiosError('SEPARATE_EDIT_REQUIRED', 'change fan_zero_rpm and fan_closed_loop in separate edits: both '
+                         'write the fan policy flag bytes (0x32)',
+                         details={'fields': ['fan_closed_loop', 'fan_zero_rpm']})
     # The runtime voltage-offset hooks take the first unused VFE entries and hold the REL/ALT/OV selectors, which
     # the GPC curve offset, the follow-OV switch and the flat follow-OV value's copy use too. Those fields requested
     # at their current value with the switch change nothing and are left out (their bytes overlap the switch's).
@@ -1046,7 +1054,8 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
     # and only at the bytes their bindings declare: the PWM frequency bytes,
     # the channel list/enable bytes, the row limits of the active channels,
     # the points of the enabled curves, the policy entry flag bytes (0x32)
-    # fan_zero_rpm covers, the fan-stop blocks its reviewed template writes and
+    # fan_zero_rpm and fan_closed_loop cover, the fan-stop blocks the zero RPM
+    # template writes and
     # the zero RPM temperature pairs (bytes 30..33) of the enabled entries, and
     # the same bytes of an unused copy of a channel's policy entry, which those
     # bindings declare with their source (policy_mirrors). They must still

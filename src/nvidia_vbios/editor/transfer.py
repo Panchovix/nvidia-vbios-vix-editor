@@ -197,6 +197,17 @@ def import_fields(target, donor, sections, *, include_opt_in=False, dry_run=Fals
             proposal[key] = other['current']
             continue
         left.append(dict(entries[key], reason=reason))
+    # A ceiling that shows the top cable sense level's value over another stored base (Ada stored_base_maximum)
+    # comes with a proposed partner of its ordering group even when it shows the donor's value, as the window
+    # stages it: the partner's own bounds hold the stored base, and the joint result checks the value shown.
+    groups = {our_fields[key].get('ordering_group') for key in proposal} - {None}
+    for key in [key for key in unchanged if our_fields[key].get('stored_base_maximum') is not None and
+                our_fields[key].get('ordering_group') in groups]:
+        mine = our_fields[key]
+        unchanged.remove(key)
+        entries[key] = dict(field=key, section=field_section(mine), label=mine.get('label', key),
+                            units=mine['units'], target=mine['current'], donor=their_fields[key]['current'])
+        proposal[key] = their_fields[key]['current']
 
     def set_of(key):
         return next((name for name in (_set(f) for f in (our_fields.get(key), their_fields.get(key)) if f) if name),

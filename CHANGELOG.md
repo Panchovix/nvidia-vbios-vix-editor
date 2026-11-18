@@ -3,6 +3,11 @@
 One line per change. What each change does, where it applies and what was tested is in the
 [changelog details](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/changelog-details.md).
 
+## 0.1.46
+
+- Blackwell desktop: fan RPM control switch (experimental, issue #33); ASUS XOC ROMs no longer offer a third fan channel.
+- Ada: the 12 V input current ceiling on RTX 4090 ROMs whose top cable sense level raises it (95.02.18.C0.75, untested).
+
 ## 0.1.45
 
 - Blackwell desktop: Board power ceiling also writes the rated value of the fixed board policies 2/7; their own field is gone.

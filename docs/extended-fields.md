@@ -32,8 +32,11 @@ N stands for any fan or connector number; a curve point keeps its number. The un
 paths of these fields stay experimental: a value bound to an override profile (the Ada
 cable sense profiles; the ASUS RTX 5090 XOC top-level profile, its 12 V input current
 too), the Ada and Turing notebook TGP, a VMIN set per chip (tree root or per-chip
-equation) and the VMIN copy of the RTX 4090 95.02.3C images, and the GB20x zero RPM switch
-where it writes a template or leaves bit 4 clear. So do the lower zero RPM threshold, the
+equation) and the VMIN copy of the RTX 4090 95.02.3C images, the GB20x zero RPM switch
+where it writes a template or leaves bit 4 clear, and the GB20x speed limits of a channel
+whose fan policy flag byte has bit 0 clear (the ASUS XOC and MSI Lightning images, or a copy
+saved with `fan_closed_loop` 0: the speed tests ran with an RPM target, see
+[Fan control unit](#fan-control-unit-fan_closed_loop-opt-in)). So do the lower zero RPM threshold, the
 extra fan curves, curve points 2 and 3, `input_current_policy7_limit_ma`, the Ada and
 Ampere input current thresholds and every field not listed. The hidden `dram_min_table_mhz`
 alias writes the bytes of `memory_offset_min_mhz` and carries its flag.
@@ -103,6 +106,7 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `nvvdd_rel_alt_follow_ov_mv` | One NVVDD value for REL = ALT = OV while they follow OV: the OV constant, or a copy of it in the first unused VFE slot where other tables or the MSVDD row use it | Experimental, opt-in, GB20x, Ada, Ampere and Turing (in place only on Ada, Ampere and Turing); on a copy saved with `nvvdd_rel_alt_follow_ov` 1 and on the vendor XOC images; 850-1560 mV (Ada 830-1560 mV and Ampere 900-1430 mV, both at least the highest VMIN set per chip; Turing 950-1462 mV and at least the boot voltage and the highest VMIN) |
 | `nvvdd_rel_fixed_mv`, `nvvdd_alt_fixed_mv`, `msvdd_rel_fixed_mv`, `msvdd_alt_fixed_mv` | Value of a constant REL or ALT equation: its constant and clamp maximum | Experimental, Ada (NVVDD), Ampere (every rail, opt-in) and Turing (NVVDD, opt-in); from the clamp minimum up to the rail's OV value, REL <= ALT; on Turing also at least the boot voltage and the highest VMIN |
 | `fan_zero_rpm` | Bits 1\|2 of byte `0x32` of every enabled fan policy entry: 1 both set, 0 bit 2 clear (inferred meaning: the fans may stand still at low temperature) | Opt-in, GB20x ([tested on hardware](#fields-tested-on-hardware) except where it writes a template or bit 4 is clear), Ada and Ampere (experimental; not Turing); 1 only where the entries store a fan-stop block the firmware accepts or a reviewed template supplies one (RTX PRO 6000 Max-Q, RTX 5000/6000 Ada, RTX A1000-A6000); read-only when the entries disagree, an entry sets bit 2 alone, or no block or template applies (RTX A2000) |
+| `fan_closed_loop` | Bit 0 of byte `0x32` of every fan policy entry `fan_zero_rpm` covers: 1 a fan percent is an RPM target held on the tachometer (every shipped ROM but the ASUS XOC and MSI Lightning ones), 0 it sets the PWM as a share of the level maximum | Experimental, opt-in, GB20x desktop and RTX PRO (not the notebook layout, Ada, Ampere or Turing); all entries change together; read-only where the enabled entries disagree, a stored channel entry differs, or an active cooler row stores byte 0 other than 2 (the ASUS XOC and MSI Lightning images, read-only at 0); not in the same edit as `fan_zero_rpm` or `fan_channels` (`SEPARATE_EDIT_REQUIRED`) |
 | `fan_N_zero_rpm_low_temp_c`, `fan_N_zero_rpm_high_temp_c`, `fan_extra_M_zero_rpm_*_temp_c` | The two temperatures at bytes 30..33 (1/32 °C) of a channel's or an extra curve's fan policy entry, read with the zero RPM bits (inferred meaning: idle fans stop below the lower and start above the upper) | Experimental except the GB20x `fan_N_zero_rpm_high_temp_c` ([tested on hardware](#fields-tested-on-hardware)), opt-in, GB20x, Ada and Ampere (not Turing); only where the entry stores a nonzero pair (the upper at least the lower) and byte 46 is not 0xff; editable where the entry's block passes the firmware validator, on Ada and Ampere where `fan_zero_rpm` is offered; an edit keeps lower > 0, lower < upper <= point 1 of the same curve and 110 °C; with zero RPM on, an edit may not leave the upper above point 1 (`ZERO_RPM_ABOVE_CURVE`) |
 | `*_rel/alt/ov/vmin_selector_index` | Full stored selector index | Read-only |
 | `*_boot_voltage_uv` | Stored boot voltage | Read-only, preserved |
@@ -118,7 +122,7 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `input_policy_9_max_raw` | Row 9 raw maximum; units unknown | Read-only, only when row 9 is unrecognized |
 | `fan_channels` | Active fan channels across the five fan tables | Experimental, Blackwell, Ada and Ampere, up to the stored channels; read-only on Turing |
 | `fan_pwm_frequency_hz` | PWM frequency of every active fan channel | Experimental, Blackwell, Ada, Ampere and Turing, 21-28 kHz |
-| `fan_N_min/max_rpm`, `fan_N_min/max_pct` | Speed (RPM) and level (%) limits of active fan channel N, numbered from 1 | Blackwell, Ada, Ampere and Turing, experimental except where [tested on hardware](#fields-tested-on-hardware) (`fan_N_max_rpm` on GB20x, `fan_N_min_rpm` and `fan_N_min_pct` on Ada and Ampere); move alone only as far as the stored fan curves (a minimum as far as the channel's own curve: the extra curves may sit below it), past them together with the curve points; level limits opt-in |
+| `fan_N_min/max_rpm`, `fan_N_min/max_pct` | Speed (RPM) and level (%) limits of active fan channel N, numbered from 1 | Blackwell, Ada, Ampere and Turing, experimental except where [tested on hardware](#fields-tested-on-hardware) (`fan_N_max_rpm` on GB20x where bit 0 of the channel's fan policy flag byte is set, `fan_N_min_rpm` and `fan_N_min_pct` on Ada and Ampere); move alone only as far as the stored fan curves (a minimum as far as the channel's own curve: the extra curves may sit below it), past them together with the curve points; level limits opt-in |
 | `fan_N_curve_K_temp_c/rpm/pct`, `fan_extra_M_curve_K_temp_c/rpm/pct` | Point K (1..3) of channel N's stored fan curve or of extra curve M: temperature (°C, 1/32 °C steps), speed (RPM), level (%) | Blackwell, Ada, Ampere and Turing, experimental except `fan_N_curve_1_rpm` and `fan_N_curve_1_pct` on Ampere ([tested on hardware](#fields-tested-on-hardware)); points stay in order and inside the limits (an extra curve from 0 up to the lowest channel maximum, so it may sit below the minimums); levels opt-in |
 | `power_default_w` | Rated TGP value used at boot | Blackwell, Ada, Ampere, Turing; [tested on hardware](#fields-tested-on-hardware), experimental only on the Ada and Turing notebook TGP and where override profiles bind it |
 | `max_operating_temp_c` | Maximum operating temperature: the three temperatures (1/32 °C) of one thermal policy entry (P+0x50; GB20x entry 0, Turing, Ampere and Ada the entry header byte 9 names), written together | Experimental, GB20x, Ada, Ampere and Turing; 40 °C up to the product's stock value + 3 °C (only lower on products without a reviewed stock value); read-only where that entry is disabled or not named (XOC-style images) and on Ampere and Ada laptops (a lower limit of the same kind); never imported |
@@ -1817,7 +1821,8 @@ and every active channel is stored. Fan fields are offered only when that holds.
     raising again rebuilds it exactly. The Matrix lowered to 2 then has the same
     list and enables as the Astral XOC image, which
     keeps the third channel stored but off. Its other bytes stay its own: the cooler enable
-    value (2 on the Matrix, 1 on the XOC and Lightning images; meaning unknown),
+    value (2 on the Matrix, 1 on the XOC and Lightning images, the only ones that
+    clear bit 0 of their fan policy flag bytes; meaning not decoded),
     duty bytes and policy curves.
   - Raising the count enables the next stored channels, each with channel 0's enable
     byte in every table. The cooler row must also have its own configuration (row
@@ -1825,14 +1830,20 @@ and every active channel is stored. Fan fields are offered only when that holds.
     13 = 0 and speed and level maximums at or above every enabled extra curve: those
     curves serve every active channel, so an extra curve raised above a stored row's
     maximum keeps that row off. The extra curves may start below a stored row's
-    minimums, as below the active ones. The scan stops at the first channel that
-    does not qualify.
+    minimums, as below the active ones. The stored channel's policy entry must also
+    have the control unit of the enabled entries (bit 0 of its flag byte, see
+    [Fan control unit](#fan-control-unit-fan_closed_loop-opt-in)): its control entry
+    would combine it with the extra curves, and GSP-RM rejects a control entry whose
+    policies do not share the unit. The scan stops at the first channel that does
+    not qualify.
   - Lowering and raising again restores the original bytes.
-  - Resulting limits: Matrix, Astral XOC and Lightning 3; FE, 5080, 5070 Ti, 5070
-    and Workstation 2; Max-Q and 5060 Ti 1, read-only, because their second
-    channel holds only placeholder entries; SFF 1, read-only, because its extra
-    curves (3600-7300 RPM) top out above the 3375 RPM maximum of its stored second
-    row (1375-3375 RPM).
+  - Resulting limits: Matrix and Lightning 3; FE, 5080, 5070 Ti, 5070, Workstation
+    and both ASUS XOC images 2 (the XOC images store their third channel entry at
+    0x17, bit 0 set, next to 0x16/0x06 on the enabled entries; earlier versions offered
+    3 there, a mix of control units the firmware rejects); Max-Q and 5060 Ti 1,
+    read-only, because their second channel holds only placeholder entries; SFF 1,
+    read-only, because its extra curves (3600-7300 RPM) top out above the 3375 RPM
+    maximum of its stored second row (1375-3375 RPM).
 - **PWM frequency.** Cooler row bytes 11..13 hold the PWM frequency in Hz. It is
   25000 on the active rows of the 5090 Matrix and the Asus XOC images, and 27000
   elsewhere. On the Matrix, mVolt's BIOS override view shows the same 25 kHz and 3
@@ -1859,7 +1870,8 @@ and every active channel is stored. Fan fields are offered only when that holds.
   percent to 30-100 %, turns it into an RPM target on that line and reports the
   speeds on the same scale, using only the speed limits. GSP-RM validates the level
   bytes and sends them to the fan controller, but uses them itself only where bit 0
-  is clear (a manual percent then sets the PWM as a share of the level maximum). The
+  is clear (a manual percent then sets the PWM as a share of the level maximum, see
+  [Fan control unit](#fan-control-unit-fan_closed_loop-opt-in)). The
   driver's 30-100 % range does not follow byte 2 (10-30 on the corpus), so the
   meaning of the level bytes is unconfirmed. Hardware test on that RTX 5080 (both
   channels, fans under manual control): with the speed maximum raised from 3500 to 4000 RPM, 72 % gave 2820 RPM
@@ -1880,7 +1892,10 @@ and every active channel is stored. Fan fields are offered only when that holds.
   on hardware, so not experimental: `fan_N_max_rpm` on GB20x, `fan_N_min_rpm` and
   `fan_N_min_pct` on Ada and Ampere, and point 1 of a channel's own curve
   (`fan_N_curve_1_rpm`, `fan_N_curve_1_pct`) on Ampere. The other limits, curve points and
-  families are not hardware-tested.
+  families are not hardware-tested. Those tests ran with bit 0 set, so on a GB20x channel
+  whose entry has bit 0 clear (the ASUS XOC and MSI Lightning images, a copy saved with
+  `fan_closed_loop` 0) the speed limits stay experimental and their reasons say that a
+  manual percent sets the PWM there; the level limits say the same.
   `fan_N_min_rpm`, `fan_N_max_rpm`, `fan_N_min_pct` and `fan_N_max_pct`
   (N = row index + 1, active channels only) edit these bytes:
   - A minimum may go from 0 up to the first point of the channel's own curve, and
@@ -1954,11 +1969,25 @@ and every active channel is stored. Fan fields are offered only when that holds.
     meaning is unconfirmed. Byte 3 is 100 on every active row, so `fan_N_max_pct`
     moves alone only where the curves top out lower (RTX 5060 Ti 81 %, RTX 5070
     92 %); elsewhere it lowers with the top level points.
-- `fan_channels` and a channel limit, curve point, `fan_zero_rpm` or zero RPM
-  temperature are refused together (`SEPARATE_EDIT_REQUIRED`): the count adds or
-  removes channel fields, changes the maximums the extra curves must stay under and
-  which policy entries the zero-RPM flag reads, so save it first and edit the limits,
-  curves, flag and temperatures on the copy.
+  - **Level limits far below stock.** Every GB20x ROM of the corpus ships a level
+    maximum of 100 % on its active rows, and no GB20x curve tops out below 81 % (some
+    Turing ROMs ship tops of 55 and 60 %). On one ASUS ROG Astral RTX 5090 (98.02.2E.40.E0,
+    Windows driver 621.01) whose channel 2 tachometer reads 0 RPM after a fan header
+    was damaged, a copy with `fan_2_max_pct` at 45 % and level points 2 and 3 of
+    channel 2's curve and of both extra curves at 40 and 45 % loaded, and about two
+    minutes after boot Windows removed the GPU as failing (Kernel-PnP 1011); the screen
+    went black, and the card came back after booting on the integrated GPU and
+    removing the override ([issue #33](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/33)).
+    The editor accepts that edit: GSP-RM checks each row and curve only against
+    itself. Whether the fan controller, the dead tachometer or something else caused
+    it is unknown (one attempt, on a damaged card). The reason of `fan_N_max_pct` and
+    of point 3 of every level curve on GB20x says so, and the GUI shows it as a note
+    under those rows; no bound was added.
+- `fan_channels` and a channel limit, curve point, `fan_zero_rpm`, `fan_closed_loop`
+  or zero RPM temperature are refused together (`SEPARATE_EDIT_REQUIRED`): the count
+  adds or removes channel fields, changes the maximums the extra curves must stay
+  under and which policy entries the flags read, so save it first and edit the
+  limits, curves, flags and temperatures on the copy.
   The PWM frequency combines with them.
 - **Preserved.** Speed values, the other policy entry bytes and the remaining bytes.
 
@@ -1972,7 +2001,8 @@ agree in the source, including a table with another header, no byte of them may
 change. All fan fields are
 reviewed resolvers: an extension binding cannot unlock them, relax the band or the
 curve bounds, redirect their bytes or substitute a layout. The fan edits booted on
-hardware are the limit and curve tests above and the zero RPM tests below.
+hardware are the limit and curve tests above and the zero RPM and control unit tests
+below.
 
 ### Zero RPM (`fan_zero_rpm`, opt-in)
 
@@ -2037,8 +2067,9 @@ Byte `0x32`, the last byte of each 51-byte policy entry, is a flag byte.
   (the enabled curves past the cooler rows, and entry 1 of the RTX 3050 6GB and 8GB),
   in every duplicate image chain (Ada, Ampere). Like the PWM
   frequency, a write also covers the stored channel entries a larger `fan_channels`
-  count may enable (the third channel of the ASUS XOC and MSI Lightning images, whose
-  bits already match), so the count and the flag can change in either order. It
+  count may enable (the third channel of the MSI Lightning image, whose bits already
+  match; the ASUS XOC images keep theirs out of reach, see the channel limits above),
+  so the count and the flag can change in either order. It
   changes only bits 1 and 2 of each flag byte; every other bit stays as stored,
   bit 4 included. The manifest lists the flag bytes as layout bytes.
   - It reads 1 when every entry sets both bits. On GB20x it reads 0 when every entry
@@ -2295,6 +2326,93 @@ Bytes 30..33 of a policy entry hold two `<H` temperatures in 1/32 °C, the lower
   so its RPM fields and curve points are read-only and it cannot be set up that way.
   Below point 1 the fans stand still, and they start at point 2, with no hysteresis
   between the two: the same temperature stops and starts them.
+
+### Fan control unit (`fan_closed_loop`, opt-in)
+
+Bit 0 of the flag byte `0x32` of a fan policy entry selects how a fan percent drives the fan.
+
+- **Firmware (static analysis).** In GSP-RM 615.78.08 (`gsp_ga10x.bin`, read with the
+  GA102-GA107 chip settings) the v0x20 entry parser (0x11cb000) decodes bit 0 inverted
+  into a boolean of its own (0x11cb3d4), apart from bits 1|2, 3 and 4. With bit 0 set,
+  a manual percent is clamped to 30-100 % and becomes an RPM target on the line from the
+  row minimum speed at 30 % to the row maximum at 100 %, which the fan controller holds
+  on the tachometer (closed loop); the measured and target speeds are reported on the
+  same scale. With bit 0 clear, a manual percent sets the PWM as a share of the level
+  maximum (open loop), and the PWM between the level minimum and maximum is reported as
+  30-100 %. The control entry validator (0x12f9130) compares the unit of each policy in
+  the first policy mask of a control entry with the unit the control entry holds
+  (0x12f923e/0x12f9242) and on a mismatch logs, asserts and returns 0x40
+  (`NV_ERR_INVALID_STATE`). Every stored GB20x control entry names its own channel entry
+  and the extra curves 4 and 5 in that mask (byte 5 = 0x30 | 1 << i), so every channel
+  shares the unit with the extra curves, and so with every other channel. Whether a
+  mismatch stops the GPU or only fan control was not traced, and the fan controller
+  code is encrypted, so how it runs the curves in either unit is not established.
+- **Corpus.** Every enabled entry sets bit 0 (GeForce 0x17/0x07, RTX PRO 0x11/0x01 or
+  0x01) except on the two ASUS RTX 5090 XOC images and the MSI RTX 5090 Lightning image
+  (0x16 on the channel entries, 0x06 on the extra curves). Those three are also the only
+  images whose active cooler rows store byte 0 = 1 (2 on every other GB20x, Ada and
+  Ampere image); what that byte means was not decoded, but the two go together on every
+  image. No image mixes bit 0 across its enabled entries. The XOC images keep their
+  stored, disabled third channel entry at 0x17, the Lightning at 0x16. Every Ada and
+  Ampere image sets bit 0. No shipped ROM stores bit 0 clear with cooler byte 0 = 2.
+- **Hardware test.** One ASUS ROG Astral RTX 5090 (98.02.2E.40.E0, outside the reviewed
+  corpus; Windows driver 621.01, Windows loader) has its rear fan disconnected and that
+  fan header damaged, so channel 2 (centre and rear fans) reads 0 RPM; with the stock
+  image its centre fan ran at full speed whenever the fans started. Its owner cleared
+  bit 0 on entries 0, 1 and 2 (0x17 -> 0x16) and on entries 4 and 5 (0x07 -> 0x06), the
+  bytes the editor writes for 0 on the corpus Astral image (98.02.2E.00.CE), and loaded
+  the copy. Both channels then followed the stock curve by percent: channel 2 reported
+  the same percent as channel 1 instead of 0 % and its centre fan no longer ran flat
+  out. At idle both channels read 0 % with the fans stopped, so zero RPM kept working.
+  At about 478 W the card settled at 67-68 °C with both channels at 33-42 %, as the
+  stored level points give. The side fans ran faster per percent than with the stock
+  image (about 722 RPM at 33 % against about 555 RPM at 31 %), and NVML still reported a
+  30-100 % fan duty range. Only 0 was tried, on that one card. The field comes from the
+  patch contributed with that report
+  ([issue #33](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/33)).
+- **Field.** `fan_closed_loop` covers the entries `fan_zero_rpm` covers: the active
+  channels' entries, the stored channel entries a larger `fan_channels` count may enable
+  and the enabled curves past the cooler rows. 1 sets bit 0 on all of them and 0 clears
+  it; every other bit stays, so 1 on a copy saved at 0 gives the source back byte for
+  byte. All channels change together: a unit per channel would leave every control
+  entry with mixed units. On the corpus Astral image, 0 writes 0x16 on entries 0, 1 and
+  2 and 0x06 on entries 4 and 5. The field is experimental and opt-in (behind the GUI's
+  advanced toggle, as "Fan RPM control"); while it is editable the window adds a note
+  under it with what Off changes and the one card it was tested on, and another while
+  the ROM stores 0 with what that card did.
+  - It is present on every GB20x desktop and workstation image with fan tables, and
+    editable where every active cooler row stores byte 0 = 2 (29 of the 32 GB20x images
+    with fan tables in the corpus; the other 3 show it read-only, below). The RTX
+    PRO images have the same structure (0x11/0x01 or 0x01) and get it like the GeForce
+    ones; none was tested. Not on the notebook layout (the system drives those fans),
+    Ada, Ampere or Turing: Ada and Ampere share the parser and validator, but no image
+    clears the bit there and nothing was tested.
+  - It is read-only at 0 on the ASUS XOC and MSI Lightning images (cooler byte 0 = 1):
+    no shipped ROM sets bit 0 with that value, so 1 is not offered there. The rule is
+    not symmetric: the form 0 gives on the other images (bit 0 clear with byte 0 = 2) is
+    in no shipped ROM either, and rests on the one hardware result above.
+  - It is read-only where the enabled entries disagree about bit 0, and where a stored
+    channel entry that a larger count would enable has another bit 0 (the channel count
+    also stops below it; no image of the corpus stores that).
+  - `fan_closed_loop` and `fan_zero_rpm` in one request are refused
+    (`SEPARATE_EDIT_REQUIRED`, both in `details.fields`): each writes the whole flag byte,
+    computed from the source. As separate edits they compose in either order, and an
+    import from another ROM takes one and reports the other as refused. `fan_channels`
+    goes in its own edit too (above).
+- **What 0 changes.** A manual percent sets the PWM instead of an RPM target. On the
+  card tested the fans then followed the level points of the curves, not the speed
+  points; the fan controller code that runs the curves is encrypted, so this is not
+  verified. The same percent can give another speed than with 1 (faster on the side
+  fans of the card tested), and 100 % PWM may run a fan past the speed maximum of its
+  row. GSP-RM then uses neither speed limit for manual control, and their hardware
+  tests ran with 1: on such a copy, as on the XOC and Lightning images,
+  `fan_N_max_rpm` is experimental and the speed and level limit reasons say that a
+  manual percent sets the PWM. The reasons of the curve speed points there say what
+  the card tested did, with the same caveat. A card whose tachometers work was not
+  tested with 0.
+- **Extension bindings.** The flag bytes change only through the canonical binding: the
+  fan table guard refuses another key over them, or the same key over fewer offsets or
+  without its layout (`PRESERVED_FIELD_CHANGED`).
 
 ## Advanced section: performance controllers and idle power
 
@@ -2718,10 +2836,30 @@ TGP maximum and profile 7's TGP maximum together, and `power_default_w` writes
 profile 7's rated entry with the base where one exists (MSI image); on the Gigabyte
 image profile 7 holds no rated entry, so `power_default_w` writes the base alone
 and its reason says that the base value applies at the top level. An entry there
-that differs from the base keeps that field read-only: on the Gigabyte
-image direct profile 3 sets the 12 V input maximum to 60 A against 58 A in the base,
-so `input_current_max_ma` is read-only and names profile 3; a TGP entry that differs
-hides the power fields. The other profiles keep their values and set the bounds: the
+that differs from the base keeps that field read-only, with one exception: a 12 V
+input current maximum that the top level only raises. When the top level's maxima
+cover both input rows with one value above the one base maximum, and every other
+level that votes replaces that maximum too (so the base ceiling itself is in force
+at no level, since a code without a vote fails the power setup), `input_current_max_ma`
+shows the top level's value and writes it to the base rows and to those entries
+together, in both chains, so they end equal. On the Gigabyte image direct profile 3
+sets 60 A against 58 A in the base and profile 2 sets 45 A at code 2: the field shows
+60 A, an edit writes the maxima of rows 9 and 10 and profile 3's two entries (four
+4-byte values in each chain, and the two checksums; an edit to 72 A changes 24 of
+those bytes), and profile 2 keeps 45 A and bounds it from below.
+Requesting the 60 A shown rewrites the base maxima from 58 to 60 A, inferred to change
+nothing at runtime since the base ceiling never applies (static analysis, not tested).
+The descriptor keeps the stored base in `stored_base_maximum` (58 A). A rated value
+above it needs the ceiling in the same edit (see below), so the GUI and an import
+from another ROM send the ceiling row as shown whenever the rated value is staged: a
+rated value up to 60 A works there
+without retyping the ceiling, and that copy also writes the base at 60 A. A higher
+limit lets more current through the 16-pin cable and connector than their rating,
+which is the user's call. The field stays experimental and opt-in. A top level
+that lowers the ceiling, sets a different value per row or covers one row only, or a
+level that votes and leaves the ceiling to the base, keeps the field read-only and its
+reason names the profile; a TGP entry that differs hides the power fields. The other
+profiles keep their values and set the bounds: the
 ceiling stays at or above every other profile value on the row (480 W, the rated
 value, on the MSI image), the rated value at or above their rated values (450 W), and
 `power_min_w` at or below all of them. A profile that no sense code selects (profiles
@@ -2734,17 +2872,23 @@ maximum (450 W) at code 2, and profile 2 sets only the 12 V input maximum (45 A)
 How the firmware treats a rated value above that maximum is not known (not
 analysed), so the editor does not bound it: `power_default_w` and
 `input_current_rated_ma` keep the base ceiling as their upper bound (600 W and
-58 A on the Gigabyte image), and their reasons name the profile and the maximum it
+58 A on the Gigabyte image; a higher rated input value needs `input_current_max_ma`
+in the same edit), and their reasons name the profile and the maximum it
 sets so the choice is the user's. The 12 V input
 current fields follow the same rules: on the MSI image profile 6 holds only their
 rated value (45 A), so both the rated value and the ceiling stay at or above it.
 `power_max_w` keeps no upper bound but the encoding; the other profiles bound it
 from below only. Its reason, and notes in the GUI, say that the top level is most
 likely a 600 W cable, that going past 600 W is the user's call, and that the 12 V
-input current thresholds (rated 48 A on the MSI image, about 576 W at 12 V) may
-limit first (45 A, about 540 W, on the Gigabyte image), so `input_current_rated_ma`
-(opt-in) should be raised with it. On the Gigabyte image the reason adds that
-profile 2 sets their maximum to 45 A at code 2, as above. Descriptors carry
+input current thresholds (rated 48 A on the MSI image, about 576 W at 12 V; 45 A,
+about 540 W, on the Gigabyte image) may limit too, so `input_current_rated_ma`
+(opt-in) should be raised with it if the power stops short. Whether they bind is not
+known: one Gigabyte RTX 4090 reached about 670 W with them at the stock 45 A (one
+report, issue #37).
+On the Gigabyte image the reason adds that profile 2 sets their maximum to 45 A at
+code 2, as above, and the reasons of the power fields name the fields that write
+direct profile 3's entries (`connector_1_power_*` for row 6, `input_current_max_ma`
+for rows 9 and 10). Descriptors carry
 `override_profiles` (top profile, its sense code, the inferred 600 W level, the
 other profiles and, on the Gigabyte image, `top_direct_profile`) and an evidence
 entry of kind `firmware-static-analysis`.

@@ -80,7 +80,7 @@ def stage_document(document, changes):
     fields = {f['key']: f for f in controls(document.report)}
     if 'dram_max_table_mhz' in changes and 'memory_offset_max_mhz' in changes:
         raise editor.VbiosError('CONFLICTING_FIELDS', 'Choose one memory unit representation.')
-    requested = {}
+    requested, shown = {}, {}
     for key, value in changes.items():
         field = fields.get(key)
         if field is None:
@@ -98,6 +98,13 @@ def stage_document(document, changes):
         # A VMIN set per chip (vmin_tree) has no current number: any value fixes it.
         if field['current'] is None or amount != Decimal(str(field['current'])):
             requested[key] = str(amount)
+        elif field.get('stored_base_maximum') is not None:
+            shown[key] = str(amount)
+    # A ceiling that shows the top cable sense level's value over another stored base (Ada stored_base_maximum)
+    # goes unchanged with a staged partner of its ordering group: the partner's bounds hold the stored base, and
+    # the joint result checks it against the value shown. Alone it stays out, as requesting it rewrites the base.
+    staged = {fields[key].get('ordering_group') for key in requested} - {None}
+    requested.update({key: value for key, value in shown.items() if fields[key].get('ordering_group') in staged})
     proposal = editor.plan(document.original, requested)
     return replace(document, changes=requested, proposal=proposal, last_saved=None)
 

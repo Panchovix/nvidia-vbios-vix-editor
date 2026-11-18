@@ -116,7 +116,7 @@ env -u PYTHONMALLOC -u PYTHONDEVMODE -u PYTHONHASHSEED ./nvbios-gui
 Offline editor for NVIDIA Blackwell (GB20x), Ada (AD10x), Ampere (GA10x) and Turing (TU10x/TU11x) VBIOS images.
 It edits when applicable: power limits, voltage ceilings, the minimum voltage
 (VMIN), clock offset ranges, 12 V input current and output OCP limits, fan PWM frequency, fan channels,
-per-channel fan speed limits, the stored fan curves and zero RPM.
+per-channel fan speed limits, the stored fan curves, zero RPM and, on Blackwell, the fan RPM control.
 A read-only **Memory** section (all four families) shows the memory configurations, the memory clock bands and
 their timing entries with decoded values and, on Blackwell, an undecoded board memory-training profile, and tells
 whether another ROM's tables are identical or differ. **Import from ROM…** copies the values of chosen sections

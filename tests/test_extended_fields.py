@@ -164,6 +164,16 @@ def descriptors(image):
     return {f['key']: f for f in inspect_image(image)['fields']}
 
 
+def closed_loop(blob):
+    """A GB20x fan fixture with bit 0 of every fan policy flag byte set, the RPM target form of every shipped
+    GeForce and RTX PRO image (synthetic_blackwell stores 0 there, which reads as fan_closed_loop 0)."""
+    table = backend(from_bytes(bytes(blob))).fan_coolers()
+    blob = bytearray(blob)
+    for entry in table['rows'] + table['extra_curves']:
+        blob[entry['flag_offset']] |= 1
+    return repair_fixture(blob)
+
+
 def fan_stop_refusals(image):
     """The fan policy entries of a GB20x, Ada or Ampere image that the GSP-RM 615.78.08 policy validator
     (0x1b20c44) refuses: every entry it decodes (byte 0 = 1), in every image chain, with bit 2 of its
@@ -2172,8 +2182,9 @@ class FanCoolerTests(unittest.TestCase):
         lower = edit(on.image, {'fan_channels': 2})
         self.assertEqual(lower.blob, early.blob)
         self.assertEqual(descriptors(lower.image)['fan_zero_rpm']['fan_entries'], [0, 1, 2, 4, 5])
-        # A stored third channel whose bits differ from the enabled entries leaves the field read-only.
-        mixed = self.zero_rpm_fixture((0x17, 0x07), entries=(0, 1, 4, 5))
+        # A stored third channel whose bits differ from the enabled entries leaves the field read-only (bit 0 as
+        # on the third channel, which a larger count could enable only with the same control unit).
+        mixed = self.zero_rpm_fixture((0x16, 0x06), entries=(0, 1, 4, 5))
         field = descriptors(mixed)['fan_zero_rpm']
         self.assertEqual((field['current'], field['editable']), (1, False))
         self.assertIn('larger channel count', field['reason'])
@@ -2206,6 +2217,142 @@ class FanCoolerTests(unittest.TestCase):
                                       bounds={'minimum': 0, 'maximum': 255})._resolvers[0])
         with self.assertRaises(VbiosError) as exc:
             edit(image, {'fan_zero_rpm': 1, 'probe': 1}, field_registry=both)
+        self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+
+    def test_closed_loop_covers_the_zero_rpm_entries_and_round_trips(self):
+        from nvidia_vbios.editor.registry import FAN_OPEN_LOOP_CURVE_SPEED, FAN_OPEN_LOOP_SPEED
+        # The GeForce form: 0x17 on the channel entries (the stored third one included), 0x07 on the extra curves.
+        image = self.zero_rpm_fixture((0x17, 0x07))
+        field = descriptors(image)['fan_closed_loop']
+        self.assertEqual((field['current'], field['units'], field['editable'], field['experimental'], field['opt_in'],
+                          field['fan_entries'], field['value_semantics']),
+                         (1, 'flag', True, True, True, [0, 1, 2, 4, 5], 'stored-fan-control-unit'))
+        self.assertEqual((field['bounds']['minimum'], field['bounds']['maximum']), (0, 1))
+        self.assertEqual([e['kind'] for e in field['evidence']],
+                         ['static-firmware-analysis', 'static-firmware-analysis', 'structural-table', 'hardware-test'])
+        self.assertNotIn('fan_channel', field)
+        offsets = self.zero_rpm_offsets(image.blob)
+        off = edit(image, {'fan_closed_loop': 0})
+        self.assertTrue(off.manifest['integrity']['valid'])
+        changed_bytes_within(self, image, off, offsets, width=1)
+        # Bit 0 alone changes: the zero RPM bits and bit 4 stay.
+        self.assertEqual([off.blob[at] for at in offsets], [0x16, 0x16, 0x16, 0x06, 0x06])
+        fields = descriptors(off.image)
+        self.assertEqual((fields['fan_closed_loop']['current'], fields['fan_zero_rpm']['current']), (0, 1))
+        self.assertEqual(edit(off.image, {'fan_closed_loop': 1}).blob, image.blob)
+        self.assertEqual(edit(image, {'fan_closed_loop': 1}).manifest['changed_bytes'], 0)
+        for value in (2, -1):
+            with self.subTest(value=value), self.assertRaises(VbiosError) as exc:
+                edit(image, {'fan_closed_loop': value})
+            self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        # With bit 0 clear the speed limits drive no manual control: their hardware test does not apply.
+        tested, copy = descriptors(image)['fan_1_max_rpm'], fields['fan_1_max_rpm']
+        self.assertEqual((tested.get('experimental', False), copy.get('experimental', False)), (False, True))
+        self.assertIn('tested on hardware', tested['reason'])
+        self.assertTrue(copy['reason'].startswith('experimental: ') and copy['reason'].endswith(FAN_OPEN_LOOP_SPEED))
+        self.assertIn('so a manual percent sets the PWM as a share of the level maximum',
+                      fields['fan_2_max_pct']['reason'])
+        # The curve speed points say what the one card run that way did, qualified; the level points do not.
+        for key in ('fan_1_curve_1_rpm', 'fan_2_curve_3_rpm', 'fan_extra_2_curve_2_rpm'):
+            self.assertNotIn(FAN_OPEN_LOOP_CURVE_SPEED, descriptors(image)[key]['reason'], key)
+            self.assertTrue(fields[key]['reason'].endswith(FAN_OPEN_LOOP_CURVE_SPEED), key)
+        self.assertIn('(the fan controller code is encrypted, so this is not verified)', FAN_OPEN_LOOP_CURVE_SPEED)
+        self.assertNotIn(FAN_OPEN_LOOP_CURVE_SPEED, fields['fan_2_curve_2_pct']['reason'])
+        # The synthetic image stores 0 everywhere: 0 with cooler byte 0 = 2, offered and reversible too.
+        bare = from_bytes(synthetic_blackwell(fans=True))
+        field = descriptors(bare)['fan_closed_loop']
+        self.assertEqual((field['current'], field['editable']), (0, True))
+        on = edit(bare, {'fan_closed_loop': 1})
+        self.assertEqual([on.blob[at] for at in offsets], [0x01] * 5)
+        self.assertEqual(edit(on.image, {'fan_closed_loop': 0}).blob, bare.blob)
+
+    def test_closed_loop_read_only_cases(self):
+        from nvidia_vbios.editor.registry import FAN_CLOSED_LOOP_COOLER_REASON
+        # Enabled entries that disagree about bit 0.
+        mixed = self.zero_rpm_fixture((0x17, 0x07), entries=(0, 4, 5))
+        field = descriptors(mixed)['fan_closed_loop']
+        self.assertEqual((field['current'], field['editable'], field['opt_in']), (None, False, True))
+        self.assertIn('disagree about bit 0', field['reason'])
+        for value in (0, 1):
+            with self.subTest(value=value), self.assertRaises(VbiosError) as exc:
+                edit(mixed, {'fan_closed_loop': value})
+            self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
+        # A stored third channel with another bit 0: the count stops below it, and the switch keeps its entries.
+        later = self.zero_rpm_fixture((0x17, 0x07), entries=(0, 1, 4, 5))
+        fields = descriptors(later)
+        self.assertEqual(fields['fan_channels']['bounds']['maximum'], 2)
+        with self.assertRaises(VbiosError) as exc:
+            edit(later, {'fan_channels': 3})
+        self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        field = fields['fan_closed_loop']
+        self.assertEqual((field['current'], field['editable'], field['fan_entries']), (1, False, [0, 1, 2, 4, 5]))
+        self.assertIn('a larger channel count would enable differs from the enabled entries in bit 0', field['reason'])
+        # The ASUS XOC and MSI Lightning form: bit 0 clear with cooler row byte 0 = 1. No shipped ROM sets bit 0
+        # with that value, so it stays as stored.
+        blob = bytearray(self.zero_rpm_fixture((0x16, 0x06)).blob)
+        for row in self.table(blob)['rows'][:2]:
+            blob[row['offset']] = 1
+        xoc = from_bytes(repair_fixture(blob))
+        field = descriptors(xoc)['fan_closed_loop']
+        self.assertEqual((field['current'], field['editable'], field['reason']),
+                         (0, False, FAN_CLOSED_LOOP_COOLER_REASON))
+        with self.assertRaises(VbiosError) as exc:
+            edit(xoc, {'fan_closed_loop': 1})
+        self.assertEqual(exc.exception.code, 'FIELD_READ_ONLY')
+
+    def test_closed_loop_with_zero_rpm_or_the_channel_count_takes_separate_edits(self):
+        image = self.zero_rpm_fixture((0x17, 0x07))
+        for changes, fields in (({'fan_closed_loop': 0, 'fan_zero_rpm': 0}, ['fan_closed_loop', 'fan_zero_rpm']),
+                                ({'fan_closed_loop': 0, 'fan_zero_rpm': 1}, ['fan_closed_loop', 'fan_zero_rpm']),
+                                ({'fan_closed_loop': 0, 'fan_channels': 3}, ['fan_channels', 'fan_closed_loop'])):
+            with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
+                edit(image, changes)
+            self.assertEqual((exc.exception.code, exc.exception.details['fields']), ('SEPARATE_EDIT_REQUIRED', fields))
+        # One after the other they compose, in either order, and the stored third channel follows both.
+        off = edit(image, {'fan_closed_loop': 0}).image
+        quiet = edit(off, {'fan_zero_rpm': 0})
+        self.assertEqual([quiet.blob[at] for at in self.zero_rpm_offsets(image.blob)], [0x10, 0x10, 0x10, 0x00, 0x00])
+        self.assertEqual(edit(edit(image, {'fan_zero_rpm': 0}).image, {'fan_closed_loop': 0}).blob, quiet.blob)
+        three = edit(off, {'fan_channels': 3})
+        self.assertEqual(descriptors(three.image)['fan_closed_loop']['current'], 0)
+        self.assertEqual(edit(three.image, {'fan_channels': 2}).blob, off.blob)
+
+    def test_closed_loop_only_on_gb20x_desktop_tables(self):
+        from unittest import mock
+        from nvidia_vbios.editor.registry import fan_closed_loop
+        from nvidia_vbios.rom.blackwell import BlackwellRom
+        for family in ('ada', 'ampere'):
+            with self.subTest(family=family):
+                fields = descriptors(from_bytes(synthetic_rom(family=family, copies=2, fans=2)))
+                self.assertIn('fan_zero_rpm', fields)
+                self.assertNotIn('fan_closed_loop', fields)
+        # The notebook layout: its fans belong to the system.
+        image = from_bytes(synthetic_blackwell(fans=True))
+        self.assertTrue(fan_closed_loop(image, backend(image)))
+        with mock.patch.object(BlackwellRom, 'notebook_power_layout', return_value=True):
+            self.assertEqual(fan_closed_loop(image, backend(image)), [])
+
+    def test_extensions_cannot_rebind_the_control_unit(self):
+        from nvidia_vbios.editor import FieldRegistry
+        from nvidia_vbios.editor.registry import fan_closed_loop
+        image = self.zero_rpm_fixture((0x17, 0x07))
+        reviewed = fan_closed_loop(image, backend(image))[0]
+        # The reviewed key over fewer offsets, every offset without the layout, or another key over them: not the
+        # canonical binding, so the fan table guard refuses the bytes.
+        for name, key, offsets in (('fewer offsets', 'fan_closed_loop', reviewed.offsets[:1]),
+                                   ('no layout', 'fan_closed_loop', reviewed.offsets),
+                                   ('alias', 'fan_control_unit', reviewed.offsets)):
+            with self.subTest(binding=name), self.assertRaises(VbiosError) as exc:
+                edit(image, {key: 0x16}, field_registry=custom_registry(
+                    key, offsets, encoding='<B', scale=1, bounds={'minimum': 0, 'maximum': 255}))
+            self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
+        # A canonical request does not make the neighboring byte writable.
+        both = FieldRegistry()
+        both.register(fan_closed_loop)
+        both.register(custom_registry('probe', (reviewed.offsets[0] - 1,), encoding='<B', scale=1,
+                                      bounds={'minimum': 0, 'maximum': 255})._resolvers[0])
+        with self.assertRaises(VbiosError) as exc:
+            edit(image, {'fan_closed_loop': 0, 'probe': 1}, field_registry=both)
         self.assertEqual(exc.exception.code, 'PRESERVED_FIELD_CHANGED')
 
     TEMPS = ('fan_1', 'fan_2', 'fan_extra_1', 'fan_extra_2')
@@ -2837,7 +2984,7 @@ class FanCoolerTests(unittest.TestCase):
         self.assertEqual(descriptors(from_bytes(bytes(blob)))['fan_channels']['bounds']['minimum'], 1)
 
     def test_read_only_reasons_follow_the_table_not_the_integrity(self):
-        blob = bytearray(synthetic_blackwell(fans=True))
+        blob = bytearray(closed_loop(synthetic_blackwell(fans=True)))
         clock = next(o for o in backend(from_bytes(bytes(blob))).objects if o['id'] == 3)
         blob[clock['data'] + clock['size'] - 1] ^= 1
         fields = descriptors(from_bytes(bytes(blob)))
@@ -2849,7 +2996,8 @@ class FanCoolerTests(unittest.TestCase):
                              fields[key]['reason'])
 
     def test_channel_limits_stop_at_the_stored_curves(self):
-        image = from_bytes(synthetic_blackwell(fans=True))
+        # The stock GeForce form, bit 0 set on every fan policy entry (an RPM target): the tested speed maximum.
+        image = from_bytes(closed_loop(synthetic_blackwell(fans=True)))
         fields = descriptors(image)
         rows = [r['offset'] for r in self.table(image.blob)['rows']]
         # Rows 0/1: 1050..3500 RPM and 20..100 %; their curves and entries 4/5 span exactly that.
@@ -2947,7 +3095,7 @@ class FanCoolerTests(unittest.TestCase):
         self.assertEqual((three['fan_3_min_rpm']['current'], three['fan_3_max_rpm']['editable']), (1050, True))
 
     def test_limits_outside_the_reviewed_shape_are_read_only(self):
-        blob = synthetic_blackwell(fans=True)
+        blob = closed_loop(synthetic_blackwell(fans=True))
         t = self.table(blob)
         row, policy = t['rows'][0]['offset'], t['rows'][0]['policy_offset']
         extra = t['policy_offset'] + 4 + 0x33 * 4  # entry 4, enabled past the cooler rows
@@ -3223,7 +3371,7 @@ class HardwareTestedTableTests(unittest.TestCase):
 
     def test_fan_reason_prefix_follows_the_flag(self):
         # Fan limits tested on GB20x (the speed maximum) carry neither the flag nor the prefix; the others both.
-        blob = synthetic_blackwell(shared_objects=True, power_topology=True, fans=True)
+        blob = closed_loop(synthetic_blackwell(shared_objects=True, power_topology=True, fans=True))
         fields = descriptors(from_bytes(blob))
         keys = [k for k in fields if re.fullmatch(r'fan_\d+_(min|max)_(rpm|pct)', k) and fields[k]['editable']]
         # Both cases occur: a tested maximum and an untested minimum.

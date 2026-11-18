@@ -26,14 +26,14 @@ SECTIONS = (
                  'msvdd_output_ocp_rated_ma', 'msvdd_output_ocp_max_ma', 'slot_current_threshold_rated_ma',
                  'slot_current_threshold_max_ma') +
                 tuple(f'connector_{n}_current_threshold_{side}_ma' for n in range(1, 5) for side in ('rated', 'max'))),
-    # Each channel's limits, then its curve points; then the extra curves; then zero RPM and
-    # its temperature pairs.
+    # Each channel's limits, then its curve points; then the extra curves; then zero RPM, the
+    # control unit and the zero RPM temperature pairs.
     ('fans', ('fan_channels', 'fan_pwm_frequency_hz') +
              tuple(key for n in range(1, 5) for key in
                    tuple(f'fan_{n}_{side}_{unit}' for unit in ('rpm', 'pct') for side in ('max', 'min')) +
                    tuple(f'fan_{n}_curve_{k}_{unit}' for k in (1, 2, 3) for unit in FAN_CURVE_UNITS)) +
              tuple(f'fan_extra_{m}_curve_{k}_{unit}' for m in range(1, 8) for k in (1, 2, 3)
-                   for unit in FAN_CURVE_UNITS) + ('fan_zero_rpm',) +
+                   for unit in FAN_CURVE_UNITS) + ('fan_zero_rpm', 'fan_closed_loop') +
              tuple(f'fan_{n}_zero_rpm_{side}_temp_c' for n in range(1, 5) for side in ('low', 'high')) +
              tuple(f'fan_extra_{m}_zero_rpm_{side}_temp_c' for m in range(1, 8) for side in ('low', 'high'))),
     # PERF_CF controllers (the utilization policy switch, then per clock domain its target,

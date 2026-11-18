@@ -16,6 +16,7 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
  'field.fan_pwm_frequency_hz': 'Fan PWM frequency (experimental)',
  'field.fan_channels': 'Fan channels (experimental)',
  'field.fan_zero_rpm': 'Fan zero RPM (advanced)',
+ 'field.fan_closed_loop': 'Fan RPM control (advanced, experimental)',
  'reason.fan_layout': "This table stores no other fan channel layout, or a stored channel's maximums sit below the "
                        'extra fan curves.',
  'field.fan_min_rpm': 'Fan {fan} minimum speed',
@@ -386,7 +387,8 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
                        'limit, though it is not known whether the GPU enforces it. It likely protects the core VRM, '
                        'which was sized for the stock value. Raising it is your call, and small steps are safer.'),
  'sense_profiles.input_current': 'The 12 V input current threshold (rated {amps} A, about {watts} W at 12 V) may '
-                                 'limit first. Raise it too, under Show advanced XOC-style fields.',
+                                 'also limit, though whether it does is not known. If the power stops short, raise '
+                                 'it too, under Show advanced XOC-style fields.',
  'vmin_clone.memory': 'On this ROM the memory clock voltage floor keeps its stock value. A lower VMIN shows only while '
                       'the memory runs at its lowest clock ({mhz} MHz, single-monitor idle). A higher VMIN shows at '
                       'every memory clock only above {floor} mV (stock VMIN + {constant} mV). Up to that it also '
@@ -430,6 +432,15 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
                    'the same way.'),
  'fan_stop.untested': 'Not tested on hardware on Ada or Ampere cards.',
  'fan_stop.manual': 'A fan tool that holds manual control keeps the fans running.',
+ 'fan_control.open_loop': ('This ROM stores Off. On the one card tested with Off, the fans followed the level points '
+                           'of the fan curves, not the speed points (not verified in the firmware).'),
+ 'fan_control.risk': ('Off makes a fan percent set the PWM instead of an RPM target, on every fan channel at once: the '
+                      'same percent can give another speed, and 100 % may run a fan past its speed maximum. Tested on '
+                      'one card only, whose fan speed sensor read 0 RPM on one channel.'),
+ 'fan_level.low': ('Every Blackwell ROM ships a maximum fan level of 100 %, and no curve tops out below 81 %. On one '
+                   'RTX 5090 whose fan speed sensor read 0 RPM on that channel, a copy with the maximum level at 45 % '
+                   'and the top curve points at 40 and 45 % loaded, and about two minutes after boot Windows removed '
+                   'the GPU as failing. The cause is unknown, so lower these values far below stock with care.'),
  'field.connector_current_threshold_rated': 'Connector channel {connector} current threshold, rated (advanced, '
                                             'experimental)',
  'field.connector_current_threshold_max': 'Connector channel {connector} current threshold ceiling (advanced, '
@@ -522,6 +533,11 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
                                   'third entry of the RTX A2000 stores zeros) and no reviewed template applies, '
                                   'so zero RPM cannot be turned on.'),
  'reason.fan_zero_rpm_temps_off': 'Zero RPM is read-only in this ROM, so its thresholds stay as stored.',
+ 'reason.fan_closed_loop_cooler': ('This ROM stores its fan cooler rows the way the ASUS XOC and MSI Lightning RTX '
+                                   '5090 ROMs do, which ship with RPM control off; no ROM with that cooler value ships '
+                                   'it on, so the editor leaves it as stored. With it off, a fan percent sets the PWM; '
+                                   'on the one card tested that way, the fans followed the level points of the fan '
+                                   'curves (not verified in the firmware).'),
  'reason.fan_policy_copy': ('A disabled fan channel of this ROM keeps a copy of another fan\'s settings, most '
                             'likely unused, which the editor changes together with them; setting the channel count '
                             'would switch that copy off or turn its channel on, so the count stays as stored.'),
@@ -569,8 +585,9 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
                                 'curve; lower the threshold, with the lower threshold below it where needed, or keep '
                                 'the point above it, in the same edit'),
  'error.SEPARATE_EDIT_REQUIRED': ('Save these changes in separate copies. The fan channel count goes before the '
-                                  'fan limits, curves or zero RPM, and the REL/ALT follow OV setting before the '
-                                  'voltages. On some RTX 4090 ROMs VMIN and the GPC curve offset also need separate '
+                                  'fan limits, curves, zero RPM or RPM control, and the REL/ALT follow OV setting '
+                                  'before the voltages. Zero RPM and fan RPM control are saved apart too. On some '
+                                  'RTX 4090 ROMs VMIN and the GPC curve offset also need separate '
                                   'saves, as do the NVVDD flat voltage and the GPC curve offset on some Blackwell '
                                   'ROMs, and so do zero RPM off and its thresholds on a copy where zero RPM wrote '
                                   'fan-stop values. On Blackwell ROMs the runtime voltage offsets switch is saved '

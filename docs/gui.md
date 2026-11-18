@@ -174,7 +174,20 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    turn zero RPM off and save, change the count on that copy, then turn zero RPM on
    with that threshold lowered (on the RTX 3060 whose entries disagree the count cannot
    be raised). On Ada and Ampere the thresholds are editable wherever the switch is,
-   and not hardware-tested there; experimental. Values typed before ticking **Show
+   and not hardware-tested there; experimental. On Blackwell desktop ROMs **Fan RPM
+   control** (experimental) is the switch for the bit that makes a fan percent an RPM
+   target held on the fan speed sensor (on, as every ROM ships but the ASUS XOC and MSI
+   Lightning RTX 5090 ones) or set the PWM directly (off): off helped one RTX 5090 whose
+   second fan channel reads 0 RPM after a fan header was damaged, and its zero RPM kept
+   working. A note under the switch says that off changes every fan channel at once,
+   that the same percent can then give another speed and 100 % may run a fan past its
+   speed maximum, and that only that one card was tested; on a ROM that stores off
+   another note says that on that card the fans followed the level points of the curves,
+   not the speed points (not verified: the fan controller code is encrypted). Zero RPM and
+   the fan channel count are separate saves. It is read-only on the XOC and Lightning
+   ROMs. On Blackwell the maximum level of each fan carries a note that one such card,
+   with that maximum at 45 % and the top curve points lowered too, was removed by
+   Windows about two minutes after boot, for an unknown reason. Values typed before ticking **Show
    advanced XOC-style fields** are kept. Read-only 0/1 fields show On or Off. **Shunt multiplier (x)** (1 = off, up to 10) is display only:
    for board power, PCIe slot power/current, connector power/current and 12 V
    input current rows it adds a note with the real limit on a shunt-modded card, about
@@ -197,7 +210,8 @@ only invoking the GUI loads it, so the CLI/core remain usable without `gi`.
    accepted values (experimental, not hardware-tested). Notes under the rows say
    that the top level is most likely a 600 W cable (inferred), that going past
    600 W is your call, and that the 12 V input current threshold (about 576 W at
-   12 V on that ROM, an advanced field) may limit first, so raise it too.
+   12 V on that ROM, an advanced field) may also limit, though whether it does is
+   not known, so raise it too if the power stops short.
    Unsupported
    fields and unidentified input-current policies remain read-only with a reason.
    Reviewed per-rail output OCP ceilings appear in mA when the backend validates

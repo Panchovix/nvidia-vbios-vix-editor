@@ -72,6 +72,36 @@ class ImportTests(unittest.TestCase):
         self.assertEqual((report['changes'], report['skipped']), ({'fan_zero_rpm': 1}, []))
         self.assertEqual(values(result.image)['fan_zero_rpm'], 1)
 
+    def test_a_ceiling_shown_at_the_top_sense_level_comes_with_its_partner(self):
+        # Ada cable sense profiles (issue #37): the 12 V input ceiling shows profile 3's 60 A over a stored 58 A
+        # base. A donor at 59 A rated with that ceiling equals it on the ceiling, which still comes with the rated
+        # value so that both are checked together, as the window stages them.
+        from test_ada_fields import gigabyte_sense_profiles
+        target = from_bytes(gigabyte_sense_profiles(synthetic_rom(copies=2, policies=True)), 'stock.rom')
+        self.assertEqual(values(target)['input_current_max_ma'], 60000)
+        donor = donor_of(target.blob, {'input_current_rated_ma': 59000, 'input_current_max_ma': 60000})
+        report, result = import_fields(target, donor, ['current'], include_opt_in=True)
+        self.assertEqual(report['changes'], {'input_current_rated_ma': 59000, 'input_current_max_ma': 60000})
+        self.assertNotIn('input_current_max_ma', report['unchanged'])
+        self.assertEqual(result.image.blob, donor.blob)
+        # Alone, a ceiling equal to the donor's stays unchanged and the stored base is kept.
+        donor = donor_of(target.blob, {'power_max_w': 590})
+        report, result = import_fields(target, donor, ['power', 'current'], include_opt_in=True)
+        self.assertEqual(report['changes'], {'power_max_w': 590})
+        self.assertIn('input_current_max_ma', report['unchanged'])
+
+    def test_zero_rpm_and_the_fan_control_unit_come_in_separate_imports(self):
+        # Both write the fan policy flag bytes: one import takes the first, the other is refused, and a second
+        # import from the same donor brings it.
+        donor = donor_of(self.blob, {'fan_closed_loop': 1}, {'fan_zero_rpm': 1})
+        report, result = import_fields(self.target, donor, ['fans'], include_opt_in=True)
+        self.assertEqual(report['changes'], {'fan_zero_rpm': 1})
+        refused = next(e for e in report['skipped'] if e['field'] == 'fan_closed_loop')
+        self.assertEqual((refused['reason'], refused['code']), ('refused', 'SEPARATE_EDIT_REQUIRED'))
+        report, again = import_fields(result.image, donor, ['fans'], include_opt_in=True)
+        self.assertEqual(report['changes'], {'fan_closed_loop': 1})
+        self.assertEqual(again.blob, donor.blob)
+
     def test_a_lower_ceiling_brings_the_fixed_board_policies_and_a_curve_point_its_level(self):
         # The ceiling writes the rated value of the fixed board policies 2/7, so a lower ceiling leaves no mix of
         # both ROMs. A fan curve point comes whole with its level, an advanced field that comes with its curve all

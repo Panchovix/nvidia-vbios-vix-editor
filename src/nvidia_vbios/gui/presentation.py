@@ -7,7 +7,8 @@ import re
 from ..editor.sections import (ADVANCED_SECTION, SECTION_NAMES, SECTIONS, field_section,  # noqa: F401
                                opt_in_field_keys, technical_field_keys)
 from ..editor.registry import (FACTORY_BOOST_REASON, FACTORY_OFFSET_FRACTION_REASON, FACTORY_UNREVIEWED_REASON,
-                               FAN_LOW_EXTRA_CHANNELS_REASON, FAN_POLICY_COPY_CHANNELS_REASON,
+                               FAN_CLOSED_LOOP_COOLER_REASON, FAN_LOW_EXTRA_CHANNELS_REASON,
+                               FAN_POLICY_COPY_CHANNELS_REASON,
                                FAN_ZERO_RPM_MIXED_REASON, FAN_ZERO_RPM_NO_BLOCK_REASON, FAN_ZERO_RPM_TEMPS_OFF_REASON,
                                FOLLOW_OV_CLAMP_REASON, FOLLOW_OV_HOOKS_REASON, FOLLOW_OV_REL_CLAMP_REASON,
                                FOLLOW_OV_SWITCH_OFF_REASON,
@@ -32,7 +33,7 @@ FIELD_KEYS = frozenset(('power_min_w', 'power_max_w', 'nvvdd_rel_max_mv', 'msvdd
                         'notebook_base_tgp_w', 'runtime_power_limit_unlock',
                         'fan_pwm_frequency_hz', 'fan_channels',
                         'nvvdd_rel_alt_follow_ov', 'nvvdd_rel_alt_follow_ov_mv', 'runtime_voltage_offsets',
-                        'fan_zero_rpm',
+                        'fan_zero_rpm', 'fan_closed_loop',
                         'slot_current_threshold_rated_ma', 'slot_current_threshold_max_ma',
                         'nvvdd_power_threshold_rated_w', 'nvvdd_power_threshold_max_w',
                         'connector_sum_power_max_w', 'connector_sum_power_rated_w', 'gpc_curve_offset_mhz',
@@ -95,6 +96,7 @@ REASON_KEYS = {
     FAN_ZERO_RPM_MIXED_REASON: 'reason.fan_zero_rpm_mixed',
     FAN_ZERO_RPM_NO_BLOCK_REASON: 'reason.fan_zero_rpm_no_block',
     FAN_ZERO_RPM_TEMPS_OFF_REASON: 'reason.fan_zero_rpm_temps_off',
+    FAN_CLOSED_LOOP_COOLER_REASON: 'reason.fan_closed_loop_cooler',
     FAN_POLICY_COPY_CHANNELS_REASON: 'reason.fan_policy_copy',
     FAN_LOW_EXTRA_CHANNELS_REASON: 'reason.fan_low_extra',
     FOLLOW_OV_CLAMP_REASON: 'reason.follow_ov_clamp',
@@ -261,7 +263,7 @@ def sense_profile_notes(field, fields, language='en'):
 
     The field carries override_profiles (the top level is most likely a 600 W cable; inferred). The
     ceiling also notes that going past that level is the user's call and, when the 12 V input
-    current threshold has a rated value, that it may limit first.
+    current threshold has a rated value, that it may also limit (whether it binds is not known).
     """
     profiles = field.get('override_profiles')
     if not profiles or field['key'] not in ('power_max_w', 'power_default_w'):
@@ -418,6 +420,31 @@ def zero_rpm_channels_hint(channel_count):
     return {'separate-edits': 'zero_rpm_channels_hint', 'none': 'zero_rpm_channels_locked_hint'}.get(channel_count)
 
 
+def fan_control_notes(field, language='en'):
+    """Notes of an editable fan control unit switch (fan_closed_loop): on a ROM that stores 0, what the one card run
+    that way did (not verified in the firmware); always, what Off changes and how little it was tested, since editable
+    rows do not show the field reason that says so."""
+    if field.get('key') != 'fan_closed_loop' or not field.get('editable'):
+        return []
+    text = Messages(language)
+    stored_off = [text('fan_control.open_loop')] if field.get('current') == 0 else []
+    return stored_off + [text('fan_control.risk')]
+
+
+# The GB20x fields whose reason carries the issue #33 report (FAN_LOW_LEVEL_NOTE): a channel's level maximum and the
+# top level point of each curve.
+# Shown once per fan, under its maximum level: the top level points carry it in their reason only.
+FAN_LOW_LEVEL_KEY = re.compile(r'fan_\d+_max_pct')
+
+
+def fan_level_notes(field, family, language='en'):
+    """Note of an editable GB20x fan maximum level: the issue #33 report of a GPU removed after it and the top level
+    points were lowered far below stock (the field reasons say so, but editable rows do not show reasons)."""
+    if family != 'blackwell-gb20x' or not field.get('editable') or not FAN_LOW_LEVEL_KEY.fullmatch(field['key']):
+        return []
+    return [Messages(language)('fan_level.low')]
+
+
 def fan_curve_hint(field, fields, values, language='en'):
     """Explain curve points blocking a fan limit, using all pending stored values.
 
@@ -470,7 +497,8 @@ RESOLVER_SECTIONS = {'equation_roles': 'voltage', 'evaluated_vmin': 'voltage',
                      'fixed_voltage': 'voltage', 'rail_follow_ov': 'voltage',
                      'power': 'power', 'slot_power': 'power', 'connector_power': 'power',
                      'connector_sum_power': 'power', 'output_ocp': 'current', 'input_current': 'current',
-                     'memory': 'clocks', 'fans': 'fans', 'fan_zero_rpm': 'fans', 'fan_zero_rpm_temperatures': 'fans',
+                     'memory': 'clocks', 'fans': 'fans', 'fan_zero_rpm': 'fans', 'fan_closed_loop': 'fans',
+                     'fan_zero_rpm_temperatures': 'fans',
                      'dram_offset_points': 'clocks', 'gpc_curve_offset': 'clocks',
                      'max_operating_temperature': 'power', 'factory_clocks': 'clocks',
                      'perf_cf_controllers': 'advanced', 'lpwr_features': 'advanced'}

@@ -16,6 +16,7 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.fan_pwm_frequency_hz': 'Frecuencia PWM de los ventiladores (experimental)',
  'field.fan_channels': 'Canales de ventilador (experimental)',
  'field.fan_zero_rpm': 'Parada de ventiladores en reposo (avanzado)',
+ 'field.fan_closed_loop': 'Control de ventiladores por RPM (avanzado, experimental)',
  'reason.fan_layout': 'Esta tabla no guarda otra disposición de canales de ventilador, o los máximos de un canal '
                        'guardado quedan por debajo de las curvas adicionales.',
  'field.fan_min_rpm': 'Velocidad mínima del ventilador {fan}',
@@ -405,7 +406,8 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                        'protege el VRM del núcleo, que se dimensionó para el valor de fábrica. Subirlo queda a tu '
                        'criterio, y es más seguro hacerlo en pasos pequeños.'),
  'sense_profiles.input_current': 'El umbral de corriente de entrada de 12 V (nominal {amps} A, unos {watts} W a 12 V) '
-                                 'puede limitar antes. Súbelo también, en Mostrar campos avanzados (estilo XOC).',
+                                 'también puede limitar, aunque no se sabe si lo hace. Si la potencia se queda '
+                                 'corta, súbelo también, en Mostrar campos avanzados (estilo XOC).',
  'vmin_clone.memory': 'En esta ROM el piso de voltaje del reloj de memoria mantiene su valor de fábrica. Un VMIN más '
                       'bajo solo se nota mientras la memoria va a su reloj más bajo ({mhz} MHz, reposo con un monitor). '
                       'Un VMIN más alto se nota con cualquier reloj de memoria solo por encima de {floor} mV (VMIN de '
@@ -455,6 +457,18 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                    'editor cambia los dos de la misma forma.'),
  'fan_stop.untested': 'Sin probar en hardware en tarjetas Ada ni Ampere.',
  'fan_stop.manual': 'Una herramienta de ventiladores que mantiene el control manual deja los ventiladores girando.',
+ 'fan_control.open_loop': ('Esta ROM guarda Desactivado. En la única tarjeta probada con Desactivado, los '
+                           'ventiladores siguieron los puntos de nivel de las curvas, no los de velocidad (sin '
+                           'verificar en el firmware).'),
+ 'fan_control.risk': ('Desactivado hace que un porcentaje de ventilador fije el PWM en vez de una velocidad objetivo '
+                      'en RPM, en todos los canales a la vez: el mismo porcentaje puede dar otra velocidad, y 100 % '
+                      'puede llevar un ventilador por encima de su velocidad máxima. Probado solo en una tarjeta, cuyo '
+                      'sensor de velocidad leía 0 RPM en un canal.'),
+ 'fan_level.low': ('Toda ROM Blackwell trae un nivel máximo de ventilador de 100 %, y ninguna curva termina bajo 81 %. '
+                   'En una RTX 5090 cuyo sensor de velocidad leía 0 RPM en ese canal, una copia con el nivel máximo en '
+                   '45 % y los puntos más altos de las curvas en 40 y 45 % cargó, y unos dos minutos después del '
+                   'arranque Windows quitó la GPU por falla. La causa no se conoce, así que baja estos valores muy por '
+                   'debajo de los de fábrica con cuidado.'),
  'field.connector_current_threshold_rated': ('Umbral de corriente del canal de conector {connector}, nominal '
                                              '(avanzado, experimental)'),
  'field.connector_current_threshold_max': ('Techo del umbral de corriente del canal de conector {connector} '
@@ -557,6 +571,12 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                                   'plantilla revisada, así que la parada en reposo no se puede activar.'),
  'reason.fan_zero_rpm_temps_off': ('La parada en reposo es de solo lectura en esta ROM, así que sus umbrales '
                                    'quedan como están guardados.'),
+ 'reason.fan_closed_loop_cooler': ('Esta ROM guarda sus filas de ventilador como las ROM ASUS XOC y MSI Lightning de '
+                                   'la RTX 5090, que vienen con el control por RPM desactivado; ninguna ROM con ese '
+                                   'valor lo trae activado, así que el editor lo deja como está. Desactivado, un '
+                                   'porcentaje de ventilador fija el PWM; en la única tarjeta probada así, los '
+                                   'ventiladores siguieron los puntos de nivel de las curvas (sin verificar en el '
+                                   'firmware).'),
  'reason.fan_policy_copy': ('Un canal de ventilador desactivado de esta ROM guarda una copia de los ajustes de otro '
                             'ventilador, probablemente sin uso, que el editor cambia junto con ellos; fijar la '
                             'cantidad de canales desactivaría esa copia o activaría su canal, así que la cantidad '
@@ -611,8 +631,10 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
                                 'del punto 1 de su curva de ventilador; baja el umbral, con el umbral inferior por '
                                 'debajo de él si hace falta, o mantén el punto por encima, en la misma edición'),
  'error.SEPARATE_EDIT_REQUIRED': ('Guarda estos cambios en copias separadas. La cantidad de canales de ventilador '
-                                  'va antes que los límites, las curvas o la parada en reposo de los ventiladores, y '
-                                  'el ajuste REL/ALT siguen a OV antes que los voltajes. En algunas ROM de RTX 4090 el '
+                                  'va antes que los límites, las curvas, la parada en reposo o el control por RPM de '
+                                  'los ventiladores, y el ajuste REL/ALT siguen a OV antes que los voltajes. La parada '
+                                  'en reposo y el control por RPM también se guardan por separado. En algunas ROM de '
+                                  'RTX 4090 el '
                                   'VMIN y el offset de la curva GPC también se guardan por separado, al igual que el '
                                   'voltaje plano de NVVDD y el offset de la curva GPC en algunas ROM Blackwell, y lo '
                                   'mismo desactivar la parada en reposo y cambiar sus umbrales en una copia donde la '

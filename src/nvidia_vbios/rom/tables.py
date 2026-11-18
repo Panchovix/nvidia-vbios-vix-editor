@@ -865,7 +865,11 @@ class TableRom:
         duplicate chain} of the top level's entries on these rows that equal the base,
         written with it. differs: {'maximum'|'default': (profile index, value)} of the
         top level's entries on these rows that differ from the base; such a field cannot
-        be edited through the base (the profile would replace it). The other profiles'
+        be edited through the base alone (the profile would replace it). differs_entries:
+        the same entries as (row, value, value offsets in every duplicate chain), for a
+        caller that writes them with the base. base_levels: {'maximum'|'default': sense
+        codes with a vote where no applied profile replaces that field on every one of
+        these rows}, the levels where a base value is in force. The other profiles'
         entries on these rows bound an edit: values (lower bounds) for the ceiling to stay
         at or above (also a differing top-level rated value), defaults (their rated values)
         for the rated value, ceilings (upper bounds) for the floor to stay at or below.
@@ -890,6 +894,7 @@ class TableRom:
         rows, levels = self.power_rows(), self.profile_levels(profiles)
         top_indices = {p['index'] for p in top}
         tied, differs = {'maximum': [], 'default': []}, {'maximum': [], 'default': []}
+        differs_entries = {'maximum': [], 'default': []}
         values, defaults, ceilings, rated_ceilings, outside = [], [], [], set(), set()
         entries = {'maximum': [], 'default': []}
         reached = {index for applied in levels.values() for index in applied}
@@ -903,6 +908,7 @@ class TableRom:
                         tied[e['field']].extend(self.copy_offsets(e['value_offset'], 4))
                         continue
                     differs[e['field']].append((p['index'], value))
+                    differs_entries[e['field']].append((e['policy'], value, self.copy_offsets(e['value_offset'], 4)))
                     # The top level runs this rated value under the base ceiling.
                     if e['field'] == 'default':
                         values.append(value)
@@ -930,9 +936,18 @@ class TableRom:
                         index in top_indices and value == rows[policy]['maximum_raw']):
                     continue
                 rated_ceilings.add((index, value))
+        # A code without a vote applies no profile, and the power setup fails there: no base value is in force.
+        at = self.profile_table() + 0x0A + 5
+        votes = {self.blob[at + 7 * j + 6]: read(self.blob, '<I', at + 7 * j + 2)[0] for j in range(len(levels))}
+        base_levels = {}
+        for name in ('maximum', 'default'):
+            base_levels[name] = sorted(code for code, applied in levels.items() if votes[code] and not {
+                (policy, name) for policy in policies} <= {(e['policy'], e['field']) for i in applied
+                                                           for e in by_index[i]['entries']})
         return dict(top=next(p['index'] for p in top if p['selected_by'] == 'threshold'),
                     top_direct=next((p['index'] for p in top if p['selected_by'] == 'direct'), None),
-                    tied=tied, differs=differs, values=values, defaults=defaults, ceilings=ceilings,
+                    tied=tied, differs=differs, differs_entries=differs_entries, base_levels=base_levels,
+                    values=values, defaults=defaults, ceilings=ceilings,
                     rated_ceilings=sorted(rated_ceilings), entries=entries, outside=sorted(outside),
                     unreached=sorted({p['index'] for p in profiles
                                       if p['index'] not in reached and p['index'] not in top_indices}))

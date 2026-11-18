@@ -3,6 +3,56 @@
 What each change does, where it applies, what was tested and its risks. CHANGELOG.md lists the same
 changes, one line each, in the same order.
 
+## 0.1.46
+
+- **Blackwell desktop: fan RPM control switch (experimental, issue #33); ASUS XOC ROMs no longer offer a third fan
+  channel.** Bit 0 of the flag byte of each fan policy entry picks how a fan percent drives the fans: set, as on every
+  shipped ROM but the ASUS RTX 5090 XOC and MSI RTX 5090 Lightning ones, the percent is an RPM target the fans hold on
+  their speed sensor; clear, it sets the PWM directly. **Fan RPM control** (`fan_closed_loop`, under the advanced
+  toggle) sets that bit on every fan entry at once, because the driver rejects a fan channel whose entries mix the two
+  forms and every channel shares the extra curves. It comes from a patch and hardware report in
+  [issue #33](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/33): on an ASUS ROG Astral RTX 5090 whose
+  second fan channel reads 0 RPM after a fan header was damaged, its centre fan ran at full speed; with the bit
+  cleared both channels followed the curve by percent and zero RPM kept working. On that card the fans then followed
+  the level points of the curves instead of the speed points (the fan controller code is encrypted, so this is not
+  verified). With it off the same percent can give another speed, and 100 % can run a fan past its speed maximum; a
+  note under the switch says so. It changes only that bit, and on again gives the original bytes back. On the XOC and
+  Lightning ROMs it stays off and read-only (no ROM with their cooler setting ships it on). Zero RPM and the fan
+  channel count go in separate saves. The fan speed limits of a ROM with it off are experimental again, since their
+  hardware test ran with it on. Separately, the editor no longer offers a third fan channel on the two ASUS RTX 5090
+  XOC ROMs: their third channel stores the other form next to the extra curves, a mix the driver rejects. The maximum
+  fan level (in the window and its reason) and the top level point of every curve (in its reason) now carry a note of a
+  second result from the same card: a copy with that channel's maximum level at 45 % and level points 2 and 3 of its
+  curve and of both extra curves at 40 and 45 % made Windows remove the GPU about two minutes after boot, for an
+  unknown reason; no limit was added. Tested offline on every RTX 50 desktop and workstation ROM of the corpus (the
+  switch toggles and comes back byte for byte; on the corpus Astral ROM off writes the five bytes of the report). Not
+  tested on a card whose fans work. For API users:
+  `fan_closed_loop` (`value_semantics` `stored-fan-control-unit`, `fan_entries`), `SEPARATE_EDIT_REQUIRED` with
+  `fan_zero_rpm` or `fan_channels`, and `fan_channels` bounds 1-2 on the XOC ROMs.
+
+- **Ada: the 12 V input current ceiling on RTX 4090 ROMs whose top cable sense level raises it (95.02.18.C0.75,
+  untested).** On the Gigabyte RTX 4090 ROM 95.02.18.C0.75 the 12 V input current thresholds (rows 9 and 10) store a
+  58 A ceiling, but at the top cable sense level (code 3, most likely a 600 W cable) direct profile 3 replaces it with
+  60 A, and at code 2 profile 2 sets 45 A. **12 V input current threshold ceiling** was read-only there, because an
+  edit of the base alone would be undone at the top level. Where the top level only raises that ceiling (one value
+  above the base on both rows) and every other level that votes replaces it too, the field now shows the top level's
+  value (60 A) and an edit writes the base rows and profile 3's entries together in every chain, so they end equal;
+  profile 2 keeps 45 A and bounds the value from below. The base ceiling then applies at no level (codes 0 and 1 vote
+  nothing, and the power setup fails there; static analysis), so requesting the 60 A shown, which rewrites the base
+  from 58 to 60 A, is inferred to change nothing. A rated value above the base ceiling needs the ceiling in the same
+  edit, so the GUI and **Import from ROM…** send the ceiling as shown whenever the rated value is staged (that copy
+  also writes the base at 60 A). The field stays experimental and opt-in, under **Show advanced XOC-style fields**. A
+  higher limit lets more current through the 16-pin cable and connector than their rating, so raising it is your call.
+  On ROMs with cable sense profiles the board power ceiling's reason and its note in the GUI now say that whether the
+  12 V input thresholds bind is not known: one such card reached about 670 W with them at the stock 45 A (about 540 W
+  at 12 V). On this ROM the board power reasons also name the fields that write direct profile 3's entries. Tested
+  offline: across the corpus only this field of this ROM changes its value, bounds, editability or written bytes
+  (other fields change their reasons only), an edit to 72 A changes 24 value bytes of the base rows and profile 3 in
+  both chains plus the two checksums, and the relocated payload carries the new entries. Not tested on hardware.
+  Requested in [issue #37](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/37). For API users: on such a
+  ROM the descriptor's `current` is the top level's value, and `stored_base_maximum` and `raw_bounds` keep the base
+  row's.
+
 ## 0.1.45
 
 - **Blackwell desktop: Board power ceiling also writes the rated value of the fixed board policies 2/7; their own

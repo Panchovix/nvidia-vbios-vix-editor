@@ -347,6 +347,38 @@ class ControllerTests(unittest.TestCase):
         self.assertIn('dram_max_table_mhz', technical_field_keys(ada.report))
         self.assertIn('nvvdd_rel_max_mv', technical_field_keys(ada.report))
 
+    def test_a_ceiling_shown_at_the_top_sense_level_goes_with_a_staged_partner(self):
+        from nvidia_vbios.rom.image import backend
+        from test_ada_fields import gigabyte_sense_profiles
+        # The 12 V input rows store a 58 A ceiling; direct profile 3 raises it to 60 A at the top cable sense level,
+        # and the window shows 60 A.
+        self.source.write_bytes(gigabyte_sense_profiles(synthetic_rom(copies=2, policies=True)))
+        doc = self.controller.open(self.source)
+        fields = {f['key']: f for f in controls(doc.report)}
+        ceiling = fields['input_current_max_ma']
+        self.assertEqual((ceiling['current'], ceiling['stored_base_maximum']), (60000, 58000))
+        self.assertNotIn('stored_base_maximum', fields['input_current_rated_ma'])
+        # The window sends every row's text.
+        rows = {key: '%g' % fields[key]['current']
+                for key in ('input_current_max_ma', 'input_current_rated_ma', 'power_max_w')}
+
+        def stored(document):
+            after = backend(document.proposal.image).power_rows()
+            return [(after[i]['default_raw'], after[i]['maximum_raw']) for i in (9, 10)]
+        # The rated value raised past the stored 58 A, the ceiling row as shown: the ceiling goes with it.
+        staged = stage_document(doc, dict(rows, input_current_rated_ma='59000'))
+        self.assertEqual(staged.changes, {'input_current_rated_ma': '59000', 'input_current_max_ma': '60000'})
+        self.assertEqual(stored(staged), [(59000, 60000)] * 2)
+        # Unchanged, or with a field of another ordering group, it stays out and the stored base is kept.
+        for changes in (rows, dict(rows, power_max_w='650')):
+            with self.subTest(changes=changes):
+                staged = stage_document(doc, changes)
+                self.assertNotIn('input_current_max_ma', staged.changes)
+                self.assertEqual(stored(staged), [(45000, 58000)] * 2)
+        with self.assertRaises(VbiosError) as exc:
+            stage_document(doc, dict(rows, input_current_rated_ma='61000'))
+        self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+
     def test_unknown_placeholders_stay_in_the_json_and_out_of_the_window(self):
         from nvidia_vbios.gui.presentation import technical_field_keys
         from test_extended_fields import single_rail_fixture
@@ -736,8 +768,11 @@ class PresentationNumberTests(unittest.TestCase):
             'This ROM sets its power limits from the 16-pin cable sense pins. This value applies at the top level, '
             'most likely a 600 W cable (inferred, not tested). Lower levels keep their own limits.',
             'Going past 600 W is more than that cable is rated for. That is your call.',
-            'The 12 V input current threshold (rated 30 A, about 360 W at 12 V) may limit first. Raise it too, under '
-            'Show advanced XOC-style fields.'])
+            'The 12 V input current threshold (rated 30 A, about 360 W at 12 V) may also limit, though whether it does '
+            'is not known. If the power stops short, raise it too, under Show advanced XOC-style fields.'])
+        self.assertTrue(sense_profile_notes(fields['power_max_w'], report['fields'], 'es')[2].endswith(
+            'también puede limitar, aunque no se sabe si lo hace. Si la potencia se queda corta, súbelo también, en '
+            'Mostrar campos avanzados (estilo XOC).'))
         self.assertEqual(sense_profile_notes(fields['power_default_w'], report['fields'], 'es'), [
             'Esta ROM fija sus límites de potencia según los pines de detección del cable de 16 pines. Este valor se '
             'aplica en el nivel más alto, probablemente un cable de 600 W (deducido, sin probar). Los niveles más '
@@ -962,9 +997,10 @@ class PresentationNumberTests(unittest.TestCase):
     def test_fan_limit_labels_sections_and_opt_in(self):
         from nvidia_vbios.gui.presentation import (display_units, field_label, field_section, opt_in_field_keys,
                                                    section_order, shunt_scaled)
-        from test_extended_fields import descriptors
+        from test_extended_fields import closed_loop, descriptors
         from nvidia_vbios.rom import from_bytes
-        fields = descriptors(from_bytes(synthetic_blackwell(fans=True)))
+        # The stock GeForce form (bit 0 of the fan policy flag bytes set): the speed maximum is the tested one.
+        fields = descriptors(from_bytes(closed_loop(synthetic_blackwell(fans=True))))
         self.assertEqual([field_label(fields[k]) for k in ('fan_2_min_rpm', 'fan_1_max_pct')],
                          ['Fan 2 minimum speed', 'Fan 1 maximum level (advanced, experimental)'])
         self.assertEqual([field_label(fields[k], 'es') for k in ('fan_2_max_rpm', 'fan_1_min_pct')],
@@ -1010,18 +1046,19 @@ class PresentationNumberTests(unittest.TestCase):
         # The GB20x curve points are not tested on hardware: every one keeps the experimental badge (the flag).
         from nvidia_vbios.gui.presentation import row_title
         self.assertTrue(all(row_title(fields[k], language)[1] for k in keys for language in ('en', 'es')))
-        # Channels and PWM, then each channel's limits and curve points, then the extra curves, then zero RPM
-        # and its temperature pairs.
+        # Channels and PWM, then each channel's limits and curve points, then the extra curves, then zero RPM,
+        # the control unit and the zero RPM temperature pairs.
         limits = lambda n: [f'fan_{n}_{side}_{unit}' for unit in ('rpm', 'pct') for side in ('max', 'min')]
         points = lambda prefix: [f'{prefix}_curve_{k}_{unit}' for k in (1, 2, 3) for unit in ('temp_c', 'rpm', 'pct')]
         pair = lambda prefix: [f'{prefix}_zero_rpm_{side}_temp_c' for side in ('low', 'high')]
         temperatures = pair('fan_1') + pair('fan_2') + pair('fan_extra_1') + pair('fan_extra_2')
         expected = (['fan_channels', 'fan_pwm_frequency_hz'] + limits(1) + points('fan_1') + limits(2) + points('fan_2') +
-                    points('fan_extra_1') + points('fan_extra_2') + ['fan_zero_rpm'] + temperatures)
+                    points('fan_extra_1') + points('fan_extra_2') + ['fan_zero_rpm', 'fan_closed_loop'] + temperatures)
         self.assertEqual([f['key'] for f in section_order(fields.values()) if f['key'].startswith('fan_')], expected)
         self.assertTrue(all(field_section(fields[k]) == 'fans' for k in expected))
         self.assertEqual(opt_in_field_keys({'fields': list(fields.values())}) & set(expected),
-                         {k for k in expected if k.endswith('_pct')} | {'fan_zero_rpm'} | set(temperatures))
+                         {k for k in expected if k.endswith('_pct')} | {'fan_zero_rpm', 'fan_closed_loop'} |
+                         set(temperatures))
         thresholds = ('fan_2_zero_rpm_low_temp_c', 'fan_extra_1_zero_rpm_high_temp_c')
         self.assertEqual([field_label(fields[k]) for k in thresholds],
                          ['Fan 2 zero RPM lower threshold (advanced, experimental)',
@@ -1240,6 +1277,76 @@ class PresentationNumberTests(unittest.TestCase):
         self.assertEqual([value_text(field, v, 'es') for v in (0, 1)], ['Desactivado', 'Activado'])
         # Other units keep the plain number, 0 and 1 included.
         self.assertEqual([value_text({'units': 'channels'}, v) for v in (Decimal(1), Decimal('2.50'))], ['1', '2.5'])
+
+    def test_fan_control_unit_label_note_and_reason(self):
+        from nvidia_vbios.gui.presentation import fan_control_notes, field_label, read_only_reason, row_title
+        from test_extended_fields import closed_loop, descriptors, repair_fixture
+        from nvidia_vbios.rom import from_bytes
+        from nvidia_vbios.rom.image import backend
+        stock = descriptors(from_bytes(closed_loop(synthetic_blackwell(fans=True))))['fan_closed_loop']
+        self.assertEqual((field_label(stock), field_label(stock, 'es')),
+                         ('Fan RPM control (advanced, experimental)',
+                          'Control de ventiladores por RPM (avanzado, experimental)'))
+        self.assertTrue(all(row_title(stock, language)[1] for language in ('en', 'es')))
+        # Stock (1), the only value from which Off can be chosen: what Off changes and how little it was tested,
+        # since an editable row does not show the field reason.
+        self.assertEqual((stock['current'], stock['editable']), (1, True))
+        risk = fan_control_notes(stock)
+        self.assertEqual(len(risk), 1)
+        self.assertTrue(risk[0].startswith('Off makes a fan percent set the PWM instead of an RPM target, on every fan '
+                                           'channel at once'))
+        self.assertIn('100 % may run a fan past its speed maximum', risk[0])
+        self.assertIn('Tested on one card only, whose fan speed sensor read 0 RPM on one channel', risk[0])
+        spanish = fan_control_notes(stock, 'es')
+        self.assertEqual(len(spanish), 1)
+        self.assertIn('fije el PWM en vez de una velocidad objetivo en RPM, en todos los canales a la vez', spanish[0])
+        # A ROM that stores 0 (the synthetic image stores 0 everywhere): what the one card run that way did, not
+        # verified in the firmware, then the same risk note.
+        blob = synthetic_blackwell(fans=True)
+        off = descriptors(from_bytes(blob))['fan_closed_loop']
+        self.assertEqual(off['current'], 0)
+        notes = fan_control_notes(off)
+        self.assertEqual(notes[1:], risk)
+        self.assertIn('the fans followed the level points of the fan curves, not the speed points (not verified in '
+                      'the firmware)', notes[0])
+        self.assertIn('no los de velocidad (sin verificar en el firmware)', fan_control_notes(off, 'es')[0])
+        self.assertEqual(fan_control_notes(off, 'es')[1:], spanish)
+        # The ASUS XOC and MSI Lightning form (cooler row byte 0 = 1): read-only, with its reason in both languages.
+        edited = bytearray(blob)
+        for row in backend(from_bytes(blob)).fan_coolers()['rows'][:2]:
+            edited[row['offset']] = 1
+        xoc = descriptors(from_bytes(repair_fixture(edited)))['fan_closed_loop']
+        self.assertFalse(xoc['editable'])
+        self.assertEqual(fan_control_notes(xoc), [])
+        self.assertIn('the way the ASUS XOC and MSI Lightning RTX 5090 ROMs do', read_only_reason(xoc))
+        self.assertIn('(not verified in the firmware)', read_only_reason(xoc))
+        self.assertIn('como las ROM ASUS XOC y MSI Lightning', read_only_reason(xoc, 'es'))
+        self.assertIn('(sin verificar en el firmware)', read_only_reason(xoc, 'es'))
+
+    def test_fan_level_note_on_the_gb20x_level_maximum(self):
+        from nvidia_vbios.editor.registry import FAN_LOW_LEVEL_NOTE
+        from nvidia_vbios.gui.presentation import fan_level_notes
+        from test_extended_fields import closed_loop, descriptors
+        from nvidia_vbios.rom import from_bytes
+        fields = descriptors(from_bytes(closed_loop(synthetic_blackwell(fans=True))))
+        # The issue #33 report is in the reason of each fan maximum level and top level point; an editable row
+        # shows it once per fan, under the maximum level.
+        noted = sorted(key for key, field in fields.items() if fan_level_notes(field, 'blackwell-gb20x'))
+        self.assertEqual(noted, ['fan_1_max_pct', 'fan_2_max_pct'])
+        self.assertTrue(all(FAN_LOW_LEVEL_NOTE in fields[key]['reason'] for key in
+                            noted + ['fan_1_curve_3_pct', 'fan_extra_1_curve_3_pct', 'fan_extra_2_curve_3_pct']))
+        note = fan_level_notes(fields['fan_2_max_pct'], 'blackwell-gb20x')
+        self.assertEqual(len(note), 1)
+        self.assertTrue(note[0].startswith('Every Blackwell ROM ships a maximum fan level of 100 %'))
+        self.assertIn('about two minutes after boot Windows removed the GPU as failing', note[0])
+        spanish = fan_level_notes(fields['fan_1_max_pct'], 'blackwell-gb20x', 'es')
+        self.assertEqual(len(spanish), 1)
+        self.assertIn('unos dos minutos después del arranque Windows quitó la GPU por falla', spanish[0])
+        # Not on the curve points, other families or a read-only row (which shows the reason itself).
+        self.assertEqual(fan_level_notes(fields['fan_2_curve_3_pct'], 'blackwell-gb20x'), [])
+        self.assertEqual(fan_level_notes(fields['fan_2_max_rpm'], 'blackwell-gb20x'), [])
+        self.assertEqual(fan_level_notes(fields['fan_2_max_pct'], 'turing'), [])
+        self.assertEqual(fan_level_notes(dict(fields['fan_2_max_pct'], editable=False), 'blackwell-gb20x'), [])
 
     def test_number_formats_every_magnitude_briefly(self):
         from decimal import Decimal
