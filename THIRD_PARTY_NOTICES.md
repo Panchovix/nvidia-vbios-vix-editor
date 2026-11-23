@@ -32,7 +32,7 @@ nvgpu `bios.h` structure definitions (MIT). No NVIDIA source file is included.
 | mingw-w64-ucrt-x86_64-bzip2 | 1.0.8-4 | custom | third_party/mingw-w64-ucrt-x86_64-bzip2/ | libbz2-1.dll |
 | mingw-w64-ucrt-x86_64-cairo | 1.18.6-2 | LGPL-2.1-or-later OR MPL-1.1 | third_party/mingw-w64-ucrt-x86_64-cairo/ | libcairo-2.dll libcairo-gobject-2.dll libcairo-script-interpreter-2.dll |
 | mingw-w64-ucrt-x86_64-expat | 2.10.0-1 | MIT | third_party/mingw-w64-ucrt-x86_64-expat/ | libexpat-1.dll |
-| mingw-w64-ucrt-x86_64-fontconfig | 2.18.3-1 | custom | third_party/mingw-w64-ucrt-x86_64-fontconfig/ | libfontconfig-1.dll |
+| mingw-w64-ucrt-x86_64-fontconfig | 2.18.4-1 | custom | third_party/mingw-w64-ucrt-x86_64-fontconfig/ | libfontconfig-1.dll |
 | mingw-w64-ucrt-x86_64-freetype | 2.15.0-1 | GPL-2.0-or-later OR FTL | third_party/mingw-w64-ucrt-x86_64-freetype/ | libfreetype-6.dll |
 | mingw-w64-ucrt-x86_64-fribidi | 1.0.18-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-fribidi/ | libfribidi-0.dll |
 | mingw-w64-ucrt-x86_64-gdk-pixbuf2 | 2.44.8-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-gdk-pixbuf2/ | libgdk_pixbuf-2.0-0.dll GdkPixbuf-2.0.typelib |
@@ -45,7 +45,7 @@ nvgpu `bios.h` structure definitions (MIT). No NVIDIA source file is included.
 | mingw-w64-ucrt-x86_64-gst-plugins-base | 1.28.9-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-gst-plugins-base/ | libgstallocators-1.0-0.dll libgstaudio-1.0-0.dll libgstgl-1.0-0.dll libgstpbutils-1.0-0.dll libgsttag-1.0-0.dll libgstvideo-1.0-0.dll |
 | mingw-w64-ucrt-x86_64-gstreamer | 1.28.9-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-gstreamer/ (standard text) | libgstbase-1.0-0.dll libgstreamer-1.0-0.dll |
 | mingw-w64-ucrt-x86_64-gtk4 | 4.24.1-1 | LGPL-2.1-or-later | third_party/mingw-w64-ucrt-x86_64-gtk4/ | libgtk-4-1.dll Gdk-4.0.typelib Gsk-4.0.typelib Gtk-4.0.typelib |
-| mingw-w64-ucrt-x86_64-harfbuzz | 15.1.0-1 | MIT | third_party/mingw-w64-ucrt-x86_64-harfbuzz/ | libharfbuzz-0.dll libharfbuzz-gobject-0.dll libharfbuzz-subset-0.dll HarfBuzz-0.0.typelib |
+| mingw-w64-ucrt-x86_64-harfbuzz | 15.2.0-1 | MIT | third_party/mingw-w64-ucrt-x86_64-harfbuzz/ | libharfbuzz-0.dll libharfbuzz-gobject-0.dll libharfbuzz-subset-0.dll HarfBuzz-0.0.typelib |
 | mingw-w64-ucrt-x86_64-jbigkit | 2.1-6 | GPL-2.0 | third_party/mingw-w64-ucrt-x86_64-jbigkit/ | libjbig-0.dll |
 | mingw-w64-ucrt-x86_64-lerc | 4.1.1-1 | Apache-2.0 | third_party/mingw-w64-ucrt-x86_64-lerc/ | libLerc.dll |
 | mingw-w64-ucrt-x86_64-libdatrie | 0.2.14-1 | LGPL | third_party/mingw-w64-ucrt-x86_64-libdatrie/ | libdatrie-1.dll |
@@ -97,7 +97,7 @@ corresponding source of these packages on request: open an issue in the reposito
 | mingw-w64-bzip2 | 1.0.8-4 | https://repo.msys2.org/mingw/sources/mingw-w64-bzip2-1.0.8-4.src.tar.zst |
 | mingw-w64-cairo | 1.18.6-2 | https://repo.msys2.org/mingw/sources/mingw-w64-cairo-1.18.6-2.src.tar.zst |
 | mingw-w64-expat | 2.10.0-1 | https://repo.msys2.org/mingw/sources/mingw-w64-expat-2.10.0-1.src.tar.zst |
-| mingw-w64-fontconfig | 2.18.3-1 | https://repo.msys2.org/mingw/sources/mingw-w64-fontconfig-2.18.3-1.src.tar.zst |
+| mingw-w64-fontconfig | 2.18.4-1 | https://repo.msys2.org/mingw/sources/mingw-w64-fontconfig-2.18.4-1.src.tar.zst |
 | mingw-w64-freetype | 2.15.0-1 | https://repo.msys2.org/mingw/sources/mingw-w64-freetype-2.15.0-1.src.tar.zst |
 | mingw-w64-fribidi | 1.0.18-1 | https://repo.msys2.org/mingw/sources/mingw-w64-fribidi-1.0.18-1.src.tar.zst |
 | mingw-w64-gcc | 16.2.0-7 | https://repo.msys2.org/mingw/sources/mingw-w64-gcc-16.2.0-7.src.tar.zst |
@@ -111,7 +111,7 @@ corresponding source of these packages on request: open an issue in the reposito
 | mingw-w64-gst-plugins-base | 1.28.9-1 | https://repo.msys2.org/mingw/sources/mingw-w64-gst-plugins-base-1.28.9-1.src.tar.zst |
 | mingw-w64-gstreamer | 1.28.9-1 | https://repo.msys2.org/mingw/sources/mingw-w64-gstreamer-1.28.9-1.src.tar.zst |
 | mingw-w64-gtk4 | 4.24.1-1 | https://repo.msys2.org/mingw/sources/mingw-w64-gtk4-4.24.1-1.src.tar.zst |
-| mingw-w64-harfbuzz | 15.1.0-1 | https://repo.msys2.org/mingw/sources/mingw-w64-harfbuzz-15.1.0-1.src.tar.zst |
+| mingw-w64-harfbuzz | 15.2.0-1 | https://repo.msys2.org/mingw/sources/mingw-w64-harfbuzz-15.2.0-1.src.tar.zst |
 | mingw-w64-jbigkit | 2.1-6 | https://repo.msys2.org/mingw/sources/mingw-w64-jbigkit-2.1-6.src.tar.zst |
 | mingw-w64-lerc | 4.1.1-1 | https://repo.msys2.org/mingw/sources/mingw-w64-lerc-4.1.1-1.src.tar.zst |
 | mingw-w64-libdatrie | 0.2.14-1 | https://repo.msys2.org/mingw/sources/mingw-w64-libdatrie-0.2.14-1.src.tar.zst |
