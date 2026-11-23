@@ -914,6 +914,14 @@ class EditorWindow(Gtk.ApplicationWindow):
         delta = label('', xalign=1, css=('vb-delta',))
         delta.set_visible(False)
         row.append(delta)
+        if field.get('value_semantics') == 'stored-fan-minimum-speed':
+            # The independent level floor can dominate a lower RPM target. Do not
+            # auto-scale it: the editor has no measured RPM-to-PWM calibration.
+            row.append(label(self.text('fan.minimum_level_advice'), wrap=True, css=('vb-note',)))
+            bounds = field['bounds']
+            if field['current'] > bounds['maximum']:
+                row.append(label(self.text('fan.minimum_recovery', current=field['current'],
+                                           maximum=bounds['maximum']), wrap=True, css=('vb-note',)))
         self._shunt_note(row, field)
         self.entries[field['key']] = entry
         self.rows[field['key']] = dict(row=row, delta=delta, field=field)

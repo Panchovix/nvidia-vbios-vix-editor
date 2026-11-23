@@ -1925,6 +1925,22 @@ and every active channel is stored. Fan fields are offered only when that holds.
     minimum, a curve or the speed value above the maximum, a maximum or a curve
     above the ceiling). Bounds are always numeric, so a joint request that breaks
     the order is refused on the edited result.
+  - One experimental corrective path handles an otherwise recognized RPM minimum
+    above its enabled speed-table value: a 3000 RPM minimum with a 2295 RPM speed
+    value, for example. If the minimum still fits its own curve and all curve tops
+    fit the maximum, the minimum can decrease into the reviewed range (0-2295 RPM
+    in that example). The same ceiling is enforced on joint edits; values between
+    that ceiling and the old minimum stay refused. The speed-table meaning remains
+    unknown, and this does not make malformed curves editable. The GUI explains the
+    recovery range and advises reviewing the independent minimum level (%) under
+    the advanced fields; neither percentage scaling nor paired-channel edits are
+    automatic. Lower RPM and level settings require checking actual speed and
+    restart from a stopped fan on the particular cooler.
+    An owner tested this recovery on a modified RTX 4080 32 GB (95.03.33.40.5E)
+    through the Windows loader: a 1500 RPM minimum with the minimum level at 15 %
+    reached about 1500 RPM and restarted reliably. This is one cooler, not a
+    calibration or a guaranteed minimum for other boards; the recovery path remains
+    experimental.
 - **Curve points.** `fan_N_curve_K_temp_c`, `fan_N_curve_K_rpm` and `fan_N_curve_K_pct`
   (K = 1..3) edit point K of channel N's own policy entry: the temperature at byte
   18 + 4(K-1) (`<H`, 1/32 °C; the field is in °C, so 60.5 is stored as 1936 and 60.01

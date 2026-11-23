@@ -3917,7 +3917,7 @@ def fan_shaped(curve):
 
 
 def fan_field(writable, parser, key, label, units, current, lo, hi, shaped, places, encoding, scale, ceiling, noun,
-              evidence, reason, *, untested=False, **extra):
+              evidence, reason, *, untested=False, corrective_decrease=False, **extra):
     """One fan limit or curve point, in stored units, written at places (the value's offset, then the
     same place in each unused policy entry copy: policy_mirrors) in every chain, experimental unless
     HARDWARE_TESTED lists it for the family and the path is a tested one (untested False). It is
@@ -3925,18 +3925,26 @@ def fan_field(writable, parser, key, label, units, current, lo, hi, shaped, plac
     inside lo..hi. With lo == hi (a curve point flush with its limit, a level maximum of 100 under a
     curve that reaches 100 %) a request for it alone keeps its value, but it can move with its partners
     in a joint edit. Bounds stay numeric, so the joint recheck refuses a request that breaks the order
-    on the edited result."""
+    on the edited result. A structurally valid RPM minimum already above its reviewed
+    range can be lowered into that range when corrective_decrease is set; its encoding
+    bounds use that same range so a joint edit cannot bypass the correction."""
     inside = shaped and lo <= current <= hi
-    editable = inside and writable
+    correcting = (corrective_decrease and shaped and lo <= hi < current <= ceiling)
+    editable = (inside or correcting) and writable
+    if correcting:
+        reason = (f'The stored minimum ({current} {units}) exceeds the reviewed upper bound '
+                  f'({hi} {units}). A corrective decrease into {lo}..{hi} {units} is allowed. ' + reason)
     show = (lambda v: v / scale) if scale != 1 else (lambda v: v)
     offsets, _ = chain_copies(parser, places, struct.calcsize(encoding))
     return field(key, label, units, show(current), show(lo), show(hi), editable, evidence,
                  offsets=offsets if editable else (), encoding=encoding if editable else '', scale=scale,
                  **({'experimental': True} if untested else experimental_flag(parser, key)),
                  ordering_group=f'fan-{noun}' if editable else None,
-                 encoding_bounds=(0, show(ceiling)) if editable else None,
+                 # Joint edits use encoding bounds before rechecking the result. Keep the
+                 # recovery ceiling here too: another edited field must not widen this repair.
+                 encoding_bounds=(show(lo), show(hi)) if correcting else (0, show(ceiling)) if editable else None,
                  writable_status=None if editable else 'unsupported',
-                 reason=reason if inside else FAN_SHAPE_REASON, **extra)
+                 reason=reason if inside or correcting else FAN_SHAPE_REASON, **extra)
 
 
 def fan_untested(parser, note='not hardware-tested'):
@@ -3987,7 +3995,13 @@ def fan_limits(writable, parser, table, evidence):
                                               ('max', high, high_at, max(top, low + 1), ceiling)):
                 word = 'minimum' if side == 'min' else 'maximum'
                 speed_open = open_loop and unit == 'rpm'
-                flagged = speed_open or not hardware_tested(parser, f'fan_{n}_{side}_{unit}')
+                # Some recognized ROMs store a minimum above their enabled speed-table
+                # value (e.g. 3000 > 2295 RPM), locking even a decrease into the reviewed
+                # range. Admit only that mismatch; do not reinterpret the unknown speed
+                # value, relax malformed curves, or repair an out-of-range maximum here.
+                recovering = bool(side == 'min' and unit == 'rpm' and held and
+                                  0 <= held[0] < low <= points[0][0] and low < high and top <= high <= ceiling)
+                flagged = speed_open or recovering or not hardware_tested(parser, f'fan_{n}_{side}_{unit}')
                 tested = None if flagged else FAN_HARDWARE_TESTED.get((side, unit))
                 ending = (FAN_OPEN_LOOP_SPEED if speed_open else
                           tested or fan_untested(parser, FAN_LIMIT_TESTED.get((side, unit), 'not hardware-tested')))
@@ -4005,7 +4019,8 @@ def fan_limits(writable, parser, table, evidence):
                      f'the maximum stays at or above every stored fan curve{value}, so it moves past a curve only '
                      'with its points in one edit; ') + ending,
                     stored_units=units, value_semantics=f'stored-fan-{word}-{noun}', fan_rows=[r['index']],
-                    fan_channel=r['index'], untested=speed_open, **({'opt_in': True} if unit == 'pct' else {})))
+                    fan_channel=r['index'], untested=speed_open or recovering,
+                    corrective_decrease=recovering, **({'opt_in': True} if unit == 'pct' else {})))
     return result
 
 

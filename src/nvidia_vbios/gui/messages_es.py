@@ -12,6 +12,8 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'section.clocks': 'Offsets de reloj',
  'section.current': 'Corriente y protección',
  'section.other': 'Otros',
+ 'fan.minimum_level_advice': 'Un objetivo de RPM inferior puede requerir reducir también el nivel mínimo en los campos avanzados de estilo XOC. Los valores son independientes y no se escalan automáticamente; comprueba las RPM reales y el arranque desde parado.',
+ 'fan.minimum_recovery': 'El mínimo guardado es {current} RPM, superior al límite revisado de {maximum} RPM. Solo se permite una reducción correctiva dentro del intervalo mostrado.',
  'section.fans': 'Ventiladores',
  'field.fan_pwm_frequency_hz': 'Frecuencia PWM de los ventiladores (experimental)',
  'field.fan_channels': 'Canales de ventilador (experimental)',
