@@ -30,7 +30,7 @@ def checked_elsewhere(key, field):
 # Tested on hardware on Ada, so not experimental there; the notebook TGP, a TGP bound to override profiles and a VMIN
 # tree, per-chip equation or VMIN copy stay experimental.
 ADA_TESTED = re.compile(r'power_(max|min|default)_w|nvvdd_rel_(equation_)?max_mv|gpc_offset_max_mhz|nvvdd_vmin_mv|'
-                        r'fan_\d+_min_(rpm|pct)|slot_power_(max|rated)_w')
+                        r'fan_\d+_min_(rpm|pct)|slot_power_(max|rated)_w|input_current_max_ma')
 
 
 def ada_tested(field):
@@ -290,8 +290,10 @@ class AdaPolicyTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertEqual(fields[key]['current'], value)
                 self.assertTrue(fields[key]['editable'])
-                # The slot power is tested on hardware (RTX 2000 Ada); the thresholds stay experimental.
-                self.assertEqual(fields[key].get('experimental', False), not key.startswith('slot_power'))
+                # The slot power (RTX 2000 Ada) and the 12 V input ceiling (Gigabyte RTX 4090, issue #37) are tested
+                # on hardware; the other thresholds stay experimental.
+                self.assertEqual(fields[key].get('experimental', False),
+                                 not (key.startswith('slot_power') or key == 'input_current_max_ma'))
                 # Class-5 hardware thresholds (slot current, 12 V input, NVVDD power) are opt-in.
                 threshold = 'threshold' in key or key.startswith('input_current')
                 self.assertEqual(fields[key].get('opt_in', False), threshold)
@@ -411,9 +413,9 @@ class AdaPolicyTests(unittest.TestCase):
         self.assertEqual(field_label(ada_fields['input_current_max_ma'], 'es'),
                          'Techo del umbral de corriente de entrada de 12 V (avanzado)')
         self.assertEqual(field_label(blackwell), '12 V input current limit, rated')
-        # The Ada thresholds stay experimental: the badge follows the flag.
+        # The badge follows the flag: the rated threshold stays experimental, the ceiling is tested (issue #37).
         self.assertEqual([row_title(ada_fields[k], 'es')[1] for k in ('input_current_rated_ma', 'input_current_max_ma')],
-                         [True, True])
+                         [True, False])
 
     def test_ampere_and_blackwell_offer_no_ada_policy_fields(self):
         for blob in (synthetic_rom(family='ampere'), synthetic_blackwell()):
@@ -620,7 +622,8 @@ class AdaDirectAndThresholdProfileTests(unittest.TestCase):
         # At code 3 direct profile 3 raises the 12 V input maximum to 60 A (base 58 A), and at code 2 profile 2 sets
         # 45 A, so the base ceiling is in force at no level: the field writes it with profile 3's entries.
         field = fields['input_current_max_ma']
-        self.assertTrue(field['experimental'] and field['opt_in'])
+        self.assertTrue(field['opt_in'])
+        self.assertNotIn('experimental', field)
         self.assertEqual(field['stored_base_maximum'], 58000)
         for text in ('at a lower cable sense level override profile 2 replaces this value with 45000 mA',
                      'at the top cable sense level (code 3) override profile 3 replaces the base ceiling (58000 mA) '

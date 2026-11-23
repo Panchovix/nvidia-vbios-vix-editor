@@ -3358,7 +3358,7 @@ class HardwareTestedTableTests(unittest.TestCase):
                  'notebook_base_tgp_w': {'gb20x': r.NOTEBOOK_BASE_TGP_REASON},
                  'slot_power_rated_w': r.SLOT_POWER_TESTED, 'slot_power_max_w': r.SLOT_POWER_TESTED,
                  'input_current_rated_ma': {'gb20x': r.INPUT_CURRENT_TESTED},
-                 'input_current_max_ma': {'gb20x': r.INPUT_CURRENT_TESTED}}
+                 'input_current_max_ma': {'gb20x': r.INPUT_CURRENT_TESTED, 'ada': r.ADA_INPUT_CURRENT_TESTED}}
         # The GB20x board power ceiling and floor never were experimental: their reasons name no test.
         exempt = {('power_max_w', 'gb20x'), ('power_min_w', 'gb20x')}
         self.assertEqual(sorted(r.HARDWARE_TESTED), sorted(texts))

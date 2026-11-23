@@ -25,20 +25,20 @@ the [changelog details](changelog-details.md) name the cards.
 | --- | --- | --- |
 | Turing | `power_max_w`, `power_min_w`, `power_default_w` (desktop), `connector_N_power_max_w`, `connector_N_power_rated_w`, `runtime_power_limit_unlock` | RTX 2070 at 225 W; RTX 2080 Ti at 500 W with 250 W per connector (Windows loader); one RTX 2070 Laptop GPU (the switch) |
 | Ampere | `power_max_w`, `power_min_w`, `power_default_w` (laptops too), `slot_power_rated_w`, `slot_power_max_w`, `fan_N_min_rpm`, `fan_N_min_pct`, `fan_N_curve_1_rpm`, `fan_N_curve_1_pct` | RTX 3050 6GB Laptop GPU (70 W ceiling, 55 W default); RTX A2000 (5 W floor, default, slot power); RTX 3090 blower (about 2000 RPM, issue #24); HP RTX 3060 (point 1 at 2000 RPM, issue #22) |
-| Ada | `power_max_w`, `power_min_w`, `power_default_w`, `nvvdd_rel_equation_max_mv` (and its alias `nvvdd_rel_max_mv`), `gpc_offset_max_mhz`, `nvvdd_vmin_mv` (pinned clamp), `slot_power_rated_w`, `slot_power_max_w`, `fan_N_min_rpm`, `fan_N_min_pct` | RTX 2000 Ada (100 W ceiling, 1100 mV REL ceiling, VMIN 700 mV read as 790 mV, slot power); RTX 4090 95.02.18 (671 W, +1200 MHz); RTX 4070 (800 RPM with the level at 15 %) |
+| Ada | `power_max_w`, `power_min_w`, `power_default_w`, `nvvdd_rel_equation_max_mv` (and its alias `nvvdd_rel_max_mv`), `gpc_offset_max_mhz`, `nvvdd_vmin_mv` (pinned clamp), `slot_power_rated_w`, `slot_power_max_w`, `input_current_max_ma`, `fan_N_min_rpm`, `fan_N_min_pct` | RTX 2000 Ada (100 W ceiling, 1100 mV REL ceiling, VMIN 700 mV read as 790 mV, slot power); RTX 4090 95.02.18 (671 W, +1200 MHz); Gigabyte RTX 4090 95.02.18.C0.75 (12 V input ceiling 70 A with direct profile 3, issue #37); RTX 4070 (800 RPM with the level at 15 %) |
 | GB20x | `power_default_w` (`power_max_w` and `power_min_w` never were experimental), `notebook_base_tgp_w`, `nvvdd_rel_equation_min_mv`, `msvdd_rel_equation_min_mv`, `nvvdd_vmin_mv` (constant), `gpc_offset_max_mhz`, `memory_offset_min_mhz`, `slot_power_rated_w`, `slot_power_max_w`, `input_current_rated_ma`, `input_current_max_ma`, `runtime_voltage_offsets`, `fan_zero_rpm`, `fan_N_max_rpm`, `fan_N_zero_rpm_high_temp_c` | Three RTX PRO 6000 Blackwell Max-Q and an RTX PRO 4000 SFF (REL floors 1100 mV); RTX PRO 6000 Blackwell Max-Q and RTX 5090 Laptop GPU (boot default; about 185 W on the laptop with the base TGP and ceiling); RTX PRO 4000 SFF (slot power, runtime voltage offsets); RTX 50 boards (12 V input current, GPC offset ceiling, memory offset floor); RTX 5080 (VMIN 800 -> 850 mV, fan maximum 3500 -> 4000 RPM, upper zero RPM threshold at 60 °C, issue #12); HP Omen RTX 5090 (zero RPM) |
 
 N stands for any fan or connector number; a curve point keeps its number. The untested
 paths of these fields stay experimental: a value bound to an override profile (the Ada
-cable sense profiles; the ASUS RTX 5090 XOC top-level profile, its 12 V input current
+cable sense profiles, except the 12 V input ceiling, which ran with direct profile 3; the ASUS RTX 5090 XOC top-level profile, its 12 V input current
 too), the Ada and Turing notebook TGP, a VMIN set per chip (tree root or per-chip
 equation) and the VMIN copy of the RTX 4090 95.02.3C images, the GB20x zero RPM switch
 where it writes a template or leaves bit 4 clear, and the GB20x speed limits of a channel
 whose fan policy flag byte has bit 0 clear (the ASUS XOC and MSI Lightning images, or a copy
 saved with `fan_closed_loop` 0: the speed tests ran with an RPM target, see
 [Fan control unit](#fan-control-unit-fan_closed_loop-opt-in)). So do the lower zero RPM threshold, the
-extra fan curves, curve points 2 and 3, `input_current_policy7_limit_ma`, the Ada and
-Ampere input current thresholds and every field not listed. The hidden `dram_min_table_mhz`
+extra fan curves, curve points 2 and 3, `input_current_policy7_limit_ma`, the Ada rated
+input current threshold, the Ampere input current thresholds and every field not listed. The hidden `dram_min_table_mhz`
 alias writes the bytes of `memory_offset_min_mhz` and carries its flag.
 
 ## Capability and unit contract
@@ -110,14 +110,14 @@ The minimum editable OCP maximum is its unchanged factory rated/default value.
 | `fan_N_zero_rpm_low_temp_c`, `fan_N_zero_rpm_high_temp_c`, `fan_extra_M_zero_rpm_*_temp_c` | The two temperatures at bytes 30..33 (1/32 °C) of a channel's or an extra curve's fan policy entry, read with the zero RPM bits (inferred meaning: idle fans stop below the lower and start above the upper) | Experimental except the GB20x `fan_N_zero_rpm_high_temp_c` ([tested on hardware](#fields-tested-on-hardware)), opt-in, GB20x, Ada and Ampere (not Turing); only where the entry stores a nonzero pair (the upper at least the lower) and byte 46 is not 0xff; editable where the entry's block passes the firmware validator, on Ada and Ampere where `fan_zero_rpm` is offered; an edit keeps lower > 0, lower < upper <= point 1 of the same curve and 110 °C; with zero RPM on, an edit may not leave the upper above point 1 (`ZERO_RPM_ABOVE_CURVE`) |
 | `*_rel/alt/ov/vmin_selector_index` | Full stored selector index | Read-only |
 | `*_boot_voltage_uv` | Stored boot voltage | Read-only, preserved |
-| `*_output_ocp_max_ma` | Reviewed output-OCP policy maximum (client ceiling) | Reviewed Blackwell rows13/14, also on the GB20x notebook layout; NVVDD row 13 on single-rail images, also on the notebook layout with the single-rail table (RTX 5050 Laptop GPU); Turing NVVDD row 13 (class 10, experimental, opt-in); Ampere NVVDD row 13 (class 0, experimental, opt-in) |
-| `*_output_ocp_rated_ma` | Reviewed output-OCP rated value, enforced from boot | Experimental, reviewed Blackwell rows13/14, also on the GB20x notebook layout; NVVDD row 13 on single-rail images, also on the notebook layout with the single-rail table (RTX 5050 Laptop GPU); Turing and Ampere NVVDD row 13 (opt-in) |
+| `*_output_ocp_max_ma` | Reviewed output-OCP policy maximum (client ceiling) | Reviewed Blackwell rows13/14, also on the GB20x notebook layout; NVVDD row 13 on single-rail images, also on the notebook layout with the single-rail table (RTX 5050 Laptop GPU); Turing NVVDD row 13 (class 10, experimental, opt-in); Ampere NVVDD row 13 (class 0, experimental, opt-in); Ada NVVDD row 13 where the class-1 mA row 12 names it (class 0, experimental, opt-in) |
+| `*_output_ocp_rated_ma` | Reviewed output-OCP rated value, enforced from boot | Experimental, reviewed Blackwell rows13/14, also on the GB20x notebook layout; NVVDD row 13 on single-rail images, also on the notebook layout with the single-rail table (RTX 5050 Laptop GPU); Turing, Ampere and Ada NVVDD row 13 (opt-in) |
 | `slot_power_rated_w`, `slot_power_max_w` | PCIe slot power policy: row 19 (SFF), row 18 (5060 Ti), Ada and Ampere row 5, Turing row 3 | Reviewed row shapes only; [tested on hardware](#fields-tested-on-hardware) on GB20x, Ada and Ampere, experimental on Turing |
 | `connector_N_power_rated/max_w`, `connector_N_current_threshold_rated/max_ma` | Power policy and current hardware threshold of external 12 V connector sense channel N, numbered in power-row order; on Ada and GB20x the power policy of the auxiliary power connector input | Experimental except the Turing power policies ([tested on hardware](#fields-tested-on-hardware)): Ampere and Turing, current thresholds opt-in; Ada and GB20x (power only, opt-in), reviewed row shapes on the connector input channel |
 | `slot_current_threshold_rated/max_ma`, `nvvdd_power_threshold_rated/max_w` | Hardware-threshold policies (slot 12 V current; Ada NVVDD output power) | Experimental, opt-in; slot current on Ada, Ampere and Turing, NVVDD power on Ada only |
 | `notebook_base_tgp_w` | Row 2 +73 of the GB20x notebook layout, the base TGP that Dynamic Boost adds its boost to (as one RTX 5090 Laptop GPU behaved) | Opt-in (hidden in the GUI by default), GB20x notebook layout only; tested on hardware on one RTX 5090 Laptop GPU, so not experimental, where it raised the running limit only together with `power_default_w` and `power_max_w`; an edited value stays between `power_default_w` and `power_max_w`, which it does not bound |
 | `runtime_power_limit_unlock` | TGP index of the power table header (3x byte 10, GB20x byte 22): 1 names the TGP row (row 2) there, 0 leaves it empty (`0xff`), as the laptop images ship, where current drivers refuse runtime power limit changes | Opt-in (hidden in the GUI by default), Turing (not experimental), Ampere and GB20x (experimental) notebook headers, not Ada; 0 gives back the stock bytes; hardware-tested on one RTX 2070 Laptop GPU (Turing, Windows) with the limits at stock, not on Ampere or GB20x; see [Runtime power limit switch](#runtime-power-limit-switch-runtime_power_limit_unlock-opt-in) |
-| `input_current_rated_ma`, `input_current_max_ma` | 12 V board input-current policy, row 9 (Ada: thresholds 0/1, rows 9/10) | Reviewed row shapes; [tested on hardware](#fields-tested-on-hardware) on GB20x (experimental when bound to an override profile, and on Ada and Ampere) |
+| `input_current_rated_ma`, `input_current_max_ma` | 12 V board input-current policy, row 9 (Ada: thresholds 0/1, rows 9/10) | Reviewed row shapes; [tested on hardware](#fields-tested-on-hardware) on GB20x (experimental when bound to an override profile) and, the ceiling only, on Ada; experimental on Ampere and for the Ada rated value |
 | `input_current_policy7_limit_ma` | Policy 7 limit linked to the 12 V input policy | Experimental, reviewed Blackwell row shape |
 | `input_policy_9_max_raw` | Row 9 raw maximum; units unknown | Read-only, only when row 9 is unrecognized |
 | `fan_channels` | Active fan channels across the five fan tables | Experimental, Blackwell, Ada and Ampere, up to the stored channels; read-only on Turing |
@@ -2694,9 +2694,9 @@ excluded) and the exact power-channel entry they read:
 | --- | --- | --- |
 | `slot_power_rated_w`, `slot_power_max_w` | class 4 mW on the slot channel (byte-identical to GB20x slot channel 1) | RTX 2000 Ada GET: policy 5, 66 W, current = rated |
 | `slot_current_threshold_rated_ma`, `_max_ma` (opt-in) | class 5 hardware threshold, mA, slot channel | RTX 2000 Ada GET: policy 8, unit mA, 8.25 A, current = rated |
-| `input_current_rated_ma`, `_max_ma` (opt-in) | class 5 hardware thresholds 0 and 1, mA, on the 12 V input channel (byte-identical to GB20x channel 9), written together | Structural only (no Ada GET of these rows); editable only while both rows hold the same value |
+| `input_current_rated_ma`, `_max_ma` (opt-in) | class 5 hardware thresholds 0 and 1, mA, on the 12 V input channel (byte-identical to GB20x channel 9), written together | Structural (no Ada GET of these rows); editable only while both rows hold the same value; the ceiling tested on one RTX 4090 (issue #37: 70 A moved its board power plateau from about 700 W to about 780 W) |
 | `nvvdd_power_threshold_rated_w`, `_max_w` (opt-in) | class 5 mW on the NVVDD output power channel 18 | RTX 2000 Ada GET: policy 16, mW, monitor rail 1, current = rated |
-| `nvvdd_output_ocp_max_ma` | class 0 mA on the NVVDD output current channel 19 | Read-only: absent from the RTX 2000 Ada runtime policy list, so enforcement is unproven. On the other Ada images and every Ampere image row 12 names rows 13 and 18 in the policy relationship entries; on the RTX 2000 Ada and RTX 4000 Ada (and SFF) row 12 is class 0 with unused entries, which may be why row 13 is absent there (inferred) |
+| `nvvdd_output_ocp_rated_ma`, `_max_ma` (opt-in) | class 0 mA on the NVVDD output current channel 19 | Structural (no Ada GET of this row). Editable where row 12 is class 1 mA on that channel: there it names rows 13 and 18 in the policy relationship entries, as on every Ampere image. On the RTX 2000 Ada and RTX 4000 Ada (and SFF) row 12 is class 0 with unused entries, which may be why row 13 is absent from the RTX 2000 Ada runtime list (inferred): there only the ceiling is shown, read-only. See [Ada NVVDD output current limit](#ada-nvvdd-output-current-limit-nvvdd_output_ocp_rated_ma-nvvdd_output_ocp_max_ma-opt-in) |
 | `connector_1_power_rated_w`, `_max_w` (opt-in) | class 4 mW with the slot row shape (its channel byte excluded) on a board input that channel 0 adds: a class-5 single input at 12 V on a connector rail (0xda, 0xdb, 0xdc, 0xfa, 0xfb, 0xfc, 0xe4), no parameter but the provider byte 15 (0..2); the auxiliary power connector input | Structural (no Ada GET of these rows); readings from one RTX 4070 with one 8-pin connector are consistent with its 150 W value binding (not hardware-tested) |
 
 Class-5 rows are hardware thresholds: their fields carry
@@ -2741,7 +2741,8 @@ RTX 4060 Ti and the 16-pin boards both use 0xda. The other RTX 4090, 4080, 4080 
 4070 Ti SUPER and 4070 SUPER images read their connector channel only with class-0 rows
 of unknown meaning, so they get no field. A class-0 mA row on the connector channel (row
 8 of the RTX 4070, RTX 4500 Ada and Gigabyte RTX 4090: 58 A or 57.5 A rated, 75 A
-maximum; row 10 of the RTX 4000 Ada, 29 A) is a current limit of unknown enforcement: it
+maximum; row 10 of the RTX 4000 Ada, 29 A) is a current limit of unknown enforcement
+(the 1000 W ASUS ROG Strix RTX 4090 XOC image keeps row 8 at 57.5/75 A): it
 has no field, the descriptor lists it in `current_limit_rows`, and the reason and the GUI
 name it as a limit that may bind next. The fields follow the other Ada policy rows:
 the keys and numbering of the Ampere connector channels (`connector_1_*`, then
@@ -2959,6 +2960,34 @@ GPC and memory offsets](#factory-gpc-and-memory-offsets-factory_gpc_offset_mhz-f
 
 `ada-relocated-v2` compares `power_rows`, `clock_ranges`, `rail_limits`,
 `rail_equations` and `fan_coolers` between the source and the relocated payload.
+
+### Ada NVVDD output current limit (`nvvdd_output_ocp_rated_ma`, `nvvdd_output_ocp_max_ma`, opt-in)
+
+Row 13 is a class-0 mA row on the NVVDD output current channel 19 (`01 01`, sensor byte
+14 = 6) on every parseable image but the RTX 4060, which has none: 108-756 A rated, 378-756 A on the RTX
+4090 images (648 A on the Gigabyte 95.02.18.C0.75, 756 A on the Galax 95.02.18). Where
+row 12 is a class-1 mA row on the same channel (28 of the 35 parseable images, laptops
+included), `nvvdd_output_ocp_max_ma` and `nvvdd_output_ocp_rated_ma` follow the Ampere
+rule: the ceiling goes from the stored rated value up to 5000.999 A, the rated value
+from the stored minimum up to the ceiling (a rated value above the stored ceiling needs
+the ceiling in the same edit), both form the ordering group `nvvdd-output-ocp`, and an
+edit writes row 13's rated value and maximum in every chain. Row 18 on the same channel
+holds 5001 A, the no-limit value, and is listed in `unlimited_rows`. No cable sense
+profile in the corpus holds an entry for row 13. Both fields are experimental and
+opt-in: whether the firmware enforces the row is unproven on Ada (no Ada GET of it, and
+it is absent from the runtime list of the RTX 2000 Ada, whose row 12 is class 0), it
+likely protects the core VRM, which was sized for the stock value, and the stored number
+is a policy value, not a hardware-safe VRM rating. At 1.07-1.10 V the Gigabyte card's
+648 A would be about 690-710 W of core output power alone (arithmetic only).
+
+**ASUS ROG Strix RTX 4090 XOC image (95.02.18.80.83, 1000 W).** Against the stock RTX
+4090 images it raises the TGP row 2 to 1000 W, the slot row 5 to 378 W, row 1 to 2001 W
+and row 13 to 1000 A, which stays class 0. Rows 6 (connector power), 9 and 10 (the 12 V
+input thresholds) and 16 (the NVVDD power threshold) turn from class 4 or 5 into class 0
+(row 6 at 1350 W, rows 9 and 10 at 45 A, row 16 at 600/900 W) instead of being raised,
+as the ASUS RTX 2080 Ti XOC image does on Turing; those rows then give no field, and the
+editor does not reproduce such a change. Row 8 (57.5 A rated, 75 A maximum on the
+connector channel) is left as on the stock images.
 
 ## Ampere fields
 

@@ -3,6 +3,11 @@
 One line per change. What each change does, where it applies and what was tested is in the
 [changelog details](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/changelog-details.md).
 
+## 0.1.47
+
+- Ada: NVVDD output current limit (row 13) as an experimental opt-in pair on most ROMs (issue #37).
+- Ada: the 12 V input current ceiling is no longer experimental (tested on a Gigabyte RTX 4090, issue #37).
+
 ## 0.1.46
 
 - Blackwell desktop: fan RPM control switch (experimental, issue #33); ASUS XOC ROMs no longer offer a third fan channel.

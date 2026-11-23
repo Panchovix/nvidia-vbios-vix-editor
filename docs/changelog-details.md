@@ -3,6 +3,30 @@
 What each change does, where it applies, what was tested and its risks. CHANGELOG.md lists the same
 changes, one line each, in the same order.
 
+## 0.1.47
+
+- **Ada: NVVDD output current limit (row 13) as an experimental opt-in pair on most ROMs (issue #37).** Row 13
+  is a class-0 mA row on the NVVDD output current channel 19 (648 A on the Gigabyte RTX 4090 95.02.18.C0.75, 378-756 A
+  on the RTX 4090 images). It was shown read-only, because the RTX 2000 Ada, the only Ada card with a runtime policy
+  list, has no row 13 in it. That card's row 12 is class 0, though, while on 28 of the 35 Ada ROMs of the corpus (all
+  but the RTX 2000, 4000 and 4000 SFF Ada and the RTX 4060) row 12 is a class-1 mA row on the same channel that names rows 13 and 18, as on every Ampere ROM. There **NVVDD output current
+  limit ceiling** and **NVVDD output current limit (rated)** (`nvvdd_output_ocp_max_ma`, `nvvdd_output_ocp_rated_ma`)
+  now follow the Ampere fields: opt-in under **Show advanced XOC-style fields**, the ceiling from the stored rated
+  value up to 5000.999 A, the rated value up to the ceiling, and an edit writes row 13's rated value and maximum in
+  every chain. No cable sense profile in the corpus holds an entry for row 13. The ASUS ROG Strix RTX 4090 XOC ROM
+  (1000 W) raises row 13 to 1000 A. Whether the firmware enforces the row is unproven on Ada, it likely protects the
+  core VRM, and raising it is your call. Requested in
+  [issue #37](https://github.com/Panchovix/nvidia-vbios-vix-editor/issues/37) after the 12 V input ceiling moved the
+  owner's plateau to about 780 W. Tested offline: an edit to 800 A changes 12 value bytes in both chains plus the two
+  checksums and reverts byte for byte, and the RTX 2000, 4000 and 4000 SFF Ada ROMs keep the read-only ceiling. Not
+  tested on hardware. Row 8 (57.5 A on the 16-pin connector channel) still has no field: the XOC ROM, which reaches
+  about 900 W, keeps it as stored.
+
+- **Ada: the 12 V input current ceiling is no longer experimental (tested on a Gigabyte RTX 4090, issue #37).** On
+  the Gigabyte RTX 4090 95.02.18.C0.75, `input_current_max_ma` at 70 A (written with direct profile 3) and the rated
+  value at 58 A moved the board power plateau from about 700 W to about 780 W under FurMark (owner report, Linux
+  loader). The rated value stays experimental: the card ran above 58 A at 12 V, so whether it binds is not known.
+
 ## 0.1.46
 
 - **Blackwell desktop: fan RPM control switch (experimental, issue #33); ASUS XOC ROMs no longer offer a third fan

@@ -173,7 +173,7 @@ HARDWARE_TESTED = {
     'slot_power_rated_w': ('ampere', 'ada', 'gb20x'),
     'slot_power_max_w': ('ampere', 'ada', 'gb20x'),
     'input_current_rated_ma': ('gb20x',),
-    'input_current_max_ma': ('gb20x',)}
+    'input_current_max_ma': ('gb20x', 'ada')}
 
 
 def hardware_tested(parser, key):
@@ -2797,6 +2797,17 @@ AMPERE_NVVDD_CURRENT_EVIDENCE = [
                     'sensor bytes, and with it flashed (older driver) the laptop reached 80 W; 45 A at 0.85-0.90 V is '
                     'about 38-41 W of core power, which fits a 60-64 W board power: row 13 is the likely cap '
                     '(inferred, not proven)'}]
+ADA_NVVDD_CURRENT_EVIDENCE = [
+    dict(ADA_STRUCTURAL_EVIDENCE, source='Ada VBIOS corpus, 35 parseable images',
+         format='Ada power row class 0 mA on the NVVDD output current channel 19 (class 1, rail 1, sensor byte 14 = 6)',
+         observation='row 13 on every parseable image but the RTX 4060 reads channel 19 (rated 108-756 A; RTX 4090 '
+                     'images 378-756 A); on 28 images row 12 is class 1 mA on that channel and, as on every Ampere '
+                     'image, names rows 13 and 18 in the relationship entries of the power policy table (inferred: a '
+                     'combined policy over them); row 18 there holds 5001 A, the no-limit value; the ASUS ROG Strix '
+                     'RTX 4090 XOC image (95.02.18.80.83, 1000 W TGP) raises row 13 to 1000 A and keeps it class 0, '
+                     'while it turns rows 6, 9, 10 and 16 from class 4 or 5 into class 0 instead of raising them'),
+    dict(ADA_RUNTIME_EVIDENCE, observation='row 13 is absent from the runtime policy list (mask 0x1c13f), on an image '
+                                           'whose row 12 is class 0')]
 
 
 def ampere_unlimited(row):
@@ -2905,6 +2916,34 @@ def output_ocp(image, parser):
         item = parser.ada_policy('nvvdd_current')
         if item is None:
             return []
+        if any(r['type'] == 1 and r['limit_unit'] == 'mA' and r['row'] != item['vbios_row_index'] and
+               parser.blob[r['offset'] + 1] == item['channel_index'] for r in parser.power_rows()):
+            # As on Ampere, a class-1 mA row 12 on the same channel names row 13 (opt-in pair); the
+            # 5001 A rows set no limit and neither take the field nor block it.
+            unlimited = [o for o in item['same_channel_rows'] if ampere_unlimited(o)]
+            item = dict(item, same_channel_rows=[o for o in item['same_channel_rows'] if not ampere_unlimited(o)])
+            limit = ('whether the firmware enforces it is unproven on Ada (no Ada GET of this row, and it is absent '
+                     'from the runtime policy list of the RTX 2000 Ada, whose row 12 is class 0); the ASUS ROG Strix '
+                     'RTX 4090 XOC image raises it to 1000 A; it likely protects the core VRM, which was sized for the '
+                     'stock value; not hardware-tested; once it is raised, the reliability voltage ceiling (REL) may '
+                     'be the next limit; values stay below 5001 A, the no-limit value of these rows, so this row '
+                     'stays a limit')
+            note = ''.join(f"; row {o['row']} on the same channel holds that value as rated and maximum and is not "
+                           'counted as a second limit' for o in unlimited)
+            extra = dict(unlimited_rows=[{'row': o['row'], 'minimum': o['minimum_raw'], 'rated': o['default_raw'],
+                                          'maximum': o['maximum_raw'], 'units': o['units']} for o in unlimited]
+                         ) if unlimited else {}
+            return ada_policy_fields(
+                image, parser, [item], ('nvvdd_output_ocp_max_ma', 'nvvdd_output_ocp_rated_ma'),
+                ('NVVDD output current limit ceiling', 'NVVDD output current limit (rated)'),
+                group='nvvdd-output-ocp', opt_in=True, evidence=ADA_NVVDD_CURRENT_EVIDENCE,
+                upper_raw=AMPERE_UNLIMITED_RAW - 1, **extra,
+                reasons=(f"experimental, opt-in: ceiling of the NVVDD output current limit (row "
+                         f"{item['vbios_row_index']}, class 0 mA on the NVVDD output current channel); SET and "
+                         'enforcement untested; ' + limit + note + '; stored value, not a hardware-safe VRM rating',
+                         f"experimental, opt-in: rated NVVDD output current limit (row {item['vbios_row_index']}, "
+                         'class 0 mA on the NVVDD output current channel); ' + limit + note +
+                         '; stored value, not a hardware-safe VRM rating'))
         return [field('nvvdd_output_ocp_max_ma', 'NVVDD output current policy ceiling', 'mA', item['maximum_raw'],
                       None, None, False, [dict(ADA_STRUCTURAL_EVIDENCE, format='Ada power row class 0 mA on channel 19 '
                                                                               '(NVVDD output current sensor, rail 1)'),
@@ -3300,6 +3339,10 @@ INPUT_CURRENT_EVIDENCE = {
 
 # The GB20x 12 V input current policy (row 9), which HARDWARE_TESTED lists.
 INPUT_CURRENT_TESTED = 'tested on hardware on RTX 50 boards'
+# The Ada 12 V input current ceiling (thresholds 0/1 and the top cable sense level), which HARDWARE_TESTED lists.
+ADA_INPUT_CURRENT_TESTED = ('tested on hardware: on one RTX 4090 (Gigabyte 95.02.18.C0.75, loader) a 70 A ceiling, '
+                            'written with direct profile 3, moved the board power plateau from about 700 W to about '
+                            '780 W')
 
 
 @registry.register
@@ -3316,7 +3359,10 @@ def input_current(image, parser):
             group='input-current-12v', evidence=ADA_INPUT_EVIDENCE if ada(parser) else AMPERE_INPUT_EVIDENCE,
             opt_in=True, raised_risk='a higher limit lets more current through the 16-pin cable and connector than '
                                      'their rating, which is your call',
-            reasons=('experimental, opt-in: client ceiling of both 12 V input-current hardware thresholds (written '
+            reasons=('opt-in: client ceiling of both 12 V input-current hardware thresholds (written together); '
+                     + ADA_INPUT_CURRENT_TESTED + '; stored value, not a hardware-safe current rating'
+                     if ada(parser) else
+                     'experimental, opt-in: client ceiling of both 12 V input-current hardware thresholds (written '
                      'together); SET and enforcement untested; stored value, not a hardware-safe current rating',
                      'experimental, opt-in: rated 12 V input-current hardware threshold, thresholds 0 and 1 written '
                      'together; identified by a channel byte-identical to the GB20x 12 V input channel; no Ada GET '
