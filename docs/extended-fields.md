@@ -25,7 +25,7 @@ the [changelog details](changelog-details.md) name the cards.
 | --- | --- | --- |
 | Turing | `power_max_w`, `power_min_w`, `power_default_w` (desktop), `connector_N_power_max_w`, `connector_N_power_rated_w`, `runtime_power_limit_unlock` | RTX 2070 at 225 W; RTX 2080 Ti at 500 W with 250 W per connector (Windows loader); one RTX 2070 Laptop GPU (the switch) |
 | Ampere | `power_max_w`, `power_min_w`, `power_default_w` (laptops too), `slot_power_rated_w`, `slot_power_max_w`, `fan_N_min_rpm`, `fan_N_min_pct`, `fan_N_curve_1_rpm`, `fan_N_curve_1_pct` | RTX 3050 6GB Laptop GPU (70 W ceiling, 55 W default); RTX A2000 (5 W floor, default, slot power); RTX 3090 blower (about 2000 RPM, issue #24); HP RTX 3060 (point 1 at 2000 RPM, issue #22) |
-| Ada | `power_max_w`, `power_min_w`, `power_default_w`, `nvvdd_rel_equation_max_mv` (and its alias `nvvdd_rel_max_mv`), `gpc_offset_max_mhz`, `nvvdd_vmin_mv` (pinned clamp), `slot_power_rated_w`, `slot_power_max_w`, `input_current_max_ma`, `fan_N_min_rpm`, `fan_N_min_pct` | RTX 2000 Ada (100 W ceiling, 1100 mV REL ceiling, VMIN 700 mV read as 790 mV, slot power); RTX 4090 95.02.18 (671 W, +1200 MHz); Gigabyte RTX 4090 95.02.18.C0.75 (12 V input ceiling 70 A with direct profile 3, issue #37); RTX 4070 (800 RPM with the level at 15 %) |
+| Ada | `power_max_w`, `power_min_w`, `power_default_w`, `nvvdd_rel_equation_max_mv` (and its alias `nvvdd_rel_max_mv`), `gpc_offset_max_mhz`, `nvvdd_vmin_mv` (pinned clamp), `slot_power_rated_w`, `slot_power_max_w`, `input_current_max_ma`, `fan_N_min_rpm`, `fan_N_min_pct` | RTX 2000 Ada (100 W ceiling, 1100 mV REL ceiling, VMIN 700 mV read as 790 mV, slot power); RTX 4090 95.02.18 (671 W, +1200 MHz); Gigabyte RTX 4090 95.02.18.C0.75 (12 V input ceiling 70 A with direct profile 3, issue #37); RTX 4070 (800 RPM with the level at 15 %); modded RTX 4080 32 GB (1500 RPM, PR #39) |
 | GB20x | `power_default_w` (`power_max_w` and `power_min_w` never were experimental), `notebook_base_tgp_w`, `nvvdd_rel_equation_min_mv`, `msvdd_rel_equation_min_mv`, `nvvdd_vmin_mv` (constant), `gpc_offset_max_mhz`, `memory_offset_min_mhz`, `slot_power_rated_w`, `slot_power_max_w`, `input_current_rated_ma`, `input_current_max_ma`, `runtime_voltage_offsets`, `fan_zero_rpm`, `fan_N_max_rpm`, `fan_N_zero_rpm_high_temp_c` | Three RTX PRO 6000 Blackwell Max-Q and an RTX PRO 4000 SFF (REL floors 1100 mV); RTX PRO 6000 Blackwell Max-Q and RTX 5090 Laptop GPU (boot default; about 185 W on the laptop with the base TGP and ceiling); RTX PRO 4000 SFF (slot power, runtime voltage offsets); RTX 50 boards (12 V input current, GPC offset ceiling, memory offset floor); RTX 5080 (VMIN 800 -> 850 mV, fan maximum 3500 -> 4000 RPM, upper zero RPM threshold at 60 °C, issue #12); HP Omen RTX 5090 (zero RPM) |
 
 N stands for any fan or connector number; a curve point keeps its number. The untested
@@ -1925,6 +1925,10 @@ and every active channel is stored. Fan fields are offered only when that holds.
     minimum, a curve or the speed value above the maximum, a maximum or a curve
     above the ceiling). Bounds are always numeric, so a joint request that breaks
     the order is refused on the edited result.
+  - Exception: a speed minimum held only by a speed-table value below it (a modded
+    RTX 4080 32 GB: 3000 RPM over 2295) can still be lowered, to that value or less.
+    That card ran at 1500 RPM with the level minimum at 15 %
+    ([PR #39](https://github.com/Panchovix/nvidia-vbios-vix-editor/pull/39)).
 - **Curve points.** `fan_N_curve_K_temp_c`, `fan_N_curve_K_rpm` and `fan_N_curve_K_pct`
   (K = 1..3) edit point K of channel N's own policy entry: the temperature at byte
   18 + 4(K-1) (`<H`, 1/32 °C; the field is in °C, so 60.5 is stored as 1936 and 60.01

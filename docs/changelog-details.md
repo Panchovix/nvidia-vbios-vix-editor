@@ -3,6 +3,14 @@
 What each change does, where it applies, what was tested and its risks. CHANGELOG.md lists the same
 changes, one line each, in the same order.
 
+## 0.1.48
+
+- **Fans: a speed minimum stored above the speed-table value can be lowered (PR #39).** A modded RTX 4080 32 GB
+  (95.03.33.40.5E) stores a 3000 RPM minimum over a 2295 RPM speed-table value, so `fan_N_min_rpm` was read-only. It
+  can now go down, to that value or less, and the GUI says so. Tested on that card: 1500 RPM with the level minimum
+  at 15 %. Contributed by @nilsheidorn
+  ([PR #39](https://github.com/Panchovix/nvidia-vbios-vix-editor/pull/39)).
+
 ## 0.1.47
 
 - **Ada: NVVDD output current limit (row 13) as an experimental opt-in pair on most ROMs (issue #37).** Row 13

@@ -445,6 +445,16 @@ def fan_level_notes(field, family, language='en'):
     return [Messages(language)('fan_level.low')]
 
 
+def fan_minimum_notes(field, language='en'):
+    """Note of a fan speed minimum stored above the ROM's speed-table value: it can only come down (lower_only in
+    the registry; editable rows do not show reasons)."""
+    maximum = (field.get('bounds') or {}).get('maximum')
+    if (field.get('value_semantics') != 'stored-fan-minimum-speed' or not field.get('editable') or maximum is None or
+            field['current'] <= maximum):
+        return []
+    return [Messages(language)('fan_minimum.lower_only', maximum=maximum)]
+
+
 def fan_curve_hint(field, fields, values, language='en'):
     """Explain curve points blocking a fan limit, using all pending stored values.
 

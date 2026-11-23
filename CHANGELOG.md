@@ -3,6 +3,10 @@
 One line per change. What each change does, where it applies and what was tested is in the
 [changelog details](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/changelog-details.md).
 
+## 0.1.48
+
+- Fans: a speed minimum stored above the ROM's speed-table value can be lowered (modded RTX 4080 32 GB, PR #39 by @nilsheidorn).
+
 ## 0.1.47
 
 - Ada: NVVDD output current limit (row 13) as an experimental opt-in pair on most ROMs (issue #37).

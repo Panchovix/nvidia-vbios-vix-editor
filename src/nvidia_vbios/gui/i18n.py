@@ -445,6 +445,8 @@ MESSAGES_EN = MappingProxyType({'window_title': 'NVIDIA VBIOS — File editor',
                                             'experimental)',
  'field.connector_current_threshold_max': 'Connector channel {connector} current threshold ceiling (advanced, '
                                           'experimental)',
+ 'fan_minimum.lower_only': ('Stored above the speed-table value of the ROM, so it can only go down, to {maximum} '
+                            'RPM or less. Lower the minimum fan level with it.'),
  'show_advanced': 'Show advanced XOC-style fields',
  'shunt_multiplier': 'Shunt multiplier (x)',
  'shunt_help': 'Display only: the VBIOS keeps the values in the fields. Assumes the same multiplier on every '

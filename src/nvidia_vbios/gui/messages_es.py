@@ -476,6 +476,8 @@ MESSAGES_ES = MappingProxyType({'window_title': 'NVIDIA VBIOS — Editor de arch
  'field.notebook_base_tgp_w': 'TGP base del portátil',
  'field.runtime_power_limit_unlock': ('Permitir cambiar el límite de potencia en uso (nvidia-smi -pl, '
                                       'Afterburner)'),
+ 'fan_minimum.lower_only': ('Está guardado sobre el valor de la speed table de la ROM, así que solo puede bajar, a '
+                            '{maximum} RPM o menos. Baja también el nivel mínimo del ventilador.'),
  'show_advanced': 'Mostrar campos avanzados (estilo XOC)',
  'shunt_multiplier': 'Multiplicador de shunt (x)',
  'shunt_help': 'Solo informativo: la VBIOS guarda los valores de los campos. Supone el mismo multiplicador en '

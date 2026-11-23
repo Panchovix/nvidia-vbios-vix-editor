@@ -3863,7 +3863,8 @@ FAN_HARDWARE_TESTED = {
                      '100 % at this speed and map the percent linearly down to 30 % at the minimum'),
     ('min', 'rpm'): ("tested on hardware: an RTX 4070 ran at 800 RPM at the driver's 30 % with the minimum level "
                      'lowered to 15 % too (with the speed alone it stayed near 1050 RPM), and an RTX 3090 blower near '
-                     '2000 RPM (issue #24); lower the minimum level with it'),
+                     '2000 RPM (issue #24), and a modded RTX 4080 32 GB blower at 1500 RPM, down from 3000, with the '
+                     'level at 15 % (PR #39); lower the minimum level with it'),
     ('min', 'pct'): ('tested on hardware: lowered with the minimum speed, to 15 % on an RTX 4070 (800 RPM) and to 30 % '
                      'on an RTX 3090 blower (about 2000 RPM, issue #24); most likely the fan does not run slower than '
                      'it spins at this level')}
@@ -3917,7 +3918,7 @@ def fan_shaped(curve):
 
 
 def fan_field(writable, parser, key, label, units, current, lo, hi, shaped, places, encoding, scale, ceiling, noun,
-              evidence, reason, *, untested=False, **extra):
+              evidence, reason, *, untested=False, lower_only=False, **extra):
     """One fan limit or curve point, in stored units, written at places (the value's offset, then the
     same place in each unused policy entry copy: policy_mirrors) in every chain, experimental unless
     HARDWARE_TESTED lists it for the family and the path is a tested one (untested False). It is
@@ -3925,8 +3926,8 @@ def fan_field(writable, parser, key, label, units, current, lo, hi, shaped, plac
     inside lo..hi. With lo == hi (a curve point flush with its limit, a level maximum of 100 under a
     curve that reaches 100 %) a request for it alone keeps its value, but it can move with its partners
     in a joint edit. Bounds stay numeric, so the joint recheck refuses a request that breaks the order
-    on the edited result."""
-    inside = shaped and lo <= current <= hi
+    on the edited result. A lower_only value sits above hi and may only come down into lo..hi."""
+    inside = shaped and lo <= current <= hi or lower_only
     editable = inside and writable
     show = (lambda v: v / scale) if scale != 1 else (lambda v: v)
     offsets, _ = chain_copies(parser, places, struct.calcsize(encoding))
@@ -3987,6 +3988,10 @@ def fan_limits(writable, parser, table, evidence):
                                               ('max', high, high_at, max(top, low + 1), ceiling)):
                 word = 'minimum' if side == 'min' else 'maximum'
                 speed_open = open_loop and unit == 'rpm'
+                # A speed minimum held only by a speed-table value below it (a modded RTX 4080 32 GB:
+                # 3000 RPM over 2295) may come down to that value.
+                lower_only = (side == 'min' and unit == 'rpm' and shaped and bool(held) and
+                              held[0] < low <= points[0][0] and low < high and top <= high <= ceiling)
                 flagged = speed_open or not hardware_tested(parser, f'fan_{n}_{side}_{unit}')
                 tested = None if flagged else FAN_HARDWARE_TESTED.get((side, unit))
                 ending = (FAN_OPEN_LOOP_SPEED if speed_open else
@@ -4001,11 +4006,14 @@ def fan_limits(writable, parser, table, evidence):
                     [dict(e) for e in firmware + list(evidence)],
                     ('experimental: ' if flagged else '') + f'{word} fan {noun} of channel {n}; ' +
                     (f"the minimum stays at or below the channel's own fan curve{value}{below}, so it moves past "
-                     'that curve only with its points in one edit; ' if side == 'min' else
+                     'that curve only with its points in one edit; ' +
+                     ('it is stored above the speed-table value, so it can only be lowered to that value; '
+                      if lower_only else '') if side == 'min' else
                      f'the maximum stays at or above every stored fan curve{value}, so it moves past a curve only '
                      'with its points in one edit; ') + ending,
                     stored_units=units, value_semantics=f'stored-fan-{word}-{noun}', fan_rows=[r['index']],
-                    fan_channel=r['index'], untested=speed_open, **({'opt_in': True} if unit == 'pct' else {})))
+                    fan_channel=r['index'], untested=speed_open, lower_only=lower_only,
+                    **({'opt_in': True} if unit == 'pct' else {})))
     return result
 
 
