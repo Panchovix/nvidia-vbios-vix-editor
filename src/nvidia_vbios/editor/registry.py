@@ -26,6 +26,11 @@ class Binding:
     # the value, the set listed for the requested value or else the None set (the
     # Ada VMIN clone and its link). Only the reviewed binding may write them.
     companion: tuple = ()
+    # Optional offsets that follow the value (the lower cable sense levels, sense_level_profiles): each takes a
+    # value raised above the one stored at offsets[0] and is capped by a lower one, so lowering never raises them.
+    # capped: offsets only capped by the value, never raised. Only the reviewed binding may write either.
+    followers: tuple = ()
+    capped: tuple = ()
 
 
 class FieldRegistry:
@@ -83,7 +88,7 @@ DRAM_MIN_UNITS_EVIDENCE = dict(NVML_CAPTURE, relation='NVML MHz = 2 * table MHz'
 
 def field(key, label, units, current, lo, hi, editable, evidence, *, offsets=(),
           encoding='', scale=1, reason=None, stored_units=None, writable_status=None,
-          ordering_group=None, encoding_bounds=None, layout=(), companion=(), **extra):
+          ordering_group=None, encoding_bounds=None, layout=(), companion=(), followers=(), capped=(), **extra):
     desc = dict(key=key, label=label, type='number', units=units, current=current,
                 bounds={'minimum': lo, 'maximum': hi, 'kind': 'encoding-and-preserved-defaults',
                         'hardware_safe_maximum': None}, editable=editable,
@@ -115,7 +120,10 @@ def field(key, label, units, current, lo, hi, editable, evidence, *, offsets=(),
         desc['reason'] = reason
     if stored_units:
         desc['stored_units'] = stored_units
-    return Binding(desc, tuple(offsets), encoding, Decimal(str(scale)), tuple(layout), tuple(companion))
+    # A follower or capped offset is never one of the value's own offsets.
+    return Binding(desc, tuple(offsets), encoding, Decimal(str(scale)), tuple(layout), tuple(companion),
+                   tuple(at for at in followers if at not in offsets),
+                   tuple(at for at in capped if at not in offsets and at not in followers))
 
 
 def can_edit(image, parser):
@@ -723,6 +731,7 @@ def power(image, parser):
     notebook = isinstance(parser, BlackwellRom) and parser.notebook_power_layout()
     top, maximum_upper, default_lower, default_upper, minimum_evidence = None, 0x7FFFFFFF, None, None, None
     binding, profile_extra, maximum_note, default_note, minimum_note = None, {}, '', '', ''
+    followers, capped = [], []
     base, maximum_extra, maximum_evidence = None, {}, []
     if notebook:
         tgp = rows[2]
@@ -758,6 +767,9 @@ def power(image, parser):
         # corpus). Only row8 is the reviewed TGP floor; coordinating their
         # maxima does not establish a shared minimum value or meaning.
         policy_indices = (8,)
+        # The lower cable sense levels follow the ceiling (sense_level_profiles).
+        levels = sense_level_profiles(parser)
+        others = [p for p in profiles if p not in levels]
         # Fixed board policies 2/7 (CONTROL current = rated): every stock image stores their rated value equal to
         # the ceiling, so where the two rows agree the ceiling writes it too and they no longer bound it.
         coupled, rated = rows[2]['default_raw'] == rows[7]['default_raw'], rows[2]['default_raw']
@@ -792,8 +804,10 @@ def power(image, parser):
             tgp = dict(rows[8], default_raw=values[(8, 'default')], maximum_raw=values[(8, 'maximum')])
             coupled, rated = coupled and values[(2, 'default')] == values[(7, 'default')], values[(2, 'default')]
             # Coupled, the profile's rows 2/7 rated values move with it and stay at or below the base ones.
-            minimum = max([values[(8, 'default')]] + top_profile_bounds(profiles, top, (2, 7, 8), 'maximum') + (
-                [rows[2]['minimum_raw'], rows[7]['minimum_raw']] + top_profile_bounds(profiles, top, (2, 7), 'default')
+            # The lower sense levels' maxima (and, coupled, rows 2/7 rated values) are written with it: they bound
+            # nothing.
+            minimum = max([values[(8, 'default')]] + top_profile_bounds(others, top, (2, 7, 8), 'maximum') + (
+                [rows[2]['minimum_raw'], rows[7]['minimum_raw']] + top_profile_bounds(others, top, (2, 7), 'default')
                 if coupled else [values[(2, 'default')], values[(7, 'default')]]))
             minimum_upper = tgp['default_raw']
             maximum_upper = min(rows[8]['maximum_raw'], rows[2]['default_raw']) if coupled else rows[8]['maximum_raw']
@@ -808,6 +822,13 @@ def power(image, parser):
             # correlations were taken where the profile equals the base, so they are dropped.
             minimum_evidence, evidence = evidence, [TOP_PROFILE_EVIDENCE] + evidence
             default_evidence = evidence
+        if levels:
+            # Their rows 2/7/8 maxima and, coupled, rows 2/7 rated values follow the ceiling (Binding.followers);
+            # their TGP rated value (and, not coupled, their rows 2/7 rated values) is only capped by it, so a lower
+            # ceiling keeps each level ordered and the ceiling keeps its range.
+            followers = [e['value_offset'] for e in level_entries(levels, (2, 7, 8), 'maximum') +
+                         (level_entries(levels, (2, 7), 'default') if coupled else [])]
+            capped = [e['value_offset'] for e in level_entries(levels, (8,) if coupled else (2, 7, 8), 'default')]
         if coupled:
             offsets = offsets + rated_offsets
             maximum_extra = dict(rated_policy_indices=[2, 7])
@@ -818,6 +839,11 @@ def power(image, parser):
                 maximum_note += ('the fixed board policies 2/7 still hold %g W and take the ceiling when it is set; '
                                  % (rated / 1000))
             maximum_evidence = [dict(e) for e in FIXED_RATED_EVIDENCE]
+        if levels:
+            maximum_note += sense_level_note(parser, 'the rows 2/7/8 maxima' + (' and rows 2/7 rated values'
+                                                                                if coupled else ''), 8)
+            maximum_extra['sense_level_profiles'] = [p['index'] for p in levels]
+            maximum_evidence = maximum_evidence + [dict(SENSE_LEVEL_EVIDENCE)]
     else:
         tgp = rows[parser.tgp_index]
         notebook = parser.notebook_power
@@ -911,7 +937,7 @@ def power(image, parser):
     layout = {'notebook_tgp': True} if notebook else {}
     return [field('power_max_w', 'Board power ceiling', 'W', tgp['maximum_raw'] / 1000,
                   minimum / 1000, maximum_upper / 1000, can_edit(image, parser), evidence + maximum_evidence,
-                  offsets=offsets, encoding='<I', scale=1000, stored_units='mW',
+                  offsets=offsets, encoding='<I', scale=1000, stored_units='mW', followers=followers, capped=capped,
                   factory_default=tgp['default_raw'] / 1000,
                   ordering_group='board-power', encoding_bounds=(0, 0x7FFFFFFF / 1000),
                   reason=(ADA_NOTEBOOK_REASON if ada(parser) else AMPERE_NOTEBOOK_REASON if ampere(parser) else
@@ -953,6 +979,46 @@ def power(image, parser):
                   'runtime minimum remain unknown',
                   **layout, **profile_extra, **flags)] + (
         [] if base is None else [notebook_base_tgp(image, parser, tgp, base)]) + runtime_power_limit(image, parser)
+
+
+SENSE_LEVEL_EVIDENCE = {
+    'kind': 'owner-observation', 'source': 'RTX PRO 6000 Blackwell Max-Q, stock image',
+    'observed': '300 W maximum with the bundled 2x8-pin adapter, 325 W with a native 12V-2x6 cable or a 3x8 or '
+                '4x8-pin adapter; the image reaches override profile 5 (300 W) at sense code 1 and profiles 6/7 '
+                '(equal to the base, 325 W) at codes 2/3'}
+
+
+def sense_level_profiles(parser):
+    """Override profiles of the lower cable sense levels (BlackwellRom.sense_level_profiles) that the board power
+    ceiling and the rated 12 V input current write along with the base table, so that those levels follow
+    them: [] on other families and the notebook layout."""
+    if not isinstance(parser, BlackwellRom) or parser.notebook_power_layout():
+        return []
+    return [profile for _, _, profile in parser.sense_level_profiles()]
+
+
+def sense_level_note(parser, what, policy):
+    """Reason clause naming the lower cable sense levels a field also writes, with each level's current value on
+    policy 8 (W, maximum) or 9 (A, rated), or ''."""
+    levels = parser.sense_level_profiles() if sense_level_profiles(parser) else []
+    if not levels:
+        return ''
+
+    def now(profile):
+        values = {(e['policy'], e['field']): e['value_raw'] for e in profile['entries']}
+        value = values.get((8, 'maximum') if policy == 8 else (9, 'default'))
+        return '' if value is None else ', now %g %s' % (value / 1000, 'W' if policy == 8 else 'A')
+    named = ' and '.join('%d (sense code %d, %g W in the selection table%s)' % (
+        profile['index'], code, power / 1000, now(profile)) for code, power, profile in levels)
+    return ('also writes %s of override profile%s %s, a lower cable sense level, when the value rises above the '
+            'stored one (also back to a stock value), and caps them at a lower one; a cable or adapter is rated for '
+            'the level its sense pins report; the level write is not hardware-tested; '
+            % (what, 's' if len(levels) > 1 else '', named))
+
+
+def level_entries(levels, policies, name):
+    """Entries of the lower sense level profiles on these policies and field ('maximum' or 'default')."""
+    return [e for p in levels for e in p['entries'] if e['policy'] in policies and e['field'] == name]
 
 
 def notebook_base_tgp(image, parser, tgp, base):
@@ -3387,6 +3453,10 @@ def input_current(image, parser):
     top = parser.top_power_profile() if profiles and not matching else None
     if profiles and not matching and top is None:
         raise FormatError('no complete override profile matches the base policy')
+    # The rated value also sets both row 9 entries of the lower cable sense levels (sense_level_profiles), so their
+    # maximum never sits below it.
+    levels = sense_level_profiles(parser)
+    others = [p for p in profiles if p not in levels]
     editable = can_edit(image, parser)
     maximum, rated, maximum_lower = item['maximum_raw'], item['default_raw'], item['default_raw']
     maximum_upper, rated_lower, extra, note = 0x7FFFFFFF, item['minimum_raw'], {}, ''
@@ -3397,7 +3467,7 @@ def input_current(image, parser):
         rated_upper = min(maximum, item['default_raw'])
         maximum_upper = item['maximum_raw']
         maximum_lower = max([rated] + top_profile_bounds(profiles, top, (9,), 'maximum'))
-        rated_lower = max([rated_lower] + top_profile_bounds(profiles, top, (9,), 'default'))
+        rated_lower = max([rated_lower] + top_profile_bounds(others, top, (9,), 'default'))
         extra = dict(bound_profile=top['index'], base_values={'input_current_max_ma': item['maximum_raw'],
                                                               'input_current_rated_ma': item['default_raw']})
         note = top_profile_note(top, '%d mA' % item['maximum_raw'] if item['maximum_raw'] == item['default_raw'] else
@@ -3425,10 +3495,11 @@ def input_current(image, parser):
              'connector alone, without the slot' if connector else '')
 
     def offsets(name, base):
-        if top is not None:
-            return top_profile_offsets(top, (9,), name)
-        return [base] + [e['value_offset'] for p in matching for e in p['entries']
-                         if e['policy'] == 9 and e['field'] == name]
+        found = (top_profile_offsets(top, (9,), name) if top is not None else
+                 [base] + [e['value_offset'] for p in matching for e in p['entries']
+                           if e['policy'] == 9 and e['field'] == name])
+        return found
+    level = ('; ' + sense_level_note(parser, 'both row 9 entries', 9)[:-2]) if levels else ''
     bound_evidence = [TOP_PROFILE_EVIDENCE] + evidence if top is not None else evidence
 
     def flags(key):
@@ -3447,12 +3518,15 @@ def input_current(image, parser):
               field('input_current_rated_ma', '12 V input current limit (rated)', 'mA', rated,
                     rated_lower, rated_upper, editable, bound_evidence,
                     offsets=offsets('default', item['default_offset']), value_semantics='stored-policy-rated-default',
+                    followers=[e['value_offset'] for e in level_entries(levels, (9,), 'default') +
+                               level_entries(levels, (9,), 'maximum')],
                     reason='experimental: ' + note + 'rated limit applied without a client request' + reads +
-                           '; enforcement not hardware-tested; stored value, not a hardware-safe current rating'
+                           level + '; enforcement not hardware-tested; stored value, not a hardware-safe current rating'
                            if flags('input_current_rated_ma') else
-                           'rated limit applied without a client request' + reads + tested +
+                           'rated limit applied without a client request' + reads + level + tested +
                            '; stored value, not a hardware-safe current rating',
-                    **flags('input_current_rated_ma'), **common, **extra)]
+                    **flags('input_current_rated_ma'), **common, **extra,
+                    **({'sense_level_profiles': [p['index'] for p in levels]} if levels else {}))]
     if item['linked_limit_recognized']:
         # Raising row9 alone may leave the effective 12 V limit at this value.
         # Kept as a separate field on purpose; which copy binds is still to

@@ -1003,15 +1003,7 @@ class BlackwellRom:
             raise FormatError("no override profiles")
         if self.matching_power_profiles():
             raise FormatError("a profile matches the base table")
-        at, b = self.pointer("P", 0xF4), self.blob
-        stages = []
-        for row, header in ((at + 0x0A, "01 08 00 00 00"), (at + 0x47, "02 00 00 00 00")):
-            if b[row:row + 5] != bytes.fromhex(header):
-                raise FormatError("profile selection stages are off or unrecognized")
-            entries = [b[row + 5 + 7 * j:row + 12 + 7 * j] for j in range(8)]
-            if any(e[0] not in (0, 1) for e in entries):
-                raise FormatError("unrecognized profile selection entry")
-            stages.append([(e[1], unpack(e, "<I", 2)[0], e[6]) for e in entries if e[0] == 1])
+        stages = self.profile_selection()
         codes = [code for _, _, code in stages[0]]
         if not codes or codes.count(max(codes)) != 1:
             raise FormatError("profile selection stage 1 has no unique top code")
@@ -1050,6 +1042,50 @@ class BlackwellRom:
                                       f"the same entry of override profile {index}",
                                       details=dict(policy=e["policy"], field=e["field"]))
         return dict(top, values=values, selection_power_raw=power, selection_code=max(codes))
+
+    def profile_selection(self):
+        """The two selection stages before the profiles (selected_top_profile): enabled entries of each as
+        (u8 profile, u32 mW, u8 param), the param being the code in stage 1. Raises FormatError unless both
+        headers and every entry type are the reviewed ones."""
+        at, b = self.pointer("P", 0xF4), self.blob
+        stages = []
+        for row, header in ((at + 0x0A, "01 08 00 00 00"), (at + 0x47, "02 00 00 00 00")):
+            if b[row:row + 5] != bytes.fromhex(header):
+                raise FormatError("profile selection stages are off or unrecognized")
+            entries = [b[row + 5 + 7 * j:row + 12 + 7 * j] for j in range(8)]
+            if any(e[0] not in (0, 1) for e in entries):
+                raise FormatError("unrecognized profile selection entry")
+            stages.append([(e[1], unpack(e, "<I", 2)[0], e[6]) for e in entries if e[0] == 1])
+        return stages
+
+    def sense_level_profiles(self):
+        """(code, mW, profile) for each profile that a stage 1 code between the lowest and the top one reaches
+        (stage 2 maps its value to one enabled profile), in code order, once per profile; [] when the stages do not
+        decode or a code repeats. Left out: a profile the lowest code (also a connector that is not fully seated)
+        or the top code reaches, and a profile that matches the base. The RTX PRO 6000 Max-Q images reach profile
+        5 (300 W) at code 1, the 300 W limit its 2x8-pin adapter gets."""
+        try:
+            first, second = self.profile_selection()
+            profiles = {p["index"]: p for p in self.power_profiles()}
+            matching = {p["index"] for p in self.matching_power_profiles()}
+        except FormatError:
+            return []
+        codes = sorted(code for _, _, code in first)
+        if not codes or len(set(codes)) != len(codes):
+            return []
+
+        def reached(power):
+            targets = [profile for profile, value, _ in second if value == power]
+            return targets[0] if power and len(targets) == 1 and targets[0] in profiles else None
+        by_code = {code: reached(power) for _, power, code in first}
+        ends = {by_code[codes[0]], by_code[codes[-1]]}
+        result, seen = [], set()
+        for _, power, code in sorted(first, key=lambda e: e[2]):
+            index = by_code[code]
+            if (codes[0] < code < codes[-1] and index is not None and index not in ends | matching | seen):
+                seen.add(index)
+                result.append((code, power, profiles[index]))
+        return result
 
     def top_power_profile(self):
         """selected_top_profile(), or None when any of its conditions fails."""

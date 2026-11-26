@@ -3,6 +3,10 @@
 One line per change. What each change does, where it applies and what was tested is in the
 [changelog details](https://github.com/Panchovix/nvidia-vbios-vix-editor/blob/main/docs/changelog-details.md).
 
+## 0.1.49
+
+- RTX 50: a raised board power ceiling or 12 V input current also reaches the lower cable sense levels (Max-Q 2x8 adapter).
+
 ## 0.1.48
 
 - Fans: a speed minimum stored above the ROM's speed-table value can be lowered (modded RTX 4080 32 GB, PR #39 by @nilsheidorn).

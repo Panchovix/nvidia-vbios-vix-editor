@@ -3,6 +3,20 @@
 What each change does, where it applies, what was tested and its risks. CHANGELOG.md lists the same
 changes, one line each, in the same order.
 
+## 0.1.49
+
+- **RTX 50: raising the board power ceiling or the 12 V input current also raises the lower cable sense
+  levels.** The ROM picks its power limits from the 12V-2x6 sense pins through override profiles. The profile
+  of a lower level that differs from the base table kept its stock limit whatever the fields said: 300 W with
+  the 2x8-pin adapter of the RTX PRO 6000 Max-Q (325 W with a native cable), 450 or 600 W with three 8-pin
+  plugs on the RTX 5090 images. **Board power ceiling** now also writes that profile's limits, and **12 V input
+  current limit (rated)** its 12 V input current, when the value rises above the stored one. A lower value
+  never raises them, it only caps them, and the lowest level, which a connector that is not fully seated also
+  reports, stays as stored. The editor does not know the stock values: any raise counts, also back to a stock
+  value on a copy saved lower, and only an edit that starts from the stock ROM gives the stock levels back. A copy
+  whose ceiling 0.1.48 or earlier already raised needs a higher ceiling to reach the level. A cable or adapter is rated for the level its sense pins report, so going past it is your call.
+  Tested offline on the Max-Q, RTX 5090 and ASUS XOC images. Not tested on hardware.
+
 ## 0.1.48
 
 - **Fans: a speed minimum stored above the speed-table value can be lowered (PR #39).** A modded RTX 4080 32 GB

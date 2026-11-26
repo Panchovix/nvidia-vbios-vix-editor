@@ -3434,8 +3434,10 @@ class TopLevelProfileTests(unittest.TestCase):
                          (7, 600000))
         fields = descriptors(image)
         # The ceiling writes the profile's rows 2/7 rated values too: its own (8, default) bounds it from below.
+        # Profile 0 (code 2, 450 W) is a lower sense level: it follows the ceiling and the rated input current, so
+        # its row 9 entries bound nothing; its TGP rated value (50 W) still bounds the defaults.
         expected = {'power_max_w': (90, 80, 100), 'power_default_w': (80, 50, 90), 'power_min_w': (30, 1, 80),
-                    'input_current_max_ma': (60000, 60000, 80000), 'input_current_rated_ma': (60000, 40000, 60000)}
+                    'input_current_max_ma': (60000, 60000, 80000), 'input_current_rated_ma': (60000, 1, 60000)}
         for key, (current, low, high) in expected.items():
             with self.subTest(key=key):
                 f = fields[key]
@@ -3463,15 +3465,22 @@ class TopLevelProfileTests(unittest.TestCase):
         self.assertEqual(offsets['power_max_w'], {e['value_offset'] for e in parser.top_power_profile()['entries']
                                                   if e['policy'] in (2, 7) or e['field'] == 'maximum' and
                                                   e['policy'] == 8})
+        level = {(e['policy'], e['field']): e['value_offset'] for e in parser.power_profiles()[0]['entries']}
+        followers = {b.descriptor['key']: set(b.followers) for b in registry.bindings(image, parser)[0]}
+        self.assertEqual(followers['power_max_w'], {level[k] for k in ((2, 'maximum'), (7, 'maximum'), (8, 'maximum'),
+                                                                       (2, 'default'), (7, 'default'))})
+        self.assertEqual(followers['input_current_rated_ma'], {level[(9, 'maximum')], level[(9, 'default')]})
+        self.assertFalse(followers['input_current_max_ma'] or followers['power_default_w'])
+        self.assertEqual(fields['power_max_w']['sense_level_profiles'], [0])
 
-    def test_edits_write_only_the_bound_profile_and_revert(self):
+    def test_edits_write_the_bound_profile_and_its_lower_level(self):
         image = top_profile_fixture()
         parser = backend(image)
-        top = parser.top_power_profile()
+        top, level = parser.top_power_profile(), parser.power_profiles()[0]
         changes = {'power_max_w': 100, 'power_default_w': 85, 'input_current_max_ma': 75000,
                    'input_current_rated_ma': 70000}
         result = edit(image, changes)
-        changed_bytes_within(self, image, result, [e['value_offset'] for e in top['entries']])
+        changed_bytes_within(self, image, result, [e['value_offset'] for e in top['entries'] + level['entries']])
         target = backend(result.image)
         self.assertEqual(target.power_rows(), parser.power_rows())
         self.assertEqual(target.top_power_profile()['values'],
@@ -3480,9 +3489,23 @@ class TopLevelProfileTests(unittest.TestCase):
                           (9, 'maximum'): 75000, (9, 'default'): 70000})
         self.assertEqual(result.manifest['preservation']['changed_rated_defaults'],
                          ['input_current_rated_ma', 'power_default_w', 'power_max_w'])
-        back = edit(result.image, {'power_max_w': 90, 'power_default_w': 80, 'input_current_max_ma': 60000,
-                                   'input_current_rated_ma': 60000})
-        self.assertEqual(back.blob, image.blob)
+
+        def level_values(blob_image):
+            return {(e['policy'], e['field']): e['value_raw']
+                    for e in backend(blob_image).power_profiles()[0]['entries']}
+        # The raised values reach the lower level; its TGP rated value stays.
+        self.assertEqual(level_values(result.image), {
+            (2, 'maximum'): 100000, (7, 'maximum'): 100000, (8, 'maximum'): 100000, (2, 'default'): 100000,
+            (7, 'default'): 100000, (8, 'default'): 50000, (9, 'maximum'): 70000, (9, 'default'): 70000})
+        stock = {'power_max_w': 90, 'power_default_w': 80, 'input_current_max_ma': 60000,
+                 'input_current_rated_ma': 60000}
+        # The stored values are a no-op; back at them, the top profile is as stored and the level stays capped there.
+        self.assertEqual(edit(image, stock).blob, image.blob)
+        back = edit(result.image, stock)
+        self.assertEqual(backend(back.image).top_power_profile()['values'], top['values'])
+        self.assertEqual(level_values(back.image), {
+            (2, 'maximum'): 90000, (7, 'maximum'): 90000, (8, 'maximum'): 90000, (2, 'default'): 90000,
+            (7, 'default'): 90000, (8, 'default'): 50000, (9, 'maximum'): 60000, (9, 'default'): 60000})
         self.assertEqual(edit(image, {'power_min_w': 40}).manifest['edits'][0]['offset'],
                          parser.power_rows()[8]['offset'] + 13)
 
@@ -3492,13 +3515,20 @@ class TopLevelProfileTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
                 edit(image, changes)
             self.assertEqual(exc.exception.code, 'OUT_OF_BOUNDS')
+        # Lowered below the lower level (profile 0), the values cap it instead of unbinding profile 7; its TGP rated
+        # value (50 W) is only capped by the ceiling, so a default alone below it is still refused (above).
+        for changes, entries in (({'power_max_w': 55, 'power_default_w': 55},
+                                  {(i, f): 55000 for i in (2, 7, 8) for f in ('maximum', 'default')
+                                   if (i, f) != (8, 'default')}),
+                                 ({'power_max_w': 45, 'power_default_w': 45},
+                                  {(i, f): 45000 for i in (2, 7, 8) for f in ('maximum', 'default')}),
+                                 ({'input_current_max_ma': 30000, 'input_current_rated_ma': 30000},
+                                  {(9, 'maximum'): 30000, (9, 'default'): 30000})):
+            with self.subTest(capped=changes):
+                level = {(e['policy'], e['field']): e['value_raw']
+                         for e in backend(edit(image, changes).image).power_profiles()[0]['entries']}
+                self.assertEqual({k: level[k] for k in entries}, entries)
         refused = {
-            'override profile 7 would no longer be the profile selected at the top level: override profile 0 '
-            'policy 2 maximum exceeds the same entry of override profile 7':
-                {'power_max_w': 55, 'power_default_w': 55},
-            'override profile 7 would no longer be the profile selected at the top level: override profile 0 '
-            'policy 9 maximum exceeds the same entry of override profile 7':
-                {'input_current_max_ma': 30000, 'input_current_rated_ma': 30000},
             'override profile 7 would no longer be the profile selected at the top level: it would equal the base '
             'table and become a matching profile; keep at least one of its values below the base table':
                 {'power_max_w': 100, 'power_default_w': 100, 'input_current_max_ma': 80000,
@@ -3521,9 +3551,10 @@ class TopLevelProfileTests(unittest.TestCase):
                          'GB20x power v40 rows 2/7/8 and complete matching profiles')
         cases = (({'power_default_w': 95, 'power_max_w': 92}, 'power_default_w',
                   'power_default_w violates the minimum/default/maximum ordering of the joint result'),
-                 ({'power_max_w': 55, 'power_default_w': 55}, 'power_max_w',
-                  'override profile 7 would no longer be the profile selected at the top level: override profile 0 '
-                  'policy 2 maximum exceeds the same entry of override profile 7'))
+                 ({'power_max_w': 100, 'power_default_w': 100, 'input_current_max_ma': 80000,
+                   'input_current_rated_ma': 80000}, 'input_current_max_ma',
+                  'override profile 7 would no longer be the profile selected at the top level: it would equal the '
+                  'base table and become a matching profile; keep at least one of its values below the base table'))
         for changes, key, message in cases:
             with self.subTest(changes=changes), self.assertRaises(VbiosError) as exc:
                 edit(image, changes)
@@ -3536,6 +3567,23 @@ class TopLevelProfileTests(unittest.TestCase):
                 'probe', [at], encoding='<B', scale=1, bounds={'minimum': 0, 'maximum': 255}))
         self.assertEqual((exc.exception.code, str(exc.exception)),
                          ('PRESERVED_FIELD_CHANGED', 'edit invalidated recognized power profiles'))
+
+    def test_lower_sense_levels_are_listed_once_and_never_the_end_profiles(self):
+        def stage1(code, power):
+            def mutate(blob, parsed):
+                struct.pack_into('<I', blob, parsed.pointer('P', 0xF4) + 0x0F + 7 * code + 2, power)
+            return mutate
+        # Code 1 also reaches profile 0: listed once. Code 2 reaching the top profile, or the lowest code reaching
+        # profile 0 (a connector that is not fully seated): no lower level.
+        for options, levels in ((dict(mutate=stage1(1, 450000)), [(1, 0)]),
+                                (dict(mutate=stage1(2, 600000)), []), (dict(mutate=stage1(0, 450000)), [])):
+            with self.subTest(levels=levels):
+                image = top_profile_fixture(**options)
+                parser = backend(image)
+                self.assertEqual(parser.top_power_profile()['index'], 7)
+                self.assertEqual([(code, p['index']) for code, _, p in parser.sense_level_profiles()], levels)
+                for changes in ({'power_max_w': 90}, {'power_max_w': 95}, {'input_current_rated_ma': 60000}):
+                    self.assertTrue(edit(image, changes).manifest['integrity']['valid'])
 
     def test_rated_fields_are_capped_by_the_base_rated_values(self):
         def lower_base_rated(blob, parsed):

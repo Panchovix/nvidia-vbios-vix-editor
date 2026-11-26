@@ -881,7 +881,8 @@ Every one of these conditions must hold, or the fields stay hidden as before:
   the base row 8/9 minima;
 - no entry of another profile exceeds the same entry of the bound profile.
 
-The bound fields write only that profile's entries. The maximum and rated values of
+The bound fields write only that profile's entries, plus those of the lower cable sense
+levels (described below) that `power_max_w` and `input_current_rated_ma` write. The maximum and rated values of
 base rows 2/7/8/9 are never written; each bound field is capped by the same base
 value (a rated field also by the base rated value), and a value above it is refused
 with `OUT_OF_BOUNDS`. `power_max_w` also writes the profile's `(2, default)` and
@@ -892,6 +893,29 @@ still writes base row 8 and is capped by the profile's `(8, default)`;
 `bound_profile` and `base_values`, are experimental, and their reason names the
 profile and the base value. Which copy the firmware enforces (profile or base) has
 not been tested on hardware.
+
+**Lower cable sense levels.** A stage 1 code between the lowest and the top one can
+reach a profile that matches no base value: profile 5 (300 W) at code 1 on the RTX PRO
+6000 Max-Q, the 300 W limit its 2x8-pin adapter gets (325 W with a native 12V-2x6 cable
+or a 3x8 or 4x8-pin adapter), and profile 6 (450 or 600 W, three 8-pin plugs) at code 2
+on the RTX 5090 images, the ASUS XOC ones included. Those levels follow two fields:
+`power_max_w` writes their rows 2/7/8 maxima (and rows 2/7 rated values where it writes
+the base ones), and `input_current_rated_ma` writes both of their row 9 entries. A value
+raised above the stored one reaches them; the stored value or a lower one leaves them as
+stored, capped at the new value, so lowering a field never raises a level. Their TGP
+rated value is never raised, only capped by a lower ceiling, so `power_max_w` keeps its
+range. The editor does not know the stock values, so any raise counts, also back to a
+stock value on a copy saved lower (590 W, then 600 W on the RTX 5090 FE sets the three-plug
+level to 600 W), and setting the stock value after a raise leaves the level at it (325 W on
+the Max-Q, not 300 W). Only an edit that starts from the stock ROM gives the stock levels
+back. A copy saved with a raised ceiling by version 0.1.48 or earlier still holds the stock
+level, and only a higher ceiling reaches it. Once every entry of a level equals the base
+table (the Max-Q level after a raised ceiling and input current, or any level after power
+and current were lowered to its values), it is a profile that matches the base, written
+like the others, its TGP rated value included. The field reasons name each level with its
+current value. A profile that the lowest code reaches is never
+written: a connector that is not fully seated reports that code too. A cable or adapter is rated for the level its sense pins report, so
+going past it is your call. The level writes are not tested on hardware.
 
 Ada V3x `30/34/5b`, `30/32/53` and `30/2c/4b` and Ampere V3x `30/2c/47`, `30/2c/43` and `30/32/47` locate the
 TGP policy using header byte 10 (notebooks: byte 13), validate its type1/mW flags, bounds and power
@@ -966,7 +990,9 @@ arbitrated 62 A. Raising the rated value needs `input_current_rated_ma` and, whe
 above the stored ceiling, `input_current_max_ma` in the same request. Both write the
 base row and the `(9, default)`/`(9, maximum)` entries of complete matching profiles
 (on a top-level profile binding, only that profile's entries, which the editor keeps at
-or below the base row).
+or below the base row). The rated value also writes both row 9 entries of the lower cable
+sense levels (see *Lower cable sense levels* under [Offline board power
+floor](#offline-board-power-floor)).
 These are stored policy values, not hardware-safe current ratings. Connector, slot
 and cable limits still apply, for example on a slot-powered card.
 
@@ -1018,7 +1044,9 @@ writes the maximum (row+21) of rows 2/7/8 and the rated value (row+17) of rows 2
 and 7, plus the `(2, maximum)`, `(7, maximum)`, `(8, maximum)`, `(2, default)` and
 `(7, default)` entries of complete matching profiles. The rated value of row 8 is
 the boot default (`power_default_w`); the ceiling never writes it. On a top-level
-profile binding it writes only that profile's entries. The descriptor carries
+profile binding it writes only that profile's entries. In both cases it also writes the
+lower cable sense levels (see *Lower cable sense levels* under [Offline board power
+floor](#offline-board-power-floor)). The descriptor carries
 `rated_policy_indices: [2, 7]`, and the manifest lists `power_max_w` under
 `preservation.changed_rated_defaults` when it changed one of these rated values.
 

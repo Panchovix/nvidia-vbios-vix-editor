@@ -171,8 +171,9 @@ def _rated_ceiling_offsets(parser, canonical):
 
 
 def _same(left, right):
-    return ((left.offsets, left.encoding, left.scale, left.layout, left.companion) ==
-            (right.offsets, right.encoding, right.scale, right.layout, right.companion))
+    return ((left.offsets, left.encoding, left.scale, left.layout, left.companion, left.followers, left.capped) ==
+            (right.offsets, right.encoding, right.scale, right.layout, right.companion, right.followers,
+             right.capped))
 
 
 def _companion_bytes(bindings, semantics):
@@ -581,6 +582,24 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
                 if data != image.blob[at:at + len(data)]:
                     edits.append(dict(field=key, offset=at, before=image.blob[at:at + len(data)].hex(),
                                       after=data.hex(), stored_units='raw bytes'))
+        if binding.followers or binding.capped:
+            # The lower cable sense levels: a follower takes a value raised above the stored one (offsets[0]) and is
+            # capped by a lower one, a capped offset is only capped, so lowering never raises either. Only the
+            # reviewed binding may write them.
+            if key not in canonical:
+                raise VbiosError('INVALID_FIELD_EVIDENCE', f'{key} must use the reviewed complete binding')
+            stored = struct.unpack_from(binding.encoding, image.blob, binding.offsets[0])[0]
+            for at in binding.followers + binding.capped:
+                old = struct.unpack_from(binding.encoding, image.blob, at)[0]
+                new = decoded if decoded > stored and at in binding.followers else min(old, decoded)
+                data = struct.pack(binding.encoding, new)
+                owned(at, len(data))
+                claim(at, len(data))
+                target[at:at + len(data)] = data
+                writes.append((at, at + len(data)))
+                if new != old:
+                    edits.append(dict(field=key, offset=at, before=old, after=new,
+                                      stored_units=binding.descriptor.get('stored_units', binding.descriptor['units'])))
     touched_objects = []
     repairs = []
     if edits:
@@ -789,8 +808,11 @@ def edit(image, changes, *, dry_run=False, field_registry=None):
         # Matching max/default overrides are unchanged by a floor-only edit.
         # Profile defaults stay immutable through aliases; only the canonical
         # rated-default bindings may change their own matching-profile entries.
-        default_offsets = rated_ceiling | {at for key, binding in canonical.items()
-                                           if PRESERVATION_EXCEPTIONS.get(key) == 'default_raw' for at in binding.offsets}
+        # A canonical binding may also write the lower sense levels' profile entries (followers, capped).
+        default_offsets = rated_ceiling | {at for binding in canonical.values()
+                                           for at in binding.followers + binding.capped} | {
+            at for key, binding in canonical.items()
+            if PRESERVATION_EXCEPTIONS.get(key) == 'default_raw' for at in binding.offsets}
         try:
             source_profiles = parser.power_profiles()
         except FormatError:
